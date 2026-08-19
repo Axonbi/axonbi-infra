@@ -1,0 +1,34 @@
+# Core agent
+langgraph>=0.2.0
+langchain-core>=0.3.0
+requests>=2.31.0
+
+# REQUIRED (not optional) as of the LLM-tool-calling architecture
+# rewrite: the agent now decides every conversational step through the
+# LLM (which tool to call, how to phrase every reply), so OPENAI_API_KEY
+# is mandatory for this project to function at all - there is no
+# deterministic/heuristic fallback anymore. This is a direct, disclosed
+# consequence of "the LLM should decide, tools return data only".
+langchain-openai>=0.1.0
+openai>=1.30.0
+
+# HTTP API layer (app.py) - wraps the existing LangGraph graph for
+# Railway/n8n. Does not replace or alter the LangGraph agent itself.
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+
+# .env loading (config.py) - local-dev convenience; LangGraph Platform/
+# Railway use their own secrets stores for production, see README.
+python-dotenv>=1.0.0
+
+# Observability / LangGraph Studio (both optional at runtime):
+#   - langsmith: set LANGSMITH_TRACING=true + LANGSMITH_API_KEY to trace
+#     every real conversation (which agent ran, which tools were called).
+#   - langgraph-sdk: only used when LANGGRAPH_SERVER_URL is set, to
+#     forward turns to a LangGraph server so real conversations appear
+#     in Studio instead of only manual experiments (langgraph_client.py).
+#   - langgraph-cli: provides `langgraph dev`, the server Studio attaches
+#     to. Needed where that server runs, not by the FastAPI process.
+langsmith>=0.1.0
+langgraph-sdk>=0.1.0
+langgraph-cli[inmem]>=0.1.0
