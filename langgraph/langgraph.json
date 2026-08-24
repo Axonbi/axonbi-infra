@@ -1,8 +1,7 @@
 {
   "dependencies": ["."],
   "graphs": {
-    "hello_flow": "./graphs/hello_flow.py:graph",
-    "support_agent": "./graphs/agent.py:graph"
+    "hello_flow": "./graphs/hello_flow.py:graph"
   },
   "env": ".env",
   "http": {

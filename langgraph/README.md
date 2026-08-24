@@ -10,7 +10,6 @@ service. Reload Studio to see the new graph.
 ## Layout
 
     graphs/hello_flow.py    no LLM -- branching + a retry loop, runs with no API key
-    graphs/agent.py         tool-calling agent on Claude (needs ANTHROPIC_API_KEY)
     langgraph.json          graph registry + CORS config for Studio
     render_graph.py         print a graph as ascii/mermaid without a browser
     proxy/                  nginx TLS + basic auth, systemd units, deploy script
