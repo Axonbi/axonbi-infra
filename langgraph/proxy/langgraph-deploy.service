@@ -5,6 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/opt/axonbi-infra/langgraph/proxy/deploy.sh
+# Invoked via bash so a lost exec bit (git on Windows does not track mode)
+# cannot break deployment.
+ExecStart=/bin/bash /opt/axonbi-infra/langgraph/proxy/deploy.sh
 StandardOutput=append:/var/log/langgraph-deploy.log
 StandardError=append:/var/log/langgraph-deploy.log
