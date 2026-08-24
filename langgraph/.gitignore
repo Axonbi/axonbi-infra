@@ -1,0 +1,9 @@
+# Runtime only -- never commit these.
+.venv/
+.env
+.langgraph_api/
+__pycache__/
+*.pyc
+
+# Holds the basic-auth password and secret path. This repo is public.
+proxy/proxy.env

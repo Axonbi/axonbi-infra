@@ -1,0 +1,18 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "hello_flow": "./graphs/hello_flow.py:graph",
+    "support_agent": "./graphs/agent.py:graph"
+  },
+  "env": ".env",
+  "http": {
+    "cors": {
+      "allow_origins": ["https://smith.langchain.com"],
+      "allow_credentials": true,
+      "allow_methods": ["*"],
+      "allow_headers": ["*"],
+      "expose_headers": ["content-type"],
+      "max_age": 600
+    }
+  }
+}

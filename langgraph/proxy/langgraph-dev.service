@@ -1,0 +1,19 @@
+[Unit]
+Description=LangGraph dev server (Studio backend)
+After=network-online.target nginx.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/langgraph
+EnvironmentFile=-/opt/langgraph/.env
+# Bound to loopback on purpose: this server runs auth "noop" and is reachable
+# only through the nginx TLS + basic-auth proxy on 2024.
+ExecStart=/opt/langgraph/.venv/bin/langgraph dev --host 127.0.0.1 --port 2025 --no-browser --no-reload
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/langgraph-dev.log
+StandardError=append:/var/log/langgraph-dev.log
+
+[Install]
+WantedBy=multi-user.target

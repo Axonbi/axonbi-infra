@@ -1,0 +1,11 @@
+[Unit]
+Description=Poll git for LangGraph graph changes
+
+[Timer]
+OnBootSec=90
+OnUnitActiveSec=60
+AccuracySec=15
+Unit=langgraph-deploy.service
+
+[Install]
+WantedBy=timers.target

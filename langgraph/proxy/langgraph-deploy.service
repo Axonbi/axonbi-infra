@@ -1,0 +1,10 @@
+[Unit]
+Description=Deploy LangGraph graphs from git
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/axonbi-infra/langgraph/proxy/deploy.sh
+StandardOutput=append:/var/log/langgraph-deploy.log
+StandardError=append:/var/log/langgraph-deploy.log
