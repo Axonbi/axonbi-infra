@@ -1,7 +1,7 @@
 {
   "dependencies": ["."],
   "graphs": {
-    "cancel_agent": "./graph.py:graph"
+    "cancel_agent": "./graph.py:api_graph"
   },
   "env": ".env",
   "http": {

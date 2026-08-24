@@ -365,3 +365,16 @@ builder.add_edge("tools", "agent")
 checkpointer = MemorySaver()
 
 graph = builder.compile(checkpointer=checkpointer)
+
+
+# ==========================================================
+# Export for the LangGraph API (langgraph dev / Studio / Platform)
+# ==========================================================
+#
+# The API supplies its own persistence and REFUSES to load a graph that
+# carries a checkpointer -- it exits with GraphLoadError rather than ignoring
+# it. `graph` above is left exactly as it was, because main.py and app.py
+# invoke it directly and depend on MemorySaver holding thread history
+# in-process; this is the same builder compiled without one, so thread state
+# is handled by the platform instead.
+api_graph = builder.compile()
