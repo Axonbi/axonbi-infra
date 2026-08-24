@@ -54,9 +54,10 @@ systemctl reload nginx || systemctl start nginx
 echo "    nginx listening on 2024/tls"
 
 echo "==> 4. langgraph service"
-install -m 644 "$SRC/langgraph-dev.service" /etc/systemd/system/langgraph-dev.service
+install -m 644 "$SRC/langgraph-dev.service"     /etc/systemd/system/langgraph-dev.service
+install -m 644 "$SRC/cancel-agent-api.service" /etc/systemd/system/cancel-agent-api.service
 systemctl daemon-reload
-systemctl enable --now langgraph-dev
+systemctl enable --now langgraph-dev cancel-agent-api
 sleep 18
 
 echo "==> 5. verify"
