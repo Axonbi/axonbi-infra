@@ -3,5 +3,15 @@
   "graphs": {
     "cancel_agent": "./graph.py:graph"
   },
-  "env": ".env"
+  "env": ".env",
+  "http": {
+    "cors": {
+      "allow_origins": ["https://smith.langchain.com"],
+      "allow_credentials": true,
+      "allow_methods": ["*"],
+      "allow_headers": ["*"],
+      "expose_headers": ["content-type"],
+      "max_age": 600
+    }
+  }
 }
