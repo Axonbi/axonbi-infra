@@ -1,0 +1,20 @@
+[Unit]
+Description=Cancel agent FastAPI wrapper (/chat, called by n8n)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/langgraph
+EnvironmentFile=-/opt/langgraph/.env
+# Loopback only: nginx on 2024 terminates TLS and applies basic auth. This is
+# app.py -- the same wrapper Railway runs via the Procfile -- NOT the LangGraph
+# API, which is a separate service on 2025 and does not serve /chat.
+ExecStart=/opt/langgraph/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/cancel-agent-api.log
+StandardError=append:/var/log/cancel-agent-api.log
+
+[Install]
+WantedBy=multi-user.target

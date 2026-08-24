@@ -58,4 +58,7 @@ if [ -f "$RUNTIME/requirements.txt" ]; then
 fi
 
 systemctl restart langgraph-dev
+# The FastAPI wrapper runs the same code from the same directory, so it has to
+# be restarted too or n8n keeps hitting the pre-deploy version.
+systemctl restart cancel-agent-api
 echo "$(date -Is) deployed $(git rev-parse --short HEAD)"
