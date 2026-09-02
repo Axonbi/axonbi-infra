@@ -20,3 +20,29 @@ uvicorn[standard]>=0.29.0
 # .env loading (config.py) - local-dev convenience; LangGraph Platform/
 # Railway use their own secrets stores for production, see README.
 python-dotenv>=1.0.0
+
+# Observability and the LangGraph Studio server. Restored after being
+# dropped: langgraph-cli is what provides the `langgraph` binary, and
+# langgraph-dev.service runs `langgraph dev` from this venv. Nothing else
+# in this file pulls langgraph-cli in transitively, so without it a fresh
+# virtualenv builds without that binary and the service fails to start --
+# the running deployment only kept working because the package was still
+# present from an earlier install.
+#
+#   - langgraph-cli[inmem]: the `langgraph dev` server Studio attaches to.
+#     The [inmem] extra is required, not cosmetic -- it supplies
+#     langgraph-api and langgraph-runtime-inmem, which `langgraph dev`
+#     needs to serve a graph in-memory.
+#   - langsmith: traces real conversations (which agent ran, which tools
+#     were called) when LANGCHAIN_TRACING_V2=true. Reached transitively
+#     via langchain-core, but declared here because this project enables
+#     tracing on purpose rather than inheriting it by accident.
+#   - langgraph-sdk: the LangGraph client library, pulled in by both
+#     langgraph and langgraph-cli. Declared so the API it provides is a
+#     stated dependency and not an implicit one.
+#
+# Floors are the versions the working deployment was verified on, so a
+# fresh build cannot resolve to something older than what runs today.
+langgraph-cli[inmem]>=0.4.31
+langsmith>=0.11.1
+langgraph-sdk>=0.4.3
