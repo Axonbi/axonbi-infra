@@ -15,12 +15,13 @@ beyond request/response shaping and error handling.
 
 import logging
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from langgraph.errors import GraphRecursionError
+
 import config
-import langgraph_client
 import main as agent  # unmodified from this point of view: send_message()
 
 config.configure_logging()
@@ -29,20 +30,6 @@ logger = logging.getLogger("app")
 # Surface a misconfigured complaint transport at startup rather than
 # only when a patient has already typed out their whole complaint.
 config.check_complaint_delivery_config()
-
-# State plainly, once, WHERE turns actually execute - the two modes look
-# identical from n8n's side, so without this line there's no way to tell
-# from the logs whether a run should be expected to appear in Studio.
-if langgraph_client.is_enabled():
-    logger.info(
-        "Turn execution: FORWARDED to LangGraph server at %s (graph_id=%s) - real conversations will appear in Studio",
-        config.LANGGRAPH_SERVER_URL, config.LANGGRAPH_GRAPH_ID,
-    )
-else:
-    logger.info(
-        "Turn execution: IN-PROCESS (LANGGRAPH_SERVER_URL not set) - Studio will only show manual runs, "
-        "not real conversations. Set LANGSMITH_TRACING=true to trace real ones instead."
-    )
 
 app = FastAPI(
     title="Guest Booking Cancellation Agent API",
@@ -153,25 +140,55 @@ def chat(req: ChatRequest) -> ChatResponse:
         )
 
     try:
-        if langgraph_client.is_enabled():
-            # Forwarded to the LangGraph server so the run shows up in
-            # Studio - see langgraph_client's module docstring. Same
-            # response shape either way, so nothing downstream (n8n
-            # included) can tell the difference.
-            result = langgraph_client.send_message(
-                req.client_id, req.session_id, req.message,
-                channel_phone=req.channel_phone, client_config=resolved_config,
-            )
-        else:
-            result = agent.send_message_with_signals(
-                req.client_id, req.session_id, req.message,
-                channel_phone=req.channel_phone, client_config=resolved_config,
-            )
+        result = agent.send_message_with_signals(
+            req.client_id, req.session_id, req.message,
+            channel_phone=req.channel_phone, client_config=resolved_config,
+        )
+    except GraphRecursionError:
+        # The turn hit the step ceiling - something looped instead of
+        # answering. The patient must still get a message: a 500 here
+        # means silence on their phone, which is the worst outcome and
+        # the one confirmed in production twice.
+        logger.exception(
+            "Graph hit the recursion limit for session_id=%s client_id=%s - something is "
+            "looping. Returning the configured failure message so the patient is not left "
+            "with nothing.", req.session_id, req.client_id,
+        )
+        templates = config.get_messages(req.client_id, client_row_override=resolved_config)
+        return ChatResponse(
+            reply=(
+                templates.get("msg_On_failure")
+                or "حدث خطأ تقني 😕. تحب تحاول مرة ثانية؟"
+            ),
+            escalate=False,
+            location=False,
+            branch_name=None,
+        )
     except Exception:
+        # ANY failure still owes the patient a message.
+        #
+        # A 500 here is silence on their phone: they wrote in, nothing
+        # came back, and they have no idea whether to wait or retry.
+        # CONFIRMED REAL PRODUCTION FAILURE: a malformed conversation
+        # (an assistant tool_call left without its tool response by an
+        # earlier aborted turn) returned 500 on EVERY subsequent
+        # message, and the session was silently dead from the patient's
+        # side. The underlying cause is fixed separately - this makes
+        # sure the next one of its kind is visible as a reply rather
+        # than as nothing at all.
         logger.exception(
             "Graph invocation failed for session_id=%s client_id=%s", req.session_id, req.client_id
         )
-        raise HTTPException(status_code=500, detail="internal_error: failed to process message")
+        templates = config.get_messages(req.client_id, client_row_override=resolved_config)
+        return ChatResponse(
+            reply=(
+                templates.get("msg_On_failure")
+                or "حدث خطأ تقني 😕. تحب تحاول مرة ثانية؟"
+            ),
+            escalate=False,
+            location=False,
+            branch_name=None,
+        )
 
     logger.info("session_id=%s reply=%r escalate=%s location=%s branch_name=%r",
                 req.session_id, result["reply"], result["escalate"], result["location"], result["branch_name"])

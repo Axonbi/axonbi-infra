@@ -65,10 +65,6 @@ DATA_DIR: Path = Path(os.getenv("AGENT_DATA_DIR", str(PROJECT_ROOT / "data")))
 # Platform.
 _CANDIDATE_DATA_DIRS: List[Path] = [DATA_DIR, PROJECT_ROOT]
 
-CLIENT_CONFIG_CSV: Path = DATA_DIR / "client_config.csv"
-DIALECT_TEMPLATES_CSV: Path = DATA_DIR / "dialect_templates.csv"
-
-
 # ==========================================================
 # Booking API
 # ==========================================================
@@ -93,6 +89,32 @@ CLIENT_ID_HEADER: str = "ClientId"
 
 REQUEST_TIMEOUT_SECONDS: float = float(
     os.getenv("BOOKING_API_TIMEOUT_SECONDS", "15")
+)
+
+# How many times to retry a Doctors/Specialties API call that failed with
+# a 5xx or a timeout, before giving up. Confirmed real production
+# behaviour: this endpoint has been measured returning the SAME query in
+# 0.5s and then, later, either timing out at 29s or answering with a bare
+# 500 and an empty body - a transient blip, not a real outage - yet
+# _post_json previously gave up on the FIRST 500/timeout. That one failed
+# call then propagated all the way to the model, which (with no real
+# branch/doctor data to work from) started inventing branch names, which
+# the reply-validation guard correctly caught and replaced with the
+# generic "حدث خطأ تقني" fallback - so a single transient 500 upstream
+# was surfacing as a hard failure to the patient. Kept LOW and env-
+# overridable: this is a shield against a known-flaky endpoint's short
+# blips, not a way to paper over a genuinely down service - if it's
+# really down, retrying more just delays the (still correct) failure
+# response to the patient.
+DOCTORS_API_MAX_RETRIES: int = int(
+    os.getenv("DOCTORS_API_MAX_RETRIES", "2")
+)
+
+# Base delay between retries, in seconds. Doubles each attempt
+# (0.5s, 1s, 2s, ...) so a genuinely struggling endpoint isn't hammered
+# harder than a transient one.
+DOCTORS_API_RETRY_BACKOFF_SECONDS: float = float(
+    os.getenv("DOCTORS_API_RETRY_BACKOFF_SECONDS", "0.5")
 )
 
 
@@ -136,8 +158,23 @@ DOCTOR_LIST_CACHE_SECONDS: float = float(
     os.getenv("DOCTOR_LIST_CACHE_SECONDS", "90")
 )
 
+# How far ahead to look for a bookable slot.
+#
+# RAISED FROM 14 DAYS. Clinics publish the next season's rota in
+# advance, and patients are expected to book into it - confirmed in
+# production, a doctor's Monday rota was valid from 01/10 while the
+# search window ended two weeks out, so those Mondays could not be found
+# no matter what the patient asked. With the schedule lookup no longer
+# hiding future rotas (see api.get_doctor_schedule's `include_future`),
+# a short window here would just move the same blind spot one step
+# later: the schedule would show Monday and the day search would find
+# nothing.
+#
+# Cost is one request either way - the sweep is a single paged call, not
+# a call per day - so the change is more rows returned, not more round
+# trips. Lower it if a client's booking horizon is genuinely shorter.
 DOCTOR_AVAILABILITY_WINDOW_DAYS: int = int(
-    os.getenv("DOCTOR_AVAILABILITY_WINDOW_DAYS", "14")
+    os.getenv("DOCTOR_AVAILABILITY_WINDOW_DAYS", "60")
 )
 
 
@@ -153,31 +190,27 @@ DOCTOR_AVAILABILITY_WINDOW_DAYS: int = int(
 # literals scattered through node.py.
 
 CANCELLED_STATUS_NAME: str = "Cancelled"
-CANCELLED_STATUS_CODE: int = 6
 
 # Official numeric status codes, confirmed directly from the Booking
 # API's own documentation - these replace the earlier fragile approach
 # of matching statusName strings (which had to handle both English AND
 # Arabic spellings depending on the accept-language header, and broke at
 # least once in practice). Numeric codes are language-independent.
+#
+# Only the codes something actually reads are defined. The full
+# enumeration (ARRIVED/NO_SHOW/COMPLETED/CANCELLED as separate
+# constants, plus CANCELLABLE_STATUSES as a parallel list of NAMES) used
+# to be spelled out here and none of it was referenced anywhere - a
+# second, string-based cancellability list sitting next to the numeric
+# one is exactly how the two drift apart and how the string-matching bug
+# above comes back.
 STATUS_NEW: int = 1
 STATUS_CONFIRMED: int = 2
-STATUS_ARRIVED: int = 3
-STATUS_NO_SHOW: int = 4
-STATUS_COMPLETED: int = 5
-STATUS_CANCELLED: int = 6
 
 # Only these two are cancellable - confirmed directly from the
 # dashboard's own status dropdown (جديد/تم التأكيد were the only ones NOT
 # excluded; وصل/لم يحضر/مكتمل/ملغي were all excluded).
 CANCELLABLE_STATUS_CODES = (STATUS_NEW, STATUS_CONFIRMED)
-
-# Statuses considered cancellable by build_response / check_booking_status.
-# The original sub-workflows only ever check for "already Cancelled" (not
-# an explicit allow-list), so this defaults permissive: anything that
-# isn't already Cancelled is treated as cancellable, and the API call
-# itself is the final authority (its own error response wins either way).
-CANCELLABLE_STATUSES = ("New", "Confirmed")
 
 
 # ==========================================================
@@ -213,7 +246,6 @@ DEFAULT_TIMEZONE: str = os.getenv("DEFAULT_TIMEZONE", "Asia/Riyadh")
 OTP_PROVIDER: str = os.getenv("OTP_PROVIDER", "dummy")
 
 TEST_OTP: str = os.getenv("TEST_OTP", "123456")
-OTP_LENGTH: int = 6
 OTP_TTL_SECONDS: int = 5 * 60  # 5 minutes
 
 AUTHENTICA_BASE_URL: str = os.getenv(
@@ -266,25 +298,18 @@ DEFAULT_COUNTRY_CODE: str = os.getenv("DEFAULT_COUNTRY_CODE", "20")  # Egypt
 
 
 # ==========================================================
-# Retry limits (bounded interrupt loops - see graph.py)
-# ==========================================================
-#
-# Every node that can loop back to itself via an interrupt (phone-format
-# retry, OTP retry, selection retry, confirmation retry) is bounded by one
-# of these, so a confused caller is routed to a handoff message
-# (client_config's msg_handoff_confirmation) instead of looping forever.
-
-MAX_PHONE_FORMAT_RETRIES: int = 3
-MAX_OTP_RETRIES: int = 3
-MAX_SELECTION_RETRIES: int = 3
-MAX_CONFIRMATION_RETRIES: int = 2
-
-
-# ==========================================================
 # LangGraph / Thread Settings
 # ==========================================================
 
 THREAD_ID_PREFIX: str = "guest-cancel"
+
+# Maximum LangGraph steps in a single turn. Guards the agent->tools->
+# agent cycle, which is otherwise bounded only by the model deciding to
+# stop - and when it doesn't, the turn never returns and the patient
+# receives nothing at all (confirmed twice in production). A normal turn
+# uses a handful of steps; even the deepest real flow stays far inside
+# this, so hitting it means something is genuinely looping.
+GRAPH_RECURSION_LIMIT: int = int(os.getenv("GRAPH_RECURSION_LIMIT", "30"))
 
 # After this many seconds of no message on a given session_id, the next
 # message starts a completely fresh conversation (new thread_id) instead
@@ -309,37 +334,6 @@ POST_SUCCESS_TIMEOUT_SECONDS: int = int(os.getenv("POST_SUCCESS_TIMEOUT_SECONDS"
 # prompts.py ever need to look back on. See graph.py's agent().
 MAX_HISTORY_MESSAGES: int = int(os.getenv("MAX_HISTORY_MESSAGES", "40"))
 
-# ==========================================================
-# Optional: run turns THROUGH a LangGraph server
-# ==========================================================
-#
-# Empty (the default) = unchanged behavior: app.py invokes the compiled
-# graph in-process, exactly as before.
-#
-# Set to a LangGraph server's URL (e.g. "http://127.0.0.1:2024") and
-# app.py forwards each /chat turn to that server instead. The point is
-# visibility: LangGraph Studio can only show runs that the SERVER
-# executed, so with in-process invocation the real WhatsApp
-# conversations never appear there and Studio is limited to manual
-# experiments. Forwarding puts real traffic on the server, so every
-# actual patient conversation shows up in Studio with its full node
-# path and tool calls - while n8n keeps calling the same /chat endpoint
-# and sees the same response shape.
-#
-# The trade-off is an extra network hop and a second process to run, so
-# this stays opt-in rather than becoming the default.
-LANGGRAPH_SERVER_URL: str = os.getenv("LANGGRAPH_SERVER_URL", "").strip().rstrip("/")
-
-# Which graph on that server to run - must match a key in the "graphs"
-# object of langgraph.json (this project defines "cancel_agent").
-LANGGRAPH_GRAPH_ID: str = os.getenv("LANGGRAPH_GRAPH_ID", "cancel_agent").strip()
-
-# Only needed for a hosted/authenticated LangGraph Platform deployment;
-# a locally-run `langgraph dev` server needs no key.
-LANGGRAPH_API_KEY: str = os.getenv("LANGGRAPH_API_KEY", "").strip()
-
-LANGGRAPH_SERVER_TIMEOUT_SECONDS: float = float(os.getenv("LANGGRAPH_SERVER_TIMEOUT_SECONDS", "120"))
-
 
 # ==========================================================
 # OpenAI (language/dialect detection, ref/phone extraction, selection
@@ -350,11 +344,12 @@ OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4.1")  # upgraded from gpt-4.1-mini for better dialect/persona instruction-following
 OPENAI_TIMEOUT_SECONDS: float = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "10"))
 
-# LLM classification is only attempted if an API key is present. Without
-# one, prompts.py's callers fall back to deterministic heuristics so the
-# agent still runs (e.g. local dev / tests / this sandbox, which has no
-# outbound access to api.openai.com).
-LLM_CLASSIFICATION_ENABLED: bool = bool(OPENAI_API_KEY)
+# NOTE: there is deliberately no "run without an LLM" flag any more.
+# The old hybrid design could fall back to deterministic heuristics when
+# no API key was present; this architecture cannot - the LLM decides
+# every conversational step - so a flag implying otherwise was a
+# misleading leftover. OPENAI_API_KEY is required, as stated in the
+# README and requirements.txt.
 
 
 # ==========================================================
@@ -429,7 +424,26 @@ PROGRESS_WEBHOOK_URL: str = os.getenv("PROGRESS_WEBHOOK_URL", "").strip()
 # told to wait. Most tool calls finish well inside this, so most turns
 # still produce exactly one message. Raise it if the interim line feels
 # too eager, lower it if patients are waiting in silence.
-PROGRESS_DELAY_SECONDS: float = float(os.getenv("PROGRESS_DELAY_SECONDS", "1.5"))
+# How long a tool phase must ALREADY have been running before the
+# patient is told to wait.
+#
+# RAISED FROM 1.5s. At 1.5s the timer fired on turns that were about to
+# finish anyway: the interim line and the real answer left the app
+# within a few tens of milliseconds of each other, and since they are
+# two separate deliveries through n8n, their ARRIVAL order is not
+# guaranteed. Confirmed in production - the "please wait" line showing
+# up underneath the answer it was supposed to precede, which reads as
+# though the assistant lost track of the conversation.
+#
+# Measured on the live medtown deployment, a turn that needs an interim
+# message at all runs 5-12s; the turns that were producing out-of-order
+# messages were finishing in 2-4s. 3.0s sits between the two, so slow
+# turns still get their line and quick ones stay silent.
+#
+# This is a latency-vs-noise trade-off, not a correctness fix: the
+# ordering guard in progress.py is what makes it safe. Raise it further
+# if the warning it logs still appears.
+PROGRESS_DELAY_SECONDS: float = float(os.getenv("PROGRESS_DELAY_SECONDS", "3.0"))
 
 # Kept short: this is a courtesy message, and its delivery must never
 # hold anything up.
@@ -544,6 +558,42 @@ def get_dialect_template(dialect: str) -> Optional[dict]:
     return None
 
 
+def _unwrap_quotes(value: str) -> str:
+    """Remove a pair of quote characters wrapping an entire value.
+
+    Message templates are authored in a spreadsheet / Data Table, where
+    it is natural to type quotes around a sentence to show where it
+    begins and ends. Those quotes are part of the VALUE, not of the CSV
+    encoding, so they survive parsing and get sent to the patient.
+
+    Confirmed in production data: `msg_On_failure` reads
+    '"حدث خطأ تقني 😕. تحب تحاول مرة ثانية؟"' for BOTH clients -
+    quote marks included. It is a message the patient only ever sees
+    when something has already gone wrong, so it is the least likely to
+    be noticed in testing and the worst moment to look sloppy.
+
+    Only stripped when a matching pair wraps the WHOLE value, so a
+    quotation used INSIDE a message is untouched.
+    """
+
+    if not isinstance(value, str):
+        return value
+
+    text = value.strip()
+    if len(text) < 2:
+        return value
+
+    for opening, closing in (('"', '"'), ("'", "'"), ("\u201c", "\u201d"), ("\u00ab", "\u00bb")):
+        if text[0] == opening and text[-1] == closing:
+            inner = text[1:-1].strip()
+            # Don't strip when the value is several quoted fragments
+            # ("a" and "b") - only when it is one wrapped sentence.
+            if opening not in inner and closing not in inner:
+                return inner
+
+    return value
+
+
 def get_messages(client_id: str, dialect: Optional[str] = None, client_row_override: Optional[dict] = None) -> dict:
     """
     Build the merged message-template dict used by build_response and the
@@ -585,7 +635,7 @@ def get_messages(client_id: str, dialect: Optional[str] = None, client_row_overr
     for key in _CLIENT_OVERRIDE_KEYS:
         value = client_row.get(key)
         if value:
-            merged[key] = value
+            merged[key] = _unwrap_quotes(value)
 
     # A few non-message fields nodes/prompts need directly, not just for
     # templating - kept alongside the message dict so callers only need

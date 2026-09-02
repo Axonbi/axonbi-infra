@@ -72,11 +72,10 @@ PROGRESS_ENABLED defaults to false. Nothing about the agent's behaviour
 changes until it is switched on - see README_MULTIAGENT.md.
 """
 
-import json
 import logging
 import threading
 import time
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, Optional
 
 import config
 
@@ -95,11 +94,37 @@ _TOOL_GROUPS: Dict[str, tuple] = {
     "searching_doctors": (
         "find_available_doctors",
         "find_best_doctor_in_specialty",
+    ),
+
+    # Kept as a group with no tools of its own: `list_specialties` is
+    # silent (see _SILENT_RESOLVER_TOOLS), but a tenant may still
+    # override this wording via msg_progress_searching_specialties, and
+    # _list_mode_alias can still select it.
+    "searching_specialties": (
+        # Announced only when the patient actually asked for the
+        # specialty list (the booking flow) - it is silenced in medical
+        # guidance, where it is an internal step. See the
+        # `list_specialties` handling in schedule().
         "list_specialties",
     ),
 
+    # A doctor search NARROWED TO A SPECIALTY, which is what the patient
+    # has just agreed to when they say "اه" to "تحب أشوف لك الدكاترة في
+    # التخصص ده؟". Worth its own wording: at that moment the specialty
+    # is the shared context of the conversation, and naming it confirms
+    # the assistant understood which one they meant.
+    "searching_specialty_doctors": (),
+
     "searching_branches": (
         "list_branches_for_specialty",
+    ),
+
+    # Looking for WHICH BRANCHES can book a service the patient has
+    # already chosen. Worth its own wording: at that moment the service
+    # is the shared context, and naming it confirms the assistant is
+    # still working on the thing they picked rather than starting over.
+    "searching_service_branches": (
+        "find_branches_offering_service",
     ),
 
     # Looking for which DAYS a doctor has anything open.
@@ -182,23 +207,119 @@ _GROUP_FOR_TOOL: Dict[str, str] = {
 _SILENT_RESOLVER_TOOLS = frozenset({
     "match_entity_for_booking",
     "match_entity_info",
+    # `list_specialties` is an INTERNAL step, not the thing the patient
+    # is waiting for. They described a symptom and are waiting to be
+    # told which doctor to see; the specialty lookup is how the
+    # assistant works that out, and announcing it ("جاري مراجعة
+    # التخصصات المتاحة") narrates the assistant's own reasoning at
+    # someone who never asked about specialties.
+    #
+    # Confirmed directly: this line appeared after "بطني وجعاني وعندي
+    # ترجيع" and was rejected - what the patient wants told to them is
+    # the DOCTOR search, which is the step after they agree. Silencing
+    # it here means the turn's timer stays unarmed and the genuinely
+    # relevant next call is what speaks.
+    "list_specialties",
+})
+
+# ...BUT ONLY IN RESOLVE MODE.
+#
+# `match_entity_for_booking` is dual-mode: with `user_input` filled it
+# resolves the patient's text to one entity (instant, always followed by
+# the real work), and with `user_input` EMPTY it lists every doctor or
+# branch - which is a full roster fetch and is frequently the slowest
+# thing in the turn.
+#
+# CONFIRMED REAL FAILURE: the patient answered "دكتور", the turn spent
+# 5.1 seconds fetching and rendering all 8 doctors, and said nothing at
+# all while they waited - because the only tool called was this one, and
+# it was unconditionally treated as silent. `schedule()` is given the
+# call's ARGUMENTS now so it can tell the two modes apart.
+_LIST_MODE_ARG_NAMES = ("user_input",)
+
+
+def _is_list_mode(tool_name: str, args: Optional[dict]) -> bool:
+    """True when a dual-mode resolver is being used to LIST rather than
+    to resolve - i.e. its entity argument is empty."""
+
+    if tool_name not in _SILENT_RESOLVER_TOOLS:
+        return False
+
+    if args is None:
+        # No argument information available: assume resolve mode, which
+        # preserves the previous behaviour exactly.
+        return False
+
+    return not any(str(args.get(name) or "").strip() for name in _LIST_MODE_ARG_NAMES)
+
+
+def _list_mode_alias(tool_name: str, args: Optional[dict]) -> str:
+    """The tool whose wording describes what a list-mode resolver is
+    actually fetching, chosen from its `entity_type` argument."""
+
+    entity_type = str((args or {}).get("entity_type") or "").strip().lower()
+
+    if entity_type.startswith("branch"):
+        return "list_branches_for_specialty"
+
+    return "find_available_doctors"
+
+# Tools that LIST options. Announcing one of these as a search is right
+# when the patient asked an open question ("what branches does he work
+# at?"), and wrong when they have just answered with a pick from a list
+# already on their screen.
+#
+# CONFIRMED FROM A REAL CHAT: the patient was shown three branches, typed
+# "2", and was told "لحظة من فضلك، جاري البحث عن الفروع المتاحة… 🏥" -
+# the branches had already been found and shown, and what the assistant
+# was actually doing was resolving their choice and fetching days. The
+# line described work from the previous turn, and re-announcing a search
+# for something they just chose reads as though their answer was
+# ignored. See `schedule(..., answering_a_list=True)`.
+_LIST_LOOKUP_TOOLS = frozenset({
+    "list_branches_for_specialty",
+    "list_specialties",
+    "find_available_doctors",
+    "find_best_doctor_in_specialty",
 })
 
 # Order of precedence when one turn calls several tools at once: the
 # patient should be told about the most significant thing happening, not
 # whichever tool the model happened to list first.
+#
+# EVERY GROUP IN _TOOL_GROUPS MUST APPEAR HERE. `message_for` resolves
+# the group by walking this tuple, so a group missing from it can never
+# be selected at all - it silently falls through to the "generic" line.
+# `searching_times` and `finding_patient_details` were both missing,
+# which is why looking up a day's times said "جاري تنفيذ طلبك… ⏳"
+# instead of "جاري البحث عن الأوقات المتاحة… 🕐", despite having a
+# perfectly good message defined for it. There is a test below that
+# fails if the two lists ever drift apart again.
 _GROUP_PRIORITY = (
     "creating_booking",
     "cancelling",
     "rescheduling",
     "sending_complaint",
     "sending_otp",
+    "searching_times",
     "searching_slots",
+    "searching_service_branches",
     "searching_branches",
+    "searching_specialty_doctors",
     "searching_doctors",
+    "searching_specialties",
     "finding_booking",
+    "finding_patient_details",
     "checking_info",
 )
+
+# Fail loudly at import rather than shipping a group nothing can select.
+_UNREACHABLE_GROUPS = set(_TOOL_GROUPS) - set(_GROUP_PRIORITY)
+if _UNREACHABLE_GROUPS:  # pragma: no cover - guards a coding mistake
+    raise RuntimeError(
+        "progress.py: these tool groups are not in _GROUP_PRIORITY and can "
+        f"therefore never be selected: {sorted(_UNREACHABLE_GROUPS)}"
+    )
 
 
 # Defaults, kept deliberately plain. They are NOT written in any one
@@ -209,8 +330,14 @@ _GROUP_PRIORITY = (
 _DEFAULT_MESSAGES: Dict[str, Dict[str, str]] = {
     "searching_doctors":  {"ar": "لحظة من فضلك، جاري البحث عن الأطباء المتاحين… 🔎",
                            "en": "One moment please - looking up the available doctors… 🔎"},
+    "searching_specialties": {"ar": "لحظة من فضلك، جاري مراجعة التخصصات المتاحة… 🩺",
+                           "en": "One moment please - checking the available specialties… 🩺"},
+    "searching_specialty_doctors": {"ar": "لحظة من فضلك، جاري مراجعة الدكاترة المتاحين في التخصص ده… 🩺",
+                           "en": "One moment please - checking the available doctors in this specialty… 🩺"},
     "searching_branches": {"ar": "لحظة من فضلك، جاري البحث عن الفروع المتاحة… 🏥",
                            "en": "One moment please - looking up the available branches… 🏥"},
+    "searching_service_branches": {"ar": "لحظة من فضلك، جاري البحث عن الفروع المتاح بها الخدمة… 🏥",
+                           "en": "One moment please - looking up the branches offering this service… 🏥"},
     "searching_slots":    {"ar": "لحظة من فضلك، جاري البحث عن المواعيد المتاحة… 🗓️",
                            "en": "One moment please - checking the available days… 🗓️"},
     "searching_times":    {"ar": "لحظة من فضلك، جاري البحث عن الأوقات المتاحة… 🕐",
@@ -234,6 +361,27 @@ _DEFAULT_MESSAGES: Dict[str, Dict[str, str]] = {
     "generic":            {"ar": "لحظة من فضلك، جاري تنفيذ طلبك… ⏳",
                            "en": "One moment please - working on that… ⏳"},
 }
+
+
+def _message_for_group(
+    group: str,
+    language: Optional[str] = "ar",
+    templates: Optional[dict] = None,
+) -> str:
+    """The interim line for one named group, bypassing tool lookup.
+
+    Same tenant-override rule as `message_for`: a
+    `msg_progress_<group>` column in the client's config wins, then
+    `msg_progress`, then the neutral default.
+    """
+
+    if templates:
+        override = templates.get(f"msg_progress_{group}") or templates.get("msg_progress")
+        if override and override.strip():
+            return override.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    key = "en" if (language or "ar").startswith("en") else "ar"
+    return _DEFAULT_MESSAGES.get(group, _DEFAULT_MESSAGES["generic"])[key]
 
 
 def message_for(
@@ -315,6 +463,33 @@ _pending: Dict[str, tuple] = {}
 last_delivered: Dict[str, str] = {}
 
 
+# When a progress message was handed to the webhook, and whether one is
+# still mid-flight. Both are what `end_turn` uses to guarantee ORDERING.
+_delivery_finished_at: Dict[str, float] = {}
+_delivery_in_progress: Dict[str, threading.Event] = {}
+
+# How far ahead of the real answer an interim message must be.
+#
+# WHY THIS EXISTS AT ALL: the interim line and the answer travel by two
+# INDEPENDENT paths - progress POSTs straight to the webhook from a
+# timer thread, while the answer goes back as the /chat response and is
+# then delivered by n8n. Nothing about "sent first" makes them "arrive
+# first". Confirmed repeatedly in production: the line reading "لحظة من
+# فضلك، جاري البحث عن الأوقات المتاحة… 🕐" landing UNDERNEATH the list
+# of times it was supposed to precede.
+#
+# No amount of checking before sending can fix that - by the time the
+# check runs, the only thing left to control is when the ANSWER goes
+# out. So the answer is held back until the interim line has had a
+# clear head start. Paid only on turns that actually sent one.
+_MIN_ORDERING_GAP_SECONDS = 0.6
+
+# Hard ceiling on the total hold, so a webhook that has gone slow or
+# unresponsive can never stall a patient's answer. Exceeding this is
+# logged: if it shows up, the webhook is the thing to look at.
+_MAX_ORDERING_WAIT_SECONDS = 2.0
+
+
 def begin_turn(session_id: str) -> None:
     """Called once when a user message starts being processed."""
 
@@ -322,6 +497,8 @@ def begin_turn(session_id: str) -> None:
         _cancel_locked(session_id)
         _in_flight[session_id] = True
         _delivered[session_id] = False
+        _delivery_finished_at.pop(session_id, None)
+        _delivery_in_progress.pop(session_id, None)
         # NOT set here on purpose - see _turn_started's comment above.
         # Left over from a PRIOR turn shouldn't leak in either, so it's
         # explicitly cleared; schedule() sets it fresh the first time
@@ -334,7 +511,22 @@ def end_turn(session_id: str) -> None:
 
     Cancelling here is what makes a fast turn produce no interim message
     at all - the timer never gets to fire.
+
+    ALSO ENFORCES ORDERING. If an interim message went out during this
+    turn, this blocks briefly so the answer cannot overtake it - see
+    _MIN_ORDERING_GAP_SECONDS. This runs on the request thread, on
+    purpose: the caller is about to return the reply, and delaying that
+    return by a few hundred milliseconds is the only remaining way to
+    control which of the two messages the patient sees first.
+
+    Never raises, and never waits longer than
+    _MAX_ORDERING_WAIT_SECONDS.
     """
+
+    try:
+        _await_ordering_gap(session_id)
+    except Exception as exc:  # pragma: no cover - must never break a turn
+        logger.warning("progress[%s]: ordering wait failed (%s)", session_id, exc)
 
     with _lock:
         # Cleared before anything else: a timer thread already inside
@@ -345,6 +537,54 @@ def end_turn(session_id: str) -> None:
         _delivered.pop(session_id, None)
         _turn_started.pop(session_id, None)
         _pending.pop(session_id, None)
+        _delivery_finished_at.pop(session_id, None)
+        _delivery_in_progress.pop(session_id, None)
+
+
+def _await_ordering_gap(session_id: str) -> None:
+    """Hold the answer back until any interim message this turn is
+    provably ahead of it."""
+
+    with _lock:
+        pending_send = _delivery_in_progress.get(session_id)
+        finished_at = _delivery_finished_at.get(session_id)
+
+    if pending_send is None and finished_at is None:
+        # Nothing was sent this turn - the overwhelming majority of
+        # turns - so there is nothing to order against.
+        return
+
+    started_waiting = time.monotonic()
+
+    if pending_send is not None and not pending_send.is_set():
+        # The POST is still in flight. Wait for it to land, otherwise
+        # the gap below would be measured from the wrong moment.
+        if not pending_send.wait(timeout=_MAX_ORDERING_WAIT_SECONDS):
+            logger.warning(
+                "progress[%s]: interim message still unsent after %.1fs - releasing the "
+                "answer anyway; the two may arrive out of order. Check the progress webhook.",
+                session_id, _MAX_ORDERING_WAIT_SECONDS,
+            )
+            return
+
+        with _lock:
+            finished_at = _delivery_finished_at.get(session_id)
+
+    if finished_at is None:
+        return
+
+    elapsed_since_send = time.monotonic() - finished_at
+    remaining_gap = _MIN_ORDERING_GAP_SECONDS - elapsed_since_send
+
+    budget_left = _MAX_ORDERING_WAIT_SECONDS - (time.monotonic() - started_waiting)
+    hold = min(remaining_gap, budget_left)
+
+    if hold > 0:
+        logger.info(
+            "progress[%s]: holding the answer %.2fs so the interim message stays ahead of it",
+            session_id, hold,
+        )
+        time.sleep(hold)
 
 
 def _cancel_locked(session_id: str) -> None:
@@ -359,8 +599,37 @@ def schedule(
     tool_names: Iterable[str],
     language: Optional[str] = "ar",
     templates: Optional[dict] = None,
+    answering_a_list: bool = False,
+    tool_args: Optional[dict] = None,
+    agent_name: Optional[str] = None,
+    channel_phone: Optional[str] = None,
 ) -> None:
     """Arm the interim message for a tool phase that is about to start.
+
+    `answering_a_list`: True when the patient's own latest message was a
+    pick from a list they were just shown ("2", "الدقي", "الأول"). In
+    that case a list-lookup tool is resolving their answer, not
+    searching on their behalf, so it is treated as a silent resolver -
+    see _LIST_LOOKUP_TOOLS.
+
+    `tool_args`: {tool_name: arguments}, used only to tell a dual-mode
+    resolver's LIST mode (a real roster fetch, worth announcing) from
+    its RESOLVE mode (instant) - see _is_list_mode.
+
+    `agent_name`: which flow is running. The SAME tool can be worth
+    describing differently depending on why it was called - looking up
+    times inside a reschedule is "moving your appointment", not
+    "checking the available times" - so this narrows the wording where
+    it genuinely changes what the patient is waiting for. Optional and
+    additive: omit it and every existing behaviour is unchanged.
+
+    `channel_phone`: the patient's own WhatsApp number for this
+    session (state["channel_phone"]). Carried through to the webhook
+    payload delivered to n8n (see _deliver) so the n8n flow can route
+    the interim message on the same channel/variable it uses for the
+    final reply, without having to re-derive it from session_id.
+    Optional and additive: omit it and the payload simply omits the
+    field, unchanged from before.
 
     Never raises: a failure here must not be able to break a turn that
     would otherwise have answered the patient perfectly well.
@@ -374,14 +643,102 @@ def schedule(
         if not names:
             return
 
-        if names and all(n in _SILENT_RESOLVER_TOOLS for n in names):
+        args_by_tool = tool_args or {}
+
+        # NO INTERIM MESSAGE WHILE SOMEONE IS DESCRIBING A SYMPTOM.
+        #
+        # In the medical-guidance flow the patient has just told us they
+        # are unwell ("بطني وجعاني وعندي ترجيع"). A mechanical "لحظة من
+        # فضلك، جاري البحث عن الأطباء المتاحين… 🔎" lands as the FIRST
+        # thing they get back - before any acknowledgement that they are
+        # in pain - and reads like a system status line rather than a
+        # person responding. The warm reply is worth waiting a moment
+        # for; a spinner in front of it is worse than silence.
+        #
+        # This is deliberately the whole flow, not one tool: every
+        # lookup here happens while the patient is waiting to be
+        # answered about their symptom.
+        if agent_name == "medical":
+            return
+
+        silent = {
+            name for name in _SILENT_RESOLVER_TOOLS
+            if not _is_list_mode(name, args_by_tool.get(name))
+        }
+        if answering_a_list:
+            silent |= _LIST_LOOKUP_TOOLS
+
+        # `list_specialties` IS SILENT ONLY IN MEDICAL GUIDANCE.
+        #
+        # There, the patient described a symptom and is waiting to be
+        # told which doctor to see; the specialty lookup is the
+        # assistant's own reasoning and announcing it narrates a step
+        # nobody asked about (see _SILENT_RESOLVER_TOOLS).
+        #
+        # In the BOOKING flow it is the opposite: the patient answered
+        # "تخصص" to "تحب تبدأ بالتخصص ولا بالدكتور؟", so the specialty
+        # list is precisely what they asked for and are now waiting on.
+        # CONFIRMED: that turn showed "جاري البحث عن الأطباء المتاحين"
+        # and then produced a list of SPECIALTIES - describing the wrong
+        # thing entirely.
+        if agent_name in ("booking", "concierge") and "list_specialties" in names:
+            silent.discard("list_specialties")
+
+        if all(name in silent for name in names):
             # Nothing worth announcing yet - see _SILENT_RESOLVER_TOOLS.
             # Leave any already-armed timer from earlier in this turn
             # alone; just don't let THIS call arm one or overwrite the
             # pending wording with a resolver-only description.
             return
 
-        text = message_for(names, language, templates)
+        # Whatever remains is what the patient is genuinely waiting for,
+        # so the wording is taken from that and not from the resolvers
+        # sharing the same turn.
+        announceable = [name for name in names if name not in silent] or names
+
+        # A dual-mode resolver in LIST mode has no group of its own -
+        # what it is fetching depends on its `entity_type` argument. Map
+        # it onto the tool whose wording already describes that fetch, so
+        # listing doctors says "جاري البحث عن الأطباء" and listing
+        # branches says "جاري البحث عن الفروع", rather than both falling
+        # through to the generic line.
+        announceable = [
+            _list_mode_alias(name, args_by_tool.get(name))
+            if _is_list_mode(name, args_by_tool.get(name)) else name
+            for name in announceable
+        ]
+
+        # A doctor search narrowed to a specialty gets wording that says
+        # so - it is the step the patient just agreed to, and naming the
+        # specialty confirms the assistant understood which one.
+        groups_override = None
+        if any(
+            name == "find_available_doctors"
+            and (args_by_tool.get(name) or {}).get("specialty_ids")
+            for name in announceable
+        ):
+            groups_override = "searching_specialty_doctors"
+
+        # INSIDE A RESCHEDULE, THE PATIENT IS WAITING ON ONE THING.
+        #
+        # Every slot/time lookup in that flow exists to move an existing
+        # appointment, so describing the mechanics ("جاري البحث عن
+        # الأوقات المتاحة") tells them about a step rather than about
+        # their request. CONFIRMED: during a reschedule the interim line
+        # read "جاري البحث عن الأوقات المتاحة" immediately before the
+        # old-vs-new appointment review - the patient is moving a
+        # booking, and that is what the line should say.
+        if agent_name == "reschedule" and any(
+            _GROUP_FOR_TOOL.get(name) in ("searching_slots", "searching_times")
+            for name in announceable
+        ):
+            groups_override = "rescheduling"
+
+        text = (
+            _message_for_group(groups_override, language, templates)
+            if groups_override
+            else message_for(announceable, language, templates)
+        )
         fire_now = False
 
         with _lock:
@@ -392,7 +749,7 @@ def schedule(
 
             # Newest wording wins, so the message describes what is
             # actually running when it goes out.
-            _pending[session_id] = (client_id, text)
+            _pending[session_id] = (client_id, text, channel_phone)
 
             if session_id in _timers:
                 # A countdown from this turn's tool phase is already
@@ -438,11 +795,11 @@ def _fire(session_id: str) -> None:
     if not pending:
         return
 
-    client_id, text = pending
-    _deliver(session_id, client_id, text)
+    client_id, text, channel_phone = pending
+    _deliver(session_id, client_id, text, channel_phone)
 
 
-def _deliver(session_id: str, client_id: str, text: str) -> None:
+def _deliver(session_id: str, client_id: str, text: str, channel_phone: Optional[str] = None) -> None:
     """Runs on the timer thread, only if the turn is still going."""
 
     with _lock:
@@ -478,6 +835,13 @@ def _deliver(session_id: str, client_id: str, text: str) -> None:
         "session_id": session_id,
         "client_id": client_id,
         "reply": text,
+        # The patient's own WhatsApp number for this session, so the n8n
+        # flow can address the interim message the same way it addresses
+        # the final reply, without re-parsing session_id. Present
+        # whenever the caller had it (see schedule()'s channel_phone
+        # param); omitted (None) only for the legacy/test call sites that
+        # don't pass it, which keeps this additive rather than breaking.
+        "channel_phone": channel_phone,
     }
 
     try:
@@ -485,39 +849,60 @@ def _deliver(session_id: str, client_id: str, text: str) -> None:
         # where nothing ever sends a webhook.
         import requests
 
-        response = requests.post(
-            url,
-            json=payload,
-            timeout=config.PROGRESS_TIMEOUT_SECONDS,
-            headers={"Content-Type": "application/json"},
-        )
-        logger.info(
-            "progress[%s]: sent %r (HTTP %s)", session_id, text, response.status_code,
-        )
+        # LAST CHECK, IMMEDIATELY BEFORE THE REQUEST GOES OUT.
+        #
+        # The guard above runs while holding the lock, but the POST that
+        # follows takes real time - measured at ~1.3s against the live
+        # n8n webhook. The turn can, and does, finish inside that window:
+        # the guard passed at T, the real answer left the app at T+40ms,
+        # and the interim line was still in flight. Re-reading the flag
+        # here shrinks that window to the width of the send call itself.
+        if not _in_flight.get(session_id):
+            logger.info(
+                "progress[%s]: suppressed %r just before sending - the turn finished",
+                session_id, text,
+            )
+            return
+
+        # Opened BEFORE the POST and closed after it, so `end_turn` can
+        # tell "nothing was sent" from "a send is still in flight" and
+        # wait for the latter rather than releasing the answer into a
+        # race - see _await_ordering_gap.
+        sent_marker = threading.Event()
+        with _lock:
+            _delivery_in_progress[session_id] = sent_marker
+
+        try:
+            response = requests.post(
+                url,
+                json=payload,
+                timeout=config.PROGRESS_TIMEOUT_SECONDS,
+                headers={"Content-Type": "application/json"},
+            )
+        finally:
+            with _lock:
+                _delivery_finished_at[session_id] = time.monotonic()
+            sent_marker.set()
+
+        # The window cannot be closed entirely from this side - the
+        # request is already with n8n by now. Logging when it happens at
+        # least makes it visible and measurable rather than showing up
+        # only as a confused patient. If this line appears often, raise
+        # PROGRESS_DELAY_SECONDS: the turns firing it are ones that were
+        # never slow enough to need an interim message.
+        if not _in_flight.get(session_id):
+            logger.warning(
+                "progress[%s]: sent %r but the turn finished while it was in "
+                "flight - the patient may see it after the answer. Consider "
+                "raising PROGRESS_DELAY_SECONDS (currently %ss).",
+                session_id, text, config.PROGRESS_DELAY_SECONDS,
+            )
+        else:
+            logger.info(
+                "progress[%s]: sent %r (HTTP %s)", session_id, text, response.status_code,
+            )
     except Exception as exc:
         # Swallowed on purpose. A "please wait" line that fails to send is
         # a cosmetic loss; it must never surface to the patient or
         # interfere with the real reply that is still being produced.
         logger.warning("progress[%s]: delivery failed (%s)", session_id, exc)
-
-
-def pending_tools(messages: List) -> List[str]:
-    """The tool names the latest AI message is about to call."""
-
-    if not messages:
-        return []
-
-    last = messages[-1]
-    calls = getattr(last, "tool_calls", None) or []
-    return [call.get("name", "") for call in calls if isinstance(call, dict)]
-
-
-def describe_config() -> str:
-    if not config.PROGRESS_ENABLED:
-        return "progress messages: off"
-
-    target = "log only" if config.PROGRESS_MODE == "log" else (config.PROGRESS_WEBHOOK_URL or "UNSET")
-    return (
-        f"progress messages: on, after {config.PROGRESS_DELAY_SECONDS}s, "
-        f"one per turn, to {target}"
-    )

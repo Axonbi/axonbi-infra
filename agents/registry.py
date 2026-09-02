@@ -36,8 +36,8 @@ Design notes worth knowing before changing anything here
 """
 
 import logging
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Tuple
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
 
 import config
 import tools as tools_module
@@ -243,10 +243,13 @@ and never alter a slot value returned by
             "find_available_doctors",
             "find_best_doctor_in_specialty",
             "list_branches_for_specialty",
+            "list_hospital_services",
+            "list_branch_services",
             "match_entity_for_booking",
             "list_available_days_for_booking",
             "get_doctor_schedule_for_booking",
             "get_available_slots_for_booking",
+            "select_appointment_slot",
             "create_new_booking",
             "get_doctor_fees",
             "resolve_available_day",
@@ -268,7 +271,14 @@ You are deliberately not given the tools that look up existing bookings.
 That is not an oversight - reaching for an existing booking mid-way
 through creating a new one has surfaced an unrelated patient's
 appointment before. Everything you need to identify this patient is in
-the flow below.""",
+the flow below.
+
+If the patient asks what SERVICES the hospital or a branch offers (not
+which medical specialties/doctors it has), that is a different question
+from this flow - call `list_hospital_services` (hospital-wide) or
+`list_branch_services` (one branch) for it, never `list_specialties` or
+`list_branches_for_specialty`, which are for medical specialties and
+booking availability, not the clinic's service catalogue.""",
     ),
 
     AgentSpec(
@@ -281,6 +291,8 @@ the flow below.""",
             "find_best_doctor_in_specialty",
             "list_branches_for_specialty",
             "list_hospital_services",
+            "list_branch_services",
+            "find_branches_offering_service",
             "match_entity_info",
             "get_doctor_fees",
             "request_human_handoff",
@@ -311,6 +323,8 @@ only ever name a doctor a tool returned in this conversation.""",
         tool_names=(
             "answer_hospital_faq",
             "list_hospital_services",
+            "list_branch_services",
+            "find_branches_offering_service",
             "list_specialties",
             "list_branches_for_specialty",
             "find_available_doctors",
@@ -459,13 +473,3 @@ def _rejoin_everything(sections: Dict[str, str]) -> str:
     if not order:
         order = [k for k in sections if k != "__order__"]
     return "\n\n".join(sections[k].strip() for k in order if k in sections)
-
-
-def describe_roster() -> str:
-    """Human-readable summary - used by the CLI banner and the tests."""
-
-    lines = []
-    for spec in _SPECS:
-        tool_count = "all" if spec.full_access else str(len(spec.tools()))
-        lines.append(f"  {spec.name:<11} {spec.title:<28} tools: {tool_count}")
-    return "\n".join(lines)

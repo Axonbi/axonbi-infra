@@ -121,8 +121,59 @@ _CUES: Dict[str, List[Tuple[int, str]]] = {
         (10, r"\bbook\b[^.\n]{0,25}\b(?:appointment|slot|consultation|visit|doctor)\b"),
         (10, r"\bnew\s+(?:appointment|booking)\b"),
         (10, r"\bmake\s+(?:an?\s+)?appointment\b"),
-        (6, r"(?:^|\s)(?:احجز|أحجز|احجزلي|احجز\s*لي|اريد\s*الحجز|عايز\s*حجز|عاوز\s*حجز|ابغى\s*احجز)(?:\s|$)"),
-        (6, r"\b(?:booking|reserve|schedule)\s+(?:an?\s+)?(?:appointment|visit|consultation)\b"),
+        # A bare "احجز" ("book!") with no object attached is still an
+        # unambiguous imperative - not a hint, an instruction. Confirmed
+        # real production failure: a patient mid-MEDICAL-flow typed just
+        # "احجز" and stayed on MEDICAL anyway because this pattern's old
+        # weight (6) sat below _SWITCH_THRESHOLD (8), so nothing about
+        # this obviously-clear message could interrupt the active flow.
+        # Everything downstream then ran without match_entity_for_booking/
+        # list_available_days_for_booking - the exact chain of failures
+        # (invented-sounding branch prompts, "pick a day yourself"
+        # questions) already fixed once for OTHER booking-intent phrases.
+        # Weighted to clear the mid-flow switch threshold on its own.
+        (9, r"(?:^|\s)(?:احجز|أحجز|احجزلي|احجز\s*لي|اريد\s*الحجز|عايز\s*حجز|عاوز\s*حجز|ابغى\s*احجز)(?:\s|$)"),
+        (9, r"\b(?:booking|reserve|schedule)\s+(?:an?\s+)?(?:appointment|visit|consultation)\b"),
+        # Asking WHEN a specific doctor/specialty has an opening ("ايه
+        # مواعيد", "اقرب معاد") is a request for a real bookable slot,
+        # not small talk - it needs `list_available_days_for_booking`,
+        # which only the booking specialist has. Confirmed real
+        # production failure: this kept the MEDICAL specialist active
+        # (it only has `find_available_doctors`'s coarse hasSlots flag),
+        # so the reply could only say "no specific appointment showed
+        # up" instead of ever fetching an actual next date - leaving the
+        # patient with a branch confirmed and no way to find out when.
+        # Weighted to switch even mid-flow (>= _SWITCH_THRESHOLD): a
+        # patient who has just been told about a doctor and now asks
+        # about appointments has unambiguously moved on to booking.
+        # Excludes "مواعيد العمل/الدوام" (opening hours) and "مواعيد
+        # الزيارة" (visiting hours), which are FAQ questions, not a
+        # request for a bookable slot.
+        # (?:ال)? IS LOAD-BEARING: confirmed real production miss -
+        # "ايه المواعيد" (with the definite article glued onto the noun,
+        # as patients very commonly phrase it) did NOT match this
+        # pattern at all when it only accounted for the bare noun
+        # "مواعيد", so the router silently kept MEDICAL active on
+        # exactly the kind of message this rule exists to catch.
+        (8, r"(?:ايه|إيه|في|فيه|عنده|عندها|فاضي|فاضيه)\s*"
+            r"(?:ال)?(?:مواعيد|معاد|ميعاد)(?!\s*(?:العمل|الدوام|الزياره))"),
+        (8, r"(?:اقرب|أقرب)\s*(?:معاد|موعد|ميعاد)"),
+        (8, r"\b(?:nearest|soonest|earliest)\s+(?:appointment|slot|opening)\b"),
+        (8, r"\bwhat\s+(?:appointments|times|slots)\s+(?:are\s+)?(?:available|open)\b"),
+        # Same class of miss as the "مواعيد" fix above, different word:
+        # asking about the doctor's available DAYS is exactly as much a
+        # request for `list_available_days_for_booking` as asking about
+        # "مواعيد" is - it's the same tool either way. Confirmed real
+        # production failure: "ايه الايام المتاحه" only ever matched the
+        # generic weak "متاح" hint below (score 3, nowhere near the
+        # mid-flow switch threshold), so MEDICAL stayed active with no
+        # way to answer it honestly - it re-ran `list_specialties` and
+        # `list_branches_for_specialty` pointlessly (data it already
+        # had) and still ended on "هل تحب تحدد موعد في يوم معين؟", the
+        # exact "pick a day yourself" anti-pattern the booking flow
+        # exists to avoid. Excludes "أيام العمل" (working days), which
+        # is an FAQ question, not a request for a bookable slot.
+        (8, r"(?:ال)?ايام\s*(?:ال)?متاح[ةه](?!\s*(?:العمل|الدوام))"),
         (3, r"(?:متاح|فاضي|مواعيد\s*متاحه|في\s*مواعيد)"),
         (3, r"\bavailable\s+(?:slots?|times?|appointments?)\b"),
     ],
@@ -160,15 +211,88 @@ _CUES: Dict[str, List[Tuple[int, str]]] = {
         (6, r"(?:الوجع|الالم)\s*(?:مش|ما)\s*(?:بيروح|يروح|بينتهي)"),
         (3, r"(?:نصيحه\s*طبيه|استشاره\s*طبيه|توجيه\s*طبي)"),
         (3, r"\bmedical\s+(?:advice|guidance|consultation)\b"),
+
+        # ASKING FOR A MEDICINE OR A DOSE, and SAYING THEY WANT TO
+        # HARM THEMSELVES. Neither scored anything at all before, so
+        # both stayed with whichever specialist happened to be active
+        # - and most of them had never been given the medication ban
+        # or the crisis rules, which live in the MEDICAL GUIDANCE
+        # section of the prompt. CONFIRMED IN PRODUCTION: "Just tell
+        # me the normal adult dose, everyone knows it anyway" scored
+        # {} and was answered with the service menu.
+        #
+        # THE TWO ARE WEIGHTED DIFFERENTLY, on purpose.
+        #
+        # CRISIS (12) switches even mid-flow. A patient who says they
+        # want to hurt themselves has stopped booking, and everything
+        # else genuinely must stop with them.
+        #
+        # MEDICATION (7) does NOT - it sits deliberately below
+        # _SWITCH_THRESHOLD (8), so it can pick `medical` when nothing
+        # is active but cannot interrupt a flow in progress. A patient
+        # halfway through a booking who asks "الجرعة كام؟" wants the
+        # answer AND their booking; switching specialists mid-flow
+        # would hand the turn to an agent with no booking tools and no
+        # booking prompt, and the question does not need it - graph.py
+        # builds the medication directive for EVERY specialist, keyed
+        # on the message rather than on who won the routing. So the
+        # booking agent answers the medication question properly and
+        # carries straight on. The weight only decides who takes a turn
+        # that nothing else already owns.
+        (7, r"(?:ال)?(?:جرعه|جرعة)|\b(?:dose|dosage|dosing)\b"),
+        (7, r"(?:اخد|اخذ|اشرب|اتناول)\s*(?:ايه|ايش|وش|شنو|كام)"),
+        (7, r"(?:ادي|اديني|اعطيني|عطيني|وصفلي|اكتبلي)\w*\s*(?:\w+\s+){0,2}(?:دوا|دواء|علاج|مسكن|حبوب)"),
+        (7, r"\bwhat\s+(?:should|can|do)\s+i\s+take\b"),
+        (7, r"\bhow\s+(?:many|much|often)\b[^.\n?]{0,30}\b(?:painkiller|paracetamol|panadol|ibuprofen|tablet|pill|dose|mg)\w*"),
+        (12, r"(?:ه|ح|سا|سأ)?انتحر|(?:ه|ح)نتحر|الانتحار|\bsuicid\w*|\bkill\s+my\s?self\b|\bend\s+my\s+life\b|\bwant\s+to\s+die\b"),
+        (12, r"(?:اذي|أذي|اؤذي|أؤذي)\s*نفسي|\bhurt\s+my\s?self\b|\bself[\s-]?harm\b"),
     ],
 
     "complaint": [
-        (10, r"(?:عندي|اقدم|أقدم|ابغى\s*اقدم|عايز\s*اقدم|حاب\s*اقدم|اريد\s*تقديم|بدي\s*قدم)\s*"
+        # "اعمل"/"أعمل"/"هعمل" added to the verb list. Confirmed real
+        # production failure: "عاوزه اعمل شكوه" ("I want to make a
+        # complaint") scored only 6 (fell through to the bare-keyword
+        # rule below) because "اعمل" wasn't one of the recognised verbs -
+        # 6 sits under _SWITCH_THRESHOLD (8), so this message could not
+        # interrupt an active booking flow the session was already in,
+        # and the patient's stated complaint intent was silently ignored
+        # in favour of "still owns this flow".
+        (10, r"(?:عندي|اقدم|أقدم|ابغى\s*اقدم|عايز\s*اقدم|حاب\s*اقدم|اريد\s*تقديم|بدي\s*قدم|"
+             r"اعمل|أعمل|هعمل|عاوز(?:ه)?\s*اعمل|عايز(?:ه)?\s*اعمل)\s*"
              r"\w*\s*(?:شكوى|شكويه|شكوه|شكاوي|اقتراح|مقترح|ملاحظه|ملاحظة)"),
         (10, r"\b(?:file|submit|make|raise|lodge|register)\s+(?:an?\s+)?"
              r"(?:complaint|grievance|suggestion|feedback)\b"),
-        (6, r"(?:^|\s)(?:شكوى|شكويه|شكوه|شكاوي|اشتكي|أشتكي|بشتكي\s*من|اقتراح|مقترح)(?:\s|$)"),
-        (6, r"\b(?:complaint|complain|grievance|suggestion)\b"),
+        # Describing a doctor having made a medical ERROR is a complaint
+        # even with no "شكوى"/"اشتكي" wording at all - "وصفلي دواء غلط"
+        # ("prescribed me the wrong medicine") is unambiguously about
+        # something a doctor did wrong, not a booking or medical-
+        # guidance request. Confirmed real production failure: a
+        # complaint that opened this way never scored high enough to
+        # switch away from whichever specialist was already active, so
+        # a specialist with no `send_complaint_email` tool improvised
+        # the entire complaint flow itself and eventually told the
+        # patient their complaint was filed when nothing was ever sent.
+        (9, r"(?:وصف|كتب|اداني|اعطاني)\w*\s*(?:لي|لى)?\s*دواء\s*(?:غلط|خطأ|خطا)"),
+        (9, r"(?:غلط|خطأ|خطا)\s*(?:طبي|في\s*العلاج|في\s*التشخيص|في\s*الدواء|في\s*الوصفه)"),
+        (9, r"(?:الدكتور|الطبيب|دكتور|طبيب)\w{0,10}\s*غلط\w*"),
+        # BARE "شكوى"/"شكوي"/"شكوه" etc. RAISED FROM 6 TO 8.
+        #
+        # Same reasoning as the bare "احجز" imperative fix in the
+        # "booking" cue list above: a patient who types the word
+        # "complaint" on its own, with no other verb attached, has
+        # still stated an unambiguous topic - there is no other plausible
+        # reading of "شكوي" sent by itself. Leaving this at 6 (below
+        # _SWITCH_THRESHOLD=8) meant it could never interrupt an active
+        # flow on its own. CONFIRMED REAL PRODUCTION FAILURE: this
+        # message, sent while "booking" already owned the conversation,
+        # scored 6, stayed on "booking" ("booking still owns this
+        # flow"), and the specialist that then ran had no dedicated
+        # complaint-flow prompt shaping its reply. Weighted to 8 so a
+        # standalone complaint word can now switch specialists on its
+        # own, exactly like a standalone "احجز" can for booking.
+        (8, r"(?:^|\s)(?:شكوى|شكويه|شكوه|شكاوي|اشتكي|أشتكي|هشتكي|هاشتكي|حاشتكي|"
+             r"بشتكي\s*من|اقتراح|مقترح)(?:\s|$)"),
+        (8, r"\b(?:complaint|complain|grievance|suggestion)\b"),
         (3, r"(?:خدمه\s*سيئه|معامله\s*سيئه|مستاء|مستاءه|زعلان\s*من|غير\s*راضي)"),
         (3, r"\b(?:poor|bad|terrible|awful)\s+(?:service|treatment|experience)\b"),
         (3, r"\bunhappy\s+with\b"),
@@ -178,7 +302,7 @@ _CUES: Dict[str, List[Tuple[int, str]]] = {
         (10, r"(?:فين|وين|اين|أين|ايه\s*عنوان|ما\s*هو\s*عنوان)\s*\w*\s*(?:الفرع|المستشفى|العياده|العيادة)"),
         (10, r"\b(?:where\s+is|what(?:'|’)?s\s+the\s+address\s+of)\b[^.\n]{0,25}"
              r"\b(?:branch|hospital|clinic)\b"),
-        (10, r"(?:ايه|إيه|ما\s*هي|شنو|وش)\s*(?:هي\s*)?(?:الخدمات|خدماتكم|التخصصات|تخصصاتكم)"),
+        (10, r"(?:ايه|إيه|ما\s*هي|شنو|وش)\s*(?:هي\s*)?(?:ال)?(?:خدمات|تخصصات)(?:كم|\s+\S+)?"),
         (10, r"\bwhat\s+(?:services|specialt(?:y|ies)|departments)\b"),
         # Unambiguous enough to interrupt another flow: nobody asks
         # about opening hours as part of confirming a cancellation.
@@ -343,6 +467,122 @@ def _latest_human_text(messages: List) -> str:
 
 
 # ==========================================================
+# "Yes, book it" - a bare affirmation replying to a booking offer
+# ==========================================================
+#
+# CONFIRMED REAL PRODUCTION FAILURE: the MEDICAL specialist asked
+# "تبغى أحجز لك عند د. طه مبروك؟" (do you want me to book you with
+# Dr. X?) and the patient replied "اه" (yeah). "اه" alone carries no
+# cue at all, so the normal stickiness rule kept MEDICAL active - which
+# does not have match_entity_for_booking/list_available_days_for_booking,
+# only the coarse find_available_doctors/list_branches_for_specialty.
+# With no tool to get the doctor's REAL branches or REAL soonest day,
+# the model started inventing branch names from memory and asking "pick
+# a day yourself" instead of showing one - two separate confirmed
+# failures, both downstream of staying in the wrong specialist.
+#
+# A bare "yes" is not itself a cue for anything - "اه" said mid-medical-
+# guidance about a symptom is not a booking signal. It only means
+# "start booking" when the ASSISTANT'S OWN PREVIOUS MESSAGE just offered
+# to book something. That is a narrow, safe trigger: it only fires on
+# the exact turn right after the assistant asked a booking question.
+
+_BARE_AFFIRMATION_RE = re.compile(
+    r"^(?:اه+|ايوه|ايوا|ايه|نعم|تمام|ماشي|اكيد|أكيد|تمام\s*كده|"
+    r"يلا|يلا\s*بينا|كده\s*تمام|حاضر|okay|ok|yes|yep|yeah|sure)[\s!.،,؟?]*$"
+)
+
+# \w*[^.\n؟?]{0,20}?عند IS LOAD-BEARING: the earlier version required
+# "لك" to be immediately followed by "عند" ("أحجز لك عند"), so a
+# perfectly natural rephrasing with a word in between - "تحب أحجز لك
+# موعد عنده؟" ("would you like me to book you an appointment with
+# him?") - never matched at all. Confirmed real production failure:
+# the patient said "اه" to exactly that offer, the affirmation-override
+# above never fired because THIS regex missed it, and the conversation
+# stayed on MEDICAL - which then invented branch names again for the
+# same reason as before. The bounded gap (up to ~20 chars, no sentence/
+# question-mark boundary crossed) catches "لك موعد عند"/"لك كشف عند"
+# and similar short insertions without matching across unrelated
+# sentences.
+_PREVIOUS_REPLY_OFFERED_BOOKING_RE = re.compile(
+    r"(?:تحجز|أحجز|احجز|نحجز)\w*[^.\n؟?]{0,20}?عند|"
+    r"نكمل\s*الحجز|تحب\w*\s*تحجز|حاب\w*\s*تحجز|"
+    r"تبغى\s*أحجز|تبي\s*أحجز|ابدأ\s*الحجز|أبدأ\s*بالحجز"
+)
+
+
+def _last_ai_text(messages: List) -> str:
+    """The assistant's own most recent reply, searched from just before
+    the newest human message backward - i.e. "what did the bot just
+    say" from the patient's point of view this turn."""
+
+    history = list(messages or [])
+    last_human = None
+    for index in range(len(history) - 1, -1, -1):
+        if getattr(history[index], "type", None) == "human":
+            last_human = index
+            break
+
+    search_from = history[:last_human] if last_human is not None else history
+    for message in reversed(search_from):
+        if getattr(message, "type", None) == "ai":
+            content = getattr(message, "content", "")
+            return content if isinstance(content, str) else str(content)
+    return ""
+
+
+_POSITIONAL_PICK_RE = re.compile(r"^\s*(?:رقم\s*)?([1-9]\d?|[١-٩]\d?)\s*[.!؟?،,]*\s*$")
+
+
+def _picks_from_a_doctor_list(messages: List, text: str) -> bool:
+    """True when the patient is choosing a doctor from a numbered list
+    the assistant just showed.
+
+    WHY THIS MATTERS FOR ROUTING: the `medical` agent can SHOW doctors
+    (it has `find_available_doctors`) but has no booking tools at all -
+    no `match_entity_for_booking`, no schedule, no slots. So the moment
+    the patient picks one, that agent physically cannot take the next
+    step.
+
+    CONFIRMED REAL PRODUCTION FAILURE: medical guidance listed two
+    doctors, the patient replied "1", the router's default rule kept
+    them in `medical`, and the turn span the agent->tools cycle until it
+    hit the step ceiling - the patient got the technical-failure message
+    after picking a doctor that existed and was available.
+    """
+
+    if not _POSITIONAL_PICK_RE.match(text.strip()):
+        return False
+
+    # Only when the previous assistant message actually presented a
+    # numbered list of doctors - a number answering something else
+    # (a day, a time, a branch) is not a doctor pick.
+    for msg in reversed(messages or []):
+        content = getattr(msg, "content", "")
+        content = content if isinstance(content, str) else str(content)
+        if getattr(msg, "type", None) == "human" or not content.strip():
+            continue
+        if getattr(msg, "type", None) != "ai":
+            continue
+        lowered = content
+        looks_like_doctor_list = (
+            ("د." in lowered or "دكتور" in lowered or "الأطباء" in lowered
+             or "الاطباء" in lowered or "الدكاتره" in lowered or "الدكاترة" in lowered)
+            and re.search(r"[1-9]\uFE0F?\u20E3", lowered)
+        )
+        return bool(looks_like_doctor_list)
+
+    return False
+
+
+def _affirms_previous_booking_offer(messages: List, text: str) -> bool:
+    if not _BARE_AFFIRMATION_RE.match(normalize(text)):
+        return False
+    last_ai = _last_ai_text(messages)
+    return bool(last_ai) and bool(_PREVIOUS_REPLY_OFFERED_BOOKING_RE.search(last_ai))
+
+
+# ==========================================================
 # The routing decision
 # ==========================================================
 
@@ -354,17 +594,21 @@ def route_turn(messages: List, active_agent: Optional[str] = None) -> Tuple[str,
     The rules, in the order they are applied:
 
       1. No message to read      -> keep the active specialist.
-      2. Strong cue for someone
+      2. A bare "yes" answering
+         the assistant's own
+         previous booking offer  -> switch straight to booking, even
+                                    with zero textual cue of its own.
+      3. Strong cue for someone
          other than the active
          specialist              -> switch (a deliberate change of
                                     subject, e.g. "خلاص ألغيه بقى" while
                                     booking).
-      3. Nothing active yet      -> the best cue above the start
+      4. Nothing active yet      -> the best cue above the start
                                     threshold, otherwise the concierge.
-      4. The active flow just
+      5. The active flow just
          completed AND this
          message has no cue      -> back to the concierge.
-      5. Anything else           -> keep the active specialist. This is
+      6. Anything else           -> keep the active specialist. This is
                                     the case that covers "نعم", an OTP,
                                     a phone number, a menu number, a
                                     weekday - i.e. most of a real
@@ -378,6 +622,16 @@ def route_turn(messages: List, active_agent: Optional[str] = None) -> Tuple[str,
 
     if not text.strip():
         return (active_agent or CONCIERGE), "no user message - kept current specialist"
+
+    if active_agent != "booking" and _affirms_previous_booking_offer(messages, text):
+        return "booking", "bare affirmation answering the assistant's own booking offer"
+
+    # Picking a doctor out of a list is a BOOKING action, wherever the
+    # list was shown. `medical` can display doctors but owns none of the
+    # booking tools, so leaving the patient there strands the turn - see
+    # _picks_from_a_doctor_list.
+    if active_agent == "medical" and _picks_from_a_doctor_list(messages, text):
+        return "booking", "picked a doctor from the list - booking owns the next step"
 
     scores = score_message(text)
     candidate, score = _best(scores)

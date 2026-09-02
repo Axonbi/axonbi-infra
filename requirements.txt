@@ -20,15 +20,3 @@ uvicorn[standard]>=0.29.0
 # .env loading (config.py) - local-dev convenience; LangGraph Platform/
 # Railway use their own secrets stores for production, see README.
 python-dotenv>=1.0.0
-
-# Observability / LangGraph Studio (both optional at runtime):
-#   - langsmith: set LANGSMITH_TRACING=true + LANGSMITH_API_KEY to trace
-#     every real conversation (which agent ran, which tools were called).
-#   - langgraph-sdk: only used when LANGGRAPH_SERVER_URL is set, to
-#     forward turns to a LangGraph server so real conversations appear
-#     in Studio instead of only manual experiments (langgraph_client.py).
-#   - langgraph-cli: provides `langgraph dev`, the server Studio attaches
-#     to. Needed where that server runs, not by the FastAPI process.
-langsmith>=0.1.0
-langgraph-sdk>=0.1.0
-langgraph-cli[inmem]>=0.1.0

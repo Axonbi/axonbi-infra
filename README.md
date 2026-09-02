@@ -5,6 +5,18 @@ deliberately, at explicit request, reversing an earlier design choice.
 See `*.pre_rewrite_backup` files in this folder for the previous
 deterministic-router version.
 
+## Multi-agent architecture (current)
+
+The single `agent` node described below has been split into a supervisor
+plus seven specialists - see **[README_MULTIAGENT.md](README_MULTIAGENT.md)**
+for the full description, the routing table and the rollback flags.
+
+    load_config -> router -> agent_<specialist> <-> tools -> END
+
+Nothing in the deployment, the `/chat` contract, `api.py`, `tools.py` or
+the CSVs changed. `MULTI_AGENT_ENABLED=false` restores the exact graph
+documented in the rest of this file.
+
 ## What changed
 
 | File | Status |
