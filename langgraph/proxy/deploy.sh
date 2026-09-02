@@ -16,7 +16,7 @@ set -euo pipefail
 
 SRC="${SRC:-/opt/agent-src}"
 RUNTIME="${RUNTIME:-/opt/langgraph}"
-BRANCH="${BRANCH:-add-medtown-agent}"
+BRANCH="${BRANCH:-multiagent-up1}"
 VENV="${VENV:-$RUNTIME/.venv}"
 
 cd "$SRC"
