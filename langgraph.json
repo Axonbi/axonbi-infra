@@ -5,6 +5,14 @@
   },
   "env": ".env",
   "http": {
-    "app": "./app.py:app"
+    "app": "./app.py:app",
+    "cors": {
+      "allow_origins": ["https://smith.langchain.com"],
+      "allow_credentials": true,
+      "allow_methods": ["*"],
+      "allow_headers": ["*"],
+      "expose_headers": ["content-type"],
+      "max_age": 600
+    }
   }
 }
