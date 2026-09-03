@@ -10529,6 +10529,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
             },
             agent_name=agent_name,
             channel_phone=state.get("channel_phone"),
+            bsuid=state.get("bsuid"),
         )
 
     # ONE QUESTION PER MESSAGE - enforced here, not just asked for in the
