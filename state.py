@@ -32,6 +32,16 @@ class AgentState(TypedDict):
     session_id: str
     channel_phone: Optional[str]  # verified channel identity (e.g. WhatsApp sender), used by compare_phone
 
+    # WHO IS MESSAGING, when there is no phone number to identify them
+    # by. On WhatsApp the sender IS a phone number and `channel_phone`
+    # carries it; on channels where the sender is a username instead,
+    # `bsuid` is the id that addresses them. Purely a passthrough - this
+    # project never interprets it, it exists so a webhook WE initiate
+    # (the interim progress message) can be routed back to the same
+    # person the final reply goes to. Per-REQUEST, like channel_phone:
+    # it identifies the sender, not the clinic.
+    bsuid: Optional[str]
+
     # The client's full config row, straight from n8n's own client_config
     # Data Table (sent fresh in every /chat request body, since n8n
     # already fetches it before calling us) - this is n8n's single
