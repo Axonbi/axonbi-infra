@@ -257,7 +257,8 @@ def _turn_signals(messages: list) -> dict:
     return {"escalate": escalate, "location": location, "branch_name": branch_name}
 
 
-def send_message(client_id: str, session_id: str, message: str, channel_phone: str = None, client_config: dict = None) -> str:
+def send_message(client_id: str, session_id: str, message: str, channel_phone: str = None,
+                 bsuid: str = None, client_config: dict = None) -> str:
     """
     Send one user message for `session_id` and return the agent's reply
     text for this turn.
@@ -286,12 +287,14 @@ def send_message(client_id: str, session_id: str, message: str, channel_phone: s
     """
 
     return send_message_with_signals(
-        client_id, session_id, message, channel_phone=channel_phone, client_config=client_config
+        client_id, session_id, message, channel_phone=channel_phone,
+        bsuid=bsuid, client_config=client_config,
     )["reply"]
 
 
 def send_message_with_signals(
-    client_id: str, session_id: str, message: str, channel_phone: str = None, client_config: dict = None
+    client_id: str, session_id: str, message: str, channel_phone: str = None,
+    bsuid: str = None, client_config: dict = None,
 ) -> Dict:
     """
     Same as send_message(), but returns a dict with the reply text PLUS
@@ -350,6 +353,9 @@ def send_message_with_signals(
                 "client_id": client_id,
                 "session_id": session_id,
                 "channel_phone": channel_phone,
+                # See AgentState.bsuid - the sender's id on channels
+                # where they have a username instead of a number.
+                "bsuid": bsuid,
                 "raw_client_config": client_config,
                 "messages": [HumanMessage(content=message)],
             }
