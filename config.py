@@ -665,14 +665,6 @@ def get_messages(client_id: str, dialect: Optional[str] = None, client_row_overr
         or merged["_base_url"]
     )
     merged["_phone_example"] = client_row.get("phone_example")
-    # The client's booking-system identifier, carried through untouched.
-    # Nothing in this project interprets it - it exists so the n8n flow
-    # receiving a webhook from us can tell which of its own accounts the
-    # message belongs to without re-deriving it. Sent on the interim
-    # progress message (see progress._deliver); present on both config
-    # paths, since the n8n-supplied row and client_config.csv both merge
-    # through here.
-    merged["_bsuid"] = client_row.get("bsuid")
     # Bilingual branch name pairs from the client's own config row, as
     # [{"name": <as the booking API knows it>, "aliases": [...]}, ...].
     #
