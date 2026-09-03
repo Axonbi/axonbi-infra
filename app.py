@@ -41,7 +41,9 @@ app = FastAPI(
 # Request fields that are the CALL's own parameters, never part of the
 # client's config row - used to separate the two when a caller sends the
 # config flattened into the top level (see ChatRequest.resolved_client_config).
-_CALL_FIELDS = frozenset({"session_id", "client_id", "message", "channel_phone", "client_config"})
+_CALL_FIELDS = frozenset({
+    "session_id", "client_id", "message", "channel_phone", "bsuid", "client_config",
+})
 
 
 class ChatRequest(BaseModel):
@@ -60,6 +62,16 @@ class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, description="The user's message text")
     channel_phone: str | None = Field(
         None, description="Optional verified channel identity phone (e.g. WhatsApp sender number)"
+    )
+    bsuid: str | None = Field(
+        None,
+        description=(
+            "Optional sender identity for channels where the sender is a "
+            "username rather than a phone number - the counterpart to "
+            "channel_phone. Passed straight through to the interim progress "
+            "webhook so it can be addressed to the same person as the final "
+            "reply. Never interpreted here."
+        ),
     )
     client_config: dict | None = Field(
         None,
@@ -108,8 +120,8 @@ def health() -> dict:
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest) -> ChatResponse:
     logger.info(
-        "Incoming /chat session_id=%s client_id=%s message=%r channel_phone=%r",
-        req.session_id, req.client_id, req.message, req.channel_phone,
+        "Incoming /chat session_id=%s client_id=%s message=%r channel_phone=%r bsuid=%r",
+        req.session_id, req.client_id, req.message, req.channel_phone, req.bsuid,
     )
 
     resolved_config = req.resolved_client_config()
@@ -142,7 +154,8 @@ def chat(req: ChatRequest) -> ChatResponse:
     try:
         result = agent.send_message_with_signals(
             req.client_id, req.session_id, req.message,
-            channel_phone=req.channel_phone, client_config=resolved_config,
+            channel_phone=req.channel_phone, bsuid=req.bsuid,
+            client_config=resolved_config,
         )
     except GraphRecursionError:
         # The turn hit the step ceiling - something looped instead of
