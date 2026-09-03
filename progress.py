@@ -603,6 +603,7 @@ def schedule(
     tool_args: Optional[dict] = None,
     agent_name: Optional[str] = None,
     channel_phone: Optional[str] = None,
+    bsuid: Optional[str] = None,
 ) -> None:
     """Arm the interim message for a tool phase that is about to start.
 
@@ -631,6 +632,13 @@ def schedule(
     Optional and additive: omit it and the payload simply omits the
     field, unchanged from before.
 
+    `bsuid`: the client's booking-system identifier, passed straight
+    through to the webhook payload so the n8n flow can tell which of its
+    own accounts an interim message belongs to. Defaults to the
+    `_bsuid` already sitting in `templates`, so the ordinary call site
+    does not have to remember to pass it and cannot silently drop it;
+    an explicit value wins for callers that have one without templates.
+
     Never raises: a failure here must not be able to break a turn that
     would otherwise have answered the patient perfectly well.
     """
@@ -642,6 +650,11 @@ def schedule(
         names = list(tool_names or [])
         if not names:
             return
+
+        # An explicit value wins; otherwise take it from the templates
+        # this call already carries. Resolved once, here, so the value
+        # stored for the timer is the one that gets sent.
+        resolved_bsuid = bsuid or (templates or {}).get("_bsuid")
 
         args_by_tool = tool_args or {}
 
@@ -749,7 +762,7 @@ def schedule(
 
             # Newest wording wins, so the message describes what is
             # actually running when it goes out.
-            _pending[session_id] = (client_id, text, channel_phone)
+            _pending[session_id] = (client_id, text, channel_phone, resolved_bsuid)
 
             if session_id in _timers:
                 # A countdown from this turn's tool phase is already
@@ -795,11 +808,17 @@ def _fire(session_id: str) -> None:
     if not pending:
         return
 
-    client_id, text, channel_phone = pending
-    _deliver(session_id, client_id, text, channel_phone)
+    client_id, text, channel_phone, bsuid = pending
+    _deliver(session_id, client_id, text, channel_phone, bsuid)
 
 
-def _deliver(session_id: str, client_id: str, text: str, channel_phone: Optional[str] = None) -> None:
+def _deliver(
+    session_id: str,
+    client_id: str,
+    text: str,
+    channel_phone: Optional[str] = None,
+    bsuid: Optional[str] = None,
+) -> None:
     """Runs on the timer thread, only if the turn is still going."""
 
     with _lock:
@@ -842,6 +861,13 @@ def _deliver(session_id: str, client_id: str, text: str, channel_phone: Optional
         # param); omitted (None) only for the legacy/test call sites that
         # don't pass it, which keeps this additive rather than breaking.
         "channel_phone": channel_phone,
+        # The client's booking-system identifier, straight from their
+        # config row (config._bsuid). We never interpret it; it is here
+        # so the receiving n8n flow can route the interim message to the
+        # same account as the final reply. None when the client's config
+        # doesn't carry one, which keeps the field's shape stable rather
+        # than having it appear and disappear between clients.
+        "bsuid": bsuid,
     }
 
     try:
