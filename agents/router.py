@@ -70,6 +70,39 @@ _START_THRESHOLD = 4
 # keyword; 3 = a topical hint that only decides an otherwise-empty turn.
 # ==========================================================
 
+# ==========================================================
+# CRISIS - ONE PATTERN, USED EVERYWHERE
+# ==========================================================
+#
+# THE SINGLE DEFINITION. graph.py builds the crisis directive from this
+# same object (graph._CRISIS_RE is assigned from it), and the routing
+# cue below uses it too, so a phrasing added here is recognised by every
+# part of the system at once.
+#
+# It had drifted before: the router's own crisis cue covered only
+# "\u0627\u0646\u062A\u062D\u0631"/"suicide"/"kill myself", while graph.py's was far broader -
+# so "\u0639\u0627\u064A\u0632\u0629 \u0623\u0645\u0648\u062A", one of the commonest ways this is actually said in
+# Arabic, raised the crisis DIRECTIVE but never moved the conversation
+# to the medical specialist, which is the only one carrying the crisis
+# rules. Two patterns for one concept, and the narrower one sat on the
+# safety-critical path.
+CRISIS_RE = re.compile(
+    # Arabic, including the colloquial future prefix ("\u0647\u0646\u062A\u062D\u0631").
+    r"(?:\u0647|\u062D|\u0633\u0627|\u0633\u0623)?\u0627\u0646\u062A\u062D\u0631|(?:\u0647|\u062D)\u0646\u062A\u062D\u0631|\u0627\u0644\u0627\u0646\u062A\u062D\u0627\u0631|"
+    r"(?:\u0639\u0627\u064A\u0632|\u0639\u0627\u0648\u0632|\u0628\u062F\u064A|\u0627\u0628\u064A|\u0627\u0628\u063A\u0649|\u0646\u0641\u0633\u064A)\s*(?:\w+\s+){0,2}(?:\u0627\u0645\u0648\u062A|\u0627\u0646\u0647\u064A\s*\u062D\u064A\u0627\u062A\u064A|\u0627\u0642\u062A\u0644\s*\u0646\u0641\u0633\u064A)|"
+    r"(?:\u0645\u0634|\u0645\u0627|\u0645\u0648)\s*(?:\u0639\u0627\u064A\u0632|\u0639\u0627\u0648\u0632|\u0628\u062F\u064A|\u0627\u0628\u064A)\s*(?:\w+\s+){0,2}(?:\u0627\u0639\u064A\u0634|\u0627\u0643\u0645\u0644)|"
+    r"(?:\u0627\u0630\u064A|\u0623\u0630\u064A|\u0627\u0624\u0630\u064A|\u0623\u0624\u0630\u064A|\u0627\u062C\u0631\u062D|\u0623\u062C\u0631\u062D)\s*\u0646\u0641\u0633\u064A|"
+    r"(?:\u0627\u0646\u0647\u064A|\u0623\u0646\u0647\u064A|\u0627\u062E\u0644\u0635\s*\u0645\u0646)\s*\u062D\u064A\u0627\u062A|"
+    r"(?:\u062A\u0639\u0628\u062A|\u0632\u0647\u0642\u062A|\u0645\u0644\u064A\u062A)\s*\u0645\u0646\s*(?:\u0627\u0644)?\u062D\u064A\u0627\u0647|"
+    # English.
+    r"\bkill\s+my\s?self\b|\bsuicid\w*|\bend\s+(?:my|it\s+all)\b[^.\n]{0,12}\blife\b|"
+    r"\bend\s+my\s+life\b|\bwant\s+to\s+die\b|\bhurt\s+my\s?self\b|"
+    r"\bself[\s-]?harm\b|\bdon'?t\s+want\s+to\s+(?:live|be\s+here)\b|"
+    r"\bno\s+reason\s+to\s+live\b",
+    re.IGNORECASE,
+)
+
+
 _DIACRITICS_RE = re.compile(r"[\u064B-\u0652\u0670\u0640]")
 _DIGIT_MAP = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
 _ALEF_RE = re.compile(r"[أإآٱ]")
@@ -244,8 +277,11 @@ _CUES: Dict[str, List[Tuple[int, str]]] = {
         (7, r"(?:ادي|اديني|اعطيني|عطيني|وصفلي|اكتبلي)\w*\s*(?:\w+\s+){0,2}(?:دوا|دواء|علاج|مسكن|حبوب)"),
         (7, r"\bwhat\s+(?:should|can|do)\s+i\s+take\b"),
         (7, r"\bhow\s+(?:many|much|often)\b[^.\n?]{0,30}\b(?:painkiller|paracetamol|panadol|ibuprofen|tablet|pill|dose|mg)\w*"),
-        (12, r"(?:ه|ح|سا|سأ)?انتحر|(?:ه|ح)نتحر|الانتحار|\bsuicid\w*|\bkill\s+my\s?self\b|\bend\s+my\s+life\b|\bwant\s+to\s+die\b"),
-        (12, r"(?:اذي|أذي|اؤذي|أؤذي)\s*نفسي|\bhurt\s+my\s?self\b|\bself[\s-]?harm\b"),
+        # The crisis cue is CRISIS_RE above - ONE definition, shared with
+        # graph.py, so a phrasing added there routes here too. Weighted 12
+        # so it switches even mid-flow: a patient who says this has
+        # stopped booking, and everything else must stop with them.
+        (12, CRISIS_RE.pattern),
     ],
 
     "complaint": [
@@ -575,6 +611,59 @@ def _picks_from_a_doctor_list(messages: List, text: str) -> bool:
     return False
 
 
+# ==========================================================
+# ANSWERING THE BOOKING FLOW'S OWN OPENING QUESTION
+# ==========================================================
+#
+# The booking flow opens by asking whether to start from a doctor or
+# from a specialty. Patients very often answer it with neither - they
+# answer with WHAT IS WRONG ("بطني وجعاني وعندي ألم شديد"), because
+# that is the thing they actually know. STEP NB1 covers this exactly:
+# match the symptom to the closest specialty yourself and carry on to
+# the doctors, with no clarifying questions and no comfort tips,
+# BECAUSE THIS IS THE BOOKING FLOW.
+#
+# But that message scores 12 on the medical cues (body part + hurting
+# verb), which is above _SWITCH_THRESHOLD, so the supervisor moved the
+# conversation to `medical` - and `medical` correctly ran ITS flow:
+# comfort measures, red flags, the ⚕️ disclaimer, then an offer to
+# book. The patient had already asked to book, one message earlier.
+#
+# CONFIRMED IN A REAL CONVERSATION: "عاوزه احجز معاد" -> "تحب تبدأ
+# بالتخصص ولا بالدكتور؟" -> "بطني وجعاني وعندي الم شديد" -> a full
+# medical-guidance reply, and only after another "اه" did the doctor
+# list finally appear. Three turns to do what NB1 does in one.
+#
+# So: a message that ANSWERS the booking flow's own opening question
+# belongs to booking, whatever it scores. Narrow by construction - it
+# only fires on the single turn immediately after that exact question.
+
+_ASKED_SPECIALTY_OR_DOCTOR_RE = re.compile(
+    r"بالتخصص\s*ولا\s*بالدكتور|بالدكتور\s*ولا\s*بالتخصص|"
+    r"تبدا\s*بالتخصص|تبدا\s*بالدكتور|"
+    r"طبيب\s*(?:معين|محدد)[^.\n؟?]{0,40}(?:ولا|او|أم)[^.\n؟?]{0,20}تخصص|"
+    r"تخصص[^.\n؟?]{0,40}(?:ولا|او|أم)[^.\n؟?]{0,20}(?:طبيب|دكتور)|"
+    r"specific\s+doctor[^.\n?]{0,40}(?:or|prefer)[^.\n?]{0,25}specialt|"
+    r"by\s+specialty\s+or\s+by\s+doctor"
+)
+
+_CRISIS_OVERRIDE_RE = CRISIS_RE
+
+
+def _answers_booking_entry_question(messages: List, text: str) -> bool:
+    """True when the assistant's own previous reply was the booking
+    flow's opening doctor-or-specialty question."""
+
+    if _CRISIS_OVERRIDE_RE.search(normalize(text)):
+        return False
+
+    last_ai = _last_ai_text(messages)
+    if not last_ai:
+        return False
+
+    return bool(_ASKED_SPECIALTY_OR_DOCTOR_RE.search(normalize(last_ai)))
+
+
 def _affirms_previous_booking_offer(messages: List, text: str) -> bool:
     if not _BARE_AFFIRMATION_RE.match(normalize(text)):
         return False
@@ -632,6 +721,13 @@ def route_turn(messages: List, active_agent: Optional[str] = None) -> Tuple[str,
     # _picks_from_a_doctor_list.
     if active_agent == "medical" and _picks_from_a_doctor_list(messages, text):
         return "booking", "picked a doctor from the list - booking owns the next step"
+
+    # A symptom, a specialty or a doctor name given in answer to the
+    # booking flow's own opening question is a BOOKING answer - see
+    # _answers_booking_entry_question. Checked before the scores,
+    # because the whole point is that the score is misleading here.
+    if active_agent in ("booking", "concierge") and _answers_booking_entry_question(messages, text):
+        return "booking", "answered the booking flow's own doctor-or-specialty question"
 
     scores = score_message(text)
     candidate, score = _best(scores)
