@@ -609,6 +609,36 @@ def _filter_active(items: list) -> list:
     return active
 
 
+def _api_error(result: Optional[dict] = None) -> dict:
+    """The error return for a tool whose upstream API call failed.
+
+    Carries the REASON api.py already worked out (`server_error`,
+    `endpoint_not_found`, `authentication_error`, `timeout`,
+    `validation_error`, ...) instead of collapsing every failure mode
+    into one opaque token.
+
+    Two things depend on this. The model needs it to say something true
+    about what went wrong - a 404 on our own URL is not something the
+    patient can fix by trying again later, and a validation error is not
+    a technical fault at all. And graph.upstream_api_failed() reads it to
+    decide whether this turn has earned the clinic's technical-failure
+    message: that wording is for a genuinely broken upstream, never for
+    our own quality gate or an empty result.
+
+    A missing/None result yields `request_failed`, which is still an
+    upstream reason - a tool only ever returns `error` for a call that
+    did not come back usable."""
+
+    reason = (result or {}).get("error") or "request_failed"
+    error: dict = {"status": "error", "reason": str(reason)}
+
+    status_code = (result or {}).get("status_code")
+    if status_code:
+        error["status_code"] = status_code
+
+    return error
+
+
 def _base_url(state: AgentState) -> str:
     return state.get("templates", {}).get("_base_url") or "https://demo.catalystsystems.io:1102"
 
@@ -834,7 +864,7 @@ def check_booking_status(
             "check_booking_status API call failed: base_url=%s ref=%r status_code=%s error=%s",
             base_url, ref_number, result.get("status_code"), result.get("error"),
         )
-        return {"status": "error"}
+        return _api_error(result)
 
     items = (result["data"] or {}).get("items", [])
     if not items:
@@ -857,8 +887,33 @@ def cancel_appointment(
     """Cancel a booking by its internal id (from a previous tool's
     "appointment"/"id" field - NEVER the human-readable reference
     number). Always call check_booking_status on the same booking
-    immediately before this. Returns {"status": "success"} or
+    immediately before this. Returns {"status": "success"},
+    {"status": "not_looked_up"} (this booking was never found by a
+    lookup in this conversation - go and find it first), or
     {"status": "error"}."""
+
+    # SERVER-SIDE ENFORCEMENT, NOT JUST A PROMPT RULE - the same
+    # reasoning `lookup_appointment` and `create_new_booking` already
+    # apply to phone numbers, applied here to the booking being
+    # destroyed. This is the only irreversible action in the whole tool
+    # set, and it was the only mutating one with no code-level gate at
+    # all: it cancelled whatever id it was handed.
+    #
+    # Everything upstream of it is a prompt instruction or a check on
+    # the REPLY - i.e. it runs after the cancellation has already gone
+    # through. The rule enforced here is the one the flow states in
+    # words: you cannot cancel a booking this conversation never looked
+    # up. `_looked_up_booking_ids` records ids as the lookup tools
+    # return them, so an id recalled, mistyped or carried over from
+    # somewhere else cannot reach the API.
+    if not _booking_was_looked_up(state, booking_id):
+        logger.warning(
+            "cancel_appointment: refusing to cancel booking_id=%r (session_id=%s) - "
+            "no lookup_appointment/check_booking_status in this conversation ever "
+            "returned that id",
+            booking_id, state.get("session_id"),
+        )
+        return {"status": "not_looked_up"}
 
     base_url = _base_url(state)
     result = api.cancel_booking_by_guid(base_url, booking_id)
@@ -1089,6 +1144,79 @@ def _get_booking_session(session_id: str) -> dict:
     session["_touched_at"] = time.monotonic()
     _prune_booking_sessions()
     return session
+
+
+_LOOKUP_TOOLS_FOR_CANCEL = ("lookup_appointment", "check_booking_status",
+                            "get_available_reschedule_slots", "reschedule_appointment")
+
+
+def _booking_was_looked_up(state: AgentState, booking_id: Optional[str]) -> bool:
+    """True when `booking_id` is one a lookup tool actually returned in
+    THIS conversation.
+
+    Reads the ToolMessages rather than any remembered state, so it works
+    on a resumed thread and cannot be satisfied by the model asserting
+    it already checked."""
+
+    if not booking_id:
+        return False
+
+    wanted = str(booking_id).strip()
+    if not wanted:
+        return False
+
+    for msg in state.get("messages") or []:
+        if getattr(msg, "type", None) != "tool":
+            continue
+        if getattr(msg, "name", None) not in _LOOKUP_TOOLS_FOR_CANCEL:
+            continue
+        content = getattr(msg, "content", "")
+        if wanted in (content if isinstance(content, str) else str(content)):
+            return True
+
+    return False
+
+
+def clear_session(session_id: Optional[str]) -> bool:
+    """Drop everything remembered for one conversation.
+
+    WHY THIS IS NEEDED AT ALL: `_BOOKING_SESSIONS` is keyed by
+    `session_id` and holds its entries for 6 hours, while main.py starts
+    a FRESH conversation after 1 hour of silence (10 minutes after a
+    completed cancellation) by bumping a generation counter that changes
+    the graph's `thread_id`. The checkpointer then hands the model an
+    empty history - but this dict, which main.py had no way to reach,
+    kept the previous conversation's `doctor_id`, `branch_id`, its
+    remembered lists, its `verified_phones`, and the `known_*_names`
+    whitelists that graph.py's invented-doctor/invented-branch guards
+    check replies against.
+
+    Three concrete consequences, all of them silent:
+      - `create_new_booking` reads doctor_id/branch_id from here rather
+        than from arguments, so a booking made in the NEW conversation
+        could be placed with the doctor and branch chosen in the old one.
+      - A doctor named in the old conversation stayed permanently
+        "tool-verified" for the new one, so recalling that name with no
+        tool call at all passed the guard.
+      - An identity verified an hour ago still counted as verified.
+
+    main.py calls this at the exact moment it decides the conversation
+    is over, so what dies with the thread now includes this."""
+
+    if not session_id:
+        return False
+
+    existed = _BOOKING_SESSIONS.pop(session_id, None) is not None
+
+    if existed:
+        logger.info(
+            "clear_session: dropped the booking session for session_id=%s - "
+            "a new conversation must not inherit the previous one's doctor, "
+            "branch, verified phones or known-name whitelists",
+            session_id,
+        )
+
+    return existed
 
 
 def _mark_phone_verified(state: AgentState, phone: Optional[str]) -> None:
@@ -1337,7 +1465,7 @@ def list_specialties(state: Annotated[AgentState, InjectedState]) -> dict:
             "list_specialties API call failed: base_url=%s status_code=%s error=%s",
             base_url, result.get("status_code"), result.get("error"),
         )
-        return {"status": "error"}
+        return _api_error(result)
 
     items = (result["data"] or {}).get("items", [])
 
@@ -2005,7 +2133,7 @@ def list_branches_for_specialty(
             "list_branches_for_specialty: get_doctor_schedule failed: status_code=%s error=%s",
             schedule_result.get("status_code"), schedule_result.get("error"),
         )
-        return {"status": "error"}
+        return _api_error(schedule_result)
 
     # Cross-reference the real branch list so the Arabic altName/address
     # are used, rather than only the schedule row's plain branchName.
@@ -2589,7 +2717,7 @@ def find_available_doctors(
             "find_available_doctors API call failed: base_url=%s specialty_ids=%s branch_ids=%s status_code=%s error=%s",
             base_url, specialty_ids, branch_ids, result.get("status_code"), result.get("error"),
         )
-        return {"status": "error"}
+        return _api_error(result)
 
     items = (result["data"] or {}).get("items", [])
 
@@ -2750,7 +2878,7 @@ def _resolve_doctor_id(state: AgentState, ref_number: str, language: Optional[st
 
     if not result["success"]:
         logger.error("_resolve_doctor_id: API call failed for ref_number=%s error=%s", ref_number, result.get("error"))
-        return {"status": "error"}
+        return _api_error(result)
 
     items = (result["data"] or {}).get("items", [])
     if not items:
@@ -3022,7 +3150,7 @@ def get_doctor_schedule(
 
     if not result["success"]:
         logger.error("get_doctor_schedule API call failed: status_code=%s error=%s", result.get("status_code"), result.get("error"))
-        return {"status": "error"}
+        return _api_error(result)
 
     items = (result["data"] or {}).get("items", [])
     if not items:
@@ -3098,7 +3226,7 @@ def get_available_reschedule_slots(
 
     if not result["success"]:
         logger.error("get_available_reschedule_slots API call failed: status_code=%s error=%s", result.get("status_code"), result.get("error"))
-        return {"status": "error"}
+        return _api_error(result)
 
     items = (result["data"] or {}).get("items", [])
     if not items:
@@ -3226,7 +3354,7 @@ def reschedule_appointment(
             "reschedule_appointment API call failed: booking_id=%s status_code=%s error=%s",
             booking_id, result.get("status_code"), result.get("error"),
         )
-        return {"status": "error"}
+        return _api_error(result)
 
     language = conversation_language(state)
     timezone_name = (state.get("templates") or {}).get("_timezone")
@@ -3394,7 +3522,7 @@ def list_branch_services(
             "list_branch_services: get_services failed for branch_id=%s: status_code=%s error=%s",
             branch_id, result.get("status_code"), result.get("error"),
         )
-        return {"status": "error"}
+        return _api_error(result)
 
     language = conversation_language(state)
     services = []
@@ -3504,7 +3632,7 @@ def find_branches_offering_service(
             "find_branches_offering_service: get_doctors failed: status_code=%s error=%s",
             result.get("status_code"), result.get("error"),
         )
-        return {"status": "error"}
+        return _api_error(result)
 
     doctor_items = [
         i for i in (result["data"] or {}).get("items", [])
@@ -3536,7 +3664,7 @@ def find_branches_offering_service(
             "find_branches_offering_service: get_doctor_schedule failed: status_code=%s error=%s",
             schedule_result.get("status_code"), schedule_result.get("error"),
         )
-        return {"status": "error"}
+        return _api_error(schedule_result)
 
     doctors_per_branch = {}
     for row in (schedule_result["data"] or {}).get("items", []):
@@ -3590,10 +3718,21 @@ def answer_hospital_faq(
     their own tools), and NOT for "what services do you offer?" (use
     `list_hospital_services`, which returns the complete list rather
     than the passages that happen to look most similar).
-    Returns the most relevant passages found; summarize them naturally
-    in 2-3 sentences rather than reproducing them verbatim. Returns:
+    ANSWER ONLY FROM THE PASSAGES RETURNED. Find the sentence in them
+    that actually answers the question and give it back in the
+    conversation's own language, tightened for length - do not add a
+    fact, a number, a name, or an implication that is not written in
+    them. If the passages do not contain the answer, say plainly that
+    you don't have that specific information and offer a staff handoff;
+    that is a correct answer, not a failure. Passages are only returned
+    when they genuinely match the question, so an empty result means
+    the knowledge base really has nothing on it.
+    Returns:
     {"status": "found", "passages": ["...", ...]}
-    {"status": "not_found"}  # nothing relevant enough was found
+    {"status": "not_found"}  # nothing relevant enough was found - the
+                          # knowledge base does not cover this. Say so;
+                          # never assemble an answer out of whatever
+                          # else the clinic's document happens to say.
     {"status": "not_configured"}  # this clinic has no FAQ knowledge base set up yet"""
 
     kb_file = (state.get("templates") or {}).get("_knowledge_base_file", "")
@@ -3658,8 +3797,18 @@ def _strip_entity_filler(text: str) -> str:
     stripped = str(text)
     for filler in (
         "فرع", "فروع", "الفرع", "مستشفى", "المستشفى", "مستشفي", "عيادة", "العيادة",
-        "مركز", "المركز", "دكتور", "الدكتور", "دكتوره", "دكتورة", "د.", "طبيب", "الطبيب",
+        "مركز", "المركز", "دكتور", "الدكتور", "دكتوره", "دكتورة", "د.", "د", "طبيب", "الطبيب",
+        # PROFESSIONAL TITLES. The clinic stores them as part of the
+        # name ("استشاري أحمد العقيل"), and patients include or omit
+        # them freely. Confirmed real complaint: typing "احمد عقيل"
+        # against a stored "استشاري أحمد العقيل" produced "هل تقصد
+        # استشاري أحمد العقيل؟" - a question whose only content was a
+        # title and a definite article.
+        "استشاري", "استشارى", "الاستشاري", "استشارية", "استشاريه",
+        "اخصائي", "أخصائي", "الاخصائي", "اخصائية", "أخصائية", "اخصائيه",
+        "بروفيسور", "البروفيسور", "استاذ", "أستاذ", "الاستاذ", "ا.د", "أ.د",
         "branch", "hospital", "clinic", "center", "centre", "doctor", "dr.", "dr",
+        "consultant", "specialist", "professor", "prof.", "prof",
     ):
         stripped = re.sub(rf"(?:^|\s){re.escape(filler)}(?=\s|$)", " ", stripped, flags=re.IGNORECASE)
 
@@ -3668,6 +3817,93 @@ def _strip_entity_filler(text: str) -> str:
     # If stripping removed everything, the filler WAS the name - keep the
     # original rather than matching on an empty string.
     return stripped or str(text).strip()
+
+
+def _name_tokens(text: str) -> frozenset:
+    """The identifying WORDS in a name, with everything that carries no
+    identity stripped out: professional titles, the generic entity
+    words, and the definite article on each remaining word.
+
+    WHY A TOKEN SET AND NOT JUST A STRING RATIO: character-level
+    similarity is the wrong tool for Arabic names, and it was producing
+    "did you mean...?" questions for names that are the same name.
+    Measured against a stored "أحمد العقيل":
+
+        "احمد العقيل"        1.000  ->  fine
+        "احمد عقيل"          0.900  ->  "هل تقصد استشاري أحمد العقيل؟"
+        "استشاري احمد عقيل"  0.643  ->  same question, worse score
+
+    The only differences are a definite article and a title the patient
+    happened to include - neither of which distinguishes one doctor from
+    another. And against a stored "د. أحمد عبد الله العقيل", the
+    perfectly normal "احمد العقيل" (first name + family name, middle
+    names dropped, which is how people actually refer to each other)
+    scored 0.710.
+
+    Comparing the SETS of identifying words instead makes all four of
+    those the same name, while two genuinely different doctors - أحمد
+    العقيل and أحمد الغامدي - still differ by a whole token.
+
+    Single-letter tokens are dropped: they are initials and article
+    fragments, never the thing that tells two people apart.
+    """
+
+    if not text:
+        return frozenset()
+
+    normalized = _normalize_arabic(_strip_entity_filler(text))
+    tokens = set()
+
+    for raw in re.split(r"[\s.،,\-]+", normalized):
+        token = raw.strip()
+        if not token:
+            continue
+        # The definite article is not part of a name's identity:
+        # "العقيل" and "عقيل" are one family, written two ways. Only
+        # stripped when something of substance is left behind, so a name
+        # that genuinely IS "ال..." survives.
+        if token.startswith("ال") and len(token) > 3:
+            token = token[2:]
+        if len(token) > 1:
+            tokens.add(token)
+
+    return frozenset(tokens)
+
+
+def _token_set_score(input_tokens: frozenset, value_tokens: frozenset) -> float:
+    """0.97 when two names carry the same identifying words, or when one
+    is a shortened form of the other; 0.0 when they are not comparable
+    this way and the caller should fall back to character similarity.
+
+    0.97 IS A DELIBERATE BAND, not a rounded guess. It sits:
+      - ABOVE `match_entity_for_booking`'s 0.95 auto-confirm threshold,
+        so a name that resolves this way is accepted without a "did you
+        mean...?" round trip; and
+      - BELOW `_fuzzy_match`'s 0.98 short-circuit, so the ambiguity
+        check still runs. Two doctors who both match this way still come
+        back as a genuine choice for the patient rather than one of them
+        being picked silently.
+
+    A single-token input is excluded on purpose. "احمد" is inside a
+    great many full names, and treating a bare given name as a confident
+    match is how the wrong doctor gets booked; it falls through to the
+    substring path, where the ambiguity check turns it into a question -
+    which is the right outcome there.
+    """
+
+    if not input_tokens or not value_tokens:
+        return 0.0
+
+    if input_tokens == value_tokens:
+        return 0.97
+
+    if len(input_tokens) >= 2 and input_tokens <= value_tokens:
+        return 0.97
+
+    if len(value_tokens) >= 2 and value_tokens <= input_tokens:
+        return 0.97
+
+    return 0.0
 
 
 def _fuzzy_match(user_input: str, candidates: list, name_keys: list) -> dict:
@@ -3707,10 +3943,24 @@ def _fuzzy_match(user_input: str, candidates: list, name_keys: list) -> dict:
             for normalized_value in {_normalize_arabic(value), _normalize_arabic(_strip_entity_filler(value))}:
                 if not normalized_value:
                     continue
+                value_tokens = _name_tokens(value)
                 for candidate_input in candidates_input:
                     if candidate_input == normalized_value:
                         best_score = max(best_score, 1.0)
-                    elif candidate_input in normalized_value or normalized_value in candidate_input:
+                        continue
+
+                    # SAME WORDS, DIFFERENT DRESS - checked before the
+                    # character ratio, which cannot see that "احمد عقيل"
+                    # and "استشاري أحمد العقيل" are one person. See
+                    # `_token_set_score` for why 0.97 specifically.
+                    token_score = _token_set_score(
+                        _name_tokens(candidate_input), value_tokens,
+                    )
+                    if token_score:
+                        best_score = max(best_score, token_score)
+                        continue
+
+                    if candidate_input in normalized_value or normalized_value in candidate_input:
                         best_score = max(best_score, 0.96)
                     else:
                         ratio = difflib.SequenceMatcher(None, candidate_input, normalized_value).ratio()
@@ -3933,7 +4183,7 @@ def match_entity_info(
 
     if not result["success"]:
         logger.error("match_entity_info API call failed: entity_type=%s status_code=%s error=%s", entity_type, result.get("status_code"), result.get("error"))
-        return {"status": "error"}
+        return _api_error(result)
 
     items = (result["data"] or {}).get("items", [])
     if entity_type == "branch":
@@ -5350,7 +5600,7 @@ def get_doctor_fees(state: Annotated[AgentState, InjectedState]) -> dict:
 
     if not result["success"]:
         logger.error("get_doctor_fees API call failed: status_code=%s error=%s", result.get("status_code"), result.get("error"))
-        return {"status": "error"}
+        return _api_error(result)
 
     items = (result["data"] or {}).get("items", [])
     if not items:
@@ -5426,7 +5676,7 @@ def get_patient_info(state: Annotated[AgentState, InjectedState], mobile_number:
 
     if not result["success"]:
         logger.error("get_patient_info API call failed: status_code=%s error=%s", result.get("status_code"), result.get("error"))
-        return {"status": "error"}
+        return _api_error(result)
 
     data = result["data"] or {}
     items = data.get("items", [])
@@ -5619,7 +5869,7 @@ def resolve_available_day(
 
     if not result["success"]:
         logger.error("resolve_available_day API call failed: status_code=%s error=%s", result.get("status_code"), result.get("error"))
-        return {"status": "error"}
+        return _api_error(result)
 
     items = (result["data"] or {}).get("items", [])
     logger.info(
@@ -6395,7 +6645,7 @@ def list_available_days_for_booking(
 
     if not result["success"]:
         logger.error("list_available_days_for_booking API call failed: status_code=%s error=%s", result.get("status_code"), result.get("error"))
-        return {"status": "error"}
+        return _api_error(result)
 
     items = (result["data"] or {}).get("items", [])
 
@@ -6602,6 +6852,15 @@ def create_new_booking(
     A doctor AND branch must both already be confirmed (via
     `match_entity_for_booking`) before calling this. Returns:
     {"status": "success", "booking_ref": "GBN-..."}
+    {"status": "success_ref_pending", "booking_id": "..."}
+        # THE BOOKING WAS CREATED - it is real and confirmed - but the
+        # follow-up call that fetches its human-readable reference
+        # number failed. Tell the patient plainly that the appointment
+        # is confirmed and that the booking number will reach them
+        # shortly by SMS. NEVER write a reference number of your own in
+        # this case, in any format: there is no value to write, and an
+        # invented one is worse than none - they will try to cancel with
+        # it and be told no such booking exists.
     {"status": "slot_unavailable"}  # the requested slot is no longer free - tell the user and offer to pick again
     {"status": "missing_doctor"} / {"status": "missing_branch"}
     {"status": "invalid_details", "rejected": [{"field": ..., "message": ...}]}
@@ -6706,13 +6965,17 @@ def create_new_booking(
 
     if not slots_result["success"]:
         logger.error("create_new_booking: re-verification API call failed: status_code=%s error=%s", slots_result.get("status_code"), slots_result.get("error"))
-        return {"status": "error"}
+        return _api_error(slots_result)
 
     try:
         requested_ms = requested_start_dt.timestamp()
     except ValueError:
+        # NOT an upstream failure - the availability call above
+        # succeeded. This is a malformed slot_start that reached us,
+        # so it carries its own reason rather than borrowing the (in
+        # fact healthy) API's.
         logger.warning("create_new_booking: unparsable slot_start=%r", slot_start)
-        return {"status": "error"}
+        return {"status": "error", "reason": "unparsable_slot"}
 
     raw_items = (slots_result["data"] or {}).get("items", [])
     logger.info(
@@ -6796,11 +7059,35 @@ def create_new_booking(
         lookup_result = api.get_booking_by_id(base_url, new_booking_id)
         if lookup_result["success"]:
             booking_ref = (lookup_result["data"] or {}).get("bookingRefNum")
+        else:
+            logger.error(
+                "create_new_booking: the booking WAS created (id=%s) but fetching its "
+                "reference number failed: status_code=%s error=%s",
+                new_booking_id, lookup_result.get("status_code"), lookup_result.get("error"),
+            )
 
     # Booking complete - clear the session so a subsequent NEW booking
     # in the same conversation starts clean, matching the confirmed
     # production behavior (session auto-cleans on success).
     _BOOKING_SESSIONS.pop(session_id, None)
+
+    if not booking_ref:
+        # A REAL BOOKING WITH NO REFERENCE YET - ITS OWN STATUS.
+        #
+        # Returning plain "success" with booking_ref=None was the worst
+        # possible shape here: graph._build_booking_success_display_directive
+        # bails out on a falsy ref, so the ONE message that is supposed
+        # to be built in code fell back to free composition - while the
+        # clinic's own success template, which the model is holding,
+        # requires a reference number. A model asked to produce a
+        # confirmation with a mandatory field it does not have will
+        # supply one, and the patient keeps that number to cancel with
+        # later.
+        return {
+            "status": "success_ref_pending",
+            "booking_id": new_booking_id,
+            "booking_ref": None,
+        }
 
     return {"status": "success", "booking_ref": booking_ref}
 
@@ -6864,7 +7151,7 @@ def get_doctor_schedule_for_booking(
 
     if not result["success"]:
         logger.error("get_doctor_schedule_for_booking API call failed: status_code=%s error=%s", result.get("status_code"), result.get("error"))
-        return {"status": "error"}
+        return _api_error(result)
 
     items = (result["data"] or {}).get("items", [])
 
@@ -7041,7 +7328,7 @@ def get_available_slots_for_booking(
 
     if not result["success"]:
         logger.error("get_available_slots_for_booking API call failed: status_code=%s error=%s", result.get("status_code"), result.get("error"))
-        return {"status": "error"}
+        return _api_error(result)
 
     items = (result["data"] or {}).get("items", [])
     if items:
@@ -7264,7 +7551,7 @@ def find_best_doctor_in_specialty(
     doctors_result = api.get_doctors(base_url, specialty_ids=specialty_ids, page_size=200, language=conversation_language(state))
     if not doctors_result["success"]:
         logger.error("find_best_doctor_in_specialty: get_doctors failed: status_code=%s error=%s", doctors_result.get("status_code"), doctors_result.get("error"))
-        return {"status": "error"}
+        return _api_error(doctors_result)
 
     raw_doctors = (doctors_result["data"] or {}).get("items", [])
     doctors = [d for d in raw_doctors if d.get("hasSlots") is not False]
@@ -7296,7 +7583,7 @@ def find_best_doctor_in_specialty(
          language=conversation_language(state),)
         if not slots_result["success"]:
             logger.error("find_best_doctor_in_specialty: get_doctor_schedule_slots failed: status_code=%s error=%s", slots_result.get("status_code"), slots_result.get("error"))
-            return {"status": "error"}
+            return _api_error(slots_result)
 
         raw_slot_items = (slots_result["data"] or {}).get("items", [])
         logger.info(
