@@ -2312,10 +2312,19 @@ _DONT_KNOW_RE = re.compile(
     re.IGNORECASE,
 )
 
-# "تحب تبدأ بالتخصص ولا بالدكتور؟" in the assistant's own last reply.
+# The booking flow's opening question in the assistant's own last reply.
+# Kept in step with agents/router._ASKED_SPECIALTY_OR_DOCTOR_RE, which
+# makes the routing half of the same decision - both have to recognise
+# the question in whatever wording the clinic's dialect produced it,
+# including the fuller "do you have a doctor in mind, or shall we search
+# by specialty?" form that replaced the terse original.
 _ASKED_SPECIALTY_OR_DOCTOR_RE = re.compile(
     r"بالتخصص\s*ولا\s*بالدكتور|بالدكتور\s*ولا\s*بالتخصص|"
     r"تبدا\s*بالتخصص|تبدا\s*بالدكتور|"
+    r"طبيب\s*(?:معين|محدد)[^.\n؟?]{0,40}(?:ولا|او|أم)[^.\n؟?]{0,20}تخصص|"
+    r"دكتور\s*(?:معين|محدد)[^.\n؟?]{0,40}(?:ولا|او|أم)[^.\n؟?]{0,20}تخصص|"
+    r"تخصص[^.\n؟?]{0,40}(?:ولا|او|أم)[^.\n؟?]{0,20}(?:طبيب|دكتور)|"
+    r"specific\s+doctor[^.\n?]{0,40}(?:or|prefer)[^.\n?]{0,25}specialt|"
     r"by\s*specialty\s*or\s*by\s*doctor"
 )
 
@@ -2326,10 +2335,22 @@ _BOOKING_ENTRY_ASK_DIRECTIVE = (
     "============================================================\n"
     "The patient has asked to book an appointment and has named no "
     "doctor, no specialty, no service and no symptom. This is STEP NB1's "
-    "opening rung, and the whole reply is ONE question:\n\n"
-    "    \"تحب تبدأ بالتخصص ولا بالدكتور؟\"\n\n"
+    "opening rung.\n\n"
+    "Your reply is a short confirming line that you can help with the "
+    "booking, then ONE question offering the two ways to start - THE "
+    "DOCTOR FIRST, then the specialty:\n\n"
+    "    \"يمكنني مساعدتك في حجز موعد. هل لديك طبيب معيّن تحب تحجز "
+    "معاه، ولا تفضّل نبحث بالتخصص؟\"\n\n"
     "(compose it in this conversation's own language and dialect - the "
     "wording above is the SHAPE, not a script to paste.)\n\n"
+    "SAY IT IN FULL. A bare \"تحب تبدأ بالتخصص ولا بالدكتور؟\" is not "
+    "good enough here: it opens with no acknowledgement of what they "
+    "asked for, \"تبدأ\" describes OUR process rather than their choice, "
+    "and a patient who has never used this service does not know what "
+    "either option leads to. Name the two options as things THEY have or "
+    "want - a doctor they already have in mind, or searching by "
+    "specialty - so the choice is obvious without knowing how the flow "
+    "works. It is still exactly one question.\n\n"
     "Everything else is wrong on this turn, and each of these has "
     "actually been sent to a patient here:\n"
     "  - Do NOT ask for a phone number or whether to use this WhatsApp "
@@ -2372,6 +2393,91 @@ _BOOKING_ENTRY_DONT_KNOW_DIRECTIVE = (
     "the patient to do the one piece of work they came here for help "
     "with, and it needs knowledge they have just said they don't have.\n\n"
 )
+
+
+_SYMPTOM_IN_BOOKING_DIRECTIVE = (
+    "============================================================\n"
+    "THEY ANSWERED WITH A SYMPTOM - THIS IS STILL THE BOOKING FLOW\n"
+    "============================================================\n"
+    "You asked whether to start from a doctor or from a specialty, and "
+    "the patient answered with what is WRONG rather than with either. "
+    "That is the normal answer, not a change of subject: most people "
+    "know their symptom and do not know specialty names. It is also the "
+    "case STEP NB1 covers in as many words - match it to the closest "
+    "specialty YOURSELF and continue to the doctors.\n\n"
+    "SO: call `list_specialties`, pick the specialty that genuinely "
+    "fits what they described, then call `find_available_doctors` for "
+    "it and show the doctors, ending with ONE question - which doctor. "
+    "Chain those calls in THIS turn; the one-question rule governs what "
+    "you say, not how many tools you may call.\n\n"
+    "DO NOT run the medical-guidance reply here. Specifically, none of "
+    "this belongs in your answer:\n"
+    "  - comfort or self-care advice (rest, fluids, warmth)\n"
+    "  - red flags or \"go to the emergency room if...\"\n"
+    "  - the ⚕️ \"this is not a diagnosis\" line\n"
+    "  - any clarifying question about how long, how severe, or what "
+    "else they feel\n"
+    "  - asking them to confirm the specialty, or offering to book "
+    "\"if they'd like\" - they asked to book two messages ago\n\n"
+    "CONFIRMED IN A REAL CONVERSATION: the patient said \"عاوزه احجز "
+    "معاد\", was asked doctor-or-specialty, answered \"بطني وجعاني "
+    "وعندي الم شديد\" - and received a full medical-guidance reply with "
+    "comfort measures, red flags, the disclaimer, and an offer to book. "
+    "They then had to say \"اه\" to get the doctor list that should "
+    "have been that same reply. Three turns for one step.\n\n"
+    "Only name a specialty `list_specialties` actually returned, and "
+    "only name doctors `find_available_doctors` actually returned. If "
+    "nothing fits, say so plainly - that is still a booking answer, not "
+    "medical advice.\n\n"
+)
+
+# Body-part / pain wording, used only to tell "they answered with a
+# symptom" apart from "they answered with a specialty or a doctor".
+# Deliberately loose: the cost of a false positive here is a directive
+# telling booking to do what it was already going to do.
+_SYMPTOM_ANSWER_RE = re.compile(
+    r"وجع|يوجع|بيوجع|بتوجع|توجع|الم|آلم|تعبان|تعبانه|مريض|مريضه|"
+    r"صداع|حراره|سخونه|مغص|دوخه|دوار|كحه|سعال|ترجيع|قيء|غثيان|اسهال|"
+    r"امساك|حكه|طفح|تنميل|نزيف|ضيق\s*تنفس|حساسيه|"
+    r"بطني|معدتي|راسي|ضهري|ظهري|صدري|رقبتي|عيني|سناني|ضرسي|حلقي|"
+    r"قلبي|كتفي|ركبتي|رجلي|ايدي|جسمي|"
+    r"\bpain\b|\bache|\bhurts?\b|\bfever\b|\bheadache\b|\bnausea\b|"
+    r"\bdizz|\bcough\b|\brash\b|\bswollen\b|\bbleeding\b"
+)
+
+
+def _build_symptom_in_booking_directive(messages: list, agent_name: str) -> str:
+    """Fires when a symptom answers the booking flow's opening question.
+
+    The router now keeps that turn with `booking` (see
+    agents/router._answers_booking_entry_question); this is the other
+    half - telling the booking specialist what to DO with it, since its
+    instinct, holding the same symptom wording, is to produce the
+    medical-guidance reply."""
+
+    if agent_name not in ("booking", "concierge") or not messages:
+        return ""
+
+    index = _latest_human_index(messages)
+    if index < 0 or index != len(messages) - 1:
+        return ""
+
+    content = getattr(messages[index], "content", "")
+    text = (content if isinstance(content, str) else str(content)).strip()
+    if not text:
+        return ""
+
+    folded = _norm_ar(text)
+
+    if not _SYMPTOM_ANSWER_RE.search(folded):
+        return ""
+
+    # Only immediately after the entry question.
+    last_ai = _norm_ar(_last_ai_reply_text(messages))
+    if not last_ai or not _ASKED_SPECIALTY_OR_DOCTOR_RE.search(last_ai):
+        return ""
+
+    return _SYMPTOM_IN_BOOKING_DIRECTIVE
 
 
 def _build_booking_entry_directive(messages: list, session_id: str, agent_name: str) -> str:
@@ -7182,22 +7288,13 @@ _MEDICATION_REQUEST_RE = re.compile(
     re.IGNORECASE,
 )
 
-_CRISIS_RE = re.compile(
-    # Arabic, including the colloquial future prefix ("هنتحر" = "I'm
-    # going to kill myself") that a stem-only pattern misses.
-    r"(?:ه|ح|سا|سأ)?انتحر|(?:ه|ح)نتحر|الانتحار|"
-    r"(?:عايز|عاوز|بدي|ابي|ابغى|نفسي)\s*(?:\w+\s+){0,2}(?:اموت|امو ت|انهي\s*حياتي|اقتل\s*نفسي)|"
-    r"(?:مش|ما|مو)\s*(?:عايز|عاوز|بدي|ابي)\s*(?:\w+\s+){0,2}(?:اعيش|اكمل|اكمل\s*حياتي)|"
-    r"(?:اذي|أذي|اؤذي|أؤذي|اجرح|أجرح)\s*نفسي|"
-    r"(?:انهي|أنهي|اخلص\s*من)\s*حيات|"
-    r"(?:تعبت|زهقت|مليت)\s*من\s*(?:ال)?حياه|"
-    # English.
-    r"\bkill\s+my\s?self\b|\bsuicid\w*|\bend\s+(?:my|it\s+all)\b[^.\n]{0,12}\blife\b|"
-    r"\bend\s+my\s+life\b|\bwant\s+to\s+die\b|\bhurt\s+my\s?self\b|"
-    r"\bself[\s-]?harm\b|\bdon'?t\s+want\s+to\s+(?:live|be\s+here)\b|"
-    r"\bno\s+reason\s+to\s+live\b",
-    re.IGNORECASE,
-)
+# THE SAME OBJECT THE ROUTER USES. Crisis wording had two definitions -
+# this one, and a much narrower cue in agents/router.py - and the
+# narrower one decided ROUTING. The result: "عايزة أموت" raised this
+# directive but never moved the conversation to the medical specialist,
+# which is the only one carrying the crisis rules. One pattern now, so
+# a phrasing added in either place is recognised by both.
+_CRISIS_RE = agents.router.CRISIS_RE
 
 
 def _latest_human_text(messages: list) -> str:
@@ -11785,6 +11882,14 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
             state["messages"], state.get("session_id"), agent_name,
         )
     )
+
+    # A symptom given IN ANSWER to the entry question. The router keeps
+    # that turn with booking; this tells booking to match it to a
+    # specialty and go on to the doctors, rather than producing the
+    # medical-guidance reply its instinct reaches for.
+    symptom_in_booking_directive = _build_symptom_in_booking_directive(
+        state["messages"], agent_name,
+    )
     booking_confirmation_directive = _build_booking_confirmation_requires_tool_directive(state["messages"], state.get("session_id"))
     booking_success_directive = _build_booking_success_display_directive(state["messages"], state.get("templates"))
 
@@ -11923,6 +12028,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         # says what the patient has already supplied and therefore wins
         # any overlap - it is placed after them deliberately.
         + established_specialty_directive + booking_entry_directive
+        + symptom_in_booking_directive
         + multi_intent_directive + named_day_directive + day_unavailable_directive
         + show_soonest_directive
         + booking_confirmation_directive + booking_success_directive
