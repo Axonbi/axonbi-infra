@@ -342,7 +342,21 @@ MAX_HISTORY_MESSAGES: int = int(os.getenv("MAX_HISTORY_MESSAGES", "40"))
 
 OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4.1")  # upgraded from gpt-4.1-mini for better dialect/persona instruction-following
-OPENAI_TIMEOUT_SECONDS: float = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "10"))
+# RAISED FROM 10s. The system prompt alone is ~130 KB before the ~40
+# directive blocks and the trimmed history are added, so a 10-second
+# ceiling was being hit in normal operation - and a second hit turns
+# into a "please resend" reply, or (at the verifier retry call site)
+# silently keeps an unverified draft. Latency should not be able to
+# convert itself into unverified output.
+OPENAI_TIMEOUT_SECONDS: float = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "45"))
+
+# Pinned rather than left to the API default of 1.0 - see the comment
+# on graph._llm. Every task this agent performs is closer to
+# transcription than to composition: copy the clinic's template, copy
+# the tool's own time_display, obey the directives. 0 is the right
+# setting for that, and it is what makes the response contract
+# achievable rather than something the normalizer has to repair.
+OPENAI_TEMPERATURE: float = float(os.getenv("OPENAI_TEMPERATURE", "0"))
 
 # NOTE: there is deliberately no "run without an LLM" flag any more.
 # The old hybrid design could fall back to deterministic heuristics when
@@ -665,6 +679,16 @@ def get_messages(client_id: str, dialect: Optional[str] = None, client_row_overr
         or merged["_base_url"]
     )
     merged["_phone_example"] = client_row.get("phone_example")
+    # COMPATIBILITY ONLY. `bsuid` identifies the SENDER, not the clinic,
+    # so it properly belongs in the request body next to channel_phone
+    # (see AgentState.bsuid / app.ChatRequest) - and that is where
+    # graph.py now reads it from. It is picked up here as well because
+    # any top-level /chat field this project does not declare gets swept
+    # into the client's config row by app.resolved_client_config(): a
+    # caller still sending it the old way lands it here, and
+    # progress.schedule() falls back to this value rather than losing
+    # it. Never interpreted, only passed through.
+    merged["_bsuid"] = client_row.get("bsuid")
     # Bilingual branch name pairs from the client's own config row, as
     # [{"name": <as the booking API knows it>, "aliases": [...]}, ...].
     #
