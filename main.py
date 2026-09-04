@@ -26,9 +26,10 @@ from typing import Dict
 from langchain_core.messages import HumanMessage
 
 from config import GRAPH_RECURSION_LIMIT, POST_SUCCESS_TIMEOUT_SECONDS, SESSION_TIMEOUT_SECONDS, THREAD_ID_PREFIX, configure_logging, get_messages
-from graph import graph
+from graph import graph, soft_recovery_reply, upstream_api_failed
 
 import progress
+import tools
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -170,6 +171,17 @@ def _config_for(session_id: str) -> dict:
 
     if reset:
         _generation[session_id] = _generation.get(session_id, 0) + 1
+        # THE CONVERSATION IS OVER - SO IS EVERYTHING REMEMBERED FOR IT.
+        #
+        # Bumping the generation changes the thread_id, which gives the
+        # checkpointer a brand-new empty history. It does NOT touch
+        # tools._BOOKING_SESSIONS, which is keyed by the raw session_id
+        # and holds its entries for six hours - so the "fresh"
+        # conversation used to start holding the previous one's
+        # confirmed doctor and branch, its verified phone numbers, and
+        # the known-name whitelists the reply guards check against.
+        # See tools.clear_session for what each of those causes.
+        tools.clear_session(session_id)
     elif success is not None:
         # A follow-up message arrived within the post-success grace
         # window - this is an ordinary continuation of the same
@@ -410,11 +422,24 @@ def send_message_with_signals(
             # the same: say something, and log loudly enough that the
             # cause can be found.
             if not (reply or "").strip():
-                templates = get_messages(client_id, client_row_override=client_config)
-                reply = (
-                    templates.get("msg_On_failure")
-                    or "عذرًا، حصلت مشكلة مؤقتة. ممكن تبعت رسالتك تاني؟ 🌷"
-                )
+                # WHICH message depends on whether anything upstream
+                # actually broke. An empty reply is almost always OUR
+                # processing (a contract step that stripped everything,
+                # a tool loop that ended without a final message) - and
+                # the clinic's `msg_On_failure` announces a technical
+                # fault the patient can do nothing about. Only use it
+                # when a tool this turn really did report one; otherwise
+                # ask them to rephrase, which is both true and useful.
+                if upstream_api_failed(result.get("messages") or []):
+                    templates = get_messages(client_id, client_row_override=client_config)
+                    reply = (
+                        templates.get("msg_On_failure")
+                        or "عذرًا، حصلت مشكلة مؤقتة. ممكن تبعت رسالتك تاني؟ 🌷"
+                    )
+                else:
+                    reply = soft_recovery_reply(
+                        (result.get("target_language") if isinstance(result, dict) else None)
+                    )
                 logger.error(
                     "session_id=%s: the turn produced an EMPTY reply - sent the failure "
                     "message instead of nothing. Last message: %r",
