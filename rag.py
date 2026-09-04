@@ -105,7 +105,10 @@ def _load_and_embed(file_path: str) -> list:
         vectors = _get_embeddings_model().embed_documents(chunks)
     except Exception:
         logger.exception("rag: failed to embed knowledge base chunks for %s", file_path)
-        return []
+        # Signalled as None, NOT as []. The two mean different things
+        # and the caller must be able to tell them apart - see
+        # _get_cached_chunks.
+        return None
 
     return list(zip(chunks, vectors))
 
@@ -122,6 +125,19 @@ def _get_cached_chunks(file_path: str) -> list:
         return cached[1]
 
     chunks_with_vectors = _load_and_embed(file_path)
+
+    # ONLY CACHE A SUCCESS.
+    #
+    # A transient embeddings failure (a rate limit, a blip) used to be
+    # cached as an empty corpus against the file's own mtime - and since
+    # the file's mtime does not change, the knowledge base stayed empty
+    # for the rest of the process's life. Every FAQ question after that
+    # returned "not_found", so the assistant told patients this clinic
+    # has no information on subjects its knowledge base documents in
+    # detail. A false statement about the clinic, produced by a cache.
+    if chunks_with_vectors is None:
+        return []
+
     _CACHE[file_path] = (mtime, chunks_with_vectors)
     return chunks_with_vectors
 
@@ -209,11 +225,45 @@ def list_services(file_path: str, language: str = "ar") -> list:
     return services
 
 
+# THE RELEVANCE FLOOR.
+#
+# `search()` used to return the top_k chunks unconditionally, discarding
+# the score - so "the four least-dissimilar paragraphs in the document"
+# was reported to the caller as "found", for ANY question, including
+# ones the knowledge base says nothing about. The caller
+# (tools.answer_hospital_faq) then handed those passages to the model
+# with an instruction to summarize them naturally, and the model - with
+# no signal that they did not answer the question - wrote a fluent,
+# confident answer out of unrelated text. That is the textbook RAG
+# failure, and it made the tool's own "not_found" branch unreachable:
+# the only way to get it was a missing file.
+#
+# Calibrated for text-embedding-3-small cosine similarity, where
+# genuinely unrelated short-query/passage pairs sit well below 0.3.
+# Tunable without a redeploy because the right floor depends on how a
+# given clinic writes its knowledge base.
+RELEVANCE_FLOOR = float(os.getenv("RAG_RELEVANCE_FLOOR", "0.32"))
+
+
 def search(file_path: str, query: str, top_k: int = DEFAULT_TOP_K) -> list:
-    """Return the top_k most relevant chunks (plain strings, most
-    relevant first) for `query` from the knowledge base at `file_path`.
-    Returns [] if the file is missing/empty, or the query/chunks
-    couldn't be embedded (e.g. a transient API error)."""
+    """Return the RELEVANT chunks for `query`, most relevant first.
+
+    Only passages scoring at or above `RELEVANCE_FLOOR` are returned, so
+    an empty list genuinely means "this knowledge base does not answer
+    that" rather than "here are the four closest paragraphs regardless".
+
+    Returns [] if the file is missing/empty, if nothing clears the floor,
+    or if the query/chunks couldn't be embedded (a transient API error -
+    see `search_with_scores` for callers that need to tell those apart).
+    """
+
+    return [chunk for chunk, _score in search_with_scores(file_path, query, top_k)]
+
+
+def search_with_scores(file_path: str, query: str, top_k: int = DEFAULT_TOP_K) -> list:
+    """`search()`, but returns [(chunk, score), ...] so a caller can
+    report HOW well the knowledge base matched - the difference between
+    "we have nothing on that" and "here is the answer"."""
 
     if not file_path:
         return []
@@ -234,4 +284,14 @@ def search(file_path: str, query: str, top_k: int = DEFAULT_TOP_K) -> list:
     ]
     scored.sort(key=lambda pair: pair[1], reverse=True)
 
-    return [chunk for chunk, _score in scored[:top_k]]
+    relevant = [pair for pair in scored[:top_k] if pair[1] >= RELEVANCE_FLOOR]
+
+    if not relevant:
+        logger.info(
+            "rag: nothing cleared the relevance floor (%.2f) for query %r - "
+            "best score was %.3f. Reporting no match rather than returning "
+            "the closest unrelated passages.",
+            RELEVANCE_FLOOR, query[:120], scored[0][1] if scored else 0.0,
+        )
+
+    return relevant
