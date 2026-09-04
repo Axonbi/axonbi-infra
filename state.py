@@ -126,6 +126,34 @@ class AgentState(TypedDict):
     # to the patient, who must never learn there is more than one agent.
     routing_reason: NotRequired[Optional[str]]
 
+    # ==========================================================
+    # The evidence ledger
+    # ==========================================================
+
+    # WHAT THIS CONVERSATION HAS ACTUALLY ESTABLISHED, as opposed to
+    # what has been SAID in it.
+    #
+    # Every specialist shares one `messages` list and nothing in it
+    # records who wrote which reply, so a specialist reads the previous
+    # one's prose exactly as it reads its own - and acts on it. That is
+    # the whole propagation path: an ungrounded sentence written by
+    # `medical` becomes an established premise for `booking`, which
+    # often cannot even re-derive it because tool scoping means it is
+    # not bound to the tools that would.
+    #
+    # This field is the second channel. It is built ONLY from
+    # ToolMessage payloads (graph.build_evidence_ledger), never from an
+    # AIMessage, so nothing the model asserted can enter it. Every
+    # specialist is handed it as an explicit ESTABLISHED FACTS block, so
+    # "what do we actually know" has one answer that does not depend on
+    # which agent is holding the turn or on how the previous one worded
+    # something.
+    #
+    # NotRequired for the same reason as the fields below: tools
+    # validate the state dict strictly on every call, and threads
+    # checkpointed before this existed must keep resuming cleanly.
+    established_facts: NotRequired[Optional[dict]]
+
     # Which specialist owned the PREVIOUS turn. Lets a specialist tell
     # "I have been running this flow for several turns" apart from "I
     # have just taken this conversation over", which is the difference
