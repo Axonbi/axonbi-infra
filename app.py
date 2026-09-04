@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from langgraph.errors import GraphRecursionError
 
 import config
+import graph as graph_module  # soft_recovery_reply / upstream_api_failed
 import main as agent  # unmodified from this point of view: send_message()
 
 config.configure_logging()
@@ -164,15 +165,16 @@ def chat(req: ChatRequest) -> ChatResponse:
         # the one confirmed in production twice.
         logger.exception(
             "Graph hit the recursion limit for session_id=%s client_id=%s - something is "
-            "looping. Returning the configured failure message so the patient is not left "
+            "looping. Returning a soft recovery message so the patient is not left "
             "with nothing.", req.session_id, req.client_id,
         )
-        templates = config.get_messages(req.client_id, client_row_override=resolved_config)
+        # NOT the clinic's technical-failure template. Hitting the step
+        # ceiling is OUR graph looping, with the booking API perfectly
+        # healthy - "حدث خطأ تقني، حاول لاحقًا" both misdescribes it and
+        # points the patient at the one action that cannot help. A short
+        # ask-again keeps the conversation open. See graph.upstream_api_failed.
         return ChatResponse(
-            reply=(
-                templates.get("msg_On_failure")
-                or "حدث خطأ تقني 😕. تحب تحاول مرة ثانية؟"
-            ),
+            reply=graph_module.soft_recovery_reply(None),
             escalate=False,
             location=False,
             branch_name=None,
@@ -192,12 +194,13 @@ def chat(req: ChatRequest) -> ChatResponse:
         logger.exception(
             "Graph invocation failed for session_id=%s client_id=%s", req.session_id, req.client_id
         )
-        templates = config.get_messages(req.client_id, client_row_override=resolved_config)
+        # Same reasoning as the recursion handler above: an exception in
+        # OUR graph is not an upstream API failure, and api.py never
+        # raises for one (it returns a structured result instead). The
+        # clinic's technical-failure template stays reserved for the
+        # case a tool actually reported.
         return ChatResponse(
-            reply=(
-                templates.get("msg_On_failure")
-                or "حدث خطأ تقني 😕. تحب تحاول مرة ثانية؟"
-            ),
+            reply=graph_module.soft_recovery_reply(None),
             escalate=False,
             location=False,
             branch_name=None,
