@@ -639,10 +639,15 @@ def _picks_from_a_doctor_list(messages: List, text: str) -> bool:
 # only fires on the single turn immediately after that exact question.
 
 _ASKED_SPECIALTY_OR_DOCTOR_RE = re.compile(
+    # NOTE: these alternations are in FOLDED form ("ام", not "أم").
+    # The text is normalised before matching - alef forms are unified -
+    # but this pattern is compiled raw, so a hamza written here would
+    # never match anything. That is a silent failure: the question
+    # simply stops being recognised.
     r"بالتخصص\s*ولا\s*بالدكتور|بالدكتور\s*ولا\s*بالتخصص|"
     r"تبدا\s*بالتخصص|تبدا\s*بالدكتور|"
-    r"طبيب\s*(?:معين|محدد)[^.\n؟?]{0,40}(?:ولا|او|أم)[^.\n؟?]{0,20}تخصص|"
-    r"تخصص[^.\n؟?]{0,40}(?:ولا|او|أم)[^.\n؟?]{0,20}(?:طبيب|دكتور)|"
+    r"طبيب\s*(?:معين|محدد)[^.\n؟?]{0,40}(?:ولا|او|ام)[^.\n؟?]{0,20}تخصص|"
+    r"تخصص[^.\n؟?]{0,40}(?:ولا|او|ام)[^.\n؟?]{0,20}(?:طبيب|دكتور)|"
     r"specific\s+doctor[^.\n?]{0,40}(?:or|prefer)[^.\n?]{0,25}specialt|"
     r"by\s+specialty\s+or\s+by\s+doctor"
 )
