@@ -2303,6 +2303,29 @@ def _build_multi_intent_directive(messages: list, session_id: str, agent_name: s
 #   said "مش عارف" to that question             -> help them choose,
 #       starting from the symptom, never from the raw catalogue.
 
+# AN EXPLICIT REQUEST TO BOOK. Needs a wanting/booking VERB - the bare
+# nouns "حجز"/"موعد" are not enough, because they appear just as often
+# in "ألغي حجزي" and "أكد الحجز". See the guard in
+# _build_booking_entry_directive for why the precision matters here in
+# particular.
+_BARE_BOOKING_REQUEST_RE = re.compile(
+    r"(?:عايز|عاوز|عايزه|عاوزه|ابغى|ابغي|ابي|حاب|حابه|نفسي|اريد|ودي|بدي)"
+    r"[^.\n]{0,12}(?:احجز|حجز|موعد|معاد|ميعاد|كشف)|"
+    r"(?:^|\s)(?:احجز|احجزلي|احجز\s*لي|اححز)(?:\s|$)|"
+    r"(?:^|\s)(?:حجز|عمل\s*حجز)\s*(?:موعد|معاد|ميعاد|كشف)|"
+    r"\b(?:i\s*(?:want|need|would\s+like)|can\s+i|i'?d\s+like)\b[^.\n]{0,20}"
+    r"\b(?:book|appointment|reserve|schedule)\b|"
+    r"\bbook\s+(?:an?\s+)?appointment\b|\bmake\s+(?:an?\s+)?appointment\b"
+)
+
+# Words that mean "yes, go ahead with the thing already on the table" -
+# never "start a new booking".
+_CONFIRMATION_WORD_RE = re.compile(
+    r"(?:^|\s)(?:اكد|أكد|اكدلي|تاكيد|أكدلي|كمل|كملي|نفذ)(?:\s|$)|"
+    r"\b(?:confirm|go\s+ahead|proceed)\b"
+)
+
+
 _DONT_KNOW_RE = re.compile(
     r"^\s*(?:"
     r"مش\s*عارف\w*|مش\s*عارفه|ما\s*ادري|مااادري|ما\s*اعرف|لا\s*اعرف|"
@@ -2319,11 +2342,16 @@ _DONT_KNOW_RE = re.compile(
 # including the fuller "do you have a doctor in mind, or shall we search
 # by specialty?" form that replaced the terse original.
 _ASKED_SPECIALTY_OR_DOCTOR_RE = re.compile(
+    # NOTE: these alternations are in FOLDED form ("ام", not "أم").
+    # The text is normalised before matching - alef forms are unified -
+    # but this pattern is compiled raw, so a hamza written here would
+    # never match anything. That is a silent failure: the question
+    # simply stops being recognised.
     r"بالتخصص\s*ولا\s*بالدكتور|بالدكتور\s*ولا\s*بالتخصص|"
     r"تبدا\s*بالتخصص|تبدا\s*بالدكتور|"
-    r"طبيب\s*(?:معين|محدد)[^.\n؟?]{0,40}(?:ولا|او|أم)[^.\n؟?]{0,20}تخصص|"
-    r"دكتور\s*(?:معين|محدد)[^.\n؟?]{0,40}(?:ولا|او|أم)[^.\n؟?]{0,20}تخصص|"
-    r"تخصص[^.\n؟?]{0,40}(?:ولا|او|أم)[^.\n؟?]{0,20}(?:طبيب|دكتور)|"
+    r"طبيب\s*(?:معين|محدد)[^.\n؟?]{0,40}(?:ولا|او|ام)[^.\n؟?]{0,20}تخصص|"
+    r"دكتور\s*(?:معين|محدد)[^.\n؟?]{0,40}(?:ولا|او|ام)[^.\n؟?]{0,20}تخصص|"
+    r"تخصص[^.\n؟?]{0,40}(?:ولا|او|ام)[^.\n؟?]{0,20}(?:طبيب|دكتور)|"
     r"specific\s+doctor[^.\n?]{0,40}(?:or|prefer)[^.\n?]{0,25}specialt|"
     r"by\s*specialty\s*or\s*by\s*doctor"
 )
@@ -2446,6 +2474,56 @@ _SYMPTOM_ANSWER_RE = re.compile(
 )
 
 
+# ==========================================================
+# THE BOOKING FLOW'S OPENING QUESTION - FIXED TEXT
+# ==========================================================
+#
+# PLAIN TEXT, NO EMPHASIS MARKERS OF ANY KIND. The two options were
+# briefly wrapped in WhatsApp's bold asterisks; that is not wanted here.
+# Any markup in a fixed message is a liability across channels - what
+# renders as bold on WhatsApp arrives as literal asterisks anywhere the
+# clinic later sends this - and the sentence reads clearly without it.
+#
+# The closing sentence is load-bearing: without it, a patient who knows
+# neither a doctor nor a specialty has been handed a question with no
+# answer they can give. Saying up front that we can help them choose is
+# what makes "مش عارف" a legitimate reply rather than a dead end.
+#
+# A clinic can override the whole thing with a `msg_booking_entry`
+# column in its config row, exactly like every other authored message.
+_BOOKING_ENTRY_MESSAGE = {
+    "ar": (
+        "بالتأكيد، يمكنني مساعدتك في حجز موعد.\n"
+        "هل لديك طبيب محدد أم تبحث عن تخصص معين؟ وإذا لم تكن متأكدًا "
+        "من التخصص، يمكنني مساعدتك في اختياره."
+    ),
+    "en": (
+        "Of course, I can help you book an appointment.\n"
+        "Do you have a specific doctor in mind, or are you looking for a "
+        "particular specialty? And if you're not sure which specialty, "
+        "I can help you choose."
+    ),
+}
+
+
+def _booking_entry_message(templates: dict, target_language: Optional[str]) -> str:
+    """The exact opening question, every time.
+
+    Deliberately NOT run through `_apply_output_contract` by the caller:
+    the contract's filler-opener rule would strip the "بالتأكيد،" this
+    message opens with. That rule exists to stop the model prefixing
+    ordinary replies with a standalone acknowledgement, which is a
+    different thing from an authored message that opens by confirming
+    it can help - and this wording is the clinic's own choice."""
+
+    authored = (templates or {}).get("msg_booking_entry")
+    if authored and str(authored).strip():
+        return str(authored).replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    is_english = (target_language or "").strip().lower().startswith("en")
+    return _BOOKING_ENTRY_MESSAGE["en" if is_english else "ar"]
+
+
 def _build_symptom_in_booking_directive(messages: list, agent_name: str) -> str:
     """Fires when a symptom answers the booking flow's opening question.
 
@@ -2516,8 +2594,27 @@ def _build_booking_entry_directive(messages: list, session_id: str, agent_name: 
             return _BOOKING_ENTRY_DONT_KNOW_DIRECTIVE
         return ""
 
-    if not _BOOKING_INTENT_RE.search(folded):
+    # A DELIBERATE REQUEST TO BOOK, AND ESSENTIALLY NOTHING ELSE.
+    #
+    # `_BOOKING_INTENT_RE` is far too loose to gate this rung: it matches
+    # the bare nouns "حجز" and "موعد", so it fires on "عايز ألغي حجزي"
+    # (a CANCELLATION) and on "اه أكد الحجز" (confirming a review card).
+    # That was harmless while this only added a directive the model could
+    # weigh against everything else - but the reply is now emitted
+    # directly from code, so a false positive here replaces a real answer
+    # with the opening question. It has to be exact.
+    if not _BARE_BOOKING_REQUEST_RE.search(folded):
         return ""
+
+    # Confirming, cancelling or moving something is not opening a new
+    # booking, whatever nouns the sentence happens to contain.
+    if _CONFIRMATION_WORD_RE.search(folded):
+        return ""
+
+    scores = agents.router.score_message(text)
+    for other in ("cancel", "reschedule", "complaint"):
+        if scores.get(other, 0) >= scores.get("booking", 0):
+            return ""
 
     # Anything concrete in the message means a later rung owns the turn.
     if (_fragment_after_cue(text, _DOCTOR_CUE_RE)
@@ -2525,6 +2622,15 @@ def _build_booking_entry_directive(messages: list, session_id: str, agent_name: 
             or _BARE_SPECIALTY_RE.search(folded)
             or _named_weekday_in_latest_human(messages)
             or _booking_reference_in(text)):
+        return ""
+
+    # THE SINGLE SOURCE OF TRUTH FOR "did they tell us anything?".
+    # `_build_multi_intent_directive` already extracts every fact a
+    # message carries - a phone number, an email, a preferred time, a
+    # reference. If it found any of them, this is not a bare opening
+    # request and the two directives must never both be live: one says
+    # "ask which way to start", the other says "they already told you".
+    if _build_multi_intent_directive(messages, session_id, agent_name):
         return ""
 
     # A doctor or branch already settled in this session means the
@@ -12103,10 +12209,56 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     # constraint. Sending the LLM an empty turn would be worse than
     # sending it the untrimmed history, so fall back rather than trim.
     history = trimmed_history if trimmed_history else safe_messages
-    response = _invoke_llm_resilient(
-        _llm_for(agent_name), [system_message] + history,
-        agent_name=agent_name, target_language=target_language, context="main turn",
+
+    # THE BOOKING FLOW'S OPENING QUESTION IS WRITTEN IN CODE, NOT ASKED
+    # FOR IN A DIRECTIVE.
+    #
+    # It was a directive first, describing the shape and leaving the
+    # model to compose it. That is the right approach almost everywhere
+    # in this file - but not for this one message, and for the same
+    # reason the opening greeting is already built in code (see the
+    # GREETING GUARANTEE in this function's docstring): it is a FIXED
+    # message with no variable content in it at all. There is nothing to
+    # compose. Every patient who asks to book, before saying anything
+    # else, should get exactly the same words, and asking a model to
+    # reproduce a fixed string every time is a bet this project has
+    # already lost once with the greeting.
+    #
+    # Emitting it here skips the model call entirely for this turn:
+    # identical wording every time, one fewer round trip, and no chance
+    # of the terse "تحب تبدأ بالتخصص ولا بالدكتور؟" resurfacing.
+    # ONLY the ASK rung is fixed text. `_build_booking_entry_directive`
+    # also returns the "they said they don't know" directive, and that
+    # one needs the model: the reply has to be composed around whatever
+    # the patient is actually worried about.
+    # SCOPED TO THE `booking` SPECIALIST, NOT ALSO TO `concierge`.
+    #
+    # A clear "عايز أحجز موعد" scores 10 on the booking cues, well over
+    # _START_THRESHOLD, so the router hands it to `booking` - this rung
+    # is never reached through `concierge` in a real conversation.
+    # `concierge` is the full legacy agent and the fallback for messages
+    # nothing else claimed; skipping a model call there would change
+    # behaviour on the one path whose whole purpose is to behave exactly
+    # as the pre-multi-agent single agent did (and would desynchronise
+    # the scripted-LLM tests that assert precisely that, one reply per
+    # invoke).
+    deterministic_reply = (
+        _booking_entry_message(state.get("templates") or {}, target_language)
+        if (agent_name == "booking"
+            and booking_entry_directive is _BOOKING_ENTRY_ASK_DIRECTIVE) else None
     )
+
+    if deterministic_reply is not None:
+        logger.info(
+            "agent[%s]: booking entry question - sending the fixed wording "
+            "without a model call", agent_name,
+        )
+        response = AIMessage(content=deterministic_reply)
+    else:
+        response = _invoke_llm_resilient(
+            _llm_for(agent_name), [system_message] + history,
+            agent_name=agent_name, target_language=target_language, context="main turn",
+        )
 
     updates: dict = {}
 
@@ -12160,7 +12312,23 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     # below, so a trimmed reply is what gets stored in history too (the
     # model must never see its own multi-question message as a
     # precedent for the next turn).
-    if not has_tool_calls and response.content:
+    # THE FIXED BOOKING-ENTRY MESSAGE SKIPS ALL OF THIS.
+    #
+    # The response contract and the reply verifiers exist to police what
+    # the MODEL wrote. This text was not written by the model - it is
+    # authored, fixed, and asserts nothing that could need verifying. Two
+    # of the contract's own steps would actively damage it: the
+    # filler-opener rule would cut the "بالتأكيد،" it deliberately opens
+    # with, and the one-question trimmer could take the closing "I can
+    # help you choose" sentence for a second question.
+    # Initialised OUT here, not inside the block below. The greeting
+    # step further down reads it, and there are now three ways to reach
+    # that step without entering this block at all: a tool-calling turn,
+    # an empty reply, and the fixed booking-entry message. None of them
+    # is a safe-fallback, and none of them should crash on the way past.
+    used_safe_fallback = False
+
+    if deterministic_reply is None and not has_tool_calls and response.content:
         normalized = _apply_output_contract(
             response.content, state, target_language, agent_name,
         )
@@ -12194,7 +12362,6 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         # was sent glued underneath the full opening greeting/menu,
         # because nothing downstream distinguished it from a normal
         # first reply.
-        used_safe_fallback = False
         for check, correction_directive, description in _REPLY_VERIFIERS:
             if not check(normalized, state, agent_name):
                 continue
