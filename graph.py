@@ -5187,6 +5187,27 @@ _ORGAN_SPECIALTY_EXPECTATIONS = (
      ("انف واذن", "حنجره", "otolar")),
     (("عظم", "عظام", "كسر", "مفصل", "ركبه", "bone", "fracture", "joint"),
      ("عظام", "مفاصل", "ortho", "روماتيزم")),
+    # AN INJURED LIMB IS AN ORTHOPAEDIC COMPLAINT, even when the patient
+    # names no bone and no joint. They describe the LIMB and what
+    # happened to it - "رجلي وقعت عليها", "اتخبطت في ايدي", "التويت
+    # كاحلي" - and none of those words appear in the row above, so the
+    # guard stayed silent.
+    #
+    # CONFIRMED IN A REAL CONVERSATION: "رجلي وقعت عليها" was answered
+    # with "عندنا في مستشفى ميدتاون دكاترة في تخصص طب الباطنة متاحين -
+    # تحب أحجز لك موعد عند واحد منهم؟". Internal medicine, for a leg
+    # somebody had just fallen on.
+    #
+    # THE POSSESSIVE FORMS ARE DELIBERATE. Bare "رجل" also means "a
+    # man" in Arabic ("رجل كبير في السن"), so matching it would flag
+    # correct referrals; "رجلي" is only ever "my leg". Same reasoning
+    # for "ايدي", "كتفي", "ركبتي".
+    (("رجلي", "رجليا", "ايدي", "يدي", "كتفي", "ركبتي", "كاحلي", "كاحل",
+      "معصمي", "اصبعي", "صباعي", "قدمي", "فخدي",
+      "التويت", "اتخبطت", "اتكسرت", "انكسرت", "وقعت علي", "التواء", "كدمه",
+      "sprain", "twisted", "fell on"),
+     ("عظام", "مفاصل", "ortho", "روماتيزم", "طوارئ", "طواري", "emergency",
+      "اصابات", "رضوض")),
 )
 
 
