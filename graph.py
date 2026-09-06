@@ -4213,6 +4213,51 @@ def _normalize_stacked_number_emojis(text: str) -> str:
     return rewritten
 
 
+def _greeting_without_its_closing_question(greeting: str) -> str:
+    """The greeting with its own trailing question removed.
+
+    THE PROBLEM: the clinic greeting ends with a question of its own
+    ("أقدر أساعدك إزاي النهارده؟ 😊"). That is exactly right when the
+    greeting IS the whole reply - the patient said hello and is being
+    asked what they need. It is wrong when a substantive answer is
+    stapled underneath, because the answer ends with its own question
+    and the patient receives TWO.
+
+    Two question marks in one message is the one thing this project
+    calls absolute ("NEVER ask more than ONE question in a single reply,
+    anywhere in any flow"), and `_strip_extra_questions` cannot help
+    here: it runs on the model's draft, several steps before the
+    greeting is prepended, so the second question is introduced by our
+    own code after the last thing that could have caught it.
+
+    CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+    201158877175+medtown2, 2026-09-06 13:43:01): the reply carried the
+    full welcome menu ending "كيف أستطيع مساعدتك اليوم؟ 😊", then a
+    doctor answer ending "تحب أساعدك بحاجة ثانية؟" - two questions, and
+    the first one was already answered by the second half of the same
+    message.
+
+    Only the LAST non-empty line is considered, and only if it actually
+    carries a question mark - so a greeting written without a closing
+    question is returned untouched, and no line of the clinic's authored
+    text is ever dropped for any other reason.
+    """
+
+    if not greeting:
+        return greeting
+
+    lines = greeting.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+
+    for index in range(len(lines) - 1, -1, -1):
+        if not lines[index].strip():
+            continue
+        if "؟" in lines[index] or "?" in lines[index]:
+            return "\n".join(lines[:index]).rstrip()
+        break
+
+    return greeting
+
+
 def _is_redundant_closing_question_only(reply_text: str, greeting: str) -> bool:
     """
     True when `reply_text` is essentially just a repeat of the
@@ -9196,14 +9241,20 @@ _CLAIM_HANDOFF_RE = re.compile(
 class _ClaimGate:
     """One irreversible claim, and the tool result that makes it true."""
 
-    __slots__ = ("pattern", "tool_name", "ok_statuses", "label", "directive")
+    __slots__ = ("pattern", "tool_name", "ok_statuses", "label", "directive",
+                 "also_satisfied_by")
 
-    def __init__(self, pattern, tool_name, ok_statuses, label, directive):
+    def __init__(self, pattern, tool_name, ok_statuses, label, directive,
+                 also_satisfied_by=()):
         self.pattern = pattern
         self.tool_name = tool_name
         self.ok_statuses = ok_statuses
         self.label = label
         self.directive = directive
+        # ANOTHER TOOL WHOSE SUCCESS MAKES THE SAME CLAIM TRUE, as
+        # (tool_name, ok_statuses) pairs. One action can honestly be
+        # described in two ways - see the cancellation gate below.
+        self.also_satisfied_by = also_satisfied_by
 
 
 _CLAIM_GATES = (
@@ -9226,6 +9277,26 @@ _CLAIM_GATES = (
         "appointment is still live and they will be marked absent. "
         "Re-check the booking with `check_booking_status`, then call "
         "`cancel_appointment` with its real id.",
+        # A RESCHEDULE RELEASES THE OLD SLOT, AND SAYING SO IS TRUE.
+        #
+        # The clinic's own reschedule-success template ends with
+        # "📌 تم إلغاء الموعد السابق المحدد بتاريخ ..." - which is
+        # exactly what happened, and is the line that tells the patient
+        # not to turn up at the old time. `_CLAIM_CANCELLED_RE` matches
+        # "تم إلغاء", this gate is checked BEFORE the reschedule gate,
+        # and `cancel_appointment` of course never ran - so a completed
+        # reschedule was reported to the patient as a FAILED one.
+        #
+        # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+        # 201003365691+medtown2, 2026-09-06 13:45:49 and again at
+        # 13:47:35): `PUT /api/GuestBookings/Update` had already gone
+        # out and succeeded, the draft correctly read "تم تعديل موعدك
+        # بنجاح ✅", and the patient was sent "معلش، ما قدرتش أنفّذ
+        # الإلغاء فعليًا دلوقتي - يعني الموعد لسه قائم". The appointment
+        # HAD moved. Telling somebody their appointment is still at the
+        # old time when it is not is the exact harm this gate exists to
+        # prevent, produced by the gate itself.
+        also_satisfied_by=(("reschedule_appointment", ("success",)),),
     ),
     _ClaimGate(
         _CLAIM_RESCHEDULED_RE, "reschedule_appointment", ("success",),
@@ -9294,6 +9365,14 @@ def _ungrounded_terminal_claim(reply_text: str, messages: list):
             continue
 
         if _tool_succeeded_this_turn(messages, gate.tool_name, gate.ok_statuses):
+            continue
+
+        # Another tool whose success makes this same claim true - see
+        # `_ClaimGate.also_satisfied_by`.
+        if any(
+            _tool_succeeded_this_turn(messages, other_tool, other_statuses)
+            for other_tool, other_statuses in (gate.also_satisfied_by or ())
+        ):
             continue
 
         return gate
@@ -14164,7 +14243,29 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
 
             if reply_content and _is_redundant_closing_question_only(reply_content, greeting):
                 reply_content = ""
-            combined = f"{greeting.strip()}\n\n{reply_content}".strip() if reply_content else greeting.strip()
+
+            if reply_content:
+                # ONE QUESTION, EVEN WHEN THE GREETING BRINGS ITS OWN.
+                #
+                # The greeting alone keeps its closing question - that
+                # is the whole point of it. But once a real answer sits
+                # underneath, that answer asks the question, and the
+                # greeting's own becomes a second one. See
+                # `_greeting_without_its_closing_question`.
+                head = greeting.strip()
+                if "؟" in reply_content or "?" in reply_content:
+                    trimmed = _greeting_without_its_closing_question(greeting).strip()
+                    if trimmed:
+                        head = trimmed
+                    else:
+                        logger.warning(
+                            "agent[%s]: dropping the greeting's closing question would "
+                            "have emptied it - keeping the greeting whole", agent_name,
+                        )
+                combined = f"{head}\n\n{reply_content}".strip()
+            else:
+                combined = greeting.strip()
+
             response = AIMessage(content=combined)
 
         updates["greeted"] = True
