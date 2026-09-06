@@ -408,6 +408,17 @@ AGENT_TOOL_SCOPING: bool = _flag("AGENT_TOOL_SCOPING", True)
 #     turn and makes routing non-deterministic.
 ROUTER_MODE: str = os.getenv("ROUTER_MODE", "deterministic").strip().lower()
 
+# How long the LLM router (ROUTER_MODE=llm) may take to classify one
+# message. Deliberately much shorter than OPENAI_TIMEOUT_SECONDS: this
+# call happens BEFORE the turn's real work, and a slow classification
+# would delay a reply the deterministic cues could have routed
+# instantly. On timeout the router falls back to those cues, so the
+# only cost of a short limit is occasionally not getting the LLM's
+# opinion - never a stalled conversation. See graph._router_llm.
+ROUTER_LLM_TIMEOUT_SECONDS: float = float(
+    os.getenv("ROUTER_LLM_TIMEOUT_SECONDS", "8")
+)
+
 # The reply normalizer (agents/response_contract.py) that guarantees
 # every agent's output has identical shape. False -> only the two
 # original normalizations (extra-question trimming, emoji list numbers)
