@@ -765,11 +765,60 @@ def _answers_booking_entry_question(messages: List, text: str) -> bool:
     if looks_like_health_message(text):
         return False
 
+    # A DELIBERATE REQUEST FOR A DIFFERENT FLOW IS NOT AN ANSWER TO THIS
+    # QUESTION.
+    #
+    # "عاوزه اعدل معاد" scores 10 for reschedule - well over
+    # _SWITCH_THRESHOLD - and is nobody's idea of an answer to
+    # "doctor or specialty?". This rule was written to keep a specialty,
+    # a doctor's name or a symptom with `booking`; it was never meant to
+    # outrank an explicit change of subject, and doing so is
+    # unrecoverable rather than merely clumsy: `booking` is deliberately
+    # not given `lookup_appointment` (see agents/registry.py), so once a
+    # reschedule lands there the one action the patient needs cannot be
+    # taken at all.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+    # 201158877175+medtown2, 2026-09-06 14:08-14:09): "عاوزه اعدل معاد"
+    # stayed with `booking`, which then asked for the booking reference,
+    # was told "نفس رقم واتساب", asked again, reached for
+    # `get_patient_info` (the NEW-booking tool, which refused), and
+    # finally asked "أي دكتور أو تخصص حابة تعدلي موعدك عنده؟" - the
+    # booking entry question - to somebody who had asked three times to
+    # change an appointment that already exists.
+    scores = score_message(text)
+    for flow, score in scores.items():
+        if flow != "booking" and score >= _SWITCH_THRESHOLD:
+            return False
+
     last_ai = _last_ai_text(messages)
     if not last_ai:
         return False
 
-    return bool(_ASKED_SPECIALTY_OR_DOCTOR_RE.search(normalize(last_ai)))
+    if not _ASKED_SPECIALTY_OR_DOCTOR_RE.search(normalize(last_ai)):
+        return False
+
+    # THE MATCH HAS TO BE A QUESTION, NOT THE WELCOME MENU.
+    #
+    # The clinic's opening greeting lists what the assistant can do, and
+    # one of those lines is "🩺 التوجيه الطبي لاختيار التخصص أو الطبيب
+    # المناسب". Normalised, that contains "تخصص او طبيب" and matches
+    # `_ASKED_SPECIALTY_OR_DOCTOR_RE` exactly - so for the whole of any
+    # turn whose reply carried the greeting, every following message was
+    # read as an answer to a question that was never asked, and pinned
+    # to `booking`.
+    #
+    # The real entry question is interrogative; a menu bullet describing
+    # a service is not. Requiring the matched LINE to carry a question
+    # mark separates them cleanly and costs nothing - the authored entry
+    # question ends in "؟".
+    for line in last_ai.replace("\r", "\n").split("\n"):
+        if not _ASKED_SPECIALTY_OR_DOCTOR_RE.search(normalize(line)):
+            continue
+        if "؟" in line or "?" in line:
+            return True
+
+    return False
 
 
 def _affirms_previous_booking_offer(messages: List, text: str) -> bool:
