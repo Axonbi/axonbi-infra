@@ -41,6 +41,7 @@ import api
 import rag
 from config import (
     DEFAULT_TIMEZONE,
+    SCHEDULE_TIMES_ARE_UTC,
     CANCELLABLE_STATUS_CODES,
     CANCELLED_STATUS_NAME,
     DEFAULT_COUNTRY_CODE,
@@ -383,6 +384,88 @@ def to_local_wallclock(value: Optional[str], timezone_name: str = DEFAULT_TIMEZO
     return dt.replace(tzinfo=None).isoformat()
 
 
+# ==========================================================
+# WHICH READING OF "+00:00" IS RIGHT
+# ==========================================================
+#
+# Every timestamp this booking API returns is stamped "+00:00", and the
+# system has now been told both possible things about it:
+#
+#   (a) it is DECORATION on a value that was already local wall clock,
+#       so the offset must be dropped  -> `to_local_wallclock`
+#   (b) it is a GENUINE UTC instant, so it must be converted into the
+#       clinic's own zone             -> `to_clinic_local`, below
+#
+# (a) was implemented first, from a comparison against an admin UI. It
+# is wrong, at least for the tenants running today, and (b) is what the
+# patient-facing site does. THE EVIDENCE, gathered directly from
+# tanasuq-saudi's own API on 2026-09-06:
+#
+#   - Reported by the clinic: the assistant offers 7:00 for a slot the
+#     website lists at 10:00. Asia/Riyadh is UTC+3, exactly.
+#   - Dr Mohammed Zayed, الدقي, Saturday 2026-09-12: the slots endpoint
+#     returns 07:00/07:15/07:30/07:45 "+00:00", and the rota row for the
+#     same branch returns 07:00 -> 08:00 "+00:00". The two agree, so
+#     this is not one endpoint disagreeing with another - it is the
+#     whole API speaking UTC.
+#   - Across all 38 rota rows for that tenant, the raw windows include
+#     04:00 -> 07:00 (three doctors) and 05:00 -> 12:00. No clinic opens
+#     at four in the morning. Read as UTC they are 07:00 -> 10:00 and
+#     08:00 -> 15:00, which is what a clinic day actually looks like.
+#
+# THE FLAG EXISTS BECAUSE THIS IS PER-DEPLOYMENT, NOT UNIVERSAL. The
+# original (a) finding came from a different tenant (medtown). If any
+# deployment genuinely does store local time with a decorative offset,
+# set SCHEDULE_TIMES_ARE_UTC=false for it and every reading below
+# reverts to the old behaviour in one step.
+# Imported from config at the top of this module, alongside every other
+# setting - named here only so the reasoning above sits next to the code
+# that acts on it.
+
+
+def to_clinic_local(value: Optional[str], timezone_name: str = DEFAULT_TIMEZONE) -> Optional[str]:
+    """A real instant from the booking API -> the clinic's own wall
+    clock, as a NAIVE ISO string ready for `_display_time_12h` and
+    friends.
+
+    Naive on purpose: everything downstream compares these against
+    `_local_now_naive`, and mixing aware and naive datetimes raises
+    TypeError - a real production crash this file has already had once.
+
+    USE THIS FOR ANYTHING THE PATIENT READS. Do NOT use it for a value
+    that goes back to the API: see the comment on `slotStart` in
+    `get_available_slots_for_booking` for why the wire format is left
+    exactly as it was.
+    """
+
+    if not value:
+        return None
+
+    if not SCHEDULE_TIMES_ARE_UTC:
+        return to_local_wallclock(value, timezone_name)
+
+    try:
+        target_tz = ZoneInfo(timezone_name)
+    except Exception:
+        logger.warning(
+            "to_clinic_local: unknown timezone %r, falling back to %s",
+            timezone_name, DEFAULT_TIMEZONE,
+        )
+        target_tz = ZoneInfo(DEFAULT_TIMEZONE)
+
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+
+    if dt.tzinfo is None:
+        # No offset at all - the only sane assumption is UTC, which is
+        # what every timestamp this API has ever returned carries.
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    return dt.astimezone(target_tz).replace(tzinfo=None).isoformat()
+
+
 def _local_now_naive(timezone_name: str = DEFAULT_TIMEZONE) -> datetime:
     """"Now", as a NAIVE local datetime.
 
@@ -511,15 +594,20 @@ def _shape_appointment(item: dict, timezone_name: str = DEFAULT_TIMEZONE, langua
                 shaped[name] = item[key]
                 break
 
-    # WALL-CLOCK, like every other time in this API.
+    # THE CLINIC'S OWN CLOCK - see `to_clinic_local`.
     #
-    # A booking's stored time came from a slotStart, which is wall-clock
-    # carrying a meaningless "+00:00" (see to_local_wallclock). Running
-    # it through `to_riyadh` would shift it +3 and tell the patient the
-    # wrong time for an appointment they already hold - the same class
-    # of bug the rota and slot displays had.
-    local_from = to_local_wallclock(item.get("bookingTimeFrom"), timezone_name)
-    local_to = to_local_wallclock(item.get("bookingTimeTo"), timezone_name)
+    # A booking's stored time came from a slotStart, and slotStart is a
+    # UTC instant, so an appointment held at 10:00 comes back as
+    # "07:00+00:00". Dropping the offset here told the patient their own
+    # appointment was three hours earlier than it is - and, worse, three
+    # hours earlier than the confirmation the website had already shown
+    # them.
+    #
+    # These two fields are DISPLAY values. Nothing sends them back: a
+    # cancellation goes by booking id, and a reschedule sends the new
+    # slotStart the patient picked, not this record's old time.
+    local_from = to_clinic_local(item.get("bookingTimeFrom"), timezone_name)
+    local_to = to_clinic_local(item.get("bookingTimeTo"), timezone_name)
 
     shaped["bookingTimeFrom"] = local_from
     shaped["bookingTimeTo"] = local_to
@@ -693,6 +781,10 @@ def compare_phone(
 
     if match:
         _mark_phone_verified(state, provided_phone)
+        # They typed a number and it turned out to be their own channel
+        # number - a deliberate choice either way. See
+        # `_set_booking_phone`.
+        _set_booking_phone(state, provided_phone)
         return {"status": "match"}
 
     return {"status": "no_match"}
@@ -1027,6 +1119,7 @@ def verify_otp(state: Annotated[AgentState, InjectedState], phone: str, otp: str
         result = api.authentica_verify_otp(normalized, otp)
         if result["success"]:
             _mark_phone_verified(state, phone)
+            _set_booking_phone(state, phone)
             return {"status": "otp_valid"}
         return {"status": "otp_invalid"}
 
@@ -1040,6 +1133,9 @@ def verify_otp(state: Annotated[AgentState, InjectedState], phone: str, otp: str
 
     if str(otp).strip() == str(record["otp"]):
         _mark_phone_verified(state, phone)
+        # A number the patient went to the trouble of proving is the
+        # number they want the booking under. See `_set_booking_phone`.
+        _set_booking_phone(state, phone)
         return {"status": "otp_valid"}
 
     return {"status": "otp_invalid"}
@@ -1140,6 +1236,15 @@ def _get_booking_session(session_id: str) -> dict:
         # itself), regardless of what the model believes it already
         # did. Prompt instructions alone are not enforcement - this is.
         "verified_phones": set(),
+        # THE NUMBER THIS BOOKING IS ACTUALLY FOR - not merely a number
+        # that is allowed. `verified_phones` answers "may we use this?",
+        # and the channel identity is permanently in it, so it answers
+        # "yes" to the channel number even when the patient has just
+        # said "no, use this other one instead". This field answers the
+        # different question: which number did the patient DELIBERATELY
+        # settle on. Written by `_set_booking_phone` from the tools that
+        # establish it, and read by `create_new_booking`.
+        "booking_phone": None,
     })
     session["_touched_at"] = time.monotonic()
     _prune_booking_sessions()
@@ -1235,6 +1340,46 @@ def _mark_phone_verified(state: AgentState, phone: Optional[str]) -> None:
 
     session = _get_booking_session(session_id)
     session["verified_phones"].add(normalized)
+
+
+def _set_booking_phone(state: AgentState, phone: Optional[str]) -> None:
+    """Record which phone number the patient has settled on for this
+    booking. Last deliberate choice wins, so a patient who changes their
+    mind again is followed.
+
+    CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+    201003365691+medtown2, 2026-09-06 12:19-12:20): the patient answered
+    "لا" to "نكمل الحجز على نفس رقم واتساب ده؟", typed
+    +201155611045, passed the OTP for it, and picked their name out of
+    THAT number's patient list. `create_new_booking` was then called
+    with mobile_number='201003365691' - the channel number - and the
+    booking was created against it. `_phone_is_verified` waved it
+    through, because the channel identity is verified by definition; the
+    gate was answering "is this number allowed" when the question was
+    "is this the number they chose".
+    """
+
+    session_id = state.get("session_id")
+    normalized = normalize_phone_number(phone, state) if phone else None
+    if not session_id or not normalized:
+        return
+
+    session = _get_booking_session(session_id)
+    previous = session.get("booking_phone")
+    session["booking_phone"] = normalized
+
+    if previous and previous != normalized:
+        logger.info(
+            "_set_booking_phone: session_id=%s booking phone changed %s -> %s",
+            session_id, previous, normalized,
+        )
+
+
+def _booking_phone(state: AgentState) -> Optional[str]:
+    session_id = state.get("session_id")
+    if not session_id:
+        return None
+    return (_BOOKING_SESSIONS.get(session_id) or {}).get("booking_phone")
 
 
 def _phone_is_verified(state: AgentState, phone: Optional[str]) -> bool:
@@ -3203,8 +3348,8 @@ def get_doctor_schedule(
     schedules = [
         {
             "recurringDaysNames": item.get("recurringDaysNames"),
-            "fromDateTime": to_local_wallclock(item.get("fromDateTime"), timezone_name),
-            "toDateTime": to_local_wallclock(item.get("toDateTime"), timezone_name),
+            "fromDateTime": to_clinic_local(item.get("fromDateTime"), timezone_name),
+            "toDateTime": to_clinic_local(item.get("toDateTime"), timezone_name),
             "branchName": item.get("branchName"),
             "doctorName": item.get("doctorName"),
         }
@@ -3289,14 +3434,22 @@ def get_available_reschedule_slots(
     language = conversation_language(state)
     slots = []
     for item in items:
+        # TWO VALUES, DELIBERATELY. `slot_start`/`slot_end` are the WIRE
+        # format - byte for byte what this flow has always passed back to
+        # `reschedule_appointment` and on to the booking API, and
+        # changing them would move every appointment this system writes.
+        # `local_start` is the same instant on the clinic's clock, and is
+        # the only one the patient ever sees. See `to_clinic_local`.
         slot_start = to_local_wallclock(item.get("slotStart"), timezone_name)
         slot_end = to_local_wallclock(item.get("slotEnd"), timezone_name)
+        local_start = to_clinic_local(item.get("slotStart"), timezone_name)
         slots.append({
             "slotStart": slot_start,
             "slotEnd": slot_end,
-            "date_display": _display_date(slot_start),
-            "weekday_display": _display_weekday(slot_start, language),
-            "time_display": _display_time_12h(slot_start, language),
+            "_localStart": local_start,
+            "date_display": _display_date(local_start),
+            "weekday_display": _display_weekday(local_start, language),
+            "time_display": _display_time_12h(local_start, language),
             "doctorName": item.get("doctorName"),
             "serviceName": _service_name(item, language),
             # servicePrice is deliberately NOT returned: fees are private
@@ -3315,7 +3468,7 @@ def get_available_reschedule_slots(
         now_local = _local_now_naive(timezone_name)
         slots = [
             s for s in slots
-            if s["slotStart"] and datetime.fromisoformat(s["slotStart"]) > now_local
+            if s["_localStart"] and datetime.fromisoformat(s["_localStart"]) > now_local
         ]
     except Exception:
         logger.exception("get_available_reschedule_slots: failed to filter past slots, showing all")
@@ -3401,10 +3554,12 @@ def reschedule_appointment(
 
     language = conversation_language(state)
     timezone_name = (state.get("templates") or {}).get("_timezone")
-    # `new_time_from` is the slotStart the patient picked, already
-    # wall-clock - converting it here would confirm a time three hours
-    # later than the one they chose.
-    local_new_from = to_local_wallclock(new_time_from, timezone_name)
+    # `new_time_from` is the WIRE slotStart the patient picked - a UTC
+    # instant - so it has to be put on the clinic's clock before it is
+    # read back to them, exactly like the slot list they picked it from.
+    # Confirming "7:00" for a slot the list offered as "10:00" is the
+    # same three-hour error, at the worst possible moment.
+    local_new_from = to_clinic_local(new_time_from, timezone_name)
 
     # THE NEW TIME, READY TO DISPLAY.
     #
@@ -5710,6 +5865,13 @@ def get_patient_info(state: Annotated[AgentState, InjectedState], mobile_number:
         )
         return {"status": "phone_not_verified"}
 
+    # THE NUMBER WHOSE PATIENT RECORD THIS BOOKING USES IS THE BOOKING'S
+    # NUMBER. The name on the review card comes from this lookup, so a
+    # booking that shows a name found under one number and is created
+    # against another is internally inconsistent. See
+    # `_set_booking_phone`.
+    _set_booking_phone(state, mobile_number)
+
     base_url = _doctors_base_url(state)
     if not base_url:
         logger.warning("get_patient_info called but no doctors_base_url is configured for client_id=%s", state.get("client_id"))
@@ -5934,15 +6096,22 @@ def resolve_available_day(
         except ValueError:
             after_dt = None
 
+    # PAIRS, not single datetimes. The first element is the clinic's own
+    # clock - it decides which weekday a slot falls on, whether it is far
+    # enough ahead, and what the patient is told. The second is the WIRE
+    # value, which is what `from_date`/`to_date` must be expressed in so
+    # the next API call asks for the right window. See `to_clinic_local`.
     candidates = []
     for item in items:
         if item.get("isBooked"):
             continue
-        slot_start_local = to_local_wallclock(item.get("slotStart"), timezone_name)
-        if not slot_start_local:
+        slot_start_local = to_clinic_local(item.get("slotStart"), timezone_name)
+        slot_start_wire = to_local_wallclock(item.get("slotStart"), timezone_name)
+        if not slot_start_local or not slot_start_wire:
             continue
         try:
             dt = datetime.fromisoformat(slot_start_local)
+            wire_dt = datetime.fromisoformat(slot_start_wire)
         except ValueError:
             continue
         if dt <= lead_time:
@@ -5951,7 +6120,7 @@ def resolve_available_day(
             continue
         if after_dt and dt.date() <= after_dt:
             continue
-        candidates.append(dt)
+        candidates.append((dt, wire_dt))
 
     if not candidates:
         logger.info(
@@ -6000,8 +6169,8 @@ def resolve_available_day(
             "weekday_display": _display_weekday_name(target_weekday, conversation_language(state)),
         }
 
-    candidates.sort()
-    chosen_dt = candidates[0]
+    candidates.sort(key=lambda pair: pair[0])
+    chosen_dt, chosen_wire_dt = candidates[0]
     chosen_date = chosen_dt.date()
     english_name = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][target_weekday]
     logger.info("resolve_available_day: found date=%s (weekday=%s) from %d candidate(s)", chosen_date.isoformat(), english_name, len(candidates))
@@ -6020,12 +6189,23 @@ def resolve_available_day(
     # nearest SLOT's own start/end, not the day's actual availability
     # (11:00 صباحًا to 3:00 مساءً) - which reads as if that one narrow
     # window were the whole offer.
-    same_day_candidates = [dt for dt in candidates if dt.date() == chosen_date]
-    first_time_dt = same_day_candidates[0] if same_day_candidates else chosen_dt
-    last_time_dt = same_day_candidates[-1] if same_day_candidates else chosen_dt
+    same_day_candidates = [pair for pair in candidates if pair[0].date() == chosen_date]
+    if not same_day_candidates:
+        same_day_candidates = [(chosen_dt, chosen_wire_dt)]
+    first_time_dt = same_day_candidates[0][0]
+    last_time_dt = same_day_candidates[-1][0]
 
-    day_start = datetime.combine(chosen_date, datetime.min.time(), tzinfo=chosen_dt.tzinfo)
-    day_end = datetime.combine(chosen_date, datetime.max.time().replace(microsecond=0), tzinfo=chosen_dt.tzinfo)
+    # THE RANGE IS IN WIRE TERMS, THE DAY IS IN THE PATIENT'S TERMS.
+    # `from_date`/`to_date` are passed verbatim into
+    # `get_available_slots_for_booking`, which sends them straight to the
+    # API - so they have to name the API's own dates, not the clinic's.
+    # Taking the min and max wire date of this local day's slots covers
+    # the case where the offset pushes a late slot onto the next UTC
+    # date; for ordinary clinic hours the two are the same date and this
+    # is exactly the range it always was.
+    wire_dates = sorted({pair[1].date() for pair in same_day_candidates})
+    day_start = datetime.combine(wire_dates[0], datetime.min.time(), tzinfo=chosen_wire_dt.tzinfo)
+    day_end = datetime.combine(wire_dates[-1], datetime.max.time().replace(microsecond=0), tzinfo=chosen_wire_dt.tzinfo)
 
     language = conversation_language(state)
 
@@ -6436,7 +6616,7 @@ def _open_slots_on_day(state, base_url: str, doctor_id: str, branch_id: str,
     for item in (result["data"] or {}).get("items", []):
         if item.get("isBooked") is True:
             continue
-        local = to_local_wallclock(item.get("slotStart"), timezone_name)
+        local = to_clinic_local(item.get("slotStart"), timezone_name)
         if not local:
             continue
         try:
@@ -6708,7 +6888,7 @@ def list_available_days_for_booking(
         if item.get("isBooked"):
             continue
 
-        slot_start_local = to_local_wallclock(item.get("slotStart"), timezone_name)
+        slot_start_local = to_clinic_local(item.get("slotStart"), timezone_name)
         if not slot_start_local:
             continue
 
@@ -6964,6 +7144,34 @@ def create_new_booking(
     # would book (and hand a real reference number for) an appointment
     # under a phone number nobody ever proved belonged to the person
     # messaging.
+    # THE NUMBER THE PATIENT CHOSE WINS OVER THE ONE THE MODEL PASSED.
+    #
+    # `_phone_is_verified` below answers "is this number allowed?", and
+    # the channel identity is always allowed - so it cannot catch the
+    # case where the patient explicitly declined their WhatsApp number,
+    # proved a different one, and the model passed the channel number
+    # here anyway. `booking_phone` is the session's record of the number
+    # actually settled on, written only by the tools that establish it.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+    # 201003365691+medtown2, 2026-09-06 12:20): "لا" to the
+    # same-WhatsApp-number question, +201155611045 typed and OTP-proved,
+    # that number's patient list shown and a name picked from it - and
+    # then `create_new_booking(mobile_number='201003365691')`. The
+    # appointment was created against the number the patient had
+    # refused, under a name registered to the other one.
+    chosen_phone = _booking_phone(state)
+    if chosen_phone:
+        normalized_passed = normalize_phone_number(mobile_number, state) or mobile_number
+        if normalized_passed != chosen_phone:
+            logger.warning(
+                "create_new_booking: mobile_number=%r is not the number this "
+                "session settled on (%s) - booking against the patient's own "
+                "choice instead (session_id=%s)",
+                mobile_number, chosen_phone, session_id,
+            )
+            mobile_number = chosen_phone
+
     if not _phone_is_verified(state, mobile_number):
         logger.warning(
             "create_new_booking: refusing to book for an unverified mobile_number "
@@ -7009,6 +7217,23 @@ def create_new_booking(
     if not slots_result["success"]:
         logger.error("create_new_booking: re-verification API call failed: status_code=%s error=%s", slots_result.get("status_code"), slots_result.get("error"))
         return _api_error(slots_result)
+
+    # COMPARE INSTANTS EXPLICITLY, NOT VIA THE PROCESS TIMEZONE.
+    #
+    # `slot_start` is the wire value and is naive ("2026-09-07T09:10:00"),
+    # while the API's own items carry "+00:00". `datetime.timestamp()` on
+    # a NAIVE datetime assumes the timezone the PROCESS happens to be
+    # running in - so this comparison only lined up because the deployed
+    # container runs in UTC. On any host with a local offset the two
+    # timestamps differ by exactly that offset, nothing matches, and a
+    # perfectly bookable slot comes back "slot_unavailable" at the final
+    # step of a completed booking. Caught by
+    # test_times_and_specialties.py on a UTC+3 machine.
+    #
+    # The wire format IS UTC wall clock (see to_clinic_local), so saying
+    # so explicitly makes this independent of where it runs.
+    if requested_start_dt.tzinfo is None:
+        requested_start_dt = requested_start_dt.replace(tzinfo=timezone.utc)
 
     try:
         requested_ms = requested_start_dt.timestamp()
@@ -7284,8 +7509,8 @@ def get_doctor_schedule_for_booking(
     schedules = [
         {
             "recurringDaysNames": item.get("recurringDaysNames"),
-            "fromDateTime": to_local_wallclock(item.get("fromDateTime"), timezone_name),
-            "toDateTime": to_local_wallclock(item.get("toDateTime"), timezone_name),
+            "fromDateTime": to_clinic_local(item.get("fromDateTime"), timezone_name),
+            "toDateTime": to_clinic_local(item.get("toDateTime"), timezone_name),
             "branchName": branch_display_name if (branch_display_name and item.get("branchId") == session.get("branch_id")) else item.get("branchName"),
             "branchId": item.get("branchId"),
             "doctorName": doctor_display_name or item.get("doctorName"),
@@ -7398,14 +7623,27 @@ def get_available_slots_for_booking(
     language = conversation_language(state)
     slots = []
     for item in items:
+        # THE WIRE VALUE AND THE PATIENT'S VALUE ARE NOT THE SAME STRING.
+        #
+        # `slotStart` is what `select_appointment_slot` locks in and what
+        # `create_new_booking` matches against the API's own items and
+        # then sends back as `booking_time_from`. It stays in the exact
+        # form it has always had; the API gets the same bytes it did
+        # before this fix, so no appointment this system writes moves.
+        #
+        # `local_start` is the same instant on the clinic's clock, and
+        # every field the patient reads is built from it. See
+        # `to_clinic_local` for why the two differ at all.
         slot_start = to_local_wallclock(item.get("slotStart"), timezone_name)
         slot_end = to_local_wallclock(item.get("slotEnd"), timezone_name)
+        local_start = to_clinic_local(item.get("slotStart"), timezone_name)
         slots.append({
             "slotStart": slot_start,
             "slotEnd": slot_end,
-            "date_display": _display_date(slot_start),
-            "weekday_display": _display_weekday(slot_start, language),
-            "time_display": _display_time_12h(slot_start, language),
+            "_localStart": local_start,
+            "date_display": _display_date(local_start),
+            "weekday_display": _display_weekday(local_start, language),
+            "time_display": _display_time_12h(local_start, language),
             "serviceId": item.get("serviceId"),
             "serviceName": _service_name(item, language),
             # servicePrice deliberately omitted - see the equivalent
@@ -7416,7 +7654,7 @@ def get_available_slots_for_booking(
     # reschedule flow's equivalent (all confirmed real production issues).
     try:
         now_local = _local_now_naive(timezone_name)
-        slots = [s for s in slots if s["slotStart"] and datetime.fromisoformat(s["slotStart"]) > now_local]
+        slots = [s for s in slots if s["_localStart"] and datetime.fromisoformat(s["_localStart"]) > now_local]
     except Exception:
         logger.exception("get_available_slots_for_booking: failed to filter past slots, showing all")
 
@@ -7638,7 +7876,7 @@ def find_best_doctor_in_specialty(
         for item in raw_slot_items:
             if item.get("isBooked"):
                 continue
-            slot_start = to_local_wallclock(item.get("slotStart"), timezone_name)
+            slot_start = to_clinic_local(item.get("slotStart"), timezone_name)
             if not slot_start:
                 continue
             try:
@@ -7667,7 +7905,10 @@ def find_best_doctor_in_specialty(
                 "degreeName": doctor.get("degreeName"),
             },
             "slot": {
-                "slotStart": dt.isoformat(),
+                # WIRE VALUE, like every other `slotStart` in this file -
+                # `dt` above is the clinic's clock and is used only for
+                # the three display fields below it.
+                "slotStart": to_local_wallclock(item.get("slotStart"), timezone_name),
                 "slotEnd": to_local_wallclock(item.get("slotEnd"), timezone_name),
                 "date_display": _display_date(dt.isoformat()),
                 "weekday_display": _display_weekday(dt.isoformat(), conversation_language(state)),
