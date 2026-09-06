@@ -87,6 +87,27 @@ _llm = ChatOpenAI(
 
 _llm_with_tools = _llm.bind_tools(tools.ALL_TOOLS)
 
+# A SEPARATE, FAST-FAILING BINDING FOR THE ROUTER (ROUTER_MODE=llm).
+#
+# The router classifies a message into one word before the turn's real
+# work has even started, so it must never be able to hold a patient up.
+# Sharing `_llm` would give it that model's 45-second timeout - one slow
+# classification and the reply is 45 seconds late, for a decision the
+# deterministic cues could have made instantly.
+#
+# With its own short timeout, the worst case is that the LLM router
+# times out and `_classify_with_llm` returns None, which simply falls
+# back to the deterministic result. A router that is occasionally
+# unavailable costs nothing; a router that blocks the turn costs the
+# conversation.
+_router_llm = ChatOpenAI(
+    model=config.OPENAI_MODEL,
+    api_key=config.OPENAI_API_KEY or "sk-not-configured",
+    timeout=config.ROUTER_LLM_TIMEOUT_SECONDS,
+    temperature=0,
+    max_retries=0,
+)
+
 # The object `_llm_with_tools` was bound to at import time, kept as an
 # identity sentinel. `_llm_for()` below compares against it to tell
 # "nobody has touched this" apart from "a caller has swapped in their
@@ -5671,6 +5692,119 @@ _EMPTY_BRANCH_BOOKING_OFFER_CORRECTION = (
 )
 
 
+# ==========================================================
+# OFFERING DOCTORS IN A SPECIALTY THE CLINIC DOES NOT HAVE
+# ==========================================================
+#
+# CONFIRMED IN A REAL CONVERSATION: "جلدي فيه حاجة غريبة من امبارح" was
+# answered with "عندنا دكاترة جلدية في مستشفى ميدتاون الطبية - تحب أحجز
+# لك موعد عند واحد منهم؟" - and this clinic has no dermatology at all.
+#
+# NOTHING guarded this. There were four specialty checks in the table
+# and every one of them asks WHICH specialty or HOW MANY - whether it
+# treats the body part named, whether two were named at once, whether
+# the catalogue was printed. None asks the only question that matters
+# to a patient about to say yes: does this hospital actually have it?
+#
+# The distinction the check has to respect is the one prompts.py draws
+# itself. Naming a specialty as ADVICE is legitimate even when the
+# clinic lacks it - the flow explicitly says to name the right kind of
+# doctor and then say plainly that it is not available here. What needs
+# grounding is the POSSESSIVE claim: "عندنا", "متاحين", "موجودين", or an
+# offer to book one. That is the sentence a patient acts on.
+
+_HAS_DOCTORS_CLAIM_RE = re.compile(
+    # "عندنا دكاترة ..." / "عندنا في مستشفى س دكاترة ..."
+    r"(?:عندنا|لدينا|متوفر|يتوفر)[^.\n؟?]{0,40}"
+    r"(?:دكاتره|دكاتره|اطباء|دكتور|طبيب|استشاري|اخصائي)|"
+    # "... دكاترة متاحين / موجودين"
+    r"(?:دكاتره|اطباء|دكتور|طبيب)[^.\n؟?]{0,30}(?:متاح|موجود|متوفر)|"
+    # an offer to book with one
+    r"(?:احجز|نحجز|تحجز)\w*\s*(?:لك|لكي)?\s*(?:موعد|كشف)?\s*عند\s*"
+    r"(?:دكتور|طبيب|استشاري|اخصائي|واحد)|"
+    r"\b(?:we\s+have|there\s+are|available)\b[^.\n?]{0,30}"
+    r"\b(?:doctors?|physicians?|consultants?|specialists?)\b"
+)
+
+
+def _reply_offers_unavailable_specialty(reply_text: str, state: AgentState) -> bool:
+    """True when the reply claims this clinic HAS doctors, and no tool
+    result in this conversation backs that up.
+
+    Grounded means one of two things, both read from the evidence
+    ledger (tool results only, never the model's own prose):
+
+      - a specialty `list_specialties` returned is named in the reply.
+        That tool only ever returns specialties with a bookable doctor,
+        so its presence IS the availability guarantee; or
+      - `find_available_doctors` (or a sibling) returned actual doctors.
+        Real people came back, so "we have doctors" is simply true.
+
+    Neither present means the claim rests on nothing - most starkly
+    when NO tool ran at all, which is how "عندنا دكاترة جلدية" reached a
+    patient at a hospital with no dermatology."""
+
+    if not reply_text:
+        return False
+
+    folded = _norm_ar(reply_text)
+    if not _HAS_DOCTORS_CLAIM_RE.search(folded):
+        return False
+
+    ledger = build_evidence_ledger(state.get("messages") or [])
+
+    # Real doctors came back from a tool - the claim is about them.
+    if ledger.get("doctors"):
+        return False
+
+    # A specialty the clinic genuinely offers is named in the reply.
+    for specialty in ledger.get("specialties") or []:
+        name = _norm_ar(specialty)
+        if not name:
+            continue
+        if name in folded:
+            return False
+        # Clinics store "طب الجلدية" / "الجلدية والتناسلية"; a reply
+        # naming "جلدية" is the same specialty. Match on the longest
+        # identifying word rather than the whole stored string, and
+        # strip the definite article off both sides - the stored name
+        # carries it ("الجلدية") far more often than the reply does
+        # ("دكاترة جلدية"), so comparing them as-is misses every one.
+        for word in sorted(name.split(), key=len, reverse=True):
+            bare = word[2:] if word.startswith("ال") and len(word) > 5 else word
+            if len(bare) >= 4 and (bare in folded or word in folded):
+                return False
+
+    return True
+
+
+_UNAVAILABLE_SPECIALTY_CORRECTION_DIRECTIVE = (
+    "============================================================\n"
+    "YOU SAID THIS CLINIC HAS DOCTORS NOBODY CONFIRMED\n"
+    "============================================================\n"
+    "Your previous draft told the patient this hospital HAS doctors - "
+    "\"عندنا دكاترة ...\", \"متاحين\", or an offer to book one - and no "
+    "tool result in this conversation supports it.\n\n"
+    "That is the single worst thing to get wrong in this flow. The "
+    "patient says yes, and only then discovers the specialty does not "
+    "exist here. CONFIRMED REAL FAILURE: a patient describing a skin "
+    "problem was told \"عندنا دكاترة جلدية\" by a hospital with no "
+    "dermatology at all.\n\n"
+    "Call `list_specialties` NOW. It returns only specialties that have "
+    "a bookable doctor right now, so its answer IS the truth about what "
+    "this clinic has.\n\n"
+    "  - If the specialty you want is in the result: say so and offer "
+    "the appointment, exactly as you were about to.\n"
+    "  - If it is NOT: say plainly that this clinic does not currently "
+    "have that specialty, and offer a staff handoff. That is a correct, "
+    "complete answer - not a failure to paper over, and never a reason "
+    "to substitute the nearest-sounding specialty instead.\n\n"
+    "You may still say WHICH KIND of doctor their symptom points to - "
+    "that is advice, and it is true wherever they go. What you may not "
+    "do is say we have one.\n\n"
+)
+
+
 def _reply_dumps_specialty_catalogue(reply_text: str, state: AgentState) -> bool:
     """True when a MEDICAL-GUIDANCE reply prints the specialty catalogue
     as a numbered list for the patient to pick from.
@@ -8816,6 +8950,17 @@ _REPLY_VERIFIERS = (
         ),
         lambda reply, state: _SPECIALTY_CATALOGUE_CORRECTION_DIRECTIVE,
         "medical-guidance reply printed the specialty catalogue for the patient to pick from",
+    ),
+    (
+        # UNGATED BY AGENT. Any specialist can be the one holding the
+        # turn when this sentence gets written - the confirmed failure
+        # came out of `medical`, but `concierge` carries the same
+        # sections and the booking flow makes the same offer.
+        lambda reply, state, agent_name: _reply_offers_unavailable_specialty(reply, state),
+        lambda reply, state: _UNAVAILABLE_SPECIALTY_CORRECTION_DIRECTIVE,
+        "reply told the patient this clinic HAS doctors, but no tool result in "
+        "this conversation returned a matching specialty or any doctor - this is a "
+        "fabricated availability claim",
     ),
     (
         lambda reply, state, agent_name: _reply_recommends_medication(reply, state),
