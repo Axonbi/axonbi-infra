@@ -1215,8 +1215,27 @@ def _prune_booking_sessions() -> None:
         logger.info("_prune_booking_sessions: evicted %d abandoned booking session(s)", len(stale))
 
 
-def _get_booking_session(session_id: str) -> dict:
-    session = _BOOKING_SESSIONS.setdefault(session_id, {
+# THE SESSION SHAPE, DEFINED IN EXACTLY ONE PLACE.
+#
+# It used to be an inline literal inside `_get_booking_session`, while
+# `reset_booking_session` wrote its OWN, SHORTER literal - five keys out
+# of nine. Since `_get_booking_session` fetches with `setdefault`, a
+# session that had been through a reset was handed back exactly as the
+# reset left it: no `verified_phones`, no `known_*_names`, no
+# `booking_phone`, for the rest of its life.
+#
+# CONFIRMED REAL PRODUCTION CRASH (medtown, session
+# 201158877175+medtown2, 2026-09-06 13:10:57, and again at 13:11:08 when
+# the patient retried): `KeyError: verified_phones` inside
+# `_mark_phone_verified`, raised out of `verify_otp` - so somebody who
+# had just typed a CORRECT OTP got a hard 500 and the turn died with no
+# reply at all. STEP NB1 calls `reset_booking_session` as its very first
+# action on every new booking, so every booking that went on to verify a
+# second phone number was one KeyError waiting to happen.
+# `_remember_list` escaped it only because it reaches for its buckets
+# with `setdefault`.
+def _new_booking_session() -> dict:
+    return {
         "doctor_id": None, "branch_id": None, "service_id": None,
         "last_list": None,  # {"entity_type": "doctor"/"branch", "items": [shaped items]}
         "specialty_ids": None,  # remembered so later steps reuse the same specialties
@@ -1245,7 +1264,32 @@ def _get_booking_session(session_id: str) -> dict:
         # settle on. Written by `_set_booking_phone` from the tools that
         # establish it, and read by `create_new_booking`.
         "booking_phone": None,
-    })
+    }
+
+
+# Which keys `reset_booking_session` must NOT wipe. A reset is about the
+# BOOKING - it clears the previously-confirmed doctor, branch and
+# service - not about the person: an identity already proven by OTP does
+# not stop being proven because they changed branch, and making somebody
+# prove it twice is exactly the friction this project keeps removing.
+_SESSION_KEYS_SURVIVING_RESET = (
+    "known_branch_names", "known_doctor_names", "verified_phones",
+    "booking_phone",
+)
+
+
+def _get_booking_session(session_id: str) -> dict:
+    session = _BOOKING_SESSIONS.setdefault(session_id, _new_booking_session())
+
+    # BACKFILL, EVERY TIME. `setdefault` hands back an EXISTING dict
+    # untouched, so a key added to the shape later - or dropped by a
+    # partial write somewhere else - would otherwise stay missing for
+    # the rest of that session. Cheap, and it makes a hard subscript on
+    # any documented key safe again.
+    for key, default in _new_booking_session().items():
+        if key not in session:
+            session[key] = default
+
     session["_touched_at"] = time.monotonic()
     _prune_booking_sessions()
     return session
@@ -4725,11 +4769,19 @@ def reset_booking_session(state: Annotated[AgentState, InjectedState]) -> dict:
     or explicit branch change). Returns {"status": "reset"}."""
 
     session_id = state.get("session_id")
-    _BOOKING_SESSIONS[session_id] = {
-        "doctor_id": None, "branch_id": None, "service_id": None,
-        "last_list": None, "specialty_ids": None,
-        "_touched_at": time.monotonic(),
-    }
+
+    # BUILT FROM THE ONE SHAPE, NOT FROM A SECOND, SHORTER LITERAL - see
+    # `_new_booking_session` for the crash the second literal caused.
+    # Whatever this session has already PROVEN about the person carries
+    # over; only the booking own selections are cleared.
+    previous = _BOOKING_SESSIONS.get(session_id) or {}
+    fresh = _new_booking_session()
+    for key in _SESSION_KEYS_SURVIVING_RESET:
+        if key in previous:
+            fresh[key] = previous[key]
+
+    fresh["_touched_at"] = time.monotonic()
+    _BOOKING_SESSIONS[session_id] = fresh
     return {"status": "reset"}
 
 
