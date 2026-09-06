@@ -5307,15 +5307,30 @@ _UNRELATED_SPECIALTY_CORRECTION_DIRECTIVE = (
     "your previous draft offers them a doctor in a specialty that does "
     "not treat it. Booking that appointment would cost them a trip and "
     "leave them still needing the right doctor.\n\n"
-    "DO NOT SWAP IN ANOTHER SPECIALTY FROM THE LIST. If the fitting "
-    "specialty is not registered at this clinic, that is the honest "
-    "answer and you should give it:\n"
-    "  1. Keep the warm line, the comfort measures, and the red flags.\n"
-    "  2. Say plainly that this clinic doesn't currently have a doctor "
-    "for this - e.g. \"للأسف ما عندنا دكتور عيون حاليًا في المستشفى\".\n"
+    "DO NOT SWAP IN ANOTHER SPECIALTY FROM THE LIST.\n\n"
+    "LOOK AT `unstaffed_specialties` IN THE `list_specialties` RESULT "
+    "BEFORE YOU REWRITE. That list is the departments this clinic "
+    "really HAS whose doctors have no open slots right now, and the "
+    "specialty this patient needs is very often in it. When it is, the "
+    "correct reply says so:\n"
+    "     \"عندنا قسم جراحة العظام بس للأسف ما فيه دكتور متاح حاليًا - "
+    "تحب أوصلك بموظف يساعدك؟\"\n"
+    "That is a complete, correct, useful answer. It tells them the "
+    "clinic does treat this, and that today is not the day.\n\n"
+    "So, in order:\n"
+    "  1. Keep the warm line, the comfort measures, and the red flags - "
+    "including naming the RIGHT kind of doctor, which is true advice "
+    "wherever they end up going.\n"
+    "  2. Then say which of these applies:\n"
+    "     - the specialty is in `unstaffed_specialties` -> \"عندنا "
+    "القسم ده بس مفيش دكتور متاح حاليًا\";\n"
+    "     - it is nowhere in the result at all -> \"للأسف ما عندنا "
+    "التخصص ده في المستشفى\".\n"
     "  3. Offer to connect them with a staff member, or to help with "
     "something else.\n"
-    "Do not offer any doctor here for this complaint.\n\n"
+    "Do not offer any doctor here for this complaint, and do not tell "
+    "them you cannot work out which specialty they need - you just "
+    "did, and saying otherwise is both untrue and useless to them.\n\n"
     "CONFIRMED REAL PRODUCTION FAILURE: \"عيني وجعاني وبتدمع\" (eye pain "
     "with watering) was answered with an offer of طب الأطفال, and then "
     "on a retry with طب الباطنة - because this clinic has no "
@@ -7330,10 +7345,17 @@ def _safe_fallback_reply(
         ),
         (
             ("medical-guidance", "specialty that does not treat", "specialty catalogue"),
-            "معلش، مش قادرة أحدد لك التخصص الأنسب لحالتك بدقة كافية دلوقتي 🌷\n"
+            # NOT "I can't work out which specialty you need". By the
+            # time this fires the assistant has usually named the right
+            # specialty perfectly well in its own advice line - what it
+            # could not do is offer a doctor, because the clinic has
+            # none free. Saying it cannot understand the symptom is
+            # both untrue and useless; saying no doctor is available is
+            # true and tells them what to do next.
+            "معلش، ما لقيتش دكتور متاح حاليًا للحالة دي في المستشفى 🌷\n"
             "أفضل حاجة إنك تتواصل مع فريقنا الطبي مباشرة يوجهوك صح. تحب أحولك لهم؟",
-            "Sorry, I can't confidently match your symptoms to the right "
-            "specialty just now 🌷\nIt's best to speak directly with our "
+            "Sorry - I couldn't find a doctor available for this at the "
+            "hospital right now 🌷\nIt's best to speak directly with our "
             "medical team so they can guide you properly. Would you like "
             "me to connect you with them?",
         ),
