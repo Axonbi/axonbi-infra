@@ -8030,6 +8030,74 @@ def _reply_scope_refuses_a_health_message(reply_text: str, state: AgentState) ->
     return _is_scope_refusal(reply_text, state.get("templates") or {})
 
 
+def _reply_scope_refuses_an_answer_to_our_own_question(
+    reply_text: str, state: AgentState,
+) -> bool:
+    """True when the assistant asked a question and answered the reply
+    with the generic out-of-scope menu.
+
+    THE RULE THIS ENFORCES: if we just asked something, the next message
+    is an attempt to answer it. It may be incomplete, it may be the
+    wrong thing, it may say they don't have what we asked for - but it
+    is not off-topic, because we chose the topic one message ago.
+
+    CONFIRMED IN A REAL CONVERSATION (session 201158877175, medtown):
+        bot: "ممكن تعطيني رقم الحجز أو رقم جوالك عشان أقدر أجيب بيانات
+              موعدك؟"
+        patient: "مش معايا بس اسمي فاطمه ناصر"
+        bot: "عذرًا 🌷 أنا لطيفة، المساعدة الافتراضية... ومختصة
+              بمساعدتك في خدمات المستشفى مثل حجز أو تعديل المواعيد..."
+    She answered the question she was asked - she does not have the
+    reference, and here is her name - and was told she was off-topic.
+
+    This is the third distinct way the scope refusal has swallowed a
+    legitimate message today, so the check is deliberately broad: the
+    refusal is simply not an acceptable ENTIRE reply while a question of
+    ours is outstanding. Even for a genuine change of subject, the right
+    reply answers it and returns to the pending question rather than
+    resetting the patient to the service menu."""
+
+    if not reply_text:
+        return False
+
+    if not _is_scope_refusal(reply_text, state.get("templates") or {}):
+        return False
+
+    messages = state.get("messages") or []
+    last_ai = _last_ai_reply_text(messages)
+    if not last_ai:
+        return False
+
+    return bool(re.search(r"[?؟]", last_ai))
+
+
+_ANSWERED_OUR_QUESTION_CORRECTION_DIRECTIVE = (
+    "============================================================\n"
+    "THEY ANSWERED YOUR QUESTION - DO NOT CALL IT OFF-TOPIC\n"
+    "============================================================\n"
+    "You asked the patient a question, they replied, and your previous "
+    "draft answered them with the generic \"I can only help with "
+    "hospital services\" menu.\n\n"
+    "You chose the topic one message ago. Whatever came back is an "
+    "attempt to answer it - and \"I don't have that\" IS an answer, "
+    "often the most useful one they can give.\n\n"
+    "CONFIRMED REAL FAILURE: \"ممكن تعطيني رقم الحجز أو رقم جوالك؟\" -> "
+    "\"مش معايا بس اسمي فاطمه ناصر\" -> the service menu. She told you "
+    "she has no booking reference and gave you her name instead.\n\n"
+    "Rewrite it:\n"
+    "  - Take what they DID give you. If it is not enough on its own, "
+    "say so plainly and ask for the one specific thing still missing - "
+    "e.g. a name alone cannot find a booking, so ask for the mobile "
+    "number the booking is under.\n"
+    "  - Never repeat the list of services. They are already in the "
+    "middle of one.\n"
+    "  - If they genuinely changed the subject to something this "
+    "clinic does not do, answer THAT in one warm sentence and then "
+    "return to the question you had asked - do not reset them to the "
+    "menu.\n\n"
+)
+
+
 def _message_is_about_health(messages: list) -> bool:
     """Whether the patient's latest message is about their own body.
 
@@ -9276,6 +9344,14 @@ _REPLY_VERIFIERS = (
         ),
         lambda reply, state: _SPECIALTY_CATALOGUE_CORRECTION_DIRECTIVE,
         "medical-guidance reply printed the specialty catalogue for the patient to pick from",
+    ),
+    (
+        lambda reply, state, agent_name: (
+            _reply_scope_refuses_an_answer_to_our_own_question(reply, state)
+        ),
+        lambda reply, state: _ANSWERED_OUR_QUESTION_CORRECTION_DIRECTIVE,
+        "reply answered the patient's response to our own question with the generic "
+        "out-of-scope service menu",
     ),
     (
         lambda reply, state, agent_name: _reply_ignores_a_refusal(reply, state),
