@@ -919,9 +919,23 @@ def _classify_with_llm(text: str, active_agent: Optional[str]) -> Optional[str]:
 
         for name in AGENT_NAMES:
             if choice.startswith(name):
+                logger.info("router: llm classified %r as %s", text[:60], name)
                 return name
 
-    except Exception:
-        logger.warning("router: LLM classification failed - using deterministic result", exc_info=True)
+        # It answered, but not with one of the seven words. Worth seeing:
+        # a router that silently returns None looks identical in the logs
+        # to one that was never consulted, which is exactly the ambiguity
+        # that made "is ROUTER_MODE=llm even on?" unanswerable from the
+        # log file.
+        logger.warning(
+            "router: llm answered %r, which is not an agent name - "
+            "falling back to the deterministic result", choice[:60],
+        )
+
+    except Exception as exc:
+        logger.warning(
+            "router: llm classification failed (%s: %s) - using the "
+            "deterministic result", type(exc).__name__, exc,
+        )
 
     return None
