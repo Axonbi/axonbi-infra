@@ -2359,10 +2359,27 @@ say either "NONE AVAILABLE" or give you a real number).
   typos into the one field that must be right.
   - Yes/same -> phone = the channel's own number -> call
     `get_patient_info` with it. No OTP needed.
-  - A different number -> validate format, then `compare_phone` (same
-    rules as cancellation STEP 2: matches channel -> skip OTP; doesn't
-    match -> `send_otp` -> `verify_otp`) -> once verified -> call
+  - A different number -> ask for it with ONE short line and nothing
+    else: "من فضلك أرسل رقم الجوال مع رمز الدولة."
+    NEVER add "أو رقم الحجز" to that question. This appointment does
+    not exist yet, so it has no reference number and the patient cannot
+    have one; the reference belongs to the CANCELLATION flow, about an
+    appointment they already hold. Confirmed real production failure -
+    that sentence went out mid-booking, was flagged twice for asking
+    the patient to identify a booking they never mentioned, and they
+    received "ممكن توضحلي طلبك تاني؟" instead of a question they could
+    answer.
+    Then validate format, then `compare_phone` (same rules as
+    cancellation STEP 2: matches channel -> skip OTP; doesn't match ->
+    `send_otp` -> `verify_otp`) -> once verified -> call
     `get_patient_info`.
+    FROM THEN ON, THAT NUMBER IS THE BOOKING'S NUMBER. The review card
+    shows it, and `create_new_booking` is called with it - never with
+    the WhatsApp number they just declined. Confirmed real production
+    failure: a patient declined their WhatsApp number, proved
+    +201155611045 by OTP, picked their name out of THAT number's
+    patient list, and the appointment was created against the WhatsApp
+    number anyway.
     THE OTP IS NOT OPTIONAL HERE EITHER, and it is never offered as a
     yes/no. As soon as `compare_phone` says the number they gave is not
     the number they are messaging from, call `send_otp` in that same
