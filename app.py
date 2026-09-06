@@ -28,6 +28,46 @@ import main as agent  # unmodified from this point of view: send_message()
 config.configure_logging()
 logger = logging.getLogger("app")
 
+
+def _log_startup_banner() -> None:
+    """One line per setting that changes behaviour, plus a fingerprint of
+    the code itself.
+
+    WHY THE FINGERPRINT. "Is the new code actually running?" cost most
+    of an afternoon to answer, repeatedly - a deploy that silently kept
+    a stale file looks identical from the outside to a deploy that
+    worked, because the only symptom is the bot still saying the old
+    thing. A hash of the two files that carry the behaviour turns that
+    question into a one-second lookup: compare what the service logged
+    at startup with the md5 of what you meant to deploy.
+    """
+
+    import hashlib
+    import os
+
+    def digest(name: str) -> str:
+        try:
+            path = os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
+            with open(path, "rb") as handle:
+                return hashlib.md5(handle.read()).hexdigest()[:12]
+        except OSError:
+            return "unreadable"
+
+    logger.info("=" * 62)
+    logger.info("cancel-agent-api starting")
+    logger.info("  graph.py         md5 %s", digest("graph.py"))
+    logger.info("  agents/router.py md5 %s", digest(os.path.join("agents", "router.py")))
+    logger.info("  model            %s (temperature=%s, timeout=%ss)",
+                config.OPENAI_MODEL, config.OPENAI_TEMPERATURE, config.OPENAI_TIMEOUT_SECONDS)
+    logger.info("  router           mode=%s (llm timeout=%ss)",
+                config.ROUTER_MODE, config.ROUTER_LLM_TIMEOUT_SECONDS)
+    logger.info("  multi-agent      enabled=%s tool_scoping=%s",
+                config.MULTI_AGENT_ENABLED, config.AGENT_TOOL_SCOPING)
+    logger.info("=" * 62)
+
+
+_log_startup_banner()
+
 # Surface a misconfigured complaint transport at startup rather than
 # only when a patient has already typed out their whole complaint.
 config.check_complaint_delivery_config()
