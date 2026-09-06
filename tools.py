@@ -1418,7 +1418,26 @@ def list_specialties(state: Annotated[AgentState, InjectedState]) -> dict:
     symptom/concern - never guess whether this clinic has a given
     specialty. Returns:
     {"status": "found", "specialties": [{"id": ..., "name": ...,
-      "has_available_doctors": true}, ...]}
+      "has_available_doctors": true}, ...],
+      "unstaffed_specialties": [names]}
+        # TWO LISTS, AND THEY MEAN DIFFERENT THINGS.
+        #
+        # `specialties` are the ones you may OFFER: each has a bookable
+        # doctor right now.
+        #
+        # `unstaffed_specialties` are departments this clinic really
+        # HAS, whose doctors have no open slots at the moment. They are
+        # here so you can tell the patient the truth when the specialty
+        # their symptom needs is one of them:
+        #     "عندنا قسم جلدية بس مفيش دكتور متاح حاليًا - تحب أوصلك
+        #      بموظف؟"
+        # That is a complete, correct answer. It is ALWAYS better than
+        # offering a specialty from the first list that does not treat
+        # what they described - a skin complaint sent to طب الباطنة
+        # costs the patient a trip and they still need a dermatologist.
+        #
+        # NEVER offer to book one of these, and never say "we have
+        # doctors" about one - they exist, but nobody is bookable.
     {"status": "no_bookable_specialties", "unstaffed_specialties": [names]}
         # The clinic offers specialties on paper but has NO bookable
         # doctor behind ANY of them right now. Say that plainly in your
@@ -1572,7 +1591,31 @@ def list_specialties(state: Annotated[AgentState, InjectedState]) -> dict:
     # `find_available_doctors`'s `specialty_name` parameter.
     _remember_list(state, "specialty", specialties)
 
-    return {"status": "found", "specialties": specialties}
+    # THE UNSTAFFED SPECIALTIES GO BACK TOO.
+    #
+    # This used to return the bookable ones ONLY. The unstaffed ones
+    # were computed, logged, and thrown away - so the model was told
+    # this hospital has four specialties, full stop. It had no way to
+    # know a dermatology department exists here at all.
+    #
+    # CONFIRMED IN A REAL CONVERSATION: a patient with a skin complaint
+    # was offered طب الباطنة, and a patient who had fallen on their leg
+    # was offered طب الباطنة - at a clinic whose own catalogue contains
+    # both طب الأمراض الجلدية and جراحة العظام, neither of which had a
+    # bookable doctor that day. The model was not failing to understand
+    # the symptom; it was picking the least-bad of the only four options
+    # it had been shown, because "we don't have that" was not an answer
+    # available to it.
+    #
+    # With both lists it can say the true and useful thing - "عندنا قسم
+    # جلدية بس مفيش دكتور متاح حاليًا" - which is what a receptionist
+    # would say, and which no amount of policing the output could have
+    # produced from the bookable list alone.
+    result_payload = {"status": "found", "specialties": specialties}
+    if unstaffed_names:
+        result_payload["unstaffed_specialties"] = unstaffed_names
+
+    return result_payload
 
 
 def _shape_doctor_list(raw_items: list, language: str = "ar") -> list:
