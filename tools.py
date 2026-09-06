@@ -5392,10 +5392,38 @@ def match_entity_for_booking(
         # of the exact request that was already too slow.
         if not wants_list and result.get("success"):
             narrowed = (result["data"] or {}).get("items", [])
-            if not narrowed:
+
+            # AN EMPTY LIST IS NOT THE ONLY WAY A NARROWED LIST CAN HIDE
+            # THE DOCTOR THEY NAMED.
+            #
+            # This used to widen only when the narrowed list came back
+            # EMPTY. A list that is non-empty but simply does not contain
+            # this doctor is the commoner case, and it produced the worst
+            # possible answer: "that doctor does not exist" about a
+            # doctor who does.
+            #
+            # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+            # 201158877175+medtown2, 2026-09-06 13:45:39, repeated at
+            # 13:46:18 and 13:47:31): the session still carried
+            # `specialty_ids` for dentistry and internal medicine from
+            # earlier in the conversation, so the fetch returned 2
+            # doctors. The patient asked for "سارة عبد الله" - نساء
+            # وتوليد - three times and was told three times that no such
+            # doctor exists. Two minutes later an unfiltered
+            # `find_available_doctors` listed her as item 6️⃣.
+            #
+            # A specialty the patient never mentioned must never be able
+            # to deny the existence of a doctor they named themselves.
+            missing_by_name = bool(narrowed) and (
+                _fuzzy_match(user_input, narrowed,
+                             ["formatedName", "altName", "name"])["result"]
+                == "not_matched"
+            )
+
+            if not narrowed or missing_by_name:
                 logger.info(
-                    "match_entity_for_booking: narrowed doctor list was empty for %r - widening once",
-                    user_input,
+                    "match_entity_for_booking: narrowed doctor list %s for %r - widening once",
+                    "was empty" if not narrowed else "has no match", user_input,
                 )
                 widen_started = time.monotonic()
                 result = api.get_doctors(
@@ -5744,6 +5772,32 @@ def match_entity_for_booking(
                     "doctor's name - returning is_a_specialty",
                     user_input, specialty.get("name"),
                 )
+
+                # THE DOCTOR ON FILE IS NOT THE ONE THEY JUST ASKED FOR.
+                #
+                # Naming a new DEPARTMENT retires whatever doctor and
+                # branch this session had confirmed: they belong to the
+                # specialty the patient has just moved away from. Left in
+                # place, every tool downstream that reads the session -
+                # `get_doctor_schedule_for_booking` above all - keeps
+                # answering about the OLD doctor.
+                #
+                # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+                # 201158877175+medtown2, 2026-09-06 13:45:47-13:45:55):
+                # "لا عاوزه دكتور باطنه" resolved correctly to
+                # طب الباطنة, `find_available_doctors` returned د. طه
+                # مبروك for it - and the reply that went out was
+                # "مواعيد الدكتور محمد زايد ...", the dentist confirmed
+                # minutes earlier, because `get_doctor_schedule_for_booking`
+                # read `doctor_id` straight out of the session.
+                session["doctor_id"] = None
+                session["branch_id"] = None
+                session["branch_display_name"] = None
+                session["service_id"] = None
+                session["specialty_ids"] = (
+                    [specialty["id"]] if specialty.get("id") else None
+                )
+
                 return {
                     "matched": False, "ambiguous": False,
                     "status": "is_a_specialty",
