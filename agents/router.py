@@ -735,9 +735,34 @@ _CRISIS_OVERRIDE_RE = CRISIS_RE
 
 def _answers_booking_entry_question(messages: List, text: str) -> bool:
     """True when the assistant's own previous reply was the booking
-    flow's opening doctor-or-specialty question."""
+    flow's opening doctor-or-specialty question - AND the answer is one
+    the booking specialist can actually act on.
+
+    A SYMPTOM OR AN INJURY IS EXCLUDED, deliberately.
+
+    The entry question invites three kinds of answer: a doctor's name, a
+    specialty, or a description of what is wrong. The first two belong
+    to `booking` and this rule keeps them there. The third does not:
+    `booking` is given the NEW BOOKING FLOW and DOCTOR/BRANCH INFO
+    sections only (see agents/registry.py) - it has no medical-guidance
+    prompt at all, so it has nothing to say to somebody describing an
+    injury, and what it actually produced was a refusal.
+
+    CONFIRMED: with this rule holding the turn, "عايز أحجز موعد" ->
+    the entry question -> "رجلي وقعت عليها" came back "عذرًا، ما
+    عندي...". Routed to `medical` instead, the same message produces
+    the comfort line, the red flags, the ⚕️ notice and an offer of
+    orthopedics doctors - and the booking then resumes at the doctor
+    list by itself, because `_build_established_specialty_directive`
+    picks the specialty up from the tool result.
+
+    So a health message falls through to normal scoring, where the
+    medical cues carry it to the specialist that owns it."""
 
     if _CRISIS_OVERRIDE_RE.search(normalize(text)):
+        return False
+
+    if looks_like_health_message(text):
         return False
 
     last_ai = _last_ai_text(messages)
