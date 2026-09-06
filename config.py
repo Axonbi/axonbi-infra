@@ -425,6 +425,21 @@ ROUTER_LLM_TIMEOUT_SECONDS: float = float(
 # run, as before.
 REPLY_NORMALIZATION_ENABLED: bool = _flag("REPLY_NORMALIZATION_ENABLED", True)
 
+# HOW TO READ THE "+00:00" ON EVERY TIMESTAMP THE BOOKING API RETURNS.
+#
+# True (the default, and what the clinics' own websites do): it is a
+# real UTC instant, so a slot is shown to the patient in the clinic's
+# own zone - 07:00+00:00 becomes 10:00 in Asia/Riyadh.
+#
+# False: the offset is decoration on a value that was already local, so
+# it is simply dropped. This was the behaviour until 2026-09-06, and it
+# told patients a time three hours earlier than the website did.
+#
+# The full evidence, and why this is a flag rather than a constant, is
+# in tools.to_clinic_local. Only ever set this to False for a
+# deployment whose API is confirmed to store local time.
+SCHEDULE_TIMES_ARE_UTC: bool = _flag("SCHEDULE_TIMES_ARE_UTC", True)
+
 
 # ==========================================================
 # INTERIM "PLEASE WAIT" MESSAGES (progress.py)
