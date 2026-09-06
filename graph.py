@@ -9133,7 +9133,20 @@ _REPLY_VERIFIERS = (
     ),
     (
         lambda reply, state, agent_name: (
-            (agent_name == "medical" or _in_medical_guidance_handoff(state))
+            # `concierge` INCLUDED. It is the full legacy agent - it
+            # carries the entire MEDICAL GUIDANCE section and every
+            # tool (see agents/registry.py), so it produces medical
+            # replies itself, and the router sends it every health
+            # message that carries no strong cue.
+            #
+            # CONFIRMED IN A REAL CONVERSATION: "جلدي فيه حاجة غريبة"
+            # scored nothing, went to `concierge`, and came back
+            # offering طب الباطنة for a SKIN problem - because only 4
+            # of this clinic's 17 specialties have bookable doctors and
+            # dermatology is not one of them. This check exists for
+            # exactly that, and was gated to an agent that never held
+            # the turn.
+            (agent_name in ("medical", "concierge") or _in_medical_guidance_handoff(state))
             and _medical_reply_offers_unrelated_specialty(reply, state)
         ),
         lambda reply, state: _UNRELATED_SPECIALTY_CORRECTION_DIRECTIVE,
@@ -9142,7 +9155,7 @@ _REPLY_VERIFIERS = (
     ),
     (
         lambda reply, state, agent_name: (
-            (agent_name == "medical" or _in_medical_guidance_handoff(state))
+            (agent_name in ("medical", "concierge") or _in_medical_guidance_handoff(state))
             and _medical_reply_names_two_specialties(reply, state)
         ),
         lambda reply, state: _TWO_SPECIALTIES_CORRECTION_DIRECTIVE,
@@ -9160,7 +9173,8 @@ _REPLY_VERIFIERS = (
     ),
     (
         lambda reply, state, agent_name: (
-            agent_name == "medical" and _medical_reply_missing_not_a_diagnosis(reply, state)
+            agent_name in ("medical", "concierge")
+            and _medical_reply_missing_not_a_diagnosis(reply, state)
         ),
         lambda reply, state: _NOT_A_DIAGNOSIS_CORRECTION_DIRECTIVE,
         "medical-guidance reply steered the patient to a specialty/doctor without "
@@ -9179,7 +9193,7 @@ _REPLY_VERIFIERS = (
     ),
     (
         lambda reply, state, agent_name: (
-            (agent_name == "medical" or _in_medical_guidance_handoff(state))
+            (agent_name in ("medical", "concierge") or _in_medical_guidance_handoff(state))
             and _reply_dumps_specialty_catalogue(reply, state)
         ),
         lambda reply, state: _SPECIALTY_CATALOGUE_CORRECTION_DIRECTIVE,
