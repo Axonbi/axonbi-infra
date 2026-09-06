@@ -5717,6 +5717,12 @@ _HAS_DOCTORS_CLAIM_RE = re.compile(
     # "عندنا دكاترة ..." / "عندنا في مستشفى س دكاترة ..."
     r"(?:عندنا|لدينا|متوفر|يتوفر)[^.\n؟?]{0,40}"
     r"(?:دكاتره|دكاتره|اطباء|دكتور|طبيب|استشاري|اخصائي)|"
+    # THE SAME CLAIM WITH NO DOCTOR WORD IN IT. "عندنا طب نفسي",
+    # "عندنا قسم عظام", "عندنا عيادة جلدية" say exactly what "عندنا
+    # دكاترة عظام" says - the patient reads all four as "you can book
+    # this here" - but the doctor-word patterns above see none of them.
+    r"(?:عندنا|لدينا|متوفر|يتوفر)[^.\n؟?]{0,25}"
+    r"(?:قسم|عياده|تخصص|وحده|مركز|(?:^|\s)طب(?:\s|$))|"
     # "... دكاترة متاحين / موجودين"
     r"(?:دكاتره|اطباء|دكتور|طبيب)[^.\n؟?]{0,30}(?:متاح|موجود|متوفر)|"
     # an offer to book with one
@@ -5725,6 +5731,30 @@ _HAS_DOCTORS_CLAIM_RE = re.compile(
     r"\b(?:we\s+have|there\s+are|available)\b[^.\n?]{0,30}"
     r"\b(?:doctors?|physicians?|consultants?|specialists?)\b"
 )
+
+
+# The halves of a specialty name that carry no identity. "طب" and
+# "أمراض" open a third of any clinic's catalogue, so matching on them
+# would accept "عندنا دكاترة نفسيين" from a clinic whose only specialty
+# is "طب الباطنة". Matching happens on what is left.
+# Saying the clinic does NOT have something - the correct reply when a
+# specialty is missing, and the exact shape the claim patterns would
+# otherwise misread as a claim.
+_SPECIALTY_DENIAL_RE = re.compile(
+    r"(?:مافيش|ما\s*فيه|مفيش|مش\s*متوفر|لا\s*يوجد|ما\s*عندنا|ليس\s*لدينا|للاسف)"
+    r"[^.\n؟?]{0,25}"
+    r"(?:عندنا|لدينا|التخصص|تخصص|القسم|قسم|دكاتره|اطباء|دكتور|طبيب)|"
+    r"\b(?:we\s+(?:do\s*n[o']?t|don'?t)\s+have|is\s+not\s+available|"
+    r"unfortunately\s+we)\b"
+)
+
+
+_GENERIC_SPECIALTY_WORDS = frozenset({
+    "طب", "الطب", "امراض", "الامراض", "جراحه", "الجراحه", "قسم", "القسم",
+    "عياده", "العياده", "تخصص", "التخصص", "علاج", "العلاج", "وحده", "الوحده",
+    "مركز", "المركز", "و", "عام", "العام", "general", "medicine", "surgery",
+    "department", "clinic", "and",
+})
 
 
 def _reply_offers_unavailable_specialty(reply_text: str, state: AgentState) -> bool:
@@ -5748,6 +5778,16 @@ def _reply_offers_unavailable_specialty(reply_text: str, state: AgentState) -> b
         return False
 
     folded = _norm_ar(reply_text)
+
+    # A DENIAL IS THE OPPOSITE OF THIS CLAIM, and it is what the flow
+    # asks for when the specialty is missing: "للأسف مافيش عندنا
+    # التخصص ده حاليًا". The container-word pattern below sees "عندنا"
+    # + "التخصص" in that sentence and would flag the one reply that
+    # handles the situation correctly - which is how a guard ends up
+    # punishing honesty.
+    if _SPECIALTY_DENIAL_RE.search(folded):
+        return False
+
     if not _HAS_DOCTORS_CLAIM_RE.search(folded):
         return False
 
@@ -5764,15 +5804,18 @@ def _reply_offers_unavailable_specialty(reply_text: str, state: AgentState) -> b
             continue
         if name in folded:
             return False
-        # Clinics store "طب الجلدية" / "الجلدية والتناسلية"; a reply
-        # naming "جلدية" is the same specialty. Match on the longest
-        # identifying word rather than the whole stored string, and
-        # strip the definite article off both sides - the stored name
-        # carries it ("الجلدية") far more often than the reply does
-        # ("دكاترة جلدية"), so comparing them as-is misses every one.
+        # Clinics store "طب الجلدية" / "الجلدية والتناسلية" / "أمراض
+        # القلب"; a reply naming "جلدية" or "قلب" means the same
+        # specialty. Compare on the IDENTIFYING words only - the
+        # generic halves ("طب", "أمراض", "جراحة") appear in half the
+        # catalogue and would match anything - with the definite
+        # article stripped, since the stored name carries it far more
+        # often than the reply does.
         for word in sorted(name.split(), key=len, reverse=True):
-            bare = word[2:] if word.startswith("ال") and len(word) > 5 else word
-            if len(bare) >= 4 and (bare in folded or word in folded):
+            bare = word[2:] if word.startswith("ال") and len(word) > 4 else word
+            if bare in _GENERIC_SPECIALTY_WORDS or len(bare) < 3:
+                continue
+            if bare in folded or word in folded:
                 return False
 
     return True
