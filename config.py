@@ -482,12 +482,62 @@ PROGRESS_TIMEOUT_SECONDS: float = float(os.getenv("PROGRESS_TIMEOUT_SECONDS", "5
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
 
+_LOGGING_CONFIGURED = False
+
+
 def configure_logging() -> None:
-    """Configure root logging once for the whole application."""
+    """Configure root logging once for the whole application.
+
+    `force=True` IS THE WHOLE POINT OF THIS FUNCTION IN PRODUCTION.
+
+    `logging.basicConfig()` is documented to do NOTHING if the root
+    logger already has handlers - and under uvicorn it always does,
+    because uvicorn installs its own logging configuration before it
+    imports the app. So this call, which looks like it sets up logging,
+    was silently a no-op on the deployed service: `app.py` called it,
+    nothing happened, and every logger.info/warning/error in this
+    project went nowhere.
+
+    THE COST OF THAT WAS REAL. An entire afternoon of diagnosing live
+    behaviour - which specialist took a turn, whether a tool was called
+    at all, which reply verifier fired - was done by inference from the
+    patient-visible reply, because `journalctl -u cancel-agent-api`
+    showed only systemd's own start/stop lines. Every one of those
+    questions is answered by a log line this project already writes.
+
+    `force=True` removes the existing handlers and installs ours, so the
+    application's own logs reach stderr and therefore the journal. It
+    does not silence uvicorn: uvicorn's loggers propagate to root and
+    are picked up by the same handler.
+    """
+
+    # Idempotent: app.py and main.py both call this (app.py imports
+    # main), and with force=True each call would tear the handlers down
+    # and build them again - harmless, but it prints the confirmation
+    # line once per caller and makes the startup log look like the
+    # service booted twice.
+    global _LOGGING_CONFIGURED
+    if _LOGGING_CONFIGURED:
+        return
+    _LOGGING_CONFIGURED = True
 
     logging.basicConfig(
         level=getattr(logging, LOG_LEVEL.upper(), logging.INFO),
         format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+        force=True,
+    )
+
+    # These two are extremely chatty at INFO (one line per request and
+    # per HTTP call) and would bury the lines that actually explain a
+    # conversation. Raised so the signal survives.
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("openai").setLevel(logging.WARNING)
+
+    logging.getLogger(__name__).info(
+        "logging configured: level=%s (force=True - uvicorn had already "
+        "installed handlers, which made this a no-op before)", LOG_LEVEL.upper(),
     )
 
 
