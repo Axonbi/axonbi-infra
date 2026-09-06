@@ -2373,8 +2373,9 @@ _BOOKING_ENTRY_ASK_DIRECTIVE = (
     "opening rung.\n\n"
     "Your reply is ONE question offering the two ways to start, plus an "
     "invitation to describe the problem for a patient who knows neither:\n\n"
-    "    \"دكتور أو تخصص معيّن في بالك؟ اكتب لي الاسم أو قل لي وش تحس "
-    "فيه وأساعدك تختار التخصص المناسب\"\n\n"
+    "    \"بالتأكيد يمكنني مساعدتك / عندك دكتور أو تخصص معيّن في "
+    "بالك؟ اكتب لي الاسم أو قل لي وش تحس فيه وأساعدك تختار التخصص "
+    "المناسب.\"\n\n"
     "(this exact wording is normally sent from code without a model call - "
     "see _booking_entry_message. You only compose it yourself if a clinic "
     "has overridden it, in which case follow ITS wording.)\n\n"
@@ -2500,13 +2501,15 @@ _SYMPTOM_ANSWER_RE = re.compile(
 # column in its config row, exactly like every other authored message.
 _BOOKING_ENTRY_MESSAGE = {
     "ar": (
-        "دكتور أو تخصص معيّن في بالك؟ اكتب لي الاسم أو قل لي وش تحس فيه "
-        "وأساعدك تختار التخصص المناسب"
+        "بالتأكيد يمكنني مساعدتك\n"
+        "عندك دكتور أو تخصص معيّن في بالك؟ اكتب لي الاسم أو قل لي وش "
+        "تحس فيه وأساعدك تختار التخصص المناسب."
     ),
     "en": (
-        "A specific doctor or specialty in mind? Send me the name - or "
-        "tell me what you're feeling and I'll help you pick the right "
-        "specialty"
+        "Of course, I can help you\n"
+        "Do you have a specific doctor or specialty in mind? Send me the "
+        "name, or tell me what you're feeling and I'll help you pick the "
+        "right specialty."
     ),
 }
 
@@ -7557,10 +7560,46 @@ def _reply_scope_refuses_a_health_message(reply_text: str, state: AgentState) ->
         return False
 
     messages = state.get("messages") or []
-    if not (_asks_for_medication(messages) or _signals_crisis(messages)):
+
+    # WIDENED FROM "medication or crisis" TO ANY HEALTH MESSAGE.
+    #
+    # The two original cases were the ones that had bitten, so those
+    # were the two that got a guard - but the rule they encode is
+    # general: the out-of-scope refusal must never answer somebody
+    # talking about their own body. Everything in between - a symptom,
+    # and above all an INJURY - had no guard at all.
+    #
+    # CONFIRMED IN A REAL CONVERSATION: "رجلي وقعت عليها" was answered
+    # with the service menu ("مختصة بمساعدتك في خدمات المستشفى مثل حجز
+    # أو تعديل المواعيد..."). The patient repeated the identical message
+    # and only then got a proper reply. The routing cue that missed it
+    # is fixed too (agents/router.INJURY_RE), but a routing miss must
+    # not be able to produce THIS reply again - so the check now covers
+    # the whole class rather than the two known members of it.
+    if not (_asks_for_medication(messages)
+            or _signals_crisis(messages)
+            or _message_is_about_health(messages)):
         return False
 
     return _is_scope_refusal(reply_text, state.get("templates") or {})
+
+
+def _message_is_about_health(messages: list) -> bool:
+    """Whether the patient's latest message is about their own body.
+
+    Delegates to agents.router.looks_like_health_message, which reads
+    the router's own medical cues - so this can never fall behind them
+    the way a second hand-written list would."""
+
+    text = _latest_human_text(messages)
+    if not text:
+        return False
+
+    try:
+        return agents.router.looks_like_health_message(text)
+    except Exception:  # pragma: no cover - never worth failing a turn for
+        logger.warning("health-message check failed", exc_info=True)
+        return False
 
 
 def _health_message_refusal_correction(reply_text: str, state: AgentState) -> str:
