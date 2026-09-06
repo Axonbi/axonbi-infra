@@ -10127,6 +10127,105 @@ _BARE_DOCTOR_ANSWER_DIRECTIVE = (
 )
 
 
+_SINGLE_DOCTOR_AFFIRMED_DIRECTIVE = (
+    "============================================================\n"
+    "THEY SAID YES TO THE ONE DOCTOR YOU OFFERED - IT IS {name}\n"
+    "============================================================\n"
+    "Your previous reply named exactly ONE available doctor, {name}, "
+    "and asked whether to book with them. The patient said yes. There "
+    "is no ambiguity left: {name} is the doctor.\n\n"
+    "DO NOT ASK FOR THE DOCTOR'S NAME. You said it one message ago, "
+    "they agreed to it, and there was only ever one to choose from - "
+    "asking them to type it back is asking them to repeat you.\n\n"
+    "In THIS turn: call `match_entity_for_booking` with "
+    "user_input=\"{name}\" and entity_type=\"doctor\" to confirm them "
+    "properly, then continue the flow from STEP NB2 - their real days "
+    "and branches.\n\n"
+    "CONFIRMED REAL PRODUCTION FAILURE (medtown, session "
+    "201158877175+medtown2, 2026-09-06 14:21:44-14:21:56): "
+    "\"الدكتور المتاح عندنا حاليًا في تخصص طب الباطنة هو د. طه مبروك "
+    "- تحب أحجز لك موعد عنده؟\" -> \"اه\" -> \"ما زلت أحتاج لتأكيد اسم "
+    "الدكتور... من فضلك اكتب لي اسم الدكتور اللي حابب تحجز عنده.\" The "
+    "doctor had been named by the assistant itself, offered by the "
+    "assistant itself, and accepted - and the patient was asked to "
+    "supply it.\n\n"
+)
+
+
+def _build_single_doctor_affirmation_directive(
+    messages: list, session_id: str, agent_name: str,
+) -> str:
+    """A bare "yes" to an offer that named exactly ONE doctor.
+
+    WHY THIS GAP EXISTED: the medical flow hands over to booking in
+    PROSE. `find_available_doctors` returns one doctor, `medical` names
+    them in a sentence and offers to book - but nothing writes that
+    doctor into the booking session, because confirming a doctor is
+    `match_entity_for_booking`'s job and `medical` never calls it. So
+    `booking` inherits a turn whose only content is "اه", finds
+    `doctor_id` empty, and correctly concludes it cannot proceed without
+    a doctor - then asks for the name.
+
+    This is the doctor-shaped version of a problem this file has already
+    solved twice: `_build_established_specialty_directive` for a
+    specialty asserted across the same handover, and `_remember_list`
+    for a numbered pick. The remembered list is what makes it safe -
+    with exactly one item in it there is nothing to guess.
+    """
+
+    if agent_name not in _NEW_BOOKING_AGENTS or not messages:
+        return ""
+
+    index = _latest_human_index(messages)
+    if index < 0 or index != len(messages) - 1:
+        return ""
+
+    content = getattr(messages[index], "content", "")
+    text = (content if isinstance(content, str) else str(content)).strip()
+    if not text or not _BARE_AFFIRMATION_RE.match(_norm_ar(text)):
+        return ""
+
+    session = tools._BOOKING_SESSIONS.get(session_id) or {}
+
+    # Already confirmed - nothing to resolve, and re-confirming would
+    # invite the model to redo a settled step.
+    if session.get("doctor_id"):
+        return ""
+
+    last_list = session.get("last_list") or {}
+    if last_list.get("entity_type") != "doctor":
+        return ""
+
+    items = last_list.get("items") or []
+    if len(items) != 1:
+        return ""
+
+    item = items[0] if isinstance(items[0], dict) else {}
+    name = ""
+    for key in ("formatedName", "altName", "name", "doctorName"):
+        value = item.get(key)
+        if value and str(value).strip():
+            name = str(value).strip()
+            break
+
+    if not name:
+        return ""
+
+    # THE OFFER HAS TO BE THE ONE THEY ANSWERED. A remembered list from
+    # earlier in the conversation is not consent to book its only entry;
+    # the reply immediately before this "yes" must actually have named
+    # this doctor.
+    last_ai = _last_ai_reply_text(messages)
+    if not last_ai:
+        return ""
+
+    folded_ai = _norm_ar(last_ai)
+    if _norm_ar(name) not in folded_ai:
+        return ""
+
+    return _SINGLE_DOCTOR_AFFIRMED_DIRECTIVE.format(name=name)
+
+
 def _build_bare_doctor_answer_directive(messages: list) -> str:
     """Fires when the patient's latest message is just the bare word
     ("دكتور"/"doctor"), answering a specialty-vs-doctor choice the
@@ -13411,6 +13510,13 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     bare_entity_directive = _build_bare_entity_answer_directive(state["messages"])
     branches_info_directive = _build_branches_info_directive(state["messages"])
     bare_doctor_directive = _build_bare_doctor_answer_directive(state["messages"])
+
+    # "اه" to an offer that named exactly one doctor. The medical ->
+    # booking handover happens in prose, so the doctor is named but
+    # never confirmed in the session; this carries it across.
+    single_doctor_directive = _build_single_doctor_affirmation_directive(
+        state["messages"], state.get("session_id"), agent_name,
+    )
     show_all_doctors_directive = _build_show_all_doctors_after_ask_directive(state["messages"])
     doctor_branches_directive = _build_doctor_branches_directive(
         state["messages"], state.get("session_id"),
@@ -13528,7 +13634,8 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         + resolved_day_directive + entity_list_directive
         + abandoned_booking_directive + bare_entity_directive
         + branches_info_directive
-        + bare_doctor_directive + show_all_doctors_directive
+        + bare_doctor_directive + single_doctor_directive
+        + show_all_doctors_directive
         + doctor_branches_directive + branch_question_directive
         + review_phone_directive + selected_slot_directive
         + otp_required_directive + unstaffed_specialty_directive
