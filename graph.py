@@ -5278,23 +5278,58 @@ def _medical_reply_offers_unrelated_specialty(reply_text: str, state: AgentState
 
     from langchain_core.messages import HumanMessage as _HumanMessage
 
-    patient_text = " ".join(
+    # THE MOST RECENT SYMPTOM DECIDES - not every symptom ever mentioned.
+    #
+    # This used to join EVERY human message in the conversation into one
+    # string and match the table against that. A patient who mentions
+    # two different complaints over a conversation therefore had the
+    # older one judging replies about the newer one, forever.
+    #
+    # CONFIRMED IN A REAL CONVERSATION (session 201003365691, medtown):
+    # the patient said "رجلي وقعت عليها" earlier, then later "بطني
+    # وجعاني". The reply correctly advised and offered طب الباطنة - the
+    # right specialty for abdominal pain - and this check rejected it
+    # TWICE, because the leg injury was still in the joined text and
+    # the offer contained no "عظام". The patient got the safe fallback
+    # instead of a correct answer.
+    #
+    # So: walk backwards to the newest message that actually describes a
+    # symptom, and judge THAT one alone. A message that names a body
+    # part the table has no opinion about (the stomach, here) ends the
+    # search with no finding - which is the correct outcome, not a
+    # reason to keep looking for an older complaint to object to.
+    human_messages = [
         _norm_ar(str(getattr(m, "content", "")))
         for m in (state.get("messages") or [])
         if isinstance(m, _HumanMessage)
-    )
+    ]
 
-    if not patient_text:
-        return False
-
-    for symptom_words, ok_specialty_words in _ORGAN_SPECIALTY_EXPECTATIONS:
-        if not any(w in patient_text for w in symptom_words):
+    for text in reversed(human_messages):
+        if not text.strip():
             continue
-        # The symptom is in play. If the reply names ANY specialty that
-        # could treat it, that's fine.
-        if any(w in offer_text for w in ok_specialty_words):
-            return False
-        return True
+        # "Is this a complaint at all?" has to be at least as wide as
+        # the table below, or a row can never be reached. `التويت كاحلي`
+        # is an injury the table has an opinion about, but the ankle is
+        # not in _SYMPTOM_ANSWER_RE's body-part list - so the injury
+        # patterns are consulted too. Both come from one place each, so
+        # widening either one widens this automatically.
+        if not (_SYMPTOM_ANSWER_RE.search(text)
+                or agents.router.INJURY_RE.search(text)):
+            # Not a complaint at all ("اه", "الخميس", a phone number) -
+            # keep looking further back.
+            continue
+
+        # This is the complaint the reply is answering.
+        for symptom_words, ok_specialty_words in _ORGAN_SPECIALTY_EXPECTATIONS:
+            if not any(w in text for w in symptom_words):
+                continue
+            # If the reply names ANY specialty that could treat it, fine.
+            if any(w in offer_text for w in ok_specialty_words):
+                return False
+            return True
+
+        # The newest complaint is one this table has no opinion on.
+        return False
 
     return False
 
