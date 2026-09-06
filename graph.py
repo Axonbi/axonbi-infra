@@ -2348,6 +2348,13 @@ _ASKED_SPECIALTY_OR_DOCTOR_RE = re.compile(
     # never match anything. That is a silent failure: the question
     # simply stops being recognised.
     r"بالتخصص\s*ولا\s*بالدكتور|بالدكتور\s*ولا\s*بالتخصص|"
+    # "دكتور أو تخصص معيّن في بالك؟" - the current wording, which
+    # puts the two options side by side instead of contrasting them
+    # with "ولا". Added when the message changed; without it the
+    # question stops being recognised and the routing rule that
+    # keeps a symptom with `booking` silently stops firing.
+    r"(?:دكتور|طبيب)\s*(?:او|ولا|ام)\s*تخصص|"
+    r"تخصص\s*(?:او|ولا|ام)\s*(?:دكتور|طبيب)|"
     r"تبدا\s*بالتخصص|تبدا\s*بالدكتور|"
     r"طبيب\s*(?:معين|محدد)[^.\n؟?]{0,40}(?:ولا|او|ام)[^.\n؟?]{0,20}تخصص|"
     r"دكتور\s*(?:معين|محدد)[^.\n؟?]{0,40}(?:ولا|او|ام)[^.\n؟?]{0,20}تخصص|"
@@ -2364,13 +2371,13 @@ _BOOKING_ENTRY_ASK_DIRECTIVE = (
     "The patient has asked to book an appointment and has named no "
     "doctor, no specialty, no service and no symptom. This is STEP NB1's "
     "opening rung.\n\n"
-    "Your reply is a short confirming line that you can help with the "
-    "booking, then ONE question offering the two ways to start - THE "
-    "DOCTOR FIRST, then the specialty:\n\n"
-    "    \"يمكنني مساعدتك في حجز موعد. هل لديك طبيب معيّن تحب تحجز "
-    "معاه، ولا تفضّل نبحث بالتخصص؟\"\n\n"
-    "(compose it in this conversation's own language and dialect - the "
-    "wording above is the SHAPE, not a script to paste.)\n\n"
+    "Your reply is ONE question offering the two ways to start, plus an "
+    "invitation to describe the problem for a patient who knows neither:\n\n"
+    "    \"دكتور أو تخصص معيّن في بالك؟ اكتب لي الاسم أو قل لي وش تحس "
+    "فيه وأساعدك تختار التخصص المناسب\"\n\n"
+    "(this exact wording is normally sent from code without a model call - "
+    "see _booking_entry_message. You only compose it yourself if a clinic "
+    "has overridden it, in which case follow ITS wording.)\n\n"
     "SAY IT IN FULL. A bare \"تحب تبدأ بالتخصص ولا بالدكتور؟\" is not "
     "good enough here: it opens with no acknowledgement of what they "
     "asked for, \"تبدأ\" describes OUR process rather than their choice, "
@@ -2493,15 +2500,13 @@ _SYMPTOM_ANSWER_RE = re.compile(
 # column in its config row, exactly like every other authored message.
 _BOOKING_ENTRY_MESSAGE = {
     "ar": (
-        "بالتأكيد، يمكنني مساعدتك في حجز موعد.\n"
-        "هل لديك طبيب محدد أم تبحث عن تخصص معين؟ وإذا لم تكن متأكدًا "
-        "من التخصص، يمكنني مساعدتك في اختياره."
+        "دكتور أو تخصص معيّن في بالك؟ اكتب لي الاسم أو قل لي وش تحس فيه "
+        "وأساعدك تختار التخصص المناسب"
     ),
     "en": (
-        "Of course, I can help you book an appointment.\n"
-        "Do you have a specific doctor in mind, or are you looking for a "
-        "particular specialty? And if you're not sure which specialty, "
-        "I can help you choose."
+        "A specific doctor or specialty in mind? Send me the name - or "
+        "tell me what you're feeling and I'll help you pick the right "
+        "specialty"
     ),
 }
 
