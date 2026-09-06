@@ -2609,6 +2609,65 @@ def _resolve_specialty_for_booking(state, specialty_text: str) -> list:
     return []
 
 
+def _specialty_named_by(state, base_url: str, text: str) -> Optional[dict]:
+    """{"id", "name"} when `text` is one of THIS clinic's specialties,
+    else None.
+
+    WHY IT EXISTS: a patient answering "which doctor?" very often types
+    the DEPARTMENT instead - "اسنان", "عيون", "عظام". That is a
+    perfectly sensible answer to a question about who to see, and the
+    only thing wrong with it is that it went into a doctor-NAME match.
+
+    CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+    201158877175+medtown2, 2026-09-06 13:28:58): the patient typed
+    "اسنان" and got
+        "ما لقيت دكتور باسم \"أسنان\" 🔍، تحب أشوف لك قائمة الدكاترة
+         المتاحين في تخصص طب اسنان؟"
+    - the reply names the specialty it had just failed to recognise, in
+    the same sentence, and then asks permission to do the obvious thing.
+    The patient has to say "yes" to a question that should never have
+    been asked.
+
+    Checks the specialty list the patient was actually shown first (free,
+    and a positional/near match against that list can only mean one
+    thing), and only falls back to the API when there is no remembered
+    list. That fallback is why this is called ONLY after a doctor-name
+    match has already failed: it costs one request in the case that is
+    currently broken, and nothing at all in the normal case.
+    """
+
+    if not (text or "").strip():
+        return None
+
+    remembered = _resolve_specialty_for_booking(state, text)
+    if remembered:
+        return remembered[0]
+
+    result = api.get_specialties(base_url, language=conversation_language(state))
+    if not result["success"]:
+        logger.warning(
+            "_specialty_named_by: could not fetch specialties (status_code=%s) - "
+            "treating %r as not a specialty",
+            result.get("status_code"), text,
+        )
+        return None
+
+    items = []
+    for item in (result["data"] or {}).get("items", []):
+        name = _preferred_name(item, conversation_language(state))
+        if item.get("id") and name and str(name).strip():
+            items.append({"id": item["id"], "name": str(name).strip()})
+
+    if not items:
+        return None
+
+    match = _fuzzy_match(text, items, ["name"])
+    if match["result"] == "matched" and match["item"].get("id"):
+        return {"id": match["item"]["id"], "name": match["item"].get("name")}
+
+    return None
+
+
 _SPECIALTY_STOPWORDS = {"طب", "جراحه", "امراض", "علاج", "قسم", "عام", "عامه", "استشارات"}
 
 
@@ -5213,6 +5272,24 @@ def match_entity_for_booking(
            and ask the user to pick one; nothing was saved.
     {"matched": false, "ambiguous": false}
         -> no match at all.
+    {"matched": false, "status": "is_a_specialty", "specialty_name": ...,
+     "specialty_id": ...}
+        -> what they typed is not a doctor's name, it is one of this
+           clinic's SPECIALTIES (e.g. they answered "اسنان" when asked
+           which doctor). This is a normal, sensible answer - most
+           patients know the department, not the doctor.
+           Call `find_available_doctors` with `specialty_name` set to
+           the `specialty_name` returned here and show the doctors,
+           numbered, ending with ONE question: which doctor.
+           Do it in THIS SAME TURN. NEVER say "ما لقيت دكتور باسم ..."
+           for this status - they never claimed it was a name - and
+           never ask permission first ("تحب أشوف لك قائمة
+           الدكاترة؟"): they have already told you what they want.
+           CONFIRMED REAL PRODUCTION FAILURE: "اسنان" was answered
+           "ما لقيت دكتور باسم أسنان 🔍، تحب أشوف لك قائمة الدكاترة
+           المتاحين في تخصص طب اسنان؟" - which names the specialty it
+           claims not to have found, and then asks to be allowed to
+           act on it.
     {"matched": true, ..., "noDoctorsAtBranch": true}
         -> the branch was confirmed but NOBODY works there (for this
            booking's specialty). Never claim there's a list of doctors:
@@ -5652,6 +5729,28 @@ def match_entity_for_booking(
     match_result = _fuzzy_match(user_input, items, name_keys)
 
     if match_result["result"] == "not_matched":
+        # THEY NAMED A DEPARTMENT, NOT A PERSON.
+        #
+        # "اسنان" is not a doctor who could not be found - it is a
+        # perfectly good answer to "which doctor?", given in the words
+        # most patients actually have. Telling them no such doctor
+        # exists is both wrong and a dead end. See
+        # `_specialty_named_by`.
+        if entity_type == "doctor":
+            specialty = _specialty_named_by(state, base_url, user_input)
+            if specialty:
+                logger.info(
+                    "match_entity_for_booking: %r is the specialty %r, not a "
+                    "doctor's name - returning is_a_specialty",
+                    user_input, specialty.get("name"),
+                )
+                return {
+                    "matched": False, "ambiguous": False,
+                    "status": "is_a_specialty",
+                    "specialty_id": specialty.get("id"),
+                    "specialty_name": specialty.get("name"),
+                }
+
         return {"matched": False, "ambiguous": False}
 
     if match_result["result"] == "ambiguous":
