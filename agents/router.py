@@ -904,7 +904,10 @@ def _classify_with_llm(text: str, active_agent: Optional[str]) -> Optional[str]:
         from langchain_core.messages import HumanMessage
         import graph  # imported lazily: graph imports this package
 
-        llm = getattr(graph, "_llm", None)
+        # The router's OWN binding, which fails fast - see
+        # graph._router_llm. Falls back to the main model only if that
+        # attribute is missing (an older graph.py), never preferring it.
+        llm = getattr(graph, "_router_llm", None) or getattr(graph, "_llm", None)
         if llm is None:
             return None
 
