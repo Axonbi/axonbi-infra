@@ -103,6 +103,73 @@ CRISIS_RE = re.compile(
 )
 
 
+# ==========================================================
+# INJURIES - A HEALTH MESSAGE WITH NO PAIN WORD IN IT
+# ==========================================================
+#
+# Every medical cue below asks for a SYMPTOM: a pain word ("\u0648\u062C\u0639",
+# "\u0635\u062F\u0627\u0639"), or a body part followed by a hurting verb ("\u0628\u0637\u0646\u064A \u0628\u062A\u0648\u062C\u0639\u0646\u064A").
+# An injury is described the other way round - by WHAT HAPPENED. "\u0631\u062C\u0644\u064A
+# \u0648\u0642\u0639\u062A \u0639\u0644\u064A\u0647\u0627", "\u0627\u062A\u062E\u0628\u0637\u062A \u0641\u064A \u0627\u064A\u062F\u064A", "\u0631\u062C\u0644\u064A \u0627\u062A\u0643\u0633\u0631\u062A", "\u062D\u0631\u0642\u062A \u0627\u064A\u062F\u064A" contain no
+# symptom word at all, so they scored NOTHING and stayed with whichever
+# specialist happened to be active.
+#
+# CONFIRMED IN A REAL CONVERSATION: "\u0631\u062C\u0644\u064A \u0648\u0642\u0639\u062A \u0639\u0644\u064A\u0647\u0627" was answered with
+# the out-of-scope service menu - "\u0623\u0646\u0627 \u0644\u0637\u064A\u0641\u0629\u060C \u0627\u0644\u0645\u0633\u0627\u0639\u062F\u0629 \u0627\u0644\u0627\u0641\u062A\u0631\u0627\u0636\u064A\u0629...
+# \u0648\u0645\u062E\u062A\u0635\u0629 \u0628\u0645\u0633\u0627\u0639\u062F\u062A\u0643 \u0641\u064A \u062E\u062F\u0645\u0627\u062A \u0627\u0644\u0645\u0633\u062A\u0634\u0641\u0649" - to somebody describing an
+# injury. They sent the identical message again and only then got
+# "\u0627\u0644\u0644\u0647 \u064A\u0634\u0627\u0641\u064A\u0643 \u0648\u064A\u0639\u0627\u0641\u064A\u0643 \uD83C\uDF37 \u0645\u0646 \u0648\u064A\u0646 \u062A\u062D\u0633 \u0628\u0627\u0644\u0623\u0644\u0645 \u0628\u0627\u0644\u0636\u0628\u0637\u061F".
+#
+# The patterns are built around a BODY PART so that ordinary uses of
+# these verbs cannot trip them: "\u0648\u0642\u0639\u062A \u0627\u0644\u0639\u0642\u062F" (I signed the contract)
+# has no body part and matches nothing, while "\u0631\u062C\u0644\u064A \u0648\u0642\u0639\u062A \u0639\u0644\u064A\u0647\u0627" does.
+_INJURY_BODY_PART = (
+    r"(?:\u0631\u062C\u0644|\u0631\u062C\u0644\u064A|\u0631\u062C\u0644\u064A\u0627|\u0627\u064A\u062F|\u0627\u064A\u062F\u064A|\u064A\u062F\u064A|\u0631\u0627\u0633|\u0631\u0627\u0633\u064A|\u0636\u0647\u0631|\u0636\u0647\u0631\u064A|\u0638\u0647\u0631|\u0638\u0647\u0631\u064A|\u0643\u062A\u0641|\u0643\u062A\u0641\u064A|"
+    r"\u0631\u0643\u0628\u0647|\u0631\u0643\u0628\u062A\u064A|\u0627\u0635\u0628\u0639|\u0635\u0628\u0627\u0639|\u0635\u0648\u0627\u0628\u0639|\u0642\u062F\u0645|\u0642\u062F\u0645\u064A|\u0628\u0637\u0646|\u0628\u0637\u0646\u064A|\u0635\u062F\u0631|\u0635\u062F\u0631\u064A|\u0631\u0642\u0628\u0647|\u0631\u0642\u0628\u062A\u064A|"
+    r"\u0639\u064A\u0646|\u0639\u064A\u0646\u064A|\u0633\u0646|\u0633\u0646\u0627\u0646\u064A|\u0636\u0631\u0633|\u0636\u0631\u0633\u064A|\u0643\u0648\u0639|\u0643\u0648\u0639\u064A|\u0645\u0639\u0635\u0645|\u0645\u0639\u0635\u0645\u064A|\u0641\u062E\u062F|\u0641\u062E\u062F\u064A|\u0643\u0627\u062D\u0644)"
+)
+
+_INJURY_VERB = (
+    r"(?:\u0648\u0642\u0639|\u0627\u062A\u062E\u0628\u0637|\u062E\u0628\u0637|\u0627\u0646\u062E\u0628\u0637|\u0627\u062A\u0643\u0633\u0631|\u0643\u0633\u0631|\u0627\u0646\u0643\u0633\u0631|\u0627\u062A\u062D\u0631\u0642|\u062D\u0631\u0642|\u0627\u0646\u062D\u0631\u0642|\u0627\u062A\u062C\u0631\u062D|\u062C\u0631\u062D|"
+    r"\u0627\u0646\u062C\u0631\u062D|\u0627\u062A\u0639\u0648\u0631|\u062A\u0639\u0648\u0631|\u0627\u0644\u062A\u0648|\u0627\u062A\u0644\u0648|\u0644\u0648\u064A|\u0627\u0646\u062A\u0641\u062E|\u0648\u0631\u0645|\u0646\u0632\u0641|\u0627\u062A\u062F\u0639\u0633|\u0627\u0646\u062F\u0639\u0633)"
+)
+
+INJURY_RE = re.compile(
+    # body part first: "\u0631\u062C\u0644\u064A \u0648\u0642\u0639\u062A \u0639\u0644\u064A\u0647\u0627", "\u0627\u064A\u062F\u064A \u0627\u062A\u0643\u0633\u0631\u062A"
+    _INJURY_BODY_PART + r"\w*\s*[^.\n]{0,12}" + _INJURY_VERB + r"|"
+    # verb first: "\u0648\u0642\u0639\u062A \u0639\u0644\u0649 \u0631\u062C\u0644\u064A", "\u0627\u062A\u062E\u0628\u0637\u062A \u0641\u064A \u0627\u064A\u062F\u064A", "\u0643\u0633\u0631\u062A \u0627\u064A\u062F\u064A"
+    r"(?:\u0648\u0642\u0639\u062A|\u0627\u062A\u062E\u0628\u0637\u062A|\u062E\u0628\u0637\u062A|\u0643\u0633\u0631\u062A|\u0627\u062A\u0643\u0633\u0631\u062A|\u062D\u0631\u0642\u062A|\u0627\u062A\u062D\u0631\u0642\u062A|\u062C\u0631\u062D\u062A|\u0627\u062A\u062C\u0631\u062D\u062A|\u0644\u0648\u064A\u062A|\u0627\u0644\u062A\u0648\u064A\u062A|\u0627\u062A\u062F\u0639\u0633\u062A)"
+    r"\s*(?:\u0639\u0644\u0649|\u0641\u064A|\u0645\u0646|\u0628)?\s*[^.\n]{0,10}" + _INJURY_BODY_PART + r"|"
+    # unambiguous on their own - these words have no non-injury reading
+    r"(?:^|\s)(?:\u0627\u062A\u0639\u0648\u0631\u062A|\u0627\u062A\u0639\u0648\u0631|\u0627\u062A\u0643\u0633\u0631\u062A|\u0627\u0646\u0643\u0633\u0631\u062A|\u0627\u062A\u062D\u0631\u0642\u062A|\u0627\u0646\u062D\u0631\u0642\u062A|\u0627\u062A\u062C\u0631\u062D\u062A|\u0627\u0646\u062C\u0631\u062D\u062A|"
+    r"\u0627\u062A\u062E\u0628\u0637\u062A|\u0627\u0646\u062E\u0628\u0637\u062A|\u0627\u0644\u062A\u0648\u064A\u062A|\u0627\u062A\u062F\u0639\u0633\u062A)(?:\s|$)|"
+    # an accident
+    r"(?:\u0639\u0645\u0644\u062A|\u062D\u0635\u0644\s*\u0644\u064A|\u062C\u0627\u0644\u064A|\u062A\u0639\u0631\u0636\u062A\s*\u0644)\s*(?:\u062D\u0627\u062F\u062B|\u062D\u0627\u062F\u062B\u0647|\u0635\u062F\u0645\u0647)|"
+    r"(?:^|\s)\u062D\u0627\u062F\u062B\s*(?:\u0639\u0631\u0628\u064A\u0647|\u0633\u064A\u0631|\u0645\u0631\u0648\u0631\u064A)|"
+    # a bite or a sting
+    r"(?:\u0639\u0636\u0646\u064A|\u0639\u0636\u062A\u0646\u064A|\u0644\u062F\u063A\u0646\u064A|\u0644\u062F\u063A\u062A\u0646\u064A|\u0642\u0631\u0635\u0646\u064A)\s*(?:\u0643\u0644\u0628|\u0642\u0637\u0647|\u0646\u062D\u0644\u0647|\u0639\u0642\u0631\u0628|\u062B\u0639\u0628\u0627\u0646|\u062D\u0634\u0631\u0647)?|"
+    # English
+    r"\b(?:i\s+)?(?:fell|broke|sprained|twisted|burn(?:ed|t)|cut|injured|"
+    r"hurt|banged|sprain)\b[^.\n]{0,20}"
+    r"\b(?:my|leg|arm|hand|foot|ankle|wrist|knee|back|head|finger|shoulder|toe|rib)\b|"
+    r"\b(?:broken|fractured|sprained|dislocated)\s+"
+    r"(?:leg|arm|hand|foot|ankle|wrist|knee|finger|shoulder|rib|bone)\b"
+)
+
+
+def looks_like_health_message(text: str) -> bool:
+    """True when the message is about the patient's own body - a
+    symptom, an injury, a medication question or a crisis.
+
+    ONE definition, so the router and graph.py's scope-refusal guard
+    cannot disagree about what counts. It reads the medical cue scores
+    rather than keeping a second list, so anything added to `_CUES`
+    below is covered here automatically - which is exactly the drift
+    that let an injury reach the service menu in the first place."""
+
+    return "medical" in score_message(text)
+
+
 _DIACRITICS_RE = re.compile(r"[\u064B-\u0652\u0670\u0640]")
 _DIGIT_MAP = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
 _ALEF_RE = re.compile(r"[أإآٱ]")
@@ -281,6 +348,10 @@ _CUES: Dict[str, List[Tuple[int, str]]] = {
         # graph.py, so a phrasing added there routes here too. Weighted 12
         # so it switches even mid-flow: a patient who says this has
         # stopped booking, and everything else must stop with them.
+        # AN INJURY IS A MEDICAL MESSAGE. Weighted 10 - the same as a
+        # described symptom - so it switches even mid-flow: somebody who
+        # has just hurt themselves is not still booking. See INJURY_RE.
+        (10, INJURY_RE.pattern),
         (12, CRISIS_RE.pattern),
     ],
 
