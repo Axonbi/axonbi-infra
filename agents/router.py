@@ -645,6 +645,13 @@ _ASKED_SPECIALTY_OR_DOCTOR_RE = re.compile(
     # never match anything. That is a silent failure: the question
     # simply stops being recognised.
     r"بالتخصص\s*ولا\s*بالدكتور|بالدكتور\s*ولا\s*بالتخصص|"
+    # "دكتور أو تخصص معيّن في بالك؟" - the current wording, which
+    # puts the two options side by side instead of contrasting them
+    # with "ولا". Added when the message changed; without it the
+    # question stops being recognised and the routing rule that
+    # keeps a symptom with `booking` silently stops firing.
+    r"(?:دكتور|طبيب)\s*(?:او|ولا|ام)\s*تخصص|"
+    r"تخصص\s*(?:او|ولا|ام)\s*(?:دكتور|طبيب)|"
     r"تبدا\s*بالتخصص|تبدا\s*بالدكتور|"
     r"طبيب\s*(?:معين|محدد)[^.\n؟?]{0,40}(?:ولا|او|ام)[^.\n؟?]{0,20}تخصص|"
     r"تخصص[^.\n؟?]{0,40}(?:ولا|او|ام)[^.\n؟?]{0,20}(?:طبيب|دكتور)|"
