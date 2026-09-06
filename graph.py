@@ -5848,6 +5848,197 @@ _UNAVAILABLE_SPECIALTY_CORRECTION_DIRECTIVE = (
 )
 
 
+# ==========================================================
+# "لا" MEANT NO
+# ==========================================================
+#
+# `_build_negation_directive` already tells the model, before it writes,
+# that a refusal must move the conversation AWAY from whatever was just
+# offered. Confirmed by testing it against the real messages: it fires
+# correctly on both "لا" and "لا مش عاوزه". The model ignored it, twice,
+# in one conversation - which is what a directive with no verifier
+# behind it is always free to do.
+#
+# CONFIRMED IN A REAL CONVERSATION:
+#   bot: "تحب أحجزلك عنده؟"   (Dr Taha)
+#   patient: "لا"
+#   bot: "هل تود معرفة أسعار خدمات الدكتور طه مبروك؟"
+# The refused doctor came straight back, one question later.
+
+def _entities_offered_in_previous_reply(state: AgentState) -> list:
+    """The doctor name(s) the assistant's previous reply put on the
+    table - taken from the evidence ledger, so only names a tool
+    actually returned count, and matched against that reply's text."""
+
+    messages = state.get("messages") or []
+    previous = _norm_ar(_last_ai_reply_text(messages))
+    if not previous:
+        return []
+
+    ledger = build_evidence_ledger(messages)
+
+    offered = []
+    for doctor in ledger.get("doctors") or []:
+        name = _norm_ar(doctor)
+        if not name:
+            continue
+        # A reply usually trims the stored name ("د. طه مبروك -
+        # استشاري طب الباطنة" shown as "د. طه مبروك"), so match on the
+        # identifying words rather than the whole stored string.
+        parts = [p for p in name.split() if len(p) >= 3 and p not in ("د", "دكتور", "الدكتور")]
+        if parts and all(p in previous for p in parts[:2]):
+            offered.append(doctor)
+
+    return offered
+
+
+def _reply_ignores_a_refusal(reply_text: str, state: AgentState) -> bool:
+    """True when the patient refused, and the reply brings the refused
+    thing straight back.
+
+    Narrow on purpose: it needs the patient's whole message to be a
+    refusal, a doctor to have been on the table in the reply they were
+    refusing, and that SAME doctor to reappear. Offering a DIFFERENT
+    doctor is exactly the right move after a refusal and must not be
+    flagged."""
+
+    if not reply_text:
+        return False
+
+    messages = state.get("messages") or []
+    text = _latest_human_text(messages)
+    if not text:
+        return False
+
+    folded_human = _norm_ar(text)
+    if not (_BARE_NEGATION_RE.match(folded_human) or _LEADING_REFUSAL_RE.match(folded_human)):
+        return False
+
+    offered = _entities_offered_in_previous_reply(state)
+    if not offered:
+        return False
+
+    folded_reply = _norm_ar(reply_text)
+    for doctor in offered:
+        parts = [p for p in _norm_ar(doctor).split()
+                 if len(p) >= 3 and p not in ("د", "دكتور", "الدكتور")]
+        if parts and all(p in folded_reply for p in parts[:2]):
+            return True
+
+    return False
+
+
+_REFUSAL_CORRECTION_DIRECTIVE = (
+    "============================================================\n"
+    "THEY SAID NO AND YOU BROUGHT IT STRAIGHT BACK\n"
+    "============================================================\n"
+    "The patient refused what you offered, and your previous draft "
+    "names the very same doctor again - a different question about the "
+    "same person is still the same person.\n\n"
+    "CONFIRMED REAL FAILURE: \"تحب أحجزلك عنده؟\" -> \"لا\" -> \"هل تود "
+    "معرفة أسعار خدمات الدكتور طه مبروك؟\". The refusal was answered "
+    "with a follow-up about the doctor they had just turned down.\n\n"
+    "Move on. Acceptable next steps, in order of preference:\n"
+    "  - offer the OTHER doctors a tool has returned in this "
+    "conversation, if there are any;\n"
+    "  - if there are none, say so plainly - \"ده الوحيد المتاح "
+    "حاليًا في التخصص ده\" - and ask ONE question about what they'd "
+    "like instead (another specialty, another branch, a staff handoff);\n"
+    "  - never re-offer the refused doctor in any form: not their "
+    "prices, not their schedule, not their other branches.\n\n"
+    "Do not invent a new requirement either. A refusal is not a reason "
+    "to start asking for a phone number or a booking reference.\n\n"
+)
+
+
+# ==========================================================
+# ASKING FOR A BOOKING THAT DOES NOT EXIST
+# ==========================================================
+#
+# CONFIRMED IN THE SAME CONVERSATION: the patient, mid-way through
+# choosing a NEW appointment, said "لا مش عاوزه" - and got "هل تود
+# تعطيني رقم جوالك مع رمز الدولة أو رقم الحجز عشان أقدر أساعدك؟".
+#
+# That question is STEP 1 of the CANCEL flow. It only makes sense for
+# somebody who already HAS a booking, and this patient had never
+# mentioned one - as they put it afterwards: "انا محجزتش، رقم حجز ايه".
+# The model invented a prerequisite, and the conversation stalled on a
+# number that does not exist.
+#
+# Deliberately targets the CHOICE construction ("رقم الجوال أو رقم
+# الحجز"), which belongs to cancel/reschedule STEP 1 and nowhere else.
+# The new-booking flow's own phone question (STEP NB6) asks for a phone
+# ALONE and is untouched by this.
+
+_REFERENCE_OR_PHONE_CHOICE_RE = re.compile(
+    r"رقم\s*(?:ال)?(?:جوال|موبايل|تليفون|هاتف)[^.\n؟?]{0,40}"
+    r"(?:او|أو|ولا)[^.\n؟?]{0,20}رقم\s*(?:ال)?حجز|"
+    r"رقم\s*(?:ال)?حجز[^.\n؟?]{0,40}(?:او|أو|ولا)[^.\n؟?]{0,20}"
+    r"رقم\s*(?:ال)?(?:جوال|موبايل|تليفون|هاتف)|"
+    r"\b(?:phone\s*number|mobile\s*number)\b[^.\n?]{0,30}\bor\b"
+    r"[^.\n?]{0,20}\bbooking\s*(?:reference|number)\b"
+)
+
+_EXISTING_BOOKING_CONTEXT_TOOLS = ("lookup_appointment", "check_booking_status",
+                                   "cancel_appointment", "reschedule_appointment",
+                                   "get_available_reschedule_slots")
+
+
+def _reply_asks_to_identify_a_booking_that_was_never_mentioned(
+    reply_text: str, state: AgentState,
+) -> bool:
+    """True when the reply asks the patient to identify an existing
+    booking, and nothing in the conversation says they have one."""
+
+    if not reply_text:
+        return False
+
+    if not _REFERENCE_OR_PHONE_CHOICE_RE.search(_norm_ar(reply_text)):
+        return False
+
+    messages = state.get("messages") or []
+
+    # A real booking has been touched - the question is legitimate.
+    for msg in messages:
+        if getattr(msg, "type", None) == "tool" and \
+                getattr(msg, "name", None) in _EXISTING_BOOKING_CONTEXT_TOOLS:
+            return False
+
+    # The patient themselves raised cancelling or changing something, or
+    # typed a reference - also legitimate.
+    for msg in messages:
+        if getattr(msg, "type", None) != "human":
+            continue
+        content = getattr(msg, "content", "")
+        text = content if isinstance(content, str) else str(content)
+        if _booking_reference_in(text):
+            return False
+        if _CANCEL_OR_CHANGE_INTENT_RE.search(_norm_ar(text)):
+            return False
+
+    return True
+
+
+_NO_SUCH_BOOKING_CORRECTION_DIRECTIVE = (
+    "============================================================\n"
+    "YOU ASKED FOR A BOOKING THIS PATIENT DOES NOT HAVE\n"
+    "============================================================\n"
+    "Your previous draft asked for a phone number OR a booking "
+    "reference. That is STEP 1 of the CANCELLATION flow - it exists to "
+    "find an appointment that already exists.\n\n"
+    "This patient has never mentioned an existing booking, and no tool "
+    "in this conversation has looked one up. They have nothing to give "
+    "you. CONFIRMED REAL FAILURE: a patient part-way through choosing a "
+    "NEW appointment said \"لا مش عاوزه\" and was asked for their "
+    "booking reference; their own reaction was \"انا محجزتش، رقم حجز "
+    "ايه\".\n\n"
+    "Delete that question. Answer what they actually said, and ask ONE "
+    "question that moves THIS conversation forward. If you genuinely do "
+    "not know what they want next, ask that plainly - never reach for "
+    "an identifier as a way to fill the turn.\n\n"
+)
+
+
 def _reply_dumps_specialty_catalogue(reply_text: str, state: AgentState) -> bool:
     """True when a MEDICAL-GUIDANCE reply prints the specialty catalogue
     as a numbered list for the patient to pick from.
@@ -8993,6 +9184,20 @@ _REPLY_VERIFIERS = (
         ),
         lambda reply, state: _SPECIALTY_CATALOGUE_CORRECTION_DIRECTIVE,
         "medical-guidance reply printed the specialty catalogue for the patient to pick from",
+    ),
+    (
+        lambda reply, state, agent_name: _reply_ignores_a_refusal(reply, state),
+        lambda reply, state: _REFUSAL_CORRECTION_DIRECTIVE,
+        "the patient refused, and the reply brought the same doctor straight back",
+    ),
+    (
+        lambda reply, state, agent_name: (
+            _reply_asks_to_identify_a_booking_that_was_never_mentioned(reply, state)
+        ),
+        lambda reply, state: _NO_SUCH_BOOKING_CORRECTION_DIRECTIVE,
+        "reply asked for a phone number or booking reference to identify an existing "
+        "booking, but this patient has never mentioned having one and no tool has "
+        "looked one up",
     ),
     (
         # UNGATED BY AGENT. Any specialist can be the one holding the
