@@ -4132,6 +4132,87 @@ def _emojify_list_numbers(text: str) -> str:
     return _PLAIN_LIST_MARKER_RE.sub(_replace, text)
 
 
+# TWO OR MORE KEYCAP DIGITS WRITTEN SIDE BY SIDE, with no bidi isolate
+# around them. `\uFE0F` (the variation selector) is optional because
+# models emit both forms; `\u20E3` (COMBINING ENCLOSING KEYCAP) is what
+# actually makes a digit a badge.
+_STACKED_KEYCAP_RUN_RE = re.compile(r"(?:[0-9]\uFE0F?\u20E3){2,}")
+
+# The same run when it is ALREADY isolated - `_numbered_prefix` built it,
+# so it is already correct and must not be wrapped a second time.
+_ISOLATED_KEYCAP_RUN_RE = re.compile(
+    r"\u2066(?:[0-9]\uFE0F?\u20E3){2,}\u2069"
+)
+
+_KEYCAP_DIGIT_RE = re.compile(r"([0-9])\uFE0F?\u20E3")
+
+
+def _normalize_stacked_number_emojis(text: str) -> str:
+    """Put a multi-digit emoji badge the MODEL wrote through
+    `_numbered_prefix`, so it comes out identical to a badge this file
+    built.
+
+    WHY THIS EXISTS - CONFIRMED REAL PRODUCTION FAILURE: a 19-item list
+    of patient names was numbered by the model, following the response
+    contract's own instruction to write "1️⃣1️⃣, 1️⃣2️⃣ ..." past ten. It
+    did exactly that - and item ten arrived on the patient's phone
+    reading "0️⃣1️⃣". Keycap emoji are bidi-NEUTRAL symbols, not European
+    numbers, so inside an Arabic (RTL) paragraph a two-symbol run is free
+    to be laid out right-to-left; "10" renders as "01", "12" as "21",
+    while "11" looks fine only because reversing two identical digits is
+    invisible. `_numbered_prefix` has wrapped its own output in
+    LRI...PDI for exactly this reason since the bug was first found in a
+    code-built slot list - but only lists this file pre-builds ever went
+    through it. Every model-written list (doctors, branches, patient
+    names, specialties) reached the patient unisolated.
+
+    This is the numbering half of the same argument
+    `_emojify_list_numbers` makes for plain "1." markers: the model
+    cannot be relied on to emit an invisible control character it has no
+    reason to know about, so the shape is fixed here instead.
+
+    A run that is already isolated is left exactly as it is.
+    """
+
+    if not text or "\u20E3" not in text:
+        return text
+
+    # Protect the already-correct runs, so the pass below cannot double
+    # wrap them.
+    placeholders = {}
+
+    def _stash(match):
+        key = f"\x00{len(placeholders)}\x00"
+        placeholders[key] = match.group(0)
+        return key
+
+    protected = _ISOLATED_KEYCAP_RUN_RE.sub(_stash, text)
+
+    def _rewrite(match):
+        digits = "".join(_KEYCAP_DIGIT_RE.findall(match.group(0)))
+        if not digits:
+            return match.group(0)
+        try:
+            value = int(digits)
+        except ValueError:
+            return match.group(0)
+        # A leading zero is not a list position ("0️⃣1️⃣" is the REVERSED
+        # rendering of ten, not the number one) - int() would silently
+        # turn it into 1 and renumber the list. Leave it; the reordering
+        # happens at render time, not in the string, so a leading zero
+        # here means the model genuinely wrote one.
+        if digits[0] == "0" or value < 1:
+            return match.group(0)
+        return _numbered_prefix(value)
+
+    rewritten = _STACKED_KEYCAP_RUN_RE.sub(_rewrite, protected)
+
+    for key, original in placeholders.items():
+        rewritten = rewritten.replace(key, original)
+
+    return rewritten
+
+
 def _is_redundant_closing_question_only(reply_text: str, greeting: str) -> bool:
     """
     True when `reply_text` is essentially just a repeat of the
@@ -7109,7 +7190,9 @@ def _apply_output_contract(
          lines). First, so nothing downstream has to reason about it.
       1. Trim any question beyond the first (ONE QUESTION PER MESSAGE).
       2. Emoji list badges, so every list looks the same - including
-         lists no pre-built directive exists for.
+         lists no pre-built directive exists for, and including
+         multi-digit badges the model wrote itself, which need a bidi
+         isolate it has no way of knowing about.
       3. The shared response contract (filler openers, "let me check
          that", persona re-introductions, leaked routing language,
          irregular blank lines).
@@ -7130,6 +7213,12 @@ def _apply_output_contract(
         )
 
     normalized = _emojify_list_numbers(trimmed)
+
+    # Badges the model wrote itself as stacked keycaps get the same bidi
+    # isolate a code-built badge has carried since "1️⃣2️⃣" was confirmed
+    # rendering as "21" on real devices. See
+    # `_normalize_stacked_number_emojis`.
+    normalized = _normalize_stacked_number_emojis(normalized)
 
     if not config.REPLY_NORMALIZATION_ENABLED:
         return normalized
@@ -8602,6 +8691,7 @@ _FLOW_VERIFIER_MARKERS = (
     "before a doctor was confirmed and a time slot was selected",
     "should have been treated as another OTP retry",
     "right after the patient agreed to proceed on the channel number",
+    "whether to send the verification code instead of",
     "instead of showing the doctors",
     "instead of showing that doctor's own schedule",
     "printed the specialty catalogue",
@@ -9144,6 +9234,149 @@ def _claim_gate_retries_exhausted(state: AgentState) -> bool:
     return False
 
 
+# ==========================================================
+# THE OTP IS NOT A FAVOUR TO BE OFFERED
+# ==========================================================
+#
+# A phone number that is not the one the patient is messaging from
+# cannot be used until it is verified. There is therefore nothing for
+# them to decide, and a yes/no question about sending the code is a
+# question with no usable "no" branch.
+#
+# CONFIRMED REAL PRODUCTION FAILURE (booking flow, STEP NB6): the
+# patient typed +201155611045, the assistant answered "رقم الجوال اللي
+# أعطيته مختلف عن رقم الواتساب اللي تستخدمه. من فضلك، هل تبي نرسل لك
+# رمز التحقق على هذا الرقم؟ (نعم/لا)". They said "لا" - and the flow had
+# nowhere to go, so it asked for the number again. The same two messages
+# repeated three times and the booking never happened.
+#
+# Both halves are here: `_build_otp_required_directive` stops the
+# question being written, and `_reply_asks_permission_to_send_otp`
+# catches it if it is written anyway.
+
+# The PERMISSION question, as distinct from asking for the code itself.
+# Both sentences contain "رمز التحقق", so the discriminator is a
+# want/permission word paired with a SENDING verb - "من فضلك أرسل رمز
+# التحقق اللي وصلك" has the sending verb but no permission word, and
+# must never be flagged.
+_OTP_PERMISSION_QUESTION_RE = re.compile(
+    r"(?:هل|تبي|تبغى|تبغي|تحب|تريد|ترغب|تود|عايز|عاوز|توافق)"
+    r"[^.\n؟?]{0,30}"
+    r"(?:نرسل|ارسل|نبعت|ابعت|نبعتلك|ابعتلك|ارسال|بعث|يرسل|نرسلك)"
+    r"[^.\n؟?]{0,30}(?:رمز|كود)|"
+    r"(?:رمز|كود)\s*(?:ال)?(?:تحقق|تاكيد|otp)[^.\n؟?]{0,40}"
+    r"\(?\s*نعم\s*/\s*لا|"
+    r"\b(?:shall\s+i|should\s+i|would\s+you\s+like|do\s+you\s+want|"
+    r"may\s+i|can\s+i)\b[^.\n?]{0,40}\bsend\b[^.\n?]{0,25}"
+    r"\b(?:code|otp)\b",
+    re.IGNORECASE,
+)
+
+# Agents that actually hold `send_otp` (see agents/registry.py). A
+# specialist without it must not be told to call it.
+_OTP_CAPABLE_AGENTS = ("cancel", "reschedule", "booking", "concierge")
+
+
+def _reply_asks_permission_to_send_otp(reply_text: str, state: AgentState) -> bool:
+    """True when the reply asks the patient whether to send the
+    verification code, instead of sending it."""
+
+    if not reply_text:
+        return False
+
+    # A question ANYWHERE in the reply, not only as its last character -
+    # `_QUESTION_MARK_RE` is anchored to the end of the string, and the
+    # real failure ended "...على هذا الرقم؟ (نعم/لا)", with the yes/no
+    # hint after the question mark.
+    if not re.search(r"[?؟]", reply_text):
+        return False
+
+    return bool(_OTP_PERMISSION_QUESTION_RE.search(_norm_ar(reply_text)))
+
+
+_OTP_PERMISSION_CORRECTION_DIRECTIVE = (
+    "============================================================\n"
+    "SEND THE CODE - DO NOT ASK PERMISSION TO SEND IT\n"
+    "============================================================\n"
+    "Your previous draft asked the patient a yes/no question about "
+    "sending the verification code. That question has no usable \"no\" "
+    "branch: the number they gave is not the number they are messaging "
+    "from, so it cannot be used for anything until it is verified. "
+    "There is nothing for them to decide.\n\n"
+    "Call `send_otp` for that number in THIS turn, tell them the code "
+    "has been sent to it, and ask for the code. That is the one "
+    "question in this message.\n\n"
+    "CONFIRMED REAL PRODUCTION FAILURE: \"هل تبي نرسل لك رمز التحقق على "
+    "هذا الرقم؟ (نعم/لا)\" was answered \"لا\", and the flow had nowhere "
+    "to go - the same two messages repeated three times and the booking "
+    "never happened.\n\n"
+    "If they later say they would rather not verify a different number "
+    "at all, the answer is still never to skip verification: offer the "
+    "number they ARE messaging from, or the booking reference instead, "
+    "or a member of staff.\n\n"
+)
+
+
+_OTP_REQUIRED_DIRECTIVE = (
+    "============================================================\n"
+    "THIS NUMBER IS NOT THEIRS - SEND THE CODE NOW, DON'T OFFER TO\n"
+    "============================================================\n"
+    "`compare_phone` has just come back \"no_match\": the number the "
+    "patient gave is NOT the number this conversation is coming from. "
+    "It cannot be used until it is verified.\n\n"
+    "So, in THIS turn:\n"
+    "  1. Call `send_otp` with that same number - the exact digits the "
+    "patient typed, not the channel number and not a reformatted "
+    "version.\n"
+    "  2. Say, in one short line, that a verification code has been "
+    "sent to it.\n"
+    "  3. Ask for the code. That is this message's single question.\n\n"
+    "DO NOT ask whether to send it. \"هل تبي نرسل لك رمز التحقق على هذا "
+    "الرقم؟ (نعم/لا)\", \"هل ترغب في إرسال رمز التحقق؟\" and every other "
+    "yes/no wrapper around it are wrong here - there is no branch a "
+    "\"لا\" could lead to, and a real patient answered exactly that and "
+    "got stuck in a three-message loop.\n\n"
+    "DO NOT go back and ask for the phone number again either. You have "
+    "it; it just needs verifying.\n\n"
+    "The patient's NEXT message after this one is the code, whatever it "
+    "looks like - pass it straight to `verify_otp` with this same "
+    "number.\n\n"
+)
+
+
+def _build_otp_required_directive(messages: list, agent_name: str) -> str:
+    """Fires on the turn `compare_phone` reports the supplied number is
+    not the channel's own - the exact moment the permission question
+    used to get written."""
+
+    if agent_name not in _OTP_CAPABLE_AGENTS:
+        return ""
+
+    results = _tool_results_since_latest_human(messages, ("compare_phone",))
+    if not results:
+        return ""
+
+    no_match = False
+    for msg in results:
+        try:
+            data = json.loads(msg.content)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(data, dict) and data.get("status") == "no_match":
+            no_match = True
+
+    if not no_match:
+        return ""
+
+    # Already sent on this same turn - the model chained the calls, which
+    # is exactly what this asks for, and repeating the instruction would
+    # invite a second `send_otp`.
+    if _tool_results_since_latest_human(messages, ("send_otp",)):
+        return ""
+
+    return _OTP_REQUIRED_DIRECTIVE
+
+
 _REPLY_VERIFIERS = (
     (
         lambda reply, state, agent_name: _reply_scope_refuses_a_health_message(reply, state),
@@ -9276,6 +9509,19 @@ _REPLY_VERIFIERS = (
         lambda reply, state: _PHONE_ALREADY_KNOWN_CORRECTION_DIRECTIVE,
         "reply asked for a phone number (or a booking reference instead) right after "
         "the patient agreed to proceed on the channel number the service already has",
+    ),
+    (
+        # UNGATED BY FLOW, GATED BY CAPABILITY. The same question was
+        # produced from the NEW BOOKING flow (STEP NB6) and can just as
+        # easily come out of cancel/reschedule STEP 2 - the OTP rules
+        # are shared between them by design.
+        lambda reply, state, agent_name: (
+            agent_name in _OTP_CAPABLE_AGENTS
+            and _reply_asks_permission_to_send_otp(reply, state)
+        ),
+        lambda reply, state: _OTP_PERMISSION_CORRECTION_DIRECTIVE,
+        "reply asked the patient whether to send the verification code instead of "
+        "sending it, leaving a yes/no question with no usable no branch",
     ),
     (
         lambda reply, state, agent_name: (
@@ -11783,13 +12029,42 @@ def _reply_reoffers_reference_after_phone_chosen(reply_text: str, state: AgentSt
     # reference-or-phone question, immediately followed by a human
     # reply that is a bare, specific choice of "phone" (not "reference",
     # not something ambiguous - only a clean single-method pick counts).
+    #
+    # THE PHONE PATH IS ALSO CHOSEN IMPLICITLY, and this is the commoner
+    # way it happens. The same-WhatsApp-number question ("نكمل تعديل
+    # موعدك على نفس رقم الواتساب ده؟") exists ONLY on the phone branch of
+    # STEP 2 - there is no reason to ask it of somebody identifying by
+    # reference - so asking it commits this identification step to phone
+    # numbers just as firmly as the patient typing "رقم الجوال".
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE this half catches: STEP 1 was
+    # asked as a COMPOUND question ("تحب تلغي أو تعدل الموعد برقم الحجز
+    # ولا برقم الجوال؟"), the patient answered "اعدل" - which answers the
+    # cancel-or-modify half, not the method half - and the assistant went
+    # straight to "نكمل تعديل موعدك على نفس رقم الواتساب ده؟". The
+    # patient said "لا" and was handed "أرسل رقم الجوال مع رمز الدولة أو
+    # رقم الحجز". No bare "رقم الجوال" ever appeared in the transcript,
+    # so the original check saw no choice at all and stayed silent -
+    # even though the assistant itself had put the conversation on the
+    # phone path two messages earlier.
     chose_phone = False
     asked_step1 = False
     for msg in messages:
         if isinstance(msg, _AIMessage3):
             content = getattr(msg, "content", "")
             text = content if isinstance(content, str) else str(content or "")
-            asked_step1 = bool(_REFERENCE_OR_PHONE_QUESTION_RE.search(_norm_ar(text)))
+            folded_ai = _norm_ar(text)
+            asked_step1 = bool(_REFERENCE_OR_PHONE_QUESTION_RE.search(folded_ai))
+
+            # The implicit commitment. Scoped exactly like
+            # `_reply_skips_reference_or_phone_question` scopes the same
+            # question, so the unrelated NEW BOOKING flow's own STEP NB6
+            # ("نكمل الحجز على نفس رقم الواتساب ده؟") - which has no
+            # reference option to re-offer in the first place - can never
+            # trip this.
+            if (_SAME_WHATSAPP_QUESTION_RE.search(folded_ai)
+                    and _CANCEL_OR_RESCHEDULE_CONTEXT_RE.search(folded_ai)):
+                chose_phone = True
         elif isinstance(msg, _HumanMessage3) and asked_step1:
             content = getattr(msg, "content", "")
             text = content if isinstance(content, str) else str(content or "")
@@ -11811,9 +12086,12 @@ _REFERENCE_REOFFER_CORRECTION_DIRECTIVE = (
     "THE PATIENT ALREADY CHOSE \"PHONE\" - DON'T RE-OFFER \"REFERENCE\"\n"
     "============================================================\n"
     "Your previous draft asked for the phone number OR the booking "
-    "reference - but the patient already specifically answered \"رقم "
-    "الجوال\" (phone) when STEP 1 asked them to choose. Re-opening that "
-    "choice now reads as if their answer was never registered.\n\n"
+    "reference - but this identification step is already committed to "
+    "phone numbers. Either the patient answered \"رقم الجوال\" when "
+    "STEP 1 asked them to choose, or you have already asked them whether "
+    "to continue on this same WhatsApp number - a question that only "
+    "exists on the phone path. Re-opening the choice now reads as if "
+    "their answer was never registered.\n\n"
     "Rewrite the reply to ask ONLY for the phone number - e.g. \"من "
     "فضلك أرسل رقم الجوال مع رمز الدولة\" - with no mention of the "
     "booking reference as an alternative. If a phone-based lookup later "
@@ -11826,6 +12104,218 @@ _REFERENCE_REOFFER_CORRECTION_DIRECTIVE = (
     "ده؟\", and was then asked for \"رقم الجوال ... أو رقم الحجز الخاص "
     "بك\" - reopening a decision already made one turn earlier.\n\n"
 )
+
+
+# ==========================================================
+# STEP 1's OWN QUESTION - FIXED TEXT, ONE VERB
+# ==========================================================
+#
+# WHY THIS IS WRITTEN IN CODE, exactly like the booking flow's opening
+# question (see `_BOOKING_ENTRY_MESSAGE` and the long comment above it):
+# there is nothing in it to compose. Every patient who asks to cancel or
+# to move an appointment, and has given neither a reference nor a phone
+# number, should be asked the same two-option question in the same words.
+#
+# THE FAILURE THIS REPLACES, CONFIRMED IN PRODUCTION: the patient said
+# "لا عاوزه اعدل الحجز" - unambiguously a reschedule - and the reply was
+#
+#     "تحب تلغي أو تعدل الموعد برقم الحجز ولا برقم الجوال؟"
+#
+# which asks TWO things at once, one of which ("cancel or modify?") the
+# patient had answered in the message being replied to. They picked
+# "اعدل" - the half that should never have been asked - and the
+# identification half was then guessed at rather than answered.
+#
+# The verb comes from what the patient actually said, so cancelling is
+# never offered to somebody who asked to reschedule, or the other way
+# round. A clinic can override either wording with a
+# `msg_cancel_identifier_choice` / `msg_reschedule_identifier_choice`
+# column in its config row, exactly like every other authored message.
+_IDENTIFIER_CHOICE_MESSAGE = {
+    "cancel": {
+        "ar": "تحب تلغي الموعد برقم الجوال ولا برقم الحجز؟",
+        "en": (
+            "Would you like to cancel the appointment using your phone "
+            "number or your booking reference?"
+        ),
+    },
+    "reschedule": {
+        "ar": "تحب تعدل الموعد برقم الجوال ولا برقم الحجز؟",
+        "en": (
+            "Would you like to change the appointment using your phone "
+            "number or your booking reference?"
+        ),
+    },
+}
+
+_IDENTIFIER_CHOICE_TEMPLATE_KEY = {
+    "cancel": "msg_cancel_identifier_choice",
+    "reschedule": "msg_reschedule_identifier_choice",
+}
+
+
+def _identifier_choice_message(
+    templates: dict, target_language: Optional[str], intent: str,
+) -> str:
+    """STEP 1's question, in the clinic's own wording if it has one."""
+
+    authored = (templates or {}).get(_IDENTIFIER_CHOICE_TEMPLATE_KEY.get(intent, ""))
+    if authored and str(authored).strip():
+        return str(authored).replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    is_english = (target_language or "").strip().lower().startswith("en")
+    return _IDENTIFIER_CHOICE_MESSAGE[intent]["en" if is_english else "ar"]
+
+
+# WHICH VERB. Written in FOLDED form (see `_norm_ar`) - the text is
+# normalised before matching, so a hamza written here would match
+# nothing.
+#
+# Cancel is tested FIRST and wins a message that somehow contains both:
+# "الغي الحجز وعدل الموعد" is a patient who wants the appointment gone,
+# and offering to move it instead is the worse of the two mistakes.
+_CANCEL_VERB_RE = re.compile(
+    r"(?:^|\s)(?:الغ|ابطل|بطل)\w*|(?:^|\s)(?:ال)?الغاء(?:\s|$)|"
+    r"\bcancel\w*",
+    re.IGNORECASE,
+)
+
+_MODIFY_VERB_RE = re.compile(
+    r"(?:^|\s)(?:عدل|اعدل|غير|اغير|اجل|اؤجل|انقل|قدم)\w*|"
+    r"(?:^|\s)(?:ال)?(?:تعديل|تاجيل|تغيير|تقديم)(?:\s|$)|"
+    r"\breschedul\w*|\bpostpon\w*|\b(?:change|move|shift)\b",
+    re.IGNORECASE,
+)
+
+
+# A DELIBERATE REQUEST TO CANCEL OR TO MOVE AN APPOINTMENT, and
+# essentially nothing else. Deliberately much tighter than
+# `_CANCEL_OR_CHANGE_INTENT_RE`, for the same reason
+# `_BARE_BOOKING_REQUEST_RE` is tighter than `_BOOKING_INTENT_RE`: the
+# reply is emitted straight from code, so a false positive here replaces
+# a real answer with a question.
+_BARE_CANCEL_OR_CHANGE_REQUEST_RE = re.compile(
+    r"(?:عايز|عاوز|عايزه|عاوزه|ابغى|ابغي|ابي|حاب|حابه|نفسي|اريد|ودي|بدي|"
+    r"محتاج|محتاجه)"
+    r"[^.\n]{0,12}(?:الغ|اعدل|عدل|اغير|غير|اجل|انقل|تعديل|الغاء|تاجيل|تغيير)|"
+    r"(?:^|\s)(?:الغاء|تعديل|تاجيل|تغيير)\s*(?:ال)?"
+    r"(?:حجز|حجزي|موعد|موعدي|معاد|ميعاد|كشف)|"
+    r"(?:^|\s)(?:الغي|الغ|اعدل|عدل|غير|اجل|انقل)\s*(?:لي\s*)?(?:ال)?"
+    r"(?:حجز|حجزي|موعد|موعدي|معاد|ميعاد|كشف)|"
+    r"\b(?:i\s*(?:want|need|would\s+like)|can\s+i|i'?d\s+like)\b[^.\n]{0,20}"
+    r"\b(?:cancel|reschedul\w*|change|move|postpone)\b|"
+    r"\b(?:cancel|reschedule|postpone|change|move)\s+(?:my|the)\s*"
+    r"(?:appointment|booking|reservation)\b",
+    re.IGNORECASE,
+)
+
+
+def _cancel_or_reschedule_intent(messages: list, agent_name: str) -> str:
+    """"cancel" or "reschedule", decided from the patient's own words and
+    only falling back to which specialist owns the turn.
+
+    The patient's wording is authoritative: the router legitimately keeps
+    a weak cue on whichever specialist was already active, so
+    `agent_name` alone would offer cancellation to somebody who asked to
+    reschedule."""
+
+    folded = _norm_ar(_latest_human_text(messages))
+
+    if folded:
+        if _CANCEL_VERB_RE.search(folded):
+            return "cancel"
+        if _MODIFY_VERB_RE.search(folded):
+            return "reschedule"
+
+    if agent_name in ("cancel", "reschedule"):
+        return agent_name
+
+    return ""
+
+
+_IDENTIFIER_CHOICE_ASK_DIRECTIVE = (
+    "============================================================\n"
+    "STEP 1 - ASK HOW TO FIND THE BOOKING, ONE CHOICE ONLY\n"
+    "============================================================\n"
+    "The patient has asked to cancel or to move an appointment and has "
+    "given neither a booking reference nor a phone number, and no "
+    "booking is on the table in this conversation. This is STEP 1.\n\n"
+    "Your reply is ONE question with exactly TWO options, using the verb "
+    "THEY used:\n\n"
+    "    cancelling   -> \"تحب تلغي الموعد برقم الجوال ولا برقم الحجز؟\"\n"
+    "    rescheduling -> \"تحب تعدل الموعد برقم الجوال ولا برقم الحجز؟\"\n\n"
+    "(this exact wording is normally sent from code without a model call "
+    "- see _identifier_choice_message. You only compose it yourself if a "
+    "clinic has overridden it, in which case follow ITS wording.)\n\n"
+    "NEVER fold \"cancel or modify?\" into this question. \"تحب تلغي أو "
+    "تعدل الموعد برقم الحجز ولا برقم الجوال؟\" asks two things at once, "
+    "and the patient answered the first one in the message you are "
+    "replying to. CONFIRMED REAL PRODUCTION FAILURE: \"لا عاوزه اعدل "
+    "الحجز\" was answered with exactly that sentence; the patient "
+    "replied \"اعدل\", which answered the half that should never have "
+    "been asked, and the identification step was guessed at instead.\n\n"
+    "Everything else is wrong on this turn:\n"
+    "  - Do NOT ask whether to continue on this WhatsApp number. That "
+    "question belongs one rung later, and only if they pick phone.\n"
+    "  - Do NOT ask for the phone number or the reference outright. "
+    "Which one to use is their choice, not your assumption.\n"
+    "  - Do NOT call any tool. There is nothing to look up until they "
+    "answer.\n\n"
+)
+
+
+def _build_identifier_choice_directive(messages: list, agent_name: str) -> str:
+    """STEP 1's opening rung for cancel and reschedule, decided in code.
+
+    Stands down the moment there is something to act on instead - an
+    identifier in the message, a booking already on the table, identity
+    work already done, or STEP 1's question already asked."""
+
+    if agent_name not in _EXISTING_BOOKING_AGENTS or not messages:
+        return ""
+
+    index = _latest_human_index(messages)
+    if index < 0 or index != len(messages) - 1:
+        return ""
+
+    content = getattr(messages[index], "content", "")
+    text = (content if isinstance(content, str) else str(content)).strip()
+    if not text:
+        return ""
+
+    folded = _norm_ar(text)
+
+    if not _BARE_CANCEL_OR_CHANGE_REQUEST_RE.search(folded):
+        return ""
+
+    if not _cancel_or_reschedule_intent(messages, agent_name):
+        return ""
+
+    # They already told us HOW to find it - STEP 1's own smart-detection
+    # rule skips the question in that case.
+    if _booking_reference_in(text) or _supplied_phone_in(text):
+        return ""
+
+    # "ألغيه" about a booking this conversation already has in hand is
+    # `_build_just_booked_directive`'s job, not a fresh STEP 1.
+    if _reference_of_the_booking_on_screen(messages):
+        return ""
+
+    # Any identity or lookup work already done means we are past STEP 1.
+    for msg in messages:
+        if getattr(msg, "name", None) in _IDENTITY_VERIFICATION_TOOLS:
+            return ""
+
+    # Already asked - do not ask twice.
+    for msg in messages:
+        if getattr(msg, "type", None) != "ai":
+            continue
+        msg_content = getattr(msg, "content", "")
+        msg_text = msg_content if isinstance(msg_content, str) else str(msg_content or "")
+        if _REFERENCE_OR_PHONE_QUESTION_RE.search(_norm_ar(msg_text)):
+            return ""
+
+    return _IDENTIFIER_CHOICE_ASK_DIRECTIVE
 
 
 def _reply_reasks_identity_after_verification(reply_text: str, state: AgentState) -> bool:
@@ -12663,6 +13153,17 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     # ask for it again, whichever specialist happens to hold the turn.
     supplied_identifier_directive = _build_supplied_identifier_directive(state["messages"])
 
+    # STEP 1's opening rung for cancel and reschedule - the mirror image
+    # of `booking_entry_directive` above, and built for the same reason:
+    # a fixed two-option question that every patient must receive in the
+    # same words. Stands down whenever the patient already supplied an
+    # identifier, since `supplied_identifier_directive` is then acting
+    # on it and the two must never both be live.
+    identifier_choice_directive = (
+        "" if supplied_identifier_directive
+        else _build_identifier_choice_directive(state["messages"], agent_name)
+    )
+
     # "الغيه" / "عدله" about the booking already on the table. Suppressed
     # when the patient typed a reference of their own - that one wins,
     # and the directive above is already acting on it.
@@ -12679,6 +13180,13 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         state["messages"], state.get("templates") or {},
     )
     review_phone_directive = _build_review_card_phone_directive(state, state.get("session_id"))
+
+    # `compare_phone` said the number they gave is not the one they are
+    # messaging from. Sending the code is the only way forward from
+    # there, so it is an instruction, not an offer.
+    otp_required_directive = _build_otp_required_directive(
+        state["messages"], agent_name,
+    )
     selected_slot_directive = _build_selected_slot_directive(state.get("session_id"))
 
     # The scoped prompt for whoever owns this turn. Rebuilt per turn for
@@ -12719,6 +13227,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         + bare_doctor_directive + show_all_doctors_directive
         + doctor_branches_directive + branch_question_directive
         + review_phone_directive + selected_slot_directive
+        + otp_required_directive
         + supplied_identifier_directive + just_booked_directive + scope_directive
         + empty_branch_directive + branch_pick_directive + day_pick_directive
         + negation_directive
@@ -12739,6 +13248,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         # says what the patient has already supplied and therefore wins
         # any overlap - it is placed after them deliberately.
         + established_specialty_directive + booking_entry_directive
+        + identifier_choice_directive
         + symptom_in_booking_directive
         + multi_intent_directive + named_day_directive + day_unavailable_directive
         + show_soonest_directive
@@ -12853,10 +13363,31 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
             and booking_entry_directive is _BOOKING_ENTRY_ASK_DIRECTIVE) else None
     )
 
+    # THE SAME TREATMENT FOR STEP 1's "reference or phone?" QUESTION, and
+    # for the same three reasons: it is a fixed message with no variable
+    # content, every patient should get the identical words, and the
+    # wording the model reaches for on its own has repeatedly been the
+    # broken one ("تحب تلغي أو تعدل الموعد برقم الحجز ولا برقم الجوال؟" -
+    # two questions in one sentence, one of them already answered).
+    #
+    # SCOPED TO `cancel` AND `reschedule`, NOT `concierge` - identical
+    # reasoning to the booking rung above. A real "عايز ألغي حجزي" scores
+    # 11 and a real "عاوزه اعدل الحجز" scores 10, both far above
+    # _START_THRESHOLD, so the router hands these to a specialist; the
+    # legacy full-access `concierge` path is deliberately left composing
+    # its own reply from the directive.
+    if deterministic_reply is None and agent_name in ("cancel", "reschedule"):
+        if identifier_choice_directive is _IDENTIFIER_CHOICE_ASK_DIRECTIVE:
+            intent = _cancel_or_reschedule_intent(state["messages"], agent_name)
+            if intent:
+                deterministic_reply = _identifier_choice_message(
+                    state.get("templates") or {}, target_language, intent,
+                )
+
     if deterministic_reply is not None:
         logger.info(
-            "agent[%s]: booking entry question - sending the fixed wording "
-            "without a model call", agent_name,
+            "agent[%s]: fixed flow-entry question - sending the authored "
+            "wording without a model call", agent_name,
         )
         response = AIMessage(content=deterministic_reply)
     else:
