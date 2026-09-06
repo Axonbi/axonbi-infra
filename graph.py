@@ -5455,6 +5455,135 @@ _UNRELATED_SPECIALTY_CORRECTION_DIRECTIVE = (
 )
 
 
+def _specialties_from_tool_results(messages: list) -> tuple:
+    """(bookable names, unstaffed names) from every `list_specialties`
+    result in this conversation.
+
+    `unstaffed_specialties` is a list of plain STRINGS, not of dicts -
+    which is why the guards that only walked `specialties` never saw a
+    department the clinic really has but cannot book today, and treated
+    naming one as naming nothing.
+    """
+
+    bookable, unstaffed = [], []
+
+    for msg in messages or []:
+        if getattr(msg, "name", None) != "list_specialties":
+            continue
+        try:
+            data = json.loads(msg.content)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+
+        for item in data.get("specialties") or data.get("items") or []:
+            if isinstance(item, dict):
+                for key in ("name", "altName"):
+                    value = item.get(key)
+                    if value and str(value).strip():
+                        bookable.append(str(value).strip())
+                        break
+
+        for value in data.get("unstaffed_specialties") or []:
+            if value and str(value).strip():
+                unstaffed.append(str(value).strip())
+
+    def _dedupe(names):
+        seen, out = set(), []
+        for name in names:
+            key = _norm_ar(name)
+            if key and key not in seen:
+                seen.add(key)
+                out.append(name)
+        return out
+
+    return _dedupe(bookable), _dedupe(unstaffed)
+
+
+def _build_unstaffed_specialty_directive(messages: list, agent_name: str) -> str:
+    """Fires on the turn `list_specialties` comes back holding
+    departments the clinic HAS but cannot book today.
+
+    WHY A DIRECTIVE AND NOT ANOTHER VERIFIER: by the time a verifier
+    sees the draft, the model has already decided to substitute, and
+    every correction from there is an argument with a reply it believes
+    in. The tool result names both lists explicitly, so the choice can
+    be framed BEFORE the reply is written - and framed with the actual
+    names in it, rather than as a rule about a list the model has to
+    remember to re-read.
+
+    CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+    201158877175+medtown2, 2026-09-06 11:41): "رجلي وقعت عليها".
+    `list_specialties` returned 17 specialties, 4 bookable, and
+    جراحة العظام among the 13 unstaffed. The first draft got the
+    conclusion right - "للأسف تخصص جراحة العظام غير متوفر حاليًا. تحب
+    أساعدك تتواصل مع موظف؟" - but printed the four bookable
+    specialties on the way there, which included نساء وتوليد and
+    tripped the gynaecology guard. The rewrite dropped the catalogue
+    AND the conclusion, and offered طب الباطنة for a leg somebody had
+    just fallen on. Both drafts fail this directive's rules; neither
+    would have been written with it in the prompt.
+    """
+
+    if agent_name not in ("medical", "concierge", "booking", "faq"):
+        return ""
+
+    fresh = _tool_results_since_latest_human(messages, ("list_specialties",))
+    if not fresh:
+        return ""
+
+    bookable, unstaffed = _specialties_from_tool_results(fresh)
+    if not unstaffed:
+        return ""
+
+    unstaffed_list = "\n".join(f"      - {name}" for name in unstaffed)
+    bookable_list = (
+        "\n".join(f"      - {name}" for name in bookable)
+        if bookable else "      (none - nobody at all is bookable right now)"
+    )
+
+    return (
+        "============================================================\n"
+        "SOME DEPARTMENTS EXIST BUT CANNOT BE BOOKED TODAY\n"
+        "============================================================\n"
+        "`list_specialties` has just told you two different things, and "
+        "they must not be mixed up.\n\n"
+        "  DEPARTMENTS THIS CLINIC HAS, WITH NO BOOKABLE DOCTOR RIGHT "
+        "NOW:\n" + unstaffed_list + "\n\n"
+        "  SPECIALTIES YOU MAY ACTUALLY OFFER AN APPOINTMENT IN:\n"
+        + bookable_list + "\n\n"
+        "WORK OUT WHICH DEPARTMENT THE SYMPTOM NEEDS FIRST, then say "
+        "which of these three is true - and nothing else:\n\n"
+        "  1. It is in the BOOKABLE list -> name that specialty and "
+        "offer its doctors, exactly as usual.\n"
+        "  2. It is in the UNBOOKABLE list -> say so, in one sentence, "
+        "and offer a staff member:\n"
+        "       \"عندنا قسم [التخصص] بس للأسف ما فيه دكتور متاح حاليًا "
+        "- تحب أوصلك بموظف يساعدك؟\"\n"
+        "     That is a COMPLETE and CORRECT answer. It tells them the "
+        "clinic does treat this and that today is not the day.\n"
+        "  3. It is in neither list -> \"للأسف ما عندنا التخصص ده في "
+        "المستشفى\", then offer a staff member.\n\n"
+        "TWO THINGS THAT ARE NEVER THE ANSWER HERE:\n"
+        "  - NEVER offer a specialty from the bookable list because the "
+        "right one is unavailable. A leg somebody fell on does not "
+        "become an internal-medicine problem just because orthopaedics "
+        "has no slots. The patient pays for that trip and still needs "
+        "the right doctor.\n"
+        "  - NEVER print the bookable list as a menu for them to choose "
+        "from. They described a symptom; picking the department is your "
+        "job, not theirs, and a catalogue of unrelated specialties is "
+        "not an answer to \"my leg hurts\".\n\n"
+        "Keep the warm opening line, the comfort measures, the red "
+        "flags and the ⚕️ not-a-diagnosis line exactly as the medical "
+        "flow requires - including naming the RIGHT kind of doctor, "
+        "which is true advice wherever they end up going. Only the "
+        "closing offer changes.\n\n"
+        "Your reply still ends with exactly ONE question.\n\n"
+    )
+
+
 def _medical_reply_names_two_specialties(reply_text: str, state: AgentState) -> bool:
     """True when a medical-guidance reply tells the patient to see one
     specialty and then offers an appointment in a DIFFERENT one.
@@ -5494,24 +5623,29 @@ def _medical_reply_names_two_specialties(reply_text: str, state: AgentState) -> 
     if len(_NUMBERED_LIST_ITEM_RE.findall(reply_text)) >= 2:
         return False
 
-    specialty_names = set()
-    for msg in state.get("messages", []) or []:
-        if getattr(msg, "name", None) != "list_specialties":
-            continue
-        try:
-            data = json.loads(msg.content)
-        except (ValueError, TypeError):
-            continue
-        if not isinstance(data, dict):
-            continue
-        for item in data.get("specialties") or data.get("items") or []:
-            if isinstance(item, dict):
-                for key in ("name", "altName"):
-                    value = item.get(key)
-                    if value:
-                        normalized = _norm_ar(str(value))
-                        if len(normalized) >= 4:
-                            specialty_names.add(normalized)
+    # BOTH LISTS THE TOOL RETURNS, NOT JUST THE BOOKABLE ONE.
+    #
+    # `unstaffed_specialties` holds the departments this clinic really
+    # has but cannot book today, and the contradiction this check exists
+    # to catch is very often exactly "advise the unstaffed one, offer a
+    # bookable one". Reading only `specialties` meant the advised half
+    # counted as no specialty at all, so `mentioned` never reached two.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (medtown, 2026-09-06): "رجلي
+    # وقعت عليها" was answered "لازم تراجع دكتور جراحة العظام فورًا ...
+    # عندنا دكاترة في تخصص طب الباطنة، تحب أحجز لك موعد مع واحد منهم؟".
+    # Orthopaedics was in `unstaffed_specialties`, internal medicine in
+    # `specialties` - a textbook contradiction, and this check saw one
+    # name and stayed silent.
+    bookable, unstaffed = _specialties_from_tool_results(
+        state.get("messages") or [],
+    )
+
+    specialty_names = {
+        normalized
+        for normalized in (_norm_ar(name) for name in bookable + unstaffed)
+        if len(normalized) >= 4
+    }
 
     if not specialty_names:
         return False
@@ -11484,10 +11618,6 @@ def _build_review_card_phone_directive(state: AgentState, session_id: str) -> st
     """Supplies the actual phone number whenever the booking is at or
     near the review-card step, so it can never be described in words."""
 
-    channel_phone = (state or {}).get("channel_phone")
-    if not channel_phone:
-        return ""
-
     if not session_id:
         return ""
 
@@ -11495,7 +11625,23 @@ def _build_review_card_phone_directive(state: AgentState, session_id: str) -> st
     if not (session.get("doctor_id") and session.get("branch_id")):
         return ""
 
-    normalized = tools.normalize_phone_number(channel_phone, state) or channel_phone
+    # THE NUMBER THE PATIENT CHOSE, NOT THE ONE THEY HAPPEN TO BE
+    # MESSAGING FROM.
+    #
+    # This used to hand over the channel number unconditionally, which
+    # meant that on the one path where the two differ - the patient
+    # declined their WhatsApp number and proved another one - this
+    # directive actively instructed the model to print the WRONG number
+    # on the card the patient is being asked to check. See
+    # tools._set_booking_phone for the conversation that exposed it.
+    chosen = session.get("booking_phone")
+    channel_phone = (state or {}).get("channel_phone")
+
+    source = chosen or channel_phone
+    if not source:
+        return ""
+
+    normalized = tools.normalize_phone_number(source, state) or source
 
     return _REVIEW_CARD_PHONE_DIRECTIVE.format(phone=normalized)
 
@@ -12403,6 +12549,71 @@ _NEW_BOOKING_SAME_NUMBER_QUESTION_RE = re.compile(
 )
 
 
+_NEW_BOOKING_DIFFERENT_NUMBER_DIRECTIVE = (
+    "============================================================\n"
+    "THEY WANT A DIFFERENT NUMBER - ASK FOR THE NUMBER, NOTHING ELSE\n"
+    "============================================================\n"
+    "You asked whether to book on this same WhatsApp number and the "
+    "patient said no. There is exactly one thing to ask now:\n\n"
+    "    \"من فضلك أرسل رقم الجوال مع رمز الدولة.\"\n\n"
+    "NEVER OFFER A BOOKING REFERENCE HERE. This is a BRAND NEW "
+    "appointment - it does not exist yet, so there is no reference "
+    "number for it and the patient cannot possibly have one. \"من فضلك "
+    "أرسل رقم الجوال مع رمز الدولة أو رقم الحجز الخاص بك\" asks them "
+    "for something that cannot exist, and it belongs to the "
+    "CANCELLATION flow, which is a different conversation about an "
+    "appointment they already hold.\n\n"
+    "CONFIRMED REAL PRODUCTION FAILURE (medtown, 2026-09-06 12:19): "
+    "that exact sentence went out mid-booking, was flagged for asking "
+    "the patient to identify a booking they had never mentioned, was "
+    "rewritten the same way a second time, and the patient ended up "
+    "with \"ممكن توضحلي طلبك تاني؟\" instead of the one short question "
+    "the flow needed - two turns after choosing their appointment "
+    "time.\n\n"
+    "Also do NOT: ask for their name yet, re-ask which time they "
+    "picked, offer to continue on the WhatsApp number they just "
+    "declined, or explain why you need the number. One line, one "
+    "question.\n\n"
+    "Then, on their next message: validate the format, call "
+    "`compare_phone`, and if it comes back \"no_match\" call `send_otp` "
+    "for it in that same turn - sending the code is not optional and is "
+    "never offered as a yes/no.\n\n"
+)
+
+
+def _build_new_booking_different_number_directive(
+    messages: list, agent_name: str,
+) -> str:
+    """Fires the moment a NEW-booking patient declines their own channel
+    number, which is where the reference-number sentence kept getting
+    written."""
+
+    if agent_name not in ("booking", "concierge") or not messages:
+        return ""
+
+    index = _latest_human_index(messages)
+    if index < 0 or index != len(messages) - 1:
+        return ""
+
+    content = getattr(messages[index], "content", "")
+    text = (content if isinstance(content, str) else str(content)).strip()
+    if not text or not _PLAIN_NEGATIVE_RE.match(_norm_ar(text)):
+        return ""
+
+    last_ai = _norm_ar(_last_ai_reply_text(messages))
+    if not last_ai or not _NEW_BOOKING_SAME_NUMBER_QUESTION_RE.search(last_ai):
+        return ""
+
+    # Already moved on - a number has since been supplied and checked,
+    # so this rung is behind us.
+    if _tool_results_since_latest_human(
+        messages, ("compare_phone", "send_otp", "verify_otp", "get_patient_info"),
+    ):
+        return ""
+
+    return _NEW_BOOKING_DIFFERENT_NUMBER_DIRECTIVE
+
+
 def _reply_asks_same_number_before_booking_ready(reply_text: str, state: AgentState) -> bool:
     """True when a NEW BOOKING reply asks "same WhatsApp number?"
     (STEP NB6) before a doctor is confirmed AND a time slot is
@@ -13187,6 +13398,20 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     otp_required_directive = _build_otp_required_directive(
         state["messages"], agent_name,
     )
+
+    # `list_specialties` came back with departments that exist but have
+    # no bookable doctor. Frame that choice before the reply is written
+    # rather than arguing with it afterwards.
+    unstaffed_specialty_directive = _build_unstaffed_specialty_directive(
+        state["messages"], agent_name,
+    )
+
+    # They declined their own WhatsApp number mid-booking. Ask for the
+    # number and nothing else - above all, never for a reference number
+    # that cannot exist yet.
+    new_booking_number_directive = _build_new_booking_different_number_directive(
+        state["messages"], agent_name,
+    )
     selected_slot_directive = _build_selected_slot_directive(state.get("session_id"))
 
     # The scoped prompt for whoever owns this turn. Rebuilt per turn for
@@ -13227,7 +13452,8 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         + bare_doctor_directive + show_all_doctors_directive
         + doctor_branches_directive + branch_question_directive
         + review_phone_directive + selected_slot_directive
-        + otp_required_directive
+        + otp_required_directive + unstaffed_specialty_directive
+        + new_booking_number_directive
         + supplied_identifier_directive + just_booked_directive + scope_directive
         + empty_branch_directive + branch_pick_directive + day_pick_directive
         + negation_directive
@@ -13498,155 +13724,249 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         # was sent glued underneath the full opening greeting/menu,
         # because nothing downstream distinguished it from a normal
         # first reply.
-        for check, correction_directive, description in _REPLY_VERIFIERS:
-            if not check(normalized, state, agent_name):
-                continue
+        # THE TABLE IS RE-RUN FROM THE TOP WHENEVER A REWRITE LANDS.
+        #
+        # One pass was not enough, and the reason is structural: the
+        # loop only ever moves FORWARD, so a correction produced by
+        # check number 32 is judged by checks 33 onward and by nothing
+        # before it. Every earlier check has already been passed - on a
+        # draft that no longer exists.
+        #
+        # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+        # 201158877175+medtown2, 2026-09-06 11:41): "رجلي وقعت عليها".
+        # The first draft ended correctly - orthopaedics is unstaffed,
+        # here is a staff handoff - but listed the four bookable
+        # specialties on the way, one of which was نساء وتوليد, so the
+        # gynaecology check (index 32) fired and asked for a rewrite.
+        # The rewrite dropped the catalogue AND the conclusion, and
+        # offered طب الباطنة for a leg somebody had just fallen on. The
+        # two checks that exist for exactly that - "offered a specialty
+        # that does not treat the body part" (14) and "advised one
+        # specialty and offered an appointment in a different one" (15)
+        # - sit BEFORE 32 and were never consulted again. The patient
+        # got the referral.
+        #
+        # BOUNDED, DELIBERATELY. Two passes, and `attempted_checks`
+        # gives each check exactly one correction for the whole turn -
+        # so the worst case is a handful of extra model calls, never a
+        # loop, and a check that keeps firing lands on the same
+        # FLOW/SAFETY outcome it already had when it failed twice in
+        # one pass.
+        # A HARD CEILING ON REWRITE CALLS, SEPARATE FROM THE PASS COUNT.
+        #
+        # The table holds thirty-odd checks and each one that fires costs
+        # a model call. Nothing bounded the TOTAL, so a draft that
+        # displeased many checks at once could spend a dozen calls inside
+        # this single node - confirmed in production (medtown, session
+        # 201003365691+medtown2, 2026-09-06 12:23): thirteen completions
+        # roughly 1.2s apart on one turn, sixteen seconds of silence, and
+        # the turn ended in the graph's recursion limit with the patient
+        # getting the generic "ممكن توضحلي طلبك تاني؟".
+        #
+        # Four is enough for the cases these checks were written for - a
+        # draft with one real problem, plus the rewrite breaking one other
+        # thing - and turns "the reply is unusually bad" into a bounded
+        # cost instead of a runaway one.
+        _MAX_VERIFIER_PASSES = 2
+        _MAX_VERIFIER_CORRECTIONS = 4
+        attempted_checks: set = set()
+        corrections_used = 0
 
-            # Severity is decided ONCE, here, and drives both whether
-            # this check is enforced at all and what happens if the
-            # correction fails - see _verifier_severity.
-            severity = _verifier_severity(description)
-            strict = (
-                _VERIFIERS_SAFETY_STRICT if severity == _SAFETY
-                else _VERIFIERS_FLOW_STRICT
-            )
+        for _verifier_pass in range(_MAX_VERIFIER_PASSES):
+            rewritten_this_pass = False
 
-            logger.error(
-                "agent[%s]: %s | severity=%s strict=%s | reply=%r",
-                agent_name, description, severity, strict, normalized,
-            )
+            for check, correction_directive, description in _REPLY_VERIFIERS:
+                if not check(normalized, state, agent_name):
+                    continue
 
-            if not strict:
-                continue
-
-            directive = correction_directive(normalized, state)
-
-            try:
-                retry = _llm_for(agent_name).invoke(
-                    [SystemMessage(content=directive + system_content)] + history
+                # Severity is decided ONCE, here, and drives both whether
+                # this check is enforced at all and what happens if the
+                # correction fails - see _verifier_severity.
+                severity = _verifier_severity(description)
+                strict = (
+                    _VERIFIERS_SAFETY_STRICT if severity == _SAFETY
+                    else _VERIFIERS_FLOW_STRICT
                 )
-            except (_OpenAIAPITimeoutError, _OpenAIAPIConnectionError) as exc:
-                # Unlike the main turn's call, there is already a usable
-                # (if unverified) reply sitting in `normalized` - a
-                # timeout here should cost this one verifier's
-                # correction, not the whole turn. Log it and move on to
-                # the next verifier (or out of the loop) with the
-                # original reply intact, rather than overwriting a
-                # perfectly fine draft with a generic apology.
-                logger.warning(
-                    "agent[%s]: verifier correction call failed (%s: %s) - keeping the "
-                    "original, unverified reply for check '%s' instead of retrying further",
-                    agent_name, type(exc).__name__, exc, description,
-                )
-                continue
 
-            if getattr(retry, "tool_calls", None):
-                # It chose to go and fetch the real data instead of
-                # rewriting from memory - much better. Let the normal
-                # tools loop run and send nothing this pass.
-                #
-                # BUT THIS PATH CAN LOOP. Returning here sends us back
-                # through the tools node and into this agent again, so
-                # the same verifier can fire, retry, ask for tools, and
-                # return once more - forever, if the check is one the
-                # model cannot satisfy.
-                #
-                # CONFIRMED REAL PRODUCTION FAILURE: a false-positive
-                # "not a diagnosis" check on a doctor-selection reply
-                # spun this loop for roughly a hundred model calls over
-                # two minutes, and the patient received NOTHING - the
-                # turn simply never ended. A verifier being wrong should
-                # cost one wasted call, never the whole conversation.
-                if _verifier_tool_retries_exhausted(state):
-                    # WHAT GETS SENT NOW DEPENDS ON WHAT THE CHECK
-                    # GUARDS. For a FLOW check, delivering the draft is
-                    # right: the verifier is probably wrong and every
-                    # word of the reply is true anyway. For a SAFETY
-                    # check it is not - "we ran out of retries" is not a
-                    # reason to publish a claim no tool supports, which
-                    # is exactly what this branch used to do.
+                logger.error(
+                    "agent[%s]: %s | severity=%s strict=%s | reply=%r",
+                    agent_name, description, severity, strict, normalized,
+                )
+
+                if not strict:
+                    continue
+
+                # ONE CORRECTION ATTEMPT PER CHECK PER TURN. A check
+                # that fires again on a later pass has already had its
+                # rewrite, so it takes the same outcome as failing
+                # twice inside a single pass - never a second retry,
+                # which is what would turn the outer loop into a
+                # model-call spiral.
+                # Out of rewrite calls, or this check has already had
+                # its one attempt - either way it does not get another.
+                if (description in attempted_checks
+                        or corrections_used >= _MAX_VERIFIER_CORRECTIONS):
                     if severity == _FLOW:
                         logger.error(
-                            "agent[%s]: FLOW verifier '%s' has already sent this turn "
-                            "back for tools %d time(s) - accepting the reply as-is "
-                            "rather than looping. THE VERIFIER IS PROBABLY WRONG HERE; "
-                            "nothing it guards is unsafe to send.",
-                            agent_name, description, _MAX_VERIFIER_TOOL_RETRIES,
+                            "agent[%s]: FLOW check '%s' gets no rewrite (attempted="
+                            "%s, corrections_used=%d/%d) - keeping the reply. "
+                            "Reply: %r",
+                            agent_name, description,
+                            description in attempted_checks, corrections_used,
+                            _MAX_VERIFIER_CORRECTIONS, normalized,
                         )
-                        break
-
+                        continue
                     logger.error(
-                        "agent[%s]: SAFETY verifier '%s' exhausted its %d tool "
-                        "retries - sending the safe fallback rather than a reply that "
-                        "still asserts something no tool result supports.",
-                        agent_name, description, _MAX_VERIFIER_TOOL_RETRIES,
+                        "agent[%s]: SAFETY check '%s' gets no rewrite (attempted=%s, "
+                        "corrections_used=%d/%d) - sending the safe fallback rather "
+                        "than a reply that asserts something no tool result "
+                        "supports.",
+                        agent_name, description,
+                        description in attempted_checks, corrections_used,
+                        _MAX_VERIFIER_CORRECTIONS,
                     )
                     normalized = _safe_fallback_reply(state, target_language, description)
                     used_safe_fallback = True
-                    break
+                    continue
 
-                updates["messages"] = [_tag_author(retry, agent_name)]
-                updates["target_language"] = target_language
-                return updates
+                attempted_checks.add(description)
+                corrections_used += 1
 
-            if not retry.content:
-                continue
+                directive = correction_directive(normalized, state)
 
-            if check(retry.content, state, agent_name):
-                # FAILED THE SAME CHECK TWICE. What happens now depends
-                # on WHAT the check protects - `severity` was decided at
-                # the top of this iteration, so enforcement and outcome
-                # can never disagree about which category this is.
-                if severity == _FLOW:
-                    # Every word of this reply is true; it just asks the
-                    # wrong question or sits at the wrong step. Sending
-                    # it costs the patient one clumsy turn. Sending
-                    # "حدث خطأ تقني" costs them the answer entirely, and
-                    # if the verifier itself is the thing that is wrong -
-                    # which twice in a row strongly suggests - it costs
-                    # them a perfectly good answer.
-                    #
-                    # CONFIRMED REAL PRODUCTION FAILURE this prevents:
-                    # "معنديش فرع اسمه النيل. لكن عندنا هالفروع المتاحة
-                    # حاليًا: 1️⃣ المنار 2️⃣ النزهة" - correct, useful,
-                    # and replaced with a technical error because a flow
-                    # check misread it as re-asking a question.
-                    logger.error(
-                        "agent[%s]: FLOW check failed twice (%s) - keeping the reply "
-                        "rather than replacing it with the technical-error message. "
-                        "THE VERIFIER IS PROBABLY WRONG HERE; nothing it guards is "
-                        "unsafe to send. Reply: %r",
-                        agent_name, description, normalized,
+                try:
+                    retry = _llm_for(agent_name).invoke(
+                        [SystemMessage(content=directive + system_content)] + history
+                    )
+                except (_OpenAIAPITimeoutError, _OpenAIAPIConnectionError) as exc:
+                    # Unlike the main turn's call, there is already a usable
+                    # (if unverified) reply sitting in `normalized` - a
+                    # timeout here should cost this one verifier's
+                    # correction, not the whole turn. Log it and move on to
+                    # the next verifier (or out of the loop) with the
+                    # original reply intact, rather than overwriting a
+                    # perfectly fine draft with a generic apology.
+                    logger.warning(
+                        "agent[%s]: verifier correction call failed (%s: %s) - keeping the "
+                        "original, unverified reply for check '%s' instead of retrying further",
+                        agent_name, type(exc).__name__, exc, description,
                     )
                     continue
 
-                # ZERO-TOLERANCE FALLBACK, for SAFETY checks only.
-                #
-                # Before this existed, failing the SAME check twice
-                # still ended with the original, already-flagged reply
-                # going out unmodified. CONFIRMED REAL PRODUCTION
-                # FAILURE: the branch-name verifier logged this exact
-                # "STILL failed after correction" error and the patient
-                # was sent the flagged reply anyway five seconds later.
-                #
-                # A safety verifier firing twice means the model cannot
-                # stop asserting something no tool supports. A generic
-                # "try again" is a much better outcome than a
-                # confidently wrong claim the patient may act on.
-                logger.error(
-                    "agent[%s]: reply STILL failed the same check after correction (%s) - "
-                    "replacing with the safe fallback message rather than sending the "
-                    "twice-flagged reply",
-                    agent_name, description,
-                )
-                normalized = _safe_fallback_reply(state, target_language, description)
-                used_safe_fallback = True
-                continue
+                if getattr(retry, "tool_calls", None):
+                    # It chose to go and fetch the real data instead of
+                    # rewriting from memory - much better. Let the normal
+                    # tools loop run and send nothing this pass.
+                    #
+                    # BUT THIS PATH CAN LOOP. Returning here sends us back
+                    # through the tools node and into this agent again, so
+                    # the same verifier can fire, retry, ask for tools, and
+                    # return once more - forever, if the check is one the
+                    # model cannot satisfy.
+                    #
+                    # CONFIRMED REAL PRODUCTION FAILURE: a false-positive
+                    # "not a diagnosis" check on a doctor-selection reply
+                    # spun this loop for roughly a hundred model calls over
+                    # two minutes, and the patient received NOTHING - the
+                    # turn simply never ended. A verifier being wrong should
+                    # cost one wasted call, never the whole conversation.
+                    if _verifier_tool_retries_exhausted(state):
+                        # WHAT GETS SENT NOW DEPENDS ON WHAT THE CHECK
+                        # GUARDS. For a FLOW check, delivering the draft is
+                        # right: the verifier is probably wrong and every
+                        # word of the reply is true anyway. For a SAFETY
+                        # check it is not - "we ran out of retries" is not a
+                        # reason to publish a claim no tool supports, which
+                        # is exactly what this branch used to do.
+                        if severity == _FLOW:
+                            logger.error(
+                                "agent[%s]: FLOW verifier '%s' has already sent this turn "
+                                "back for tools %d time(s) - accepting the reply as-is "
+                                "rather than looping. THE VERIFIER IS PROBABLY WRONG HERE; "
+                                "nothing it guards is unsafe to send.",
+                                agent_name, description, _MAX_VERIFIER_TOOL_RETRIES,
+                            )
+                            break
 
-            logger.info("agent[%s]: corrected on retry (%s)", agent_name, description)
-            normalized = _apply_output_contract(
-                retry.content, state, target_language, agent_name,
-            )
+                        logger.error(
+                            "agent[%s]: SAFETY verifier '%s' exhausted its %d tool "
+                            "retries - sending the safe fallback rather than a reply that "
+                            "still asserts something no tool result supports.",
+                            agent_name, description, _MAX_VERIFIER_TOOL_RETRIES,
+                        )
+                        normalized = _safe_fallback_reply(state, target_language, description)
+                        used_safe_fallback = True
+                        break
+
+                    updates["messages"] = [_tag_author(retry, agent_name)]
+                    updates["target_language"] = target_language
+                    return updates
+
+                if not retry.content:
+                    continue
+
+                if check(retry.content, state, agent_name):
+                    # FAILED THE SAME CHECK TWICE. What happens now depends
+                    # on WHAT the check protects - `severity` was decided at
+                    # the top of this iteration, so enforcement and outcome
+                    # can never disagree about which category this is.
+                    if severity == _FLOW:
+                        # Every word of this reply is true; it just asks the
+                        # wrong question or sits at the wrong step. Sending
+                        # it costs the patient one clumsy turn. Sending
+                        # "حدث خطأ تقني" costs them the answer entirely, and
+                        # if the verifier itself is the thing that is wrong -
+                        # which twice in a row strongly suggests - it costs
+                        # them a perfectly good answer.
+                        #
+                        # CONFIRMED REAL PRODUCTION FAILURE this prevents:
+                        # "معنديش فرع اسمه النيل. لكن عندنا هالفروع المتاحة
+                        # حاليًا: 1️⃣ المنار 2️⃣ النزهة" - correct, useful,
+                        # and replaced with a technical error because a flow
+                        # check misread it as re-asking a question.
+                        logger.error(
+                            "agent[%s]: FLOW check failed twice (%s) - keeping the reply "
+                            "rather than replacing it with the technical-error message. "
+                            "THE VERIFIER IS PROBABLY WRONG HERE; nothing it guards is "
+                            "unsafe to send. Reply: %r",
+                            agent_name, description, normalized,
+                        )
+                        continue
+
+                    # ZERO-TOLERANCE FALLBACK, for SAFETY checks only.
+                    #
+                    # Before this existed, failing the SAME check twice
+                    # still ended with the original, already-flagged reply
+                    # going out unmodified. CONFIRMED REAL PRODUCTION
+                    # FAILURE: the branch-name verifier logged this exact
+                    # "STILL failed after correction" error and the patient
+                    # was sent the flagged reply anyway five seconds later.
+                    #
+                    # A safety verifier firing twice means the model cannot
+                    # stop asserting something no tool supports. A generic
+                    # "try again" is a much better outcome than a
+                    # confidently wrong claim the patient may act on.
+                    logger.error(
+                        "agent[%s]: reply STILL failed the same check after correction (%s) - "
+                        "replacing with the safe fallback message rather than sending the "
+                        "twice-flagged reply",
+                        agent_name, description,
+                    )
+                    normalized = _safe_fallback_reply(state, target_language, description)
+                    used_safe_fallback = True
+                    continue
+
+                logger.info("agent[%s]: corrected on retry (%s)", agent_name, description)
+                normalized = _apply_output_contract(
+                    retry.content, state, target_language, agent_name,
+                )
+                rewritten_this_pass = True
+
+            # Nothing changed, or the turn has already fallen back to a
+            # safe message - either way there is nothing left for
+            # another pass to judge.
+            if used_safe_fallback or not rewritten_this_pass:
+                break
 
         # ------------------------------------------------------
         # THE CLAIM GATE - the last thing between an irreversible
