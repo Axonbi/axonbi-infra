@@ -5546,6 +5546,66 @@ def _specialties_from_tool_results(messages: list) -> tuple:
     return _dedupe(bookable), _dedupe(unstaffed)
 
 
+def _build_specialty_not_resolved_directive(messages: list) -> str:
+    """Fires on the turn `find_available_doctors` reports that the
+    specialty the patient named is not one this clinic has.
+
+    A DIRECTIVE, NOT A VERIFIER, for the reason spelled out on
+    `_build_unstaffed_specialty_directive`: by the time a verifier reads
+    the draft, the substitution has already been written and every
+    correction costs a full extra model call spent arguing with it. The
+    tool result names the unmatched specialty explicitly, so the choice
+    can be framed before the reply exists.
+
+    WHAT IT GUARDS. `find_available_doctors` used to fall through this
+    case with an empty `specialty_ids`, which the doctors API reads as
+    "no filter" and answers with the clinic's ENTIRE roster - so a
+    toothache came back with a list of internal-medicine doctors and
+    nothing in the payload marked them as off-topic. That silent
+    broadening is gone (see tools.find_available_doctors); this covers
+    the turn that replaced it, where no doctors came back at all and the
+    model must not fill the gap from memory.
+    """
+
+    fresh = _tool_results_since_latest_human(messages, ("find_available_doctors",))
+    if not fresh:
+        return ""
+
+    names = []
+    for msg in fresh:
+        data = parse_tool_content(msg) or {}
+        if data.get("status") != "specialty_not_resolved":
+            continue
+        named = (data.get("specialty_name") or "").strip()
+        if named and named not in names:
+            names.append(named)
+
+    if not names:
+        return ""
+
+    bar = "=" * 60
+
+    return (
+        bar + "\n"
+        "THAT SPECIALTY IS NOT ONE THIS CLINIC HAS\n"
+        + bar + "\n"
+        "The patient asked for: " + " / ".join(names) + ". "
+        "`find_available_doctors` could not match it to any specialty "
+        "this clinic offers, so NO doctor search ran and there are NO "
+        "doctors to show.\n\n"
+        "You must not close that gap yourself. Do NOT name a doctor, do "
+        "NOT offer an appointment, and do NOT substitute a different "
+        "specialty as though it were the one they asked for.\n\n"
+        "Do exactly one of these:\n"
+        "  - say plainly that this specialty is not available here, and "
+        "offer to connect them with a member of staff; or\n"
+        "  - call `list_specialties` and offer ONLY what it returns as "
+        "bookable; or\n"
+        "  - ask which specialty they meant, if their wording really was "
+        "unclear.\n\n"
+    )
+
+
 def _build_unstaffed_specialty_directive(messages: list, agent_name: str) -> str:
     """Fires on the turn `list_specialties` comes back holding
     departments the clinic HAS but cannot book today.
@@ -5746,6 +5806,31 @@ def _in_medical_guidance_handoff(state: AgentState) -> bool:
 
     from langchain_core.messages import AIMessage as _AIMessage
 
+    # WHAT THE PATIENT ACTUALLY DID WITH THE OFFER DECIDES THIS.
+    #
+    # This helper used to answer a narrower question than its own name:
+    # "was the last assistant reply a medical-guidance offer". That is
+    # only half of it. An offer that was REFUSED, or answered with a
+    # different request altogether, is not a handoff - it is a closed
+    # subject - and treating it as one hands every medical guard a turn
+    # that has nothing medical in it.
+    #
+    # CONFIRMED FALSE POSITIVE (this is the reported one): guidance
+    # named a specialty for an injured leg and offered to book; the
+    # patient replied "لا عاوزه احجز معاد" - refusing the offer and
+    # asking to start a plain booking - and the booking reply was still
+    # graded against the specialty-choice and unrelated-specialty
+    # guards, because a "مش تشخيص" clause was sitting in the previous
+    # message. Each one that fires costs a full correction call on a
+    # ~24k-token prompt, and the rewrite it forces is an argument about
+    # medical guidance with a reply that was only ever about booking.
+    #
+    # The affirmation case this helper WAS written for is untouched: a
+    # bare "اه" is neither a refusal nor a competing request, so it
+    # still reads as an acceptance and every guard still applies to it.
+    if not _current_turn_accepts_a_medical_offer(state):
+        return False
+
     for msg in reversed(state.get("messages", []) or []):
         if not isinstance(msg, _AIMessage):
             continue
@@ -5756,6 +5841,64 @@ def _in_medical_guidance_handoff(state: AgentState) -> bool:
         return bool(_MEDICAL_OFFER_PATTERN_RE.search(_norm_ar(text)))
 
     return False
+
+
+def _current_turn_accepts_a_medical_offer(state: AgentState) -> bool:
+    """False when the patient's CURRENT message is doing something other
+    than taking up a medical-guidance offer.
+
+    Two things disqualify it, and only two - this stays deliberately
+    narrow, because the medical guards protect against a real and
+    repeatedly-confirmed failure and the cost of silencing them wrongly
+    is higher than the cost of one extra correction call:
+
+      1. A REFUSAL. "لا", "مش مناسب", "لا عاوزه احجز معاد" - they said
+         no to the offer. Whatever they want next, it is not the thing
+         that was offered.
+      2. A DIFFERENT FLOW, named explicitly. "عايز ألغي حجزي",
+         "ممكن تعديل الموعد؟" - cancelling or moving an EXISTING
+         appointment is not a medical-guidance step at all, and the
+         cancel/reschedule flows have their own guards.
+
+    Everything else - an affirmation, a doctor's name, a day, a
+    follow-up symptom question, silence on the subject - still counts as
+    the handoff this helper exists to catch.
+    """
+
+    from langchain_core.messages import HumanMessage as _HumanMessage
+
+    latest = None
+    for msg in reversed(state.get("messages", []) or []):
+        if isinstance(msg, _HumanMessage):
+            latest = msg
+            break
+
+    if latest is None:
+        return True
+
+    content = getattr(latest, "content", "")
+    text = content if isinstance(content, str) else str(content)
+    if not text.strip():
+        return True
+
+    folded = _norm_ar(text)
+
+    if _LEADING_REFUSAL_RE.search(folded) or _BARE_NEGATION_RE.search(folded):
+        logger.info(
+            "_in_medical_guidance_handoff: the patient REFUSED the medical offer "
+            "(%r) - medical-guidance guards do not apply to this turn", text[:80],
+        )
+        return False
+
+    if _CANCEL_OR_CHANGE_INTENT_RE.search(folded):
+        logger.info(
+            "_in_medical_guidance_handoff: the patient asked to cancel/reschedule "
+            "an existing appointment (%r) - medical-guidance guards do not apply "
+            "to this turn", text[:80],
+        )
+        return False
+
+    return True
 
 
 def _medical_reply_asks_which_specialty(reply_text: str, state: AgentState) -> bool:
@@ -6124,8 +6267,35 @@ def _reply_offers_unavailable_specialty(reply_text: str, state: AgentState) -> b
 
     ledger = build_evidence_ledger(state.get("messages") or [])
 
+    messages = state.get("messages") or []
+    searched_this_turn = bool(_tool_results_since_latest_human(messages, (
+        "find_available_doctors", "find_best_doctor_in_specialty",
+    )))
+    turn = ledger.get("current_turn") or {}
+
     # Real doctors came back from a tool - the claim is about them.
-    if ledger.get("doctors"):
+    #
+    # WHICH doctors count depends on whether a search actually ran THIS
+    # TURN, and this distinction is the whole point of the change here.
+    #
+    # THE HOLE THIS CLOSES: the test used to be "does the conversation
+    # contain any tool-returned doctor at all". A patient could be shown
+    # a real internal-medicine doctor on turn 1, ask "عندكم عظام؟" on
+    # turn 2, get a `found_broader_search` result - which is the tool
+    # saying in as many words that NOBODY matches orthopaedics - and
+    # "عندنا دكاترة عظام متاحين" still passed, because turn 1's doctor
+    # was sitting in the cumulative list. The guard was reading evidence
+    # for a different question than the one the reply answers.
+    #
+    # So: when this turn ran a doctor search, only what THAT search
+    # established grounds the claim. When it did not, the conversation's
+    # accumulated doctors still do - a follow-up question about a doctor
+    # already found must not be flagged, which is why this is not simply
+    # tightened to the current turn in every case.
+    if searched_this_turn:
+        if turn.get("doctors"):
+            return False
+    elif ledger.get("doctors"):
         return False
 
     # A specialty the clinic genuinely offers is named in the reply.
@@ -9019,16 +9189,44 @@ def build_evidence_ledger(messages: list) -> dict:
         "doctors": [], "branches": [], "specialties": [], "services": [],
         "dates": [], "times": [], "appointments": [],
         "identity_verified": False, "actions": [],
+        # DOCTORS WHO ARE NOT AN ANSWER TO THE SPECIALTY THAT WAS ASKED
+        # FOR. `find_available_doctors` returns `found_broader_search`
+        # when the requested specialties had nobody available and it
+        # widened the search clinic-wide. Those people are real and were
+        # really returned by a tool - so naming one is not an invention -
+        # but they are NOT a specialty match, and putting them in
+        # `doctors` made "we have doctors in <specialty>" pass
+        # `_reply_offers_unavailable_specialty` on the strength of a
+        # result that says the opposite. Kept separate so a guard can
+        # ask the question it actually means.
+        "doctors_other_specialty": [],
+        # THE SAME FACTS, NARROWED TO WHAT THIS TURN ESTABLISHED.
+        # Everything above is cumulative over the whole conversation,
+        # which is right for "may I rely on this?" and wrong for "what
+        # did I just learn?" - see _build_established_facts_directive.
+        "current_turn": {},
     }
 
     raw = {key: [] for key in ("doctors", "branches", "specialties", "services")}
+    raw["doctors_other_specialty"] = []
     dates: list = []
     times: list = []
     appointments: list = []
 
-    for msg in messages or []:
+    # Tool results that arrived AFTER the patient's latest message are
+    # this turn's work; everything before them is history.
+    _turn_start = _latest_human_index(messages or [])
+    current: dict = {key: [] for key in raw}
+    current["dates"] = []
+    current["times"] = []
+    current["appointments"] = []
+    current["actions"] = []
+
+    for _index, msg in enumerate(messages or []):
         if getattr(msg, "type", None) != "tool":
             continue
+
+        _is_current_turn = _turn_start >= 0 and _index > _turn_start
 
         name = getattr(msg, "name", None)
         if not name:
@@ -9049,6 +9247,8 @@ def build_evidence_ledger(messages: list) -> dict:
                 entry += f" (reference {ref})"
             if entry not in ledger["actions"]:
                 ledger["actions"].append(entry)
+            if _is_current_turn and entry not in current["actions"]:
+                current["actions"].append(entry)
 
         # --- identity ----------------------------------------------
         if name == "verify_otp" and status in ("verified", "success"):
@@ -9059,7 +9259,17 @@ def build_evidence_ledger(messages: list) -> dict:
         # --- named entities ----------------------------------------
         for bucket, tool_names in _LEDGER_ENTITY_TOOLS.items():
             if name in tool_names:
-                _collect_strings(data, _LEDGER_NAME_KEYS, raw[bucket])
+                target = bucket
+                if (bucket == "doctors"
+                        and name == "find_available_doctors"
+                        and status == "found_broader_search"):
+                    # See the `doctors_other_specialty` note above: the
+                    # tool is telling us these people do NOT match the
+                    # specialty that was asked for.
+                    target = "doctors_other_specialty"
+                _collect_strings(data, _LEDGER_NAME_KEYS, raw[target])
+                if _is_current_turn:
+                    _collect_strings(data, _LEDGER_NAME_KEYS, current[target])
 
         if name in _LEDGER_ENTITY_DISPATCH_TOOLS:
             entity_type = _entity_type_argument(messages, msg)
@@ -9069,11 +9279,16 @@ def build_evidence_ledger(messages: list) -> dict:
             }.get(entity_type or "")
             if bucket:
                 _collect_strings(data, _LEDGER_NAME_KEYS, raw[bucket])
+                if _is_current_turn:
+                    _collect_strings(data, _LEDGER_NAME_KEYS, current[bucket])
 
         # --- availability ------------------------------------------
         if name in _LEDGER_AVAILABILITY_TOOLS:
             _collect_strings(data, ("date_display",), dates)
             _collect_strings(data, ("time_display",), times)
+            if _is_current_turn:
+                _collect_strings(data, ("date_display",), current["dates"])
+                _collect_strings(data, ("time_display",), current["times"])
 
         # --- existing appointments ---------------------------------
         if name in _LEDGER_APPOINTMENT_TOOLS and status in (
@@ -9083,12 +9298,42 @@ def build_evidence_ledger(messages: list) -> dict:
             _collect_strings(data, ("branchName",), raw["branches"])
             _collect_strings(data, ("date_display",), dates)
             _collect_strings(data, ("time_display",), times)
+            if _is_current_turn:
+                _collect_strings(data, ("ref",), current["appointments"])
+                _collect_strings(data, ("doctorName",), current["doctors"])
+                _collect_strings(data, ("branchName",), current["branches"])
+                _collect_strings(data, ("date_display",), current["dates"])
+                _collect_strings(data, ("time_display",), current["times"])
 
     for bucket in raw:
         ledger[bucket] = _dedupe(raw[bucket])
     ledger["dates"] = _dedupe(dates)
     ledger["times"] = _dedupe(times, limit=20)
     ledger["appointments"] = _dedupe(appointments)
+
+    # A DOCTOR WHO TURNED UP IN BOTH BELONGS IN `doctors`.
+    #
+    # A broader search can return somebody an earlier, correctly
+    # filtered search already returned - and once any tool has placed a
+    # doctor in the requested specialty, that is settled. Without this,
+    # a later widened search would move them into the weaker bucket and
+    # re-open a question that was already answered.
+    _matched = {_norm_ar(n) for n in ledger["doctors"]}
+    ledger["doctors_other_specialty"] = [
+        n for n in ledger["doctors_other_specialty"] if _norm_ar(n) not in _matched
+    ]
+
+    ledger["current_turn"] = {
+        "doctors": _dedupe(current["doctors"]),
+        "doctors_other_specialty": _dedupe(current["doctors_other_specialty"]),
+        "branches": _dedupe(current["branches"]),
+        "specialties": _dedupe(current["specialties"]),
+        "services": _dedupe(current["services"]),
+        "dates": _dedupe(current["dates"]),
+        "times": _dedupe(current["times"], limit=20),
+        "appointments": _dedupe(current["appointments"]),
+        "actions": list(current["actions"]),
+    }
 
     return ledger
 
@@ -9099,6 +9344,10 @@ def _ledger_is_empty(ledger: dict) -> bool:
         ledger.get("services"), ledger.get("dates"), ledger.get("times"),
         ledger.get("appointments"), ledger.get("actions"),
         ledger.get("identity_verified"),
+        # A clinic-wide fallback result is still something the
+        # conversation established - the block must not stand down and
+        # leave those names unlabelled.
+        ledger.get("doctors_other_specialty"),
     ))
 
 
@@ -9118,6 +9367,34 @@ def _build_established_facts_directive(ledger: dict) -> str:
         if values:
             lines.append(f"  {label}: " + " | ".join(values))
 
+    # THIS TURN FIRST, THEN THE REST.
+    #
+    # The list used to be one flat cumulative dump, which answers "may I
+    # rely on this?" but not "what did I just learn?" - and those are
+    # different questions with different answers. A doctor list fetched
+    # six turns ago and one fetched a moment ago read identically, so a
+    # reply could present a stale roster as the current, filtered one
+    # with the ledger appearing to back it. Ordering by recency puts the
+    # freshest evidence where the model reads first, and labels the rest
+    # as what it is.
+    turn = ledger.get("current_turn") or {}
+
+    if any(turn.get(k) for k in ("doctors", "doctors_other_specialty", "branches",
+                                 "specialties", "services", "dates", "times",
+                                 "appointments", "actions")):
+        lines.append("  --- ESTABLISHED BY THE TOOLS YOU JUST CALLED THIS TURN ---")
+        add("DOCTORS", turn.get("doctors") or [])
+        add("DOCTORS found only by a clinic-wide fallback (NOT the specialty asked "
+            "for)", turn.get("doctors_other_specialty") or [])
+        add("BRANCHES", turn.get("branches") or [])
+        add("SPECIALTIES", turn.get("specialties") or [])
+        add("SERVICES", turn.get("services") or [])
+        add("DATES offered", turn.get("dates") or [])
+        add("TIMES offered", turn.get("times") or [])
+        add("BOOKINGS found", turn.get("appointments") or [])
+        add("COMPLETED", turn.get("actions") or [])
+        lines.append("  --- ESTABLISHED EARLIER IN THIS CONVERSATION ---")
+
     add("DOCTORS returned by a tool", ledger.get("doctors") or [])
     add("BRANCHES returned by a tool", ledger.get("branches") or [])
     add("SPECIALTIES returned by a tool", ledger.get("specialties") or [])
@@ -9125,6 +9402,16 @@ def _build_established_facts_directive(ledger: dict) -> str:
     add("DATES a tool offered", ledger.get("dates") or [])
     add("TIMES a tool offered", ledger.get("times") or [])
     add("BOOKINGS found for this patient", ledger.get("appointments") or [])
+
+    # NAMED, BUT EXPLICITLY NOT AN ANSWER TO THE SPECIALTY ASKED FOR.
+    # Listed so the model does not re-invent them from the history, and
+    # labelled so it cannot offer them as a specialty match.
+    if ledger.get("doctors_other_specialty"):
+        lines.append(
+            "  DOCTORS a tool returned but NOT in the specialty asked for "
+            "(a clinic-wide fallback search - do NOT present these as that "
+            "specialty): " + " | ".join(ledger["doctors_other_specialty"])
+        )
 
     if ledger.get("identity_verified"):
         lines.append("  IDENTITY: verified in this conversation")
@@ -13315,6 +13602,154 @@ def _tag_author(message, agent_name: str):
     return message
 
 
+# Fields worth carrying forward from an OLD tool result: the ones a
+# reply might legitimately refer back to by name. Everything else in a
+# payload (ids, GUIDs, ISO timestamps, degree names, slot boundaries,
+# per-item flags) exists so a TOOL can act on it, and tools read
+# `state["messages"]`, never this trimmed copy.
+_COMPACT_KEEP_KEYS = ("name", "doctorName", "branchName", "specialtyName",
+                      "serviceName", "date_display", "time_display",
+                      "weekday_display", "ref")
+
+# Per list, how many entries survive compaction. A patient picks from
+# the list they were JUST shown - which is this turn's result and is
+# never compacted - so an older list only needs to stay recognisable.
+_COMPACT_MAX_ITEMS = 6
+
+# Below this there is nothing to gain, and the original is always the
+# safer thing to send.
+_COMPACT_MIN_CHARS = 400
+
+
+def _compact_tool_payload(raw: str) -> str:
+    """A short, readable stand-in for an OLD tool result.
+
+    WHY THIS EXISTS: tool payloads are ~90% of the tokens in a long
+    conversation's history (measured on a realistic specialty ->
+    doctors -> branches -> days -> slots booking), and every one of
+    them is re-sent in full on every later turn, plus again on every
+    verifier correction call. A doctor roster from six turns ago is
+    costing hundreds of tokens per call to say something the ESTABLISHED
+    FACTS ledger already says in one line.
+
+    WHAT IS SAFE ABOUT IT: this only ever rewrites the copy handed to
+    the model on THIS call. `state["messages"]` - which the evidence
+    ledger, the invented-doctor/branch guards, the claim gate and the
+    checkpointer all read - is untouched, so no guard's view of what a
+    tool returned changes. The CURRENT turn's results are never
+    compacted, so the list a patient is actually choosing from is always
+    present in full.
+
+    Fails safe: anything it cannot parse is returned unchanged.
+    """
+
+    if not isinstance(raw, str) or len(raw) < _COMPACT_MIN_CHARS:
+        return raw
+
+    data = None
+    try:
+        data = json.loads(raw)
+    except Exception:
+        try:
+            data = ast.literal_eval(raw)
+        except Exception:
+            return raw
+
+    if not isinstance(data, dict):
+        return raw
+
+    parts = []
+    status = data.get("status")
+    if status:
+        parts.append(f"status={status}")
+
+    for key, value in data.items():
+        if key == "status":
+            continue
+
+        if isinstance(value, list) and value:
+            names = []
+            for item in value[:_COMPACT_MAX_ITEMS]:
+                if isinstance(item, dict):
+                    for field in _COMPACT_KEEP_KEYS:
+                        if item.get(field):
+                            names.append(str(item[field]).strip())
+                            break
+                elif isinstance(item, str) and item.strip():
+                    names.append(item.strip())
+            if names:
+                more = len(value) - len(names)
+                shown = " | ".join(names) + (f" (+{more} more)" if more > 0 else "")
+                parts.append(f"{key}[{len(value)}]: {shown}")
+            else:
+                parts.append(f"{key}[{len(value)}]")
+
+        elif isinstance(value, dict):
+            inner = [f"{f}={value[f]}" for f in _COMPACT_KEEP_KEYS if value.get(f)]
+            if inner:
+                parts.append(f"{key}: " + ", ".join(inner))
+
+        elif isinstance(value, (str, int, float, bool)) and str(value).strip():
+            text = str(value).strip()
+            if len(text) <= 60:
+                parts.append(f"{key}={text}")
+
+    if not parts:
+        return raw
+
+    compacted = "{" + "; ".join(parts) + "}  [earlier turn - shortened]"
+
+    # Never let the "compact" form be the bigger one.
+    return compacted if len(compacted) < len(raw) else raw
+
+
+def _compact_history_for_llm(history: list, full_messages: list) -> list:
+    """`history` with OLD tool payloads shortened, current turn intact.
+
+    See `_compact_tool_payload`. The split point is the patient's latest
+    message: everything after it is this turn's work and is sent whole.
+    """
+
+    if not history:
+        return history
+
+    turn_start = _latest_human_index(full_messages or [])
+    if turn_start < 0:
+        return history
+
+    # Identify this turn's tool messages by identity, not position -
+    # `history` is a trimmed slice and its indices do not line up with
+    # `full_messages`.
+    current_ids = {
+        id(msg) for msg in (full_messages or [])[turn_start + 1:]
+    }
+
+    compacted = []
+    saved = 0
+    for msg in history:
+        if getattr(msg, "type", None) != "tool" or id(msg) in current_ids:
+            compacted.append(msg)
+            continue
+
+        raw = getattr(msg, "content", None)
+        short = _compact_tool_payload(raw) if isinstance(raw, str) else raw
+        if short is raw or short == raw:
+            compacted.append(msg)
+            continue
+
+        saved += len(raw) - len(short)
+        # A copy, so the checkpointed message itself is never mutated.
+        compacted.append(msg.model_copy(update={"content": short}))
+
+    if saved:
+        logger.info(
+            "history compaction: shortened %d char(s) of older tool payloads "
+            "(current turn left intact)", saved,
+        )
+
+    return compacted
+
+
 def _run_agent(state: AgentState, agent_name: str) -> dict:
     """The body every specialist runs. Calls the LLM with that
     specialist's SCOPED system prompt + the full chat history, and
@@ -13587,6 +14022,9 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     # `list_specialties` came back with departments that exist but have
     # no bookable doctor. Frame that choice before the reply is written
     # rather than arguing with it afterwards.
+    specialty_unresolved_directive = _build_specialty_not_resolved_directive(
+        state["messages"]
+    )
     unstaffed_specialty_directive = _build_unstaffed_specialty_directive(
         state["messages"], agent_name,
     )
@@ -13638,7 +14076,8 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         + show_all_doctors_directive
         + doctor_branches_directive + branch_question_directive
         + review_phone_directive + selected_slot_directive
-        + otp_required_directive + unstaffed_specialty_directive
+        + otp_required_directive
+        + specialty_unresolved_directive + unstaffed_specialty_directive
         + new_booking_number_directive
         + supplied_identifier_directive + just_booked_directive + scope_directive
         + empty_branch_directive + branch_pick_directive + day_pick_directive
@@ -13736,6 +14175,12 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     # constraint. Sending the LLM an empty turn would be worse than
     # sending it the untrimmed history, so fall back rather than trim.
     history = trimmed_history if trimmed_history else safe_messages
+
+    # SHORTEN OLDER TOOL PAYLOADS. Tool results are ~90% of a long
+    # conversation's history tokens, and they are re-sent whole on every
+    # later turn AND on every verifier correction call. This turn's
+    # results are left completely intact - see _compact_history_for_llm.
+    history = _compact_history_for_llm(history, state["messages"])
 
     # THE BOOKING FLOW'S OPENING QUESTION IS WRITTEN IN CODE, NOT ASKED
     # FOR IN A DIRECTIVE.
