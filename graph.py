@@ -2771,6 +2771,84 @@ _ESTABLISHED_SPECIALTY_DIRECTIVE = (
 )
 
 
+def _build_specialty_picked_directive(messages: list, agent_name: str) -> str:
+    """Fires the moment the patient picks a specialty out of the list
+    they were just shown.
+
+    WHAT IT FORCES: the very next thing is the DOCTORS in that
+    specialty. Not the clinic's branches, not that branch's service
+    catalogue, not a question about the day.
+
+    CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+    201158877175+medtown2, 2026-09-07 13:03-13:09). The patient picked
+    "1" (طب اسنان) from a four-item specialty list and received, in
+    order: the clinic's three BRANCHES, then that branch's two
+    SERVICES ("فحص النظر", "كشف عيادة النساء" - neither of them
+    dentistry), and finally "عشان أشوف لك مواعيد الدكتور... لازم تختار
+    أولاً اليوم" with no day list to choose from. Four turns after
+    naming what they wanted, they had still never been shown a dentist.
+
+    The routing half of that bug is fixed separately (the flow was
+    stranded on `faq`, which owns no booking tools - see
+    `agents/router._picks_from_a_specialty_list`). This is the other
+    half: even on the right agent, the step after a specialty is the
+    doctor list, and saying so before the draft exists is cheaper and
+    more reliable than correcting a draft that went to branches.
+    """
+
+    if agent_name not in ("booking", "concierge", "medical", "faq") or not messages:
+        return ""
+
+    index = _latest_human_index(messages)
+    if index < 0 or index != len(messages) - 1:
+        return ""
+
+    content = getattr(messages[index], "content", "")
+    text = (content if isinstance(content, str) else str(content)).strip()
+    if not text:
+        return ""
+
+    # A bare positional pick, or the specialty typed by name.
+    picked_position = _POSITIONAL_ANSWER_RE.match(_norm_ar(text)) is not None
+
+    # The list the patient is answering has to be a SPECIALTY list.
+    last_ai = _last_ai_reply_text(messages)
+    if not last_ai:
+        return ""
+
+    folded_ai = _norm_ar(last_ai)
+    showed_specialties = bool(
+        ("تخصص" in folded_ai or "specialt" in last_ai.lower())
+        and _NUMBERED_LIST_ITEM_RE.search(last_ai)
+    )
+    if not showed_specialties:
+        return ""
+
+    # Their raw text is what the tool resolves - never an id worked out
+    # here. See tools.find_available_doctors's `specialty_name`.
+    if not (picked_position or _BARE_SPECIALTY_RE.search(_norm_ar(text))):
+        return ""
+
+    return (
+        "============================================================\n"
+        "THEY PICKED A SPECIALTY - SHOW ITS DOCTORS NOW\n"
+        "============================================================\n"
+        f"The patient answered the specialty list with: \"{text}\".\n\n"
+        "Call `find_available_doctors` THIS TURN with `specialty_name` "
+        f"set to their raw text (\"{text}\") - it resolves a bare number "
+        "against the exact list you just showed, so you never work out "
+        "an id yourself. Then show the doctors it returns, numbered, and "
+        "ask ONE question: which doctor.\n\n"
+        "DO NOT show the clinic's branches. DO NOT show a branch's "
+        "service catalogue. DO NOT ask which day yet. A branch is only "
+        "worth asking about once a doctor is chosen, and the day comes "
+        "after that.\n\n"
+        "If `find_available_doctors` returns nobody, say that plainly "
+        "for THAT specialty and offer a staff handoff - never substitute "
+        "a different specialty's doctors.\n\n"
+    )
+
+
 def _build_established_specialty_directive(messages: list, session_id: str, agent_name: str) -> str:
     """Fires when a settled specialty meets a booking request."""
 
@@ -14357,6 +14435,12 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     # stands down whenever a specialty is already settled, and both
     # stand down when the message names something concrete (which
     # multi_intent above is already acting on).
+    # The step after a specialty is its DOCTORS - said before the draft
+    # exists, because correcting a draft that went to branches costs a
+    # whole extra call. See `_build_specialty_picked_directive`.
+    specialty_picked_directive = _build_specialty_picked_directive(
+        state["messages"], agent_name,
+    )
     established_specialty_directive = _build_established_specialty_directive(
         state["messages"], state.get("session_id"), agent_name,
     )
@@ -14558,6 +14642,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         # `booking_entry` decide WHERE the flow starts; `multi_intent`
         # says what the patient has already supplied and therefore wins
         # any overlap - it is placed after them deliberately.
+        + specialty_picked_directive
         + established_specialty_directive + booking_entry_directive
         + identifier_choice_directive
         + symptom_in_booking_directive
