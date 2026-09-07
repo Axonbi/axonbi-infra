@@ -3273,6 +3273,101 @@ def _build_empty_branch_directive(messages: list) -> str:
     )
 
 
+# Emoji keycaps, in the order every list in this project uses. Same
+# vocabulary as the response contract's numbering rule.
+_KEYCAPS = ("1️⃣", "2️⃣", "3️⃣", "4️⃣",
+            "5️⃣", "6️⃣", "7️⃣", "8️⃣",
+            "9️⃣", "\U0001f51f")
+
+
+def _keycap(position: int) -> str:
+    """The marker for 1-based `position`, matching the numbering rule."""
+
+    if 1 <= position <= len(_KEYCAPS):
+        return _KEYCAPS[position - 1]
+    # Past ten the contract stacks digits ("1️⃣1️⃣").
+    return "".join(_KEYCAPS[int(d) - 1] for d in str(position))
+
+
+def _build_appointment_choice_directive(messages: list) -> str:
+    """Pre-build the numbered list of a patient's OWN appointments, in
+    the exact order `lookup_appointment` returned them.
+
+    WHY THIS IS BUILT IN CODE. `_build_appointment_display_directive`
+    above already does this for a single booking, for a reason it
+    states plainly: instructing the model to format a block was "not
+    reliably followed even after multiple explicit prose instructions".
+    The multi-booking case was left to the model, and it has a worse
+    failure mode than bad formatting - the ORDER.
+
+    `tools.lookup_appointment` now remembers this list, and
+    `check_booking_status` resolves a bare "2" against position 2 of
+    THAT list. So if the model prints the rows in any other order, the
+    number the patient reads and the number the tool resolves disagree,
+    and the disagreement is silent.
+
+    CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+    201158877175+medtown2, 2026-09-07 10:22): the patient was shown
+    "1️⃣ فرع الدقي 26/09 · 2️⃣ فرع الشيخ زايد 12/09", typed "2", and the
+    confirmation named فرع الدقي 26/09 - the other row, under another
+    patient's name. On a cancellation that destroys the wrong booking.
+
+    Emitting the rows here makes the two orders the same object.
+    """
+
+    if not messages:
+        return ""
+
+    last = messages[-1]
+    if getattr(last, "name", None) != "lookup_appointment":
+        return ""
+
+    data = parse_tool_content(last) or {}
+    if data.get("status") != "found_many":
+        return ""
+
+    appointments = data.get("appointments") or []
+    if len(appointments) < 2:
+        return ""
+
+    lines = []
+    for index, appt in enumerate(appointments, start=1):
+        parts = [
+            appt.get("doctorName"),
+            appt.get("branchName"),
+            appt.get("serviceName"),
+            " ".join(p for p in (appt.get("weekday_display"),
+                                 appt.get("date_display")) if p),
+            appt.get("time_display"),
+        ]
+        detail = " - ".join(str(p).strip() for p in parts if p and str(p).strip())
+        lines.append(f"{_keycap(index)} {detail}")
+
+    block = "\n".join(lines)
+
+    return (
+        "[INTERNAL INSTRUCTION - NOT FOR THE USER - READ CAREFULLY]\n"
+        "This patient has MORE THAN ONE appointment. Include the exact "
+        "text between the START/END markers below, verbatim, in your "
+        "reply - the same rows, in the same order, with the same "
+        "numbers. Do NOT re-order them, do NOT re-number them, do NOT "
+        "drop or merge any row, and do NOT add one.\n\n"
+        "WHY THE ORDER IS NOT COSMETIC: the number the patient replies "
+        "with is resolved against THIS list by position, in code. If you "
+        "print these rows in a different order, their \"2\" selects a "
+        "different appointment than the one they read - and on a "
+        "cancellation that means the wrong booking is destroyed.\n\n"
+        "[BEGIN-EXACT-TEXT]\n"
+        f"{block}\n"
+        "[END-EXACT-TEXT]\n\n"
+        "Introduce the list in one short sentence, then ask ONLY which "
+        "number they mean - one question, nothing else. Pass their answer "
+        "straight through to `check_booking_status` as `ref_number`; it "
+        "resolves the position itself, so never work out the reference "
+        "number yourself.\n\n"
+    )
+
+
 def _build_appointment_display_directive(messages: list) -> str:
     """
     If the LAST message is a ToolMessage from `lookup_appointment` or
@@ -5270,10 +5365,50 @@ _NOT_A_DIAGNOSIS_RE = re.compile(
     r"معلومات\s*عامه|not\s*a\s*(?:medical\s*)?diagnosis|general\s*information"
 )
 
+# `(?:ال)?` BEFORE متاح/اطباء IS NOT DECORATION.
+#
+# "الدكاتره المتاحين" is how the roster header is actually written, and
+# `دكاتره\s*متاح` does not match it - the definite article sits between
+# the two words. That single gap meant the header line naming the
+# specialty was not recognised as part of the offer, so
+# `_medical_reply_offers_unrelated_specialty` scoped the offer to the
+# doctor names and the closing question, neither of which repeats the
+# specialty, and rejected a perfectly correct referral.
+#
+# CONFIRMED REAL PRODUCTION FALSE POSITIVE (medtown, session
+# 201003365691+medtown2, 2026-09-07 10:38:48): "انا عيني بتوجعني" was
+# answered with "الدكاتره المتاحين في تخصص جراحة الجسم الزجاجي
+# والشبكية" - vitreoretinal surgery, exactly the right eye specialty,
+# and on the guard's own eye row - and was flagged as unrelated.
 _SPECIALTY_OFFER_RE = re.compile(
-    r"عندنا\s*دكاتره|عندنا\s*اطباء|دكاتره\s*متاح|اطباء\s*متاح|"
+    r"عندنا\s*(?:ال)?دكاتره|عندنا\s*(?:ال)?اطباء|"
+    r"(?:ال)?دكاتره\s*(?:ال)?متاح|(?:ال)?اطباء\s*(?:ال)?متاح|"
     r"احجزلك|احجز\s*لك|اشوف\s*لك\s*(?:ال)?دكاتره|"
     r"التخصص\s*(?:ال)?مناسب|تحب\s*(?:ت)?حجز"
+)
+
+
+# OFFERING TO HELP PICK A SPECIALTY IS NOT OFFERING ONE.
+#
+# `_SPECIALTY_OFFER_RE` deliberately matches "التخصص المناسب", because
+# "عندنا دكاترة في التخصص المناسب" is an offer. But the booking flow's
+# own fixed opening question ends "...وأساعدك تختار التخصص المناسب" -
+# which names no specialty at all; it offers to work one out. With no
+# specialty named there is nothing for the organ table to judge, and
+# judging it anyway compares the patient's body part against an empty
+# offer, which never matches and therefore always fails.
+#
+# CONFIRMED REAL PRODUCTION FALSE POSITIVE (medtown, 2026-09-07
+# 10:18:42): the authored booking-entry wording was flagged as
+# "offered a specialty that does not treat the body part the patient
+# named", twice, and replaced with the safe fallback - for a message
+# containing no specialty whatsoever.
+_GENERIC_SPECIALTY_PHRASE_RE = re.compile(
+    r"(?:ال)?تخصص\s*(?:ال)?مناسب|"
+    r"تخصص\s*معي?ن[هة]?|(?:ال)?تخصص\s*(?:ال)?معين|"
+    r"(?:اي|ايه|انهي|وش)\s*(?:ال)?تخصص|"
+    r"تخصص\s*(?:تاني|ثاني|اخر|احر)|"
+    r"(?:right|which|another)\s*specialt"
 )
 
 
@@ -5364,6 +5499,31 @@ def _medical_reply_offers_unrelated_specialty(reply_text: str, state: AgentState
     folded = _norm_ar(reply_text)
 
     if not _SPECIALTY_OFFER_RE.search(folded):
+        return False
+
+    # NOTHING TO JUDGE IF NO SPECIALTY IS NAMED.
+    #
+    # With the generic "help you pick the right specialty" phrasings
+    # removed, does anything still read as an OFFER? If not, this reply
+    # offered to work a specialty out rather than naming one, and the
+    # organ table has nothing to compare against. See
+    # `_GENERIC_SPECIALTY_PHRASE_RE`.
+    if not _SPECIALTY_OFFER_RE.search(_GENERIC_SPECIALTY_PHRASE_RE.sub(" ", folded)):
+        logger.info(
+            "_medical_reply_offers_unrelated_specialty: the reply offers to help "
+            "choose a specialty but names none - nothing to judge",
+        )
+        return False
+
+    # ASKING WHICH SPECIALTY IS NOT OFFERING ONE.
+    #
+    # `_medical_reply_asks_which_specialty` owns that failure and has
+    # its own directive ("don't ask which specialty - show the
+    # doctors"). Letting both fire spends two correction calls on one
+    # problem, and THIS one's directive is simply untrue in that case:
+    # it tells the model it offered a specialty that does not treat the
+    # symptom, when it offered no specialty at all.
+    if _medical_reply_asks_which_specialty(reply_text, state):
         return False
 
     # CHECK ONLY THE OFFER, NOT THE WHOLE REPLY.
@@ -7817,7 +7977,21 @@ def _safe_fallback_reply(
             "of staff just now 🌷\nShall I try the transfer again?",
         ),
         (
-            ("medical-guidance", "specialty that does not treat", "specialty catalogue"),
+            ("medical-guidance", "specialty that does not treat",
+             "specialty catalogue",
+             # ADDED: the fabricated-availability check landed in the
+             # GENERIC bucket, and the generic message ("ممكن توضحلي
+             # طلبك تاني؟") says nothing. On a first turn it is dropped
+             # entirely (see the greeting step), so a patient who had
+             # just described an injury received the service menu and
+             # nothing else - confirmed medtown 2026-09-07 10:17:55,
+             # "رجلي وقعت عليها", answered with the greeting alone.
+             #
+             # The message below is exactly right for it: we could not
+             # confirm an available doctor for this, here is the way to
+             # a human. That is true whether the specialty is unstaffed
+             # or merely unconfirmed.
+             "fabricated availability claim"),
             # NOT "I can't work out which specialty you need". By the
             # time this fires the assistant has usually named the right
             # specialty perfectly well in its own advice line - what it
@@ -7899,6 +8073,39 @@ def _safe_fallback_reply(
     if is_english:
         return "Sorry, I ran into a technical issue just now - could you please try that again? 🌷"
     return "عذرًا، حصلت مشكلة تقنية. ممكن تبعت رسالتك تاني؟ 🌷"
+
+
+def _safe_fallback_is_generic(reply_text: str, state: AgentState,
+                              target_language: Optional[str]) -> bool:
+    """True when `reply_text` is `_safe_fallback_reply`'s GENERIC
+    message rather than one of its category-specific ones.
+
+    The two are treated differently on a first turn: the generic
+    "something went wrong, try again" says nothing and must not be
+    stapled under the opening greeting, while a category-specific
+    message ("we can't confirm a doctor in that specialty right now -
+    shall I connect you with staff?") is a real answer and must be.
+
+    Compared by ASKING the same function for its generic output rather
+    than pattern-matching the wording, because that wording is partly
+    the clinic's own (`msg_On_failure`) and differs per tenant. Passing
+    a description that matches no category is what makes it return the
+    generic branch.
+    """
+
+    if not (reply_text or "").strip():
+        return False
+
+    try:
+        generic = _safe_fallback_reply(state, target_language, None)
+    except Exception:  # pragma: no cover - never let this decide by raising
+        logger.warning(
+            "_safe_fallback_is_generic: could not build the generic message - "
+            "treating the reply as generic (the previous behaviour)", exc_info=True,
+        )
+        return True
+
+    return reply_text.strip() == (generic or "").strip()
 
 
 # ==========================================================
@@ -9981,7 +10188,28 @@ _REPLY_VERIFIERS = (
         "phone at STEP 1",
     ),
     (
-        lambda reply, state, agent_name: _reply_reasks_identity_after_verification(reply, state),
+        # GATED TO THE EXISTING-BOOKING FLOWS.
+        #
+        # The confirmed failure this guard exists for is a RESCHEDULE
+        # many turns in, where identity was long since established. It
+        # was ungated, and on the `booking` agent that is simply the
+        # wrong question: a brand-new booking legitimately asks which
+        # number to book on, and may legitimately need an OTP for a
+        # number the patient has just chosen - neither has anything to
+        # do with an existing booking found earlier in the chat.
+        #
+        # CONFIRMED FALSE-POSITIVE STORM (one QA session, 2026-09-07
+        # 10:40-10:50): this check fired SIX times on `booking` and once
+        # on `cancel`, and because it is SAFETY severity a second firing
+        # replaces the reply outright. It destroyed, among others, a
+        # correct 20-name patient picker, a correct "رمز التحقق تم
+        # إرساله على +201155611045", a correct "ما لقيت موعد مرتبط
+        # بالرقم ده", and - worst - the reply to "مش معايا التليفون
+        # ارجوك ساعدني", which became "ممكن توضحلي طلبك تاني؟".
+        lambda reply, state, agent_name: (
+            agent_name in _EXISTING_BOOKING_AGENTS
+            and _reply_reasks_identity_after_verification(reply, state)
+        ),
         lambda reply, state: _IDENTITY_REASK_CORRECTION_DIRECTIVE,
         "reply asked for a phone number or booking reference even though this "
         "session already has a verified phone AND lookup_appointment already "
@@ -12971,7 +13199,38 @@ def _reply_reasks_identity_after_verification(reply_text: str, state: AgentState
     if not session.get("verified_phones"):
         return False
 
-    for msg in state.get("messages") or []:
+    messages = state.get("messages") or []
+
+    # A NUMBER THE PATIENT HAS JUST CHOSEN IS NOT A RE-ASK.
+    #
+    # "identity is already verified" is only a reason to stop asking
+    # while the number in question is the SAME one. A patient who types
+    # a different number is deliberately switching, and that number has
+    # to be verified on its own - asking about it is the correct next
+    # step, not a repetition. Before this, supplying a second number
+    # made every following reply about it unsendable.
+    supplied = _supplied_phone_in(_latest_human_text(messages))
+    if supplied and not tools._phone_is_verified(state, supplied):
+        logger.info(
+            "_reply_reasks_identity_after_verification: the patient supplied a NEW, "
+            "unverified number - asking about it is the correct next step, not a re-ask",
+        )
+        return False
+
+    # AN OTP THIS TURN IS THE NEXT STEP, NOT A REPEAT.
+    if _tool_results_since_latest_human(messages, ("send_otp", "compare_phone")):
+        return False
+
+    # "I COULDN'T FIND ANYTHING ON THAT NUMBER" IS AN HONEST ANSWER.
+    # Reporting an empty lookup and offering the other route is exactly
+    # what the flow asks for; flagging it forces the safe fallback over
+    # a true statement.
+    for msg in _tool_results_since_latest_human(messages, ("lookup_appointment",)):
+        data = parse_tool_content(msg) or {}
+        if data.get("status") in ("not_found", "found_but_inactive", "phone_not_verified"):
+            return False
+
+    for msg in messages:
         if getattr(msg, "name", None) != "lookup_appointment":
             continue
         content = getattr(msg, "content", "")
@@ -13853,6 +14112,12 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         "" if wrong_tool_directive
         else _build_appointment_display_directive(state["messages"])
     )
+    # The multi-booking counterpart of the block above: the rows AND
+    # their numbers are emitted in code, because `check_booking_status`
+    # resolves the patient's number against that exact order.
+    appointment_choice_directive = _build_appointment_choice_directive(
+        state["messages"]
+    )
     schedule_display_directive = _build_schedule_display_directive(state["messages"])
     day_confirmation_directive = _build_day_confirmation_requires_tool_directive(state["messages"])
     show_soonest_directive = _build_show_soonest_day_directive(state["messages"], state.get("session_id"))
@@ -14087,7 +14352,8 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         + branch_services_yes_directive
         + empty_branch_booking_directive
         + branches_only_directive + empty_day_directive
-        + appointment_display_directive + schedule_display_directive
+        + appointment_display_directive + appointment_choice_directive
+        + schedule_display_directive
         + wrong_tool_directive + day_confirmation_directive
         # MULTI-INTENT FIRST, then the day rules: the first says which
         # rung of the flow this turn starts on, the second says what to
@@ -14778,16 +15044,36 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                 )
                 reply_content = ""
 
-            if reply_content and used_safe_fallback:
+            if (reply_content and used_safe_fallback
+                    and _safe_fallback_is_generic(reply_content, state, target_language)):
                 # See `used_safe_fallback` above - a twice-flagged reply
-                # that got swapped for the generic technical-error
+                # that got swapped for the GENERIC technical-error
                 # message is not a real answer to staple a greeting
                 # onto; drop it here exactly as scope refusals are
                 # dropped just above, so the patient's very first
                 # message from the clinic isn't "hi! here's what I can
                 # help with... 😕 technical error, try again?".
+                #
+                # ONLY THE GENERIC ONE, THOUGH. `_safe_fallback_reply`
+                # also returns CATEGORY-SPECIFIC messages, and those are
+                # substantive answers - "we can't confirm that specialty
+                # right now, shall I connect you with staff?" tells the
+                # patient something true and gives them a next step.
+                # Dropping those left a patient who had described an
+                # INJURY with nothing but the service menu.
+                #
+                # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+                # 201158877175+medtown2, 2026-09-07 10:17:55): "رجلي
+                # وقعت عليها" on the very first turn. The availability
+                # guard correctly rejected an offer of orthopaedic
+                # doctors (the specialty is unstaffed), the fallback
+                # replaced the draft, and this branch then dropped the
+                # fallback too - so the reply was the greeting alone,
+                # with no acknowledgement of the injury at all. The
+                # patient repeated the identical message to get an
+                # answer.
                 logger.warning(
-                    "agent[%s]: the zero-tolerance fallback message was about to be "
+                    "agent[%s]: the GENERIC zero-tolerance fallback was about to be "
                     "attached to the opening greeting - dropped. Original: %r",
                     agent_name, reply_content,
                 )
