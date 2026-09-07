@@ -7885,6 +7885,137 @@ def _soft_recovery_reply(target_language: Optional[str]) -> str:
 soft_recovery_reply = _soft_recovery_reply
 
 
+def _unstaffed_specialty_for_symptom(messages: list) -> Optional[str]:
+    """The clinic's OWN name for the department this turn's symptom
+    needs, when `list_specialties` has reported it as existing but
+    having no bookable doctor.
+
+    Returns None when there is no such department, when availability
+    was never checked, or when the symptom names a body part the organ
+    table has no opinion about - all cases where nothing truthful can
+    be said in code and the model must be left to answer.
+
+    Built from the two things that are already known deterministically:
+    the organ table (`_ORGAN_SPECIALTY_EXPECTATIONS`, which says which
+    specialty words genuinely treat a given body part) and
+    `list_specialties`' own `unstaffed_specialties`.
+    """
+
+    from langchain_core.messages import HumanMessage as _HumanMessage
+
+    _, unstaffed = _specialties_from_tool_results(messages or [])
+    if not unstaffed:
+        return None
+
+    symptom_text = ""
+    for msg in reversed(messages or []):
+        if not isinstance(msg, _HumanMessage):
+            continue
+        text = _norm_ar(str(getattr(msg, "content", "")))
+        if text.strip():
+            symptom_text = text
+            break
+
+    if not symptom_text:
+        return None
+
+    for symptom_words, specialty_words in _ORGAN_SPECIALTY_EXPECTATIONS:
+        if not any(word in symptom_text for word in symptom_words):
+            continue
+        # This row's body part is the one the patient named. Is the
+        # specialty that treats it one of the unstaffed departments?
+        for name in unstaffed:
+            folded_name = _norm_ar(name)
+            if any(word in folded_name for word in specialty_words):
+                return name
+
+    return None
+
+
+# The offer line is the ONE part of a rejected medical draft that is
+# wrong. These match the sentence that makes the availability claim, so
+# it can be removed and the rest kept.
+_AVAILABILITY_OFFER_LINE_RE = re.compile(
+    r"عندنا|عندها|عند\s*المستشفى|متاح|احجزلك|احجز\s*لك|"
+    r"تحب\s*(?:ت)?حجز|(?:ال)?تخصص"
+)
+
+
+def _honest_unstaffed_reply(draft: str, messages: list,
+                            templates: dict, target_language: Optional[str]) -> Optional[str]:
+    """Rebuild a rejected medical draft as the reply it should have been:
+    its own advice, kept, with the false availability claim replaced by
+    the truth.
+
+    WHY THIS IS BUILT IN CODE RATHER THAN ASKED FOR AGAIN.
+    `_safe_fallback_reply` is the right answer when nothing truthful can
+    be assembled - but here everything needed IS known. The draft
+    already contains correct comfort advice, correct red-flag advice and
+    the not-a-diagnosis clause; only its closing sentence claims doctors
+    the clinic does not have. And `list_specialties` has already said,
+    in the same turn, which department that is and that it is unstaffed.
+
+    CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+    201158877175+medtown2, 2026-09-07 11:35): "رجلي وقعت عليها". Three
+    drafts each claimed orthopaedic doctors; the availability check had
+    spent its one rewrite on the first, so the third fell through to the
+    safe fallback and the patient received "معلش، ما لقيتش دكتور متاح
+    حاليًا للحالة دي" with NO advice at all. One message earlier in the
+    same session, "ايدي اتخبطت فيها" happened to be corrected on its
+    first retry and produced exactly the right reply - advice, then
+    "عندنا قسم جراحة العظام بس للأسف ما فيه دكتور متاح حاليًا - تحب
+    أوصلك بموظف؟". The patient should not need luck for that.
+
+    Returns None when the truth cannot be established this way, leaving
+    the caller's existing safe-fallback behaviour untouched.
+    """
+
+    if not (draft or "").strip():
+        return None
+
+    specialty = _unstaffed_specialty_for_symptom(messages)
+    if not specialty:
+        return None
+
+    kept = []
+    for line in draft.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Drop the line that makes the claim. The advice and red-flag
+        # lines never mention availability, so they survive.
+        if _AVAILABILITY_OFFER_LINE_RE.search(_norm_ar(stripped)):
+            continue
+        kept.append(stripped)
+
+    if not kept:
+        return None
+
+    is_english = (target_language or "").strip().lower().startswith("en")
+
+    if is_english:
+        closing = (
+            f"We do have a {specialty} department, but unfortunately there is "
+            f"no doctor available in it right now - would you like me to put "
+            f"you through to a member of staff?"
+        )
+    else:
+        closing = (
+            f"عندنا قسم {specialty} بس للأسف ما فيه دكتور متاح حاليًا - "
+            f"تحب أوصلك بموظف يساعدك؟"
+        )
+
+    rebuilt = "\n".join(kept + [closing])
+
+    logger.info(
+        "agent: rebuilt the rejected medical draft in code - kept its advice and "
+        "replaced the availability claim with the truth about %r, instead of "
+        "sending the safe fallback with no advice at all", specialty,
+    )
+
+    return rebuilt
+
+
 def _safe_fallback_reply(
     state: AgentState, target_language: Optional[str], failure_description: Optional[str] = None,
 ) -> str:
@@ -14722,7 +14853,21 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                         description in attempted_checks, corrections_used,
                         _MAX_VERIFIER_CORRECTIONS,
                     )
-                    normalized = _safe_fallback_reply(state, target_language, description)
+                    # BEFORE THE FALLBACK: CAN THE TRUTH BE BUILT?
+                    #
+                    # A rejected medical draft is usually wrong in one
+                    # sentence and right in all the others. When
+                    # `list_specialties` has already named the
+                    # department as unstaffed this turn, the honest
+                    # reply is fully determined - keep the advice,
+                    # replace the claim. See `_honest_unstaffed_reply`.
+                    rebuilt = _honest_unstaffed_reply(
+                        normalized, state["messages"],
+                        state.get("templates") or {}, target_language,
+                    )
+                    normalized = rebuilt or _safe_fallback_reply(
+                        state, target_language, description,
+                    )
                     used_safe_fallback = True
                     continue
 
@@ -14791,7 +14936,17 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                             "still asserts something no tool result supports.",
                             agent_name, description, _MAX_VERIFIER_TOOL_RETRIES,
                         )
-                        normalized = _safe_fallback_reply(state, target_language, description)
+                        # BEFORE THE FALLBACK: CAN THE TRUTH BE BUILT?
+                        # See `_honest_unstaffed_reply` - a rejected
+                        # medical draft is usually wrong in one sentence
+                        # and right in all the others.
+                        rebuilt = _honest_unstaffed_reply(
+                            normalized, state["messages"],
+                            state.get("templates") or {}, target_language,
+                        )
+                        normalized = rebuilt or _safe_fallback_reply(
+                            state, target_language, description,
+                        )
                         used_safe_fallback = True
                         break
 
@@ -14849,7 +15004,21 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                         "twice-flagged reply",
                         agent_name, description,
                     )
-                    normalized = _safe_fallback_reply(state, target_language, description)
+                    # BEFORE THE FALLBACK: CAN THE TRUTH BE BUILT?
+                    #
+                    # A rejected medical draft is usually wrong in one
+                    # sentence and right in all the others. When
+                    # `list_specialties` has already named the
+                    # department as unstaffed this turn, the honest
+                    # reply is fully determined - keep the advice,
+                    # replace the claim. See `_honest_unstaffed_reply`.
+                    rebuilt = _honest_unstaffed_reply(
+                        normalized, state["messages"],
+                        state.get("templates") or {}, target_language,
+                    )
+                    normalized = rebuilt or _safe_fallback_reply(
+                        state, target_language, description,
+                    )
                     used_safe_fallback = True
                     continue
 
