@@ -4125,6 +4125,30 @@ def _split_sentences(text: str) -> list:
     return segments
 
 
+# THE QUESTION THAT MOVES THE CONVERSATION FORWARD.
+#
+# A medical-guidance reply legitimately contains two questions: a
+# CLINICAL PROBE in the middle ("هل في ألم شديد، تورم، أو صعوبة في
+# المشي؟") and the ACTIONABLE NEXT STEP at the end ("تحب أحجز لك موعد
+# عند واحد منهم؟"). Only one may survive, and it must be the second -
+# the probe is rhetorical, while the offer is the whole reason the turn
+# exists.
+#
+# CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+# 201158877175+medtown2, 2026-09-07 11:54): "سناني وجعاني وبتجيب دم".
+# Dentistry IS bookable at this clinic, the model correctly offered it -
+# and the trimmer kept "هل الألم مستمر؟" and deleted "تحب أحجز لك موعد
+# عند واحد منهم؟". The patient was left with advice and no way to act
+# on it. The same thing happened one message earlier to "رجلي وقعت
+# عليها".
+_ACTIONABLE_QUESTION_RE = re.compile(
+    r"تحب|تحبي|حابب|حابه|تبغى|تبي|تريد|ودك|"
+    r"احجز|احجزلك|اشوف\s*لك|اوصلك|احولك|اعرض\s*لك|"
+    r"(?:اي|ايه|انهي|وش)\s*(?:رقم|دكتور|تخصص|فرع|يوم|وقت|موعد)|"
+    r"would\s*you\s*like|shall\s*i|do\s*you\s*want|which\s*(?:one|doctor|branch|day|time)"
+)
+
+
 def _strip_extra_questions(reply_text: str, templates: dict) -> tuple:
     """Keep the FIRST question in a reply and drop any later ones.
 
@@ -4151,19 +4175,53 @@ def _strip_extra_questions(reply_text: str, templates: dict) -> tuple:
 
     allowed = _template_question_sentences(templates)
 
+    segments = _split_sentences(reply_text)
+
+    # WHICH question is the keeper, decided before anything is dropped.
+    #
+    # Normally the first one - that is what the rule has always meant,
+    # and where two offers are stacked ("تحب تحجز مع دكتور معيّن ولا
+    # تخصص معيّن؟ أو تحب أشوف لك القائمة؟") the first is the better
+    # question anyway.
+    #
+    # But when the first question carries no action and a LATER one
+    # does, the later one is the reply's actual point and the first is
+    # a rhetorical probe. Keeping the probe and deleting the offer
+    # leaves the patient with advice they cannot act on - see
+    # `_ACTIONABLE_QUESTION_RE`.
+    question_indexes = [
+        index for index, segment in enumerate(segments)
+        if any(mark in segment for mark in _QUESTION_MARKS)
+    ]
+
+    keeper = question_indexes[0] if question_indexes else None
+
+    if len(question_indexes) > 1:
+        first_is_actionable = bool(
+            _ACTIONABLE_QUESTION_RE.search(_norm_ar(segments[question_indexes[0]]))
+        )
+        if not first_is_actionable:
+            for index in question_indexes[1:]:
+                if _ACTIONABLE_QUESTION_RE.search(_norm_ar(segments[index])):
+                    keeper = index
+                    logger.info(
+                        "_strip_extra_questions: keeping the ACTIONABLE question "
+                        "instead of the first one - the first is a probe that the "
+                        "patient cannot act on",
+                    )
+                    break
+
     kept = []
-    seen_question = False
     removed = 0
 
-    for segment in _split_sentences(reply_text):
+    for index, segment in enumerate(segments):
         is_question = any(mark in segment for mark in _QUESTION_MARKS)
 
         if not is_question:
             kept.append(segment)
             continue
 
-        if not seen_question:
-            seen_question = True
+        if index == keeper:
             kept.append(segment)
             continue
 
@@ -4181,6 +4239,11 @@ def _strip_extra_questions(reply_text: str, templates: dict) -> tuple:
     # Tidy up whatever the removal left behind: dangling connectors at
     # the end of a line ("... أو", "... ولا"), and blank-line runs.
     trimmed = re.sub(r"[ \t]*(?:أو|ولا|or)[ \t]*(?=\n|$)", "", trimmed)
+    # A line that consisted ONLY of removed questions leaves an empty
+    # line behind, which reads as a deliberate paragraph break the model
+    # never wrote. Collapsed only in replies something was actually
+    # removed from, so ordinary blank lines elsewhere stay untouched.
+    trimmed = re.sub(r"\n[ \t]*\n(?=[ \t]*\S)", "\n", trimmed)
     trimmed = re.sub(r"\n{3,}", "\n\n", trimmed)
     trimmed = "\n".join(line.rstrip() for line in trimmed.split("\n")).strip()
 
