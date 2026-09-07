@@ -849,6 +849,23 @@ def lookup_appointment(
     specialtyName, statusName, date_display, time_display, patientFullName,
     mobileNumber, email, id."""
 
+    # THE CONVERSATION'S LANGUAGE, NOT THE MODEL'S GUESS.
+    #
+    # `language` is a tool argument, so it is whatever the model decided
+    # to type - and its default is "en". When it guesses wrong, the
+    # BOOKING API returns the doctor and branch names in English, and
+    # they land verbatim in an otherwise-Arabic reply, because the model
+    # is (correctly) forbidden from altering tool values.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+    # 201003365691+medtown2, 2026-09-07 10:48:55): an Arabic reschedule
+    # confirmation read "الطبيب: Taha Mabrouk" and "الفرع: AlSheikh
+    # Zayedd". `conversation_language` computes this deterministically
+    # from state and exists for exactly this class of bug - see its own
+    # docstring. The argument is still accepted so no tool call breaks;
+    # it is simply not trusted.
+    language = conversation_language(state)
+
     if use_channel_identity:
         channel_phone = state.get("channel_phone")
         logger.info("lookup_appointment: use_channel_identity=True, channel_phone=%r", channel_phone)
@@ -1011,6 +1028,23 @@ def check_booking_status(
     returned - pass their text through as-is rather than working out
     which reference they meant.
     """
+
+    # THE CONVERSATION'S LANGUAGE, NOT THE MODEL'S GUESS.
+    #
+    # `language` is a tool argument, so it is whatever the model decided
+    # to type - and its default is "en". When it guesses wrong, the
+    # BOOKING API returns the doctor and branch names in English, and
+    # they land verbatim in an otherwise-Arabic reply, because the model
+    # is (correctly) forbidden from altering tool values.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+    # 201003365691+medtown2, 2026-09-07 10:48:55): an Arabic reschedule
+    # confirmation read "الطبيب: Taha Mabrouk" and "الفرع: AlSheikh
+    # Zayedd". `conversation_language` computes this deterministically
+    # from state and exists for exactly this class of bug - see its own
+    # docstring. The argument is still accepted so no tool call breaks;
+    # it is simply not trusted.
+    language = conversation_language(state)
 
     base_url = _base_url(state)
 
@@ -1585,9 +1619,31 @@ def _remember_specialty_ids(session: dict, specialty_ids: Optional[list]) -> Non
     if not specialty_ids:
         return
 
+    # THE SESSION MUST NEVER HOLD ANYTHING BUT AN ID.
+    #
+    # Whatever is remembered here is reused, unexamined, by every later
+    # step (`_doctors_at_branch`, `_branch_ids_with_available_doctors`,
+    # the empty-call reuse in `find_available_doctors`). One name stored
+    # once therefore turns into a 400 several turns later, in a tool
+    # nobody was looking at. The model-facing tools resolve names before
+    # they get here - this is the backstop, so a future caller that
+    # forgets cannot poison the session.
+    clean = [sid for sid in specialty_ids if _looks_like_a_specialty_id(str(sid))]
+
+    rejected = [sid for sid in specialty_ids if sid not in clean]
+    if rejected:
+        logger.error(
+            "_remember_specialty_ids: refusing to remember %s - these are names "
+            "or list positions, not ids, and everything downstream would send "
+            "them to the doctors API as a filter", rejected,
+        )
+
+    if not clean:
+        return
+
     existing = session.get("specialty_ids") or []
     merged = list(existing)
-    for sid in specialty_ids:
+    for sid in clean:
         if sid not in merged:
             merged.append(sid)
     session["specialty_ids"] = merged
@@ -2399,6 +2455,32 @@ def list_branches_for_specialty(
         return {"status": "not_configured"}
 
     session = _get_booking_session(state.get("session_id"))
+
+    # SAME GUARD AS `find_available_doctors` - these ids go to the same
+    # doctors API, which answers a name or a list position with a 400.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+    # 201158877175+medtown2, 2026-09-07 12:26): the patient picked "3"
+    # from a specialty list, the model called this tool with
+    # `specialty_ids=['نساء و توليد']`, and it 400ed - twice, because
+    # "حاول تاني" reproduced it exactly. Sanitising only
+    # `find_available_doctors` left this door open. See
+    # `_sanitize_specialty_ids`.
+    specialty_ids, _unresolved = _sanitize_specialty_ids(
+        state, base_url, specialty_ids or [],
+    )
+
+    if _unresolved and not specialty_ids:
+        logger.error(
+            "list_branches_for_specialty: every specialty_ids entry was "
+            "unresolvable (%s) - reporting it instead of asking the API to "
+            "filter by a name it cannot read", _unresolved,
+        )
+        return {
+            "status": "specialty_not_resolved",
+            "specialty_name": _unresolved[0],
+            "branches": [],
+        }
 
     if not specialty_ids:
         specialty_ids = session.get("specialty_ids") or []
@@ -3776,6 +3858,23 @@ def get_doctor_schedule(
     {"status": "not_configured"}  # this clinic doesn't have this feature set up yet
     {"status": "error"}"""
 
+    # THE CONVERSATION'S LANGUAGE, NOT THE MODEL'S GUESS.
+    #
+    # `language` is a tool argument, so it is whatever the model decided
+    # to type - and its default is "en". When it guesses wrong, the
+    # BOOKING API returns the doctor and branch names in English, and
+    # they land verbatim in an otherwise-Arabic reply, because the model
+    # is (correctly) forbidden from altering tool values.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+    # 201003365691+medtown2, 2026-09-07 10:48:55): an Arabic reschedule
+    # confirmation read "الطبيب: Taha Mabrouk" and "الفرع: AlSheikh
+    # Zayedd". `conversation_language` computes this deterministically
+    # from state and exists for exactly this class of bug - see its own
+    # docstring. The argument is still accepted so no tool call breaks;
+    # it is simply not trusted.
+    language = conversation_language(state)
+
     resolved = _resolve_doctor_id(state, ref_number, language)
     if resolved["status"] != "found":
         return resolved
@@ -3843,6 +3942,23 @@ def get_available_reschedule_slots(
     {"status": "not_found"}  # no open slots in this range
     {"status": "not_configured"}  # this clinic doesn't have this feature set up yet
     {"status": "error"}"""
+
+    # THE CONVERSATION'S LANGUAGE, NOT THE MODEL'S GUESS.
+    #
+    # `language` is a tool argument, so it is whatever the model decided
+    # to type - and its default is "en". When it guesses wrong, the
+    # BOOKING API returns the doctor and branch names in English, and
+    # they land verbatim in an otherwise-Arabic reply, because the model
+    # is (correctly) forbidden from altering tool values.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+    # 201003365691+medtown2, 2026-09-07 10:48:55): an Arabic reschedule
+    # confirmation read "الطبيب: Taha Mabrouk" and "الفرع: AlSheikh
+    # Zayedd". `conversation_language` computes this deterministically
+    # from state and exists for exactly this class of bug - see its own
+    # docstring. The argument is still accepted so no tool call breaks;
+    # it is simply not trusted.
+    language = conversation_language(state)
 
     resolved = _resolve_doctor_id(state, ref_number, language)
     if resolved["status"] != "found":
@@ -8430,6 +8546,23 @@ def find_best_doctor_in_specialty(
     if not base_url:
         logger.warning("find_best_doctor_in_specialty called but no doctors_base_url is configured for client_id=%s", state.get("client_id"))
         return {"status": "not_configured"}
+
+    # See `_sanitize_specialty_ids` - a name or a list position here is
+    # a 400 from the doctors API, not a filter.
+    specialty_ids, _unresolved = _sanitize_specialty_ids(
+        state, base_url, specialty_ids or [],
+    )
+
+    if _unresolved and not specialty_ids:
+        logger.error(
+            "find_best_doctor_in_specialty: every specialty_ids entry was "
+            "unresolvable (%s)", _unresolved,
+        )
+        return {
+            "status": "specialty_not_resolved",
+            "specialty_name": _unresolved[0],
+            "doctors": [],
+        }
 
     doctors_result = api.get_doctors(base_url, specialty_ids=specialty_ids, page_size=200, language=conversation_language(state))
     if not doctors_result["success"]:
