@@ -928,7 +928,63 @@ def lookup_appointment(
     if len(shaped) == 1:
         return {"status": "found_one", "appointment": shaped[0]}
 
+    # REMEMBER THE LIST, IN THIS EXACT ORDER.
+    #
+    # This was the ONE user-facing list in the project that never called
+    # `_remember_list` - specialties, doctors, branches, services, days
+    # and slots all do. So when a patient replied "2" to a list of their
+    # own appointments, there was nothing deterministic to resolve it
+    # against and the model had to recall which one was second from the
+    # conversation text.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+    # 201158877175+medtown2, 2026-09-07 10:22): two appointments were
+    # shown, the patient typed "2" (فرع الشيخ زايد, 12/09), and the
+    # confirmation that came back was the OTHER one (فرع الدقي, 26/09,
+    # under a different patient name). This is a CANCELLATION flow, so
+    # picking the wrong row destroys the wrong appointment and nothing
+    # undoes it - which makes this the highest-stakes list of the lot,
+    # and it was the only unprotected one.
+    _remember_list(state, "appointment", shaped)
+
     return {"status": "found_many", "appointments": shaped}
+
+
+def _resolve_appointment_pick(state, text: str) -> dict:
+    """Resolve the patient's answer to an appointment list into ONE
+    remembered appointment.
+
+    Mirrors `_resolve_specialty_for_booking` exactly, for the same
+    reason and against the same store: the list `lookup_appointment`
+    actually returned (see the `_remember_list` call there). A bare
+    number can then only ever mean the row in that position - it is
+    never recalled from the conversation text.
+
+    Returns one of:
+      {"result": "matched", "item": {...}}
+      {"result": "out_of_range", "list_size": N}
+      {"result": "no_list"}          # nothing was ever shown
+      {"result": "not_a_pick"}       # the text is not a positional pick
+    """
+
+    session = _get_booking_session(state.get("session_id"))
+    last_list = session.get("last_list") or {}
+
+    items = (last_list.get("items") or []
+             if last_list.get("entity_type") == "appointment" else [])
+
+    position = _extract_selection_number(text or "")
+
+    if position is None:
+        return {"result": "not_a_pick"}
+
+    if not items:
+        return {"result": "no_list"}
+
+    if not (1 <= position <= len(items)):
+        return {"result": "out_of_range", "list_size": len(items)}
+
+    return {"result": "matched", "item": items[position - 1]}
 
 
 @tool
@@ -944,11 +1000,53 @@ def check_booking_status(
     {"status": "active", "appointment": {...}}
     {"status": "already_cancelled", "appointment": {...}}
     {"status": "not_found"}
+    {"status": "out_of_range", "list_size": N}  # they gave a number bigger than the appointment list you showed. Say the list only has N and ask them to pick within it - never say the booking doesn't exist
+    {"status": "no_list_shown"}  # they gave a number but no appointment list has been shown yet. Call `lookup_appointment` first
     {"status": "error"}  # the booking API call itself failed - a technical
                           # problem, NOT the same as "booking not found"
+
+    `ref_number` ALSO accepts the patient's raw positional answer to an
+    appointment list `lookup_appointment` just showed them (a bare "2",
+    "٢", "رقم 2"). It is resolved against the EXACT list that tool
+    returned - pass their text through as-is rather than working out
+    which reference they meant.
     """
 
     base_url = _base_url(state)
+
+    # A BARE NUMBER IS A POSITION IN THE LIST THEY WERE SHOWN.
+    #
+    # Without this the number was sent to the bookings API as if it were
+    # a reference, or - worse - the model substituted whichever
+    # reference it believed was in that position. See
+    # `_resolve_appointment_pick` and the `_remember_list` call in
+    # `lookup_appointment` for the confirmed failure: on a CANCELLATION,
+    # "2" resolved to the first row, under a different patient's name.
+    pick = _resolve_appointment_pick(state, ref_number)
+
+    if pick["result"] == "matched":
+        resolved_ref = (pick["item"] or {}).get("ref")
+        logger.info(
+            "check_booking_status: resolved positional pick %r -> ref=%r (%s, %s)",
+            ref_number, resolved_ref,
+            (pick["item"] or {}).get("date_display"),
+            (pick["item"] or {}).get("branchName"),
+        )
+        if resolved_ref:
+            ref_number = resolved_ref
+    elif pick["result"] == "out_of_range":
+        logger.info(
+            "check_booking_status: %r is past the end of the %d-item appointment "
+            "list that was shown", ref_number, pick["list_size"],
+        )
+        return {"status": "out_of_range", "list_size": pick["list_size"]}
+    elif pick["result"] == "no_list":
+        logger.info(
+            "check_booking_status: %r looks like a positional pick but no "
+            "appointment list has been shown in this session", ref_number,
+        )
+        return {"status": "no_list_shown"}
+
     result = api.get_bookings_by_ref(base_url, ref_number, language=language)
 
     if not result["success"]:
@@ -2997,6 +3095,40 @@ def find_available_doctors(
                 "find_available_doctors: specialty_name=%r did not match, but "
                 "specialty_ids=%s were passed directly - searching on those",
                 specialty_name, specialty_ids,
+            )
+
+    # MID-BOOKING, AN EMPTY CALL MEANS "THE SPECIALTY WE ALREADY AGREED".
+    #
+    # `specialty_ids` is genuinely optional - a settled SERVICE or
+    # BRANCH is enough to narrow the search on its own, and the
+    # docstring says so. But when NOTHING narrows it at all and this
+    # booking has already settled a specialty, an empty call is not a
+    # deliberate widening; it is the filter going missing, and
+    # `api.get_doctors` answers it with the clinic's entire roster.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+    # 201003365691+medtown2, 2026-09-07 10:37:56): the patient was
+    # booking DENTISTRY, was asked which doctor, answered "معرفش اسمه"
+    # (I don't know the name) - and the reply listed six doctors across
+    # internal medicine, vitreoretinal surgery and obstetrics. The
+    # session had the dental specialty remembered the whole time; the
+    # call simply arrived without it.
+    #
+    # `all_branches=True` is the explicit "look wider" signal and is
+    # deliberately excluded, so a patient who really does ask to see
+    # everyone still gets everyone.
+    if (not specialty_ids and not (specialty_name or "").strip()
+            and not (service_name or "").strip()
+            and not (branch_name or "").strip()
+            and not all_branches):
+        remembered = session.get("specialty_ids") or []
+        if remembered:
+            specialty_ids = list(remembered)
+            logger.info(
+                "find_available_doctors: no filter was passed and nothing else "
+                "narrows this search - reusing this booking's remembered "
+                "specialty_ids=%s instead of returning every doctor in the clinic",
+                specialty_ids,
             )
 
     # Pull in sibling specialties registered under a near-identical name
