@@ -1103,15 +1103,24 @@ def verify_otp(state: Annotated[AgentState, InjectedState], phone: str, otp: str
     about): `state` is injected automatically and is used ONLY to
     normalize `phone` exactly the way `send_otp` normalized it when it
     stored the code.
-
-    CONFIRMED REAL PRODUCTION BUG this fixes: `send_otp` normalized with
-    the client's own country code while this function normalized without
-    it (plain module default). For any patient who typed a local number
-    ("01155611045") the two produced DIFFERENT keys - the code was
-    stored under one and looked up under the other - so a correct OTP
-    was rejected 100% of the time and identity verification could never
-    complete.
     """
+    # ------------------------------------------------------------------
+    # MAINTAINER NOTES - MOVED OUT OF THE DOCSTRING.
+    # A tool's docstring IS its `description`, sent to the model on every
+    # call by every agent bound to it. The incident reports below are for
+    # whoever next edits this function - they are not instructions the
+    # model can act on, so they are kept here rather than re-billed every
+    # turn. Nothing has been deleted.
+    #
+    # CONFIRMED REAL PRODUCTION BUG this fixes: `send_otp` normalized with
+    # the client's own country code while this function normalized without
+    # it (plain module default). For any patient who typed a local number
+    # ("01155611045") the two produced DIFFERENT keys - the code was stored
+    # under one and looked up under the other - so a correct OTP was
+    # rejected 100% of the time and identity verification could never
+    # complete.
+    # ------------------------------------------------------------------
+
 
     normalized = normalize_phone_number(phone, state)
 
@@ -1645,20 +1654,30 @@ def list_specialties(state: Annotated[AgentState, InjectedState]) -> dict:
     (When availability couldn't be checked at all this call, the
     `has_available_doctors` field is omitted and nothing is filtered -
     treat that as unknown, not as unavailable.)
+    """
+    # ------------------------------------------------------------------
+    # MAINTAINER NOTES - MOVED OUT OF THE DOCSTRING.
+    # A tool's docstring IS its `description`, sent to the model on every
+    # call by every agent bound to it. The incident reports below are for
+    # whoever next edits this function - they are not instructions the
+    # model can act on, so they are kept here rather than re-billed every
+    # turn. Nothing has been deleted.
+    #
+    # IMPLEMENTATION NOTE: this uses the Specialties/GetList endpoint
+    # directly. An earlier version derived specialties from the doctors
+    # endpoint instead, after an initial test call to Specialties/GetList
+    # returned mismatched placeholder data ("New NEw", unrelated ids). That
+    # turned out to be stale/unrelated test data, not a real problem with
+    # the endpoint - a follow-up call (after fixing pageNumber=1 and the
+    # /GetList path) returned the correct, complete specialty list,
+    # confirmed to share the exact same ids as the doctors' own specialtyId
+    # field. Using this endpoint (rather than deriving from doctors) is more
+    # correct: it includes every specialty this clinic has registered, even
+    # ones with zero doctors currently assigned - letting the agent
+    # correctly say "we don't offer that" only when truly true, rather than
+    # only when nobody happens to be staffed.
+    # ------------------------------------------------------------------
 
-    IMPLEMENTATION NOTE: this uses the Specialties/GetList endpoint
-    directly. An earlier version derived specialties from the doctors
-    endpoint instead, after an initial test call to Specialties/GetList
-    returned mismatched placeholder data ("New NEw", unrelated ids).
-    That turned out to be stale/unrelated test data, not a real problem
-    with the endpoint - a follow-up call (after fixing pageNumber=1 and
-    the /GetList path) returned the correct, complete specialty list,
-    confirmed to share the exact same ids as the doctors' own
-    specialtyId field. Using this endpoint (rather than deriving from
-    doctors) is more correct: it includes every specialty this clinic
-    has registered, even ones with zero doctors currently assigned -
-    letting the agent correctly say "we don't offer that" only when
-    truly true, rather than only when nobody happens to be staffed."""
 
     base_url = _doctors_base_url(state)
 
@@ -2769,11 +2788,7 @@ def find_available_doctors(
     `specialty_ids` IS OPTIONAL. Leave it out entirely when a SERVICE or
     a BRANCH is what the patient actually chose - you do NOT need to
     work out a specialty first, and you must not ask them for one just
-    to satisfy this parameter. CONFIRMED REAL PRODUCTION FAILURE: with a
-    service and a branch both already settled, the reply was "راح أحتاج
-    أعرف التخصص المناسب الأول عشان أقدر أجيب لك الدكاترة المتاحين. تحب
-    تبدأ بالتخصص ولا بالدكتور؟" - inventing a prerequisite that does not
-    exist and restarting a flow that was two steps from done.
+    to satisfy this parameter.
 
     `specialty_name`: PREFER THIS over hand-typing `specialty_ids`
     whenever the patient just answered a specialty list `list_specialties`
@@ -2806,10 +2821,7 @@ def find_available_doctors(
     provide THAT service come back. Use this whenever a service has been
     chosen: it answers "who can do this for me?" directly, and asking
     "specialty or doctor?" instead throws away a choice the patient has
-    already made. CONFIRMED REAL PRODUCTION FAILURE: the patient picked
-    "فحص النظر" and said yes to booking, and the reply was "تحب تبدأ
-    بالتخصص ولا بالدكتور؟" followed by a specialty list - restarting the
-    flow from scratch.
+    already made.
 
     `all_branches=True`: search the WHOLE hospital, ignoring any branch    settled earlier in the conversation. Pass this whenever the user asks
     to look more widely - "شوف في أي دكتور في المستشفى", "في فروع
@@ -2861,11 +2873,32 @@ def find_available_doctors(
     {"status": "found", "doctors": [{"id", "name", "specialtyName", "degreeName"}, ...]}
     {"status": "found_broader_search", "doctors": [...]}  # the given specialty_ids had nobody available, but other doctors clinic-wide currently are. These are NOT a specialty match - never offer them as an answer to a symptom
     {"status": "not_found_in_specialty"}  # allow_broader_search=False and these specialties have nobody available. Say so plainly; do NOT substitute other doctors
+    {"status": "specialty_not_resolved", "specialty_name": "...", "doctors": []}  # the specialty the patient named is not one this clinic has. NO search ran and there are NO doctors to show. Call `list_specialties` and offer only what it returns, or ask which specialty they meant. Never name a doctor after this status
     {"status": "not_found"}  # nobody at all currently has availability, even clinic-wide
     {"status": "branch_not_matched"}  # branch_name given but no branch matches it - show the branch list instead
     {"status": "not_found_in_branch", "branch": {...}}  # the branch is real, but has nobody in these specialties - offer other branches
     {"status": "not_configured"}  # this clinic doesn't have this feature set up yet
     {"status": "error"}  # the API call itself failed"""
+    # ------------------------------------------------------------------
+    # MAINTAINER NOTES - MOVED OUT OF THE DOCSTRING.
+    # A tool's docstring IS its `description`, sent to the model on every
+    # call by every agent bound to it. The incident reports below are for
+    # whoever next edits this function - they are not instructions the
+    # model can act on, so they are kept here rather than re-billed every
+    # turn. Nothing has been deleted.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE: with a service and a branch both
+    # already settled, the reply was "راح أحتاج أعرف التخصص المناسب الأول
+    # عشان أقدر أجيب لك الدكاترة المتاحين. تحب تبدأ بالتخصص ولا بالدكتور؟" -
+    # inventing a prerequisite that does not exist and restarting a flow
+    # that was two steps from done.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE: the patient picked "فحص النظر" and
+    # said yes to booking, and the reply was "تحب تبدأ بالتخصص ولا
+    # بالدكتور؟" followed by a specialty list - restarting the flow from
+    # scratch.
+    # ------------------------------------------------------------------
+
 
     base_url = _doctors_base_url(state)
 
@@ -2890,6 +2923,28 @@ def find_available_doctors(
     # used together safely.
     if specialty_name and specialty_name.strip():
         resolved_specialties = _resolve_specialty_for_booking(state, specialty_name)
+
+        # SECOND CHANCE, AGAINST THE CLINIC'S REAL SPECIALTY LIST.
+        #
+        # `_resolve_specialty_for_booking` only ever looks at the
+        # specialty list the patient was actually SHOWN, so it returns []
+        # for the single most common case there is: the patient names a
+        # specialty before any list exists ("سنانى وجعاني" ->
+        # specialty_name="طب اسنان", no `list_specialties` call yet).
+        # `_specialty_named_by` asks the API, which is the same lookup
+        # `match_entity_for_booking` already uses to decide that a word
+        # IS a specialty - so a name that tool recognised cannot fail
+        # here.
+        if not resolved_specialties:
+            named = _specialty_named_by(state, base_url, specialty_name)
+            if named and named.get("id"):
+                resolved_specialties = [named]
+                logger.info(
+                    "find_available_doctors: specialty_name=%r resolved from the "
+                    "clinic's specialty list (not a remembered list) -> %s",
+                    specialty_name, named.get("id"),
+                )
+
         if resolved_specialties:
             for item in resolved_specialties:
                 if item.get("id") and item["id"] not in specialty_ids:
@@ -2898,11 +2953,50 @@ def find_available_doctors(
                 "find_available_doctors: resolved specialty_name=%r -> %s",
                 specialty_name, [i.get("id") for i in resolved_specialties],
             )
+        elif not specialty_ids:
+            # NO SILENT BROADENING. THIS IS THE IMPORTANT BRANCH.
+            #
+            # The patient named a specialty EXPLICITLY and nothing could
+            # be matched to it. Falling through from here left
+            # `specialty_ids` empty, and an empty `specialty_ids` is not
+            # "no filter I need" - it is "the filter I was asked for is
+            # missing". `api.get_doctors` treats it as the former and
+            # returns EVERY doctor in the clinic.
+            #
+            # CONFIRMED FAILURE SHAPE: "سنانى وجعاني" -> the dental
+            # specialty fails to resolve -> the whole roster comes back
+            # -> the model picks the first plausible name and presents an
+            # internal-medicine doctor as the answer to a toothache. The
+            # patient has no way to know the specialty filter was never
+            # applied, and every downstream step (branches, days, slots)
+            # then runs on that wrong doctor.
+            #
+            # Returning a structured miss instead costs one turn and is
+            # always recoverable: the model can ask which specialty they
+            # meant, or call `list_specialties` and offer only what this
+            # clinic can actually book.
+            #
+            # Guarded by `not specialty_ids` on purpose - when the model
+            # ALSO passed real ids, those are a valid filter and the
+            # search is correctly narrowed, so there is nothing unsafe
+            # about proceeding.
+            logger.error(
+                "find_available_doctors: specialty_name=%r could not be resolved to "
+                "any specialty id (no remembered list match, no clinic specialty "
+                "match) - returning specialty_not_resolved instead of searching ALL "
+                "doctors unfiltered",
+                specialty_name,
+            )
+            return {
+                "status": "specialty_not_resolved",
+                "specialty_name": specialty_name.strip(),
+                "doctors": [],
+            }
         else:
             logger.info(
-                "find_available_doctors: specialty_name=%r did not match the remembered "
-                "specialty list or any fuzzy candidate",
-                specialty_name,
+                "find_available_doctors: specialty_name=%r did not match, but "
+                "specialty_ids=%s were passed directly - searching on those",
+                specialty_name, specialty_ids,
             )
 
     # Pull in sibling specialties registered under a near-identical name
@@ -3706,10 +3800,7 @@ def list_hospital_services(state: Annotated[AgentState, InjectedState]) -> dict:
 
     Do NOT use `answer_hospital_faq` for this question: it returns the
     passages most SIMILAR to the question, which are detail paragraphs
-    from inside one or two services. Confirmed real failure - answering
-    that way produced a list mixing inpatient amenities (gardens, gym,
-    art therapy area) with services, while four of the six actual
-    services were missing entirely.
+    from inside one or two services.
 
     Use `answer_hospital_faq` afterwards, when the user asks about ONE
     specific service in detail.
@@ -3726,6 +3817,19 @@ def list_hospital_services(state: Annotated[AgentState, InjectedState]) -> dict:
     {"status": "not_found"}  # no services section in this clinic's knowledge base
     {"status": "not_configured"}  # this clinic has no knowledge base set up yet
     """
+    # ------------------------------------------------------------------
+    # MAINTAINER NOTES - MOVED OUT OF THE DOCSTRING.
+    # A tool's docstring IS its `description`, sent to the model on every
+    # call by every agent bound to it. The incident reports below are for
+    # whoever next edits this function - they are not instructions the
+    # model can act on, so they are kept here rather than re-billed every
+    # turn. Nothing has been deleted.
+    #
+    # Confirmed real failure - answering that way produced a list mixing
+    # inpatient amenities (gardens, gym, art therapy area) with services,
+    # while four of the six actual services were missing entirely.
+    # ------------------------------------------------------------------
+
 
     kb_file = (state.get("templates") or {}).get("_knowledge_base_file", "")
 
@@ -4415,13 +4519,7 @@ def match_entity_info(
         currently have a real available doctor (see the "not_matched" +
         `available_branches` case below for when none do) - but it is
         still only a GUESS, never a confirmed fact, until the patient
-        agrees. CONFIRMED REAL PRODUCTION FAILURE: "فرع المنار" (not a
-        real branch) scored a mediocre 0.615 similarity against "فرع
-        المعادي" (a real, unrelated, and currently doctor-less branch)
-        and was reported as an outright match - "الفرع اللي ذكرته هو
-        فرع المعادي" - stated as settled fact with no confirmation
-        asked, pointing at a branch that could never actually help this
-        patient. A user's "yes" to the follow-up question is what makes
+        agrees. A user's "yes" to the follow-up question is what makes
         the match - don't act on the guessed branch/doctor until they've
         actually agreed it's the one they meant.
     {"status": "ambiguous", "candidates": [...]}  # show each candidate's
@@ -4465,6 +4563,22 @@ def match_entity_info(
     offer its SERVICES, and leave booking out of it. If THEY ask to book
     there, only then say the branch has nobody available and offer the
     branches that do, by name."""
+    # ------------------------------------------------------------------
+    # MAINTAINER NOTES - MOVED OUT OF THE DOCSTRING.
+    # A tool's docstring IS its `description`, sent to the model on every
+    # call by every agent bound to it. The incident reports below are for
+    # whoever next edits this function - they are not instructions the
+    # model can act on, so they are kept here rather than re-billed every
+    # turn. Nothing has been deleted.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE: "فرع المنار" (not a real branch)
+    # scored a mediocre 0.615 similarity against "فرع المعادي" (a real,
+    # unrelated, and currently doctor-less branch) and was reported as an
+    # outright match - "الفرع اللي ذكرته هو فرع المعادي" - stated as settled
+    # fact with no confirmation asked, pointing at a branch that could never
+    # actually help this patient.
+    # ------------------------------------------------------------------
+
 
     entity_type = (entity_type or "").strip().lower()
     if entity_type not in ("doctor", "branch"):
@@ -5256,11 +5370,7 @@ def match_entity_for_booking(
            here on purpose - one was already picked, so do not ask
            "which doctor?" or show any doctor roster. Go straight to
            `list_available_days_for_booking` for the doctor+branch pair
-           already on file. Confirmed real, repeated production
-           failure: a confirmed doctor kept getting silently dropped the
-           moment a branch was confirmed afterward, with the reply
-           reverting to "here are the available doctors" as if no
-           doctor had ever been chosen.
+           already on file.
     {"matched": true, "needsConfirmation": true, "item": {...}}
         -> a close-but-not-exact match (likely a typo) - nothing was
            saved yet. Ask the user "did you mean [item]?" and WAIT.
@@ -5285,11 +5395,6 @@ def match_entity_for_booking(
            for this status - they never claimed it was a name - and
            never ask permission first ("تحب أشوف لك قائمة
            الدكاترة؟"): they have already told you what they want.
-           CONFIRMED REAL PRODUCTION FAILURE: "اسنان" was answered
-           "ما لقيت دكتور باسم أسنان 🔍، تحب أشوف لك قائمة الدكاترة
-           المتاحين في تخصص طب اسنان؟" - which names the specialty it
-           claims not to have found, and then asks to be allowed to
-           act on it.
     {"matched": true, ..., "noDoctorsAtBranch": true}
         -> the branch was confirmed but NOBODY works there (for this
            booking's specialty). Never claim there's a list of doctors:
@@ -5306,6 +5411,30 @@ def match_entity_for_booking(
     {"status": "list", "items": [...]}
         -> list mode result (user_input was empty).
     {"status": "not_configured"} / {"status": "error"}"""
+
+    # ------------------------------------------------------------------
+    # MAINTAINER NOTES - MOVED OUT OF THE DOCSTRING ON PURPOSE.
+    #
+    # Everything in a tool's docstring is sent to the model as the
+    # tool's `description`, on every single call, for every agent bound
+    # to it. Incident narratives are written for whoever next edits this
+    # function; they are not instructions, and the model cannot act on
+    # them. They live here now so the reasoning survives without being
+    # re-billed on every turn.
+    #
+    # `doctorAlreadyConfirmed` exists because of a confirmed, REPEATED
+    # production failure: a confirmed doctor kept getting silently
+    # dropped the moment a branch was confirmed afterwards, and the
+    # reply reverted to "here are the available doctors" as if no
+    # doctor had ever been chosen.
+    #
+    # `is_a_specialty` exists because of a confirmed real production
+    # failure (medtown, session 201158877175+medtown2, 2026-09-06
+    # 13:28:58): the patient typed "اسنان" and got "ما لقيت دكتور باسم
+    # أسنان 🔍، تحب أشوف لك قائمة الدكاترة المتاحين في تخصص طب اسنان؟"
+    # - a reply that names the specialty it claims not to have found,
+    # and then asks permission to do the obvious thing.
+    # ------------------------------------------------------------------
 
     entity_type = (entity_type or "").strip().lower()
     if entity_type not in ("doctor", "branch"):
@@ -8477,21 +8606,14 @@ def request_human_handoff(
     you they're upset - not asking to be transferred. In that situation
     do NOT call this tool: apologize, and ASK whether they'd like you to
     transfer them to a staff member. Then call it only after they say
-    yes. Confirmed real production failure: a frustrated patient who
-    never asked for anyone was transferred out of the conversation
-    immediately, with the reason logged as "patient frustrated,
-    requested human agent" when no such request had been made.
+    yes.
 
     WANTING TO FILE A COMPLAINT IS ALSO NOT AGREEMENT. "شكوى"/"شكوي"/"عاوزه
     اعمل شكوه"/"I have a complaint" states a TOPIC, not a request for a
     person - filing a complaint has its own flow (ask what happened,
     which doctor/branch if relevant, then call `send_complaint_email`)
     and stays with you unless the patient separately, explicitly asks
-    for a human. Confirmed real production failure: the patient typed
-    "شكوي" alone and was immediately transferred with
-    reason="patient asked for staff" - they had said nothing of the
-    kind, and never got the chance to actually describe the complaint
-    at all. The word "complaint"/"شكوى" appearing anywhere in the
+    for a human. The word "complaint"/"شكوى" appearing anywhere in the
     message is never, by itself, grounds to call this tool.
 
     Pass `patient_agreed=False` if you are unsure whether they actually
@@ -8519,6 +8641,25 @@ def request_human_handoff(
     "اشتكي"/"complaint" or similar) and does NOT also separately name a
     person/staff/representative, the call is downgraded to
     "not_requested" regardless of what `patient_agreed` was passed as."""
+    # ------------------------------------------------------------------
+    # MAINTAINER NOTES - MOVED OUT OF THE DOCSTRING.
+    # A tool's docstring IS its `description`, sent to the model on every
+    # call by every agent bound to it. The incident reports below are for
+    # whoever next edits this function - they are not instructions the
+    # model can act on, so they are kept here rather than re-billed every
+    # turn. Nothing has been deleted.
+    #
+    # Confirmed real production failure: a frustrated patient who never
+    # asked for anyone was transferred out of the conversation immediately,
+    # with the reason logged as "patient frustrated, requested human agent"
+    # when no such request had been made.
+    #
+    # Confirmed real production failure: the patient typed "شكوي" alone and
+    # was immediately transferred with reason="patient asked for staff" -
+    # they had said nothing of the kind, and never got the chance to
+    # actually describe the complaint at all.
+    # ------------------------------------------------------------------
+
 
     latest_text = _latest_human_text_for_handoff_guard(state)
     has_complaint_word = any(root in latest_text for root in _COMPLAINT_ROOTS_FOR_HANDOFF_GUARD)
@@ -8638,11 +8779,21 @@ def share_branch_location(
     {"status": "not_requested", "reason": "no_explicit_location_request"}
     otherwise - NOTHING is signalled to n8n and no map pin is sent. This
     is enforced here, not left to the docstring above alone.
+    """
+    # ------------------------------------------------------------------
+    # MAINTAINER NOTES - MOVED OUT OF THE DOCSTRING.
+    # A tool's docstring IS its `description`, sent to the model on every
+    # call by every agent bound to it. The incident reports below are for
+    # whoever next edits this function - they are not instructions the
+    # model can act on, so they are kept here rather than re-billed every
+    # turn. Nothing has been deleted.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE: during the COMPLAINT flow's STEP
+    # C5, the patient was asked "هل في فرع محدد حابة تسجلي الشكوى عليه؟" and
+    # answered simply "فرع المنار" (naming the branch, no location question
+    # at all) - and a map pin of that branch was sent anyway.
+    # ------------------------------------------------------------------
 
-    CONFIRMED REAL PRODUCTION FAILURE: during the COMPLAINT flow's STEP
-    C5, the patient was asked "هل في فرع محدد حابة تسجلي الشكوى عليه؟"
-    and answered simply "فرع المنار" (naming the branch, no location
-    question at all) - and a map pin of that branch was sent anyway."""
 
     latest_text = ""
     for msg in reversed(state.get("messages") or []):
