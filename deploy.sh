@@ -44,7 +44,7 @@ FILES=(
   graph.py tools.py prompts.py rag.py main.py app.py config.py
   state.py api.py progress.py start.py
   agents/__init__.py agents/router.py agents/registry.py
-  agents/sections.py agents/response_contract.py
+  agents/sections.py agents/response_contract.py agents/hard_rules.py
 )
 
 RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; DIM=$'\033[2m'; OFF=$'\033[0m'
