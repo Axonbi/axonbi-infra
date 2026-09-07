@@ -8,12 +8,34 @@ Each entry says three things and nothing more:
 
 Design notes worth knowing before changing anything here
 --------------------------------------------------------
-1. `concierge` is deliberately the FULL legacy agent - every section,
-   every tool. It is the fallback the router uses whenever it cannot
-   confidently classify a message, which means an unclassifiable message
-   behaves EXACTLY as it did before this package existed. That is the
-   whole safety story of the refactor: the worst case is the old
-   behaviour, never something less capable.
+1. `concierge` is the fallback the router uses whenever it cannot
+   confidently classify a message. It keeps EVERY TOOL (see design note
+   3 - a fallback that cannot act is the one thing worse than a
+   fallback that answers imperfectly), and every shared section
+   including the complete GLOBAL HARD RULES.
+
+   Its PROMPT is narrowed to the sections it can actually act on:
+   `medical`, `faq`, `entity_info`. It was previously given all seven
+   flows - ~47k tokens on every call, by far the most expensive agent
+   in the system - and the reason it can be narrowed safely is
+   structural rather than a judgement call: the openings of the booking
+   and cancel/reschedule flows are AUTHORED IN CODE
+   (`_build_booking_entry_directive`,
+   `_build_identifier_choice_directive`), and both already list
+   `concierge` in their own agent gates. A vague "عايز أحجز" or "عايز
+   ألغي" arriving at the fallback is therefore answered with fixed text
+   and ZERO model calls, with or without the flow's prose in the
+   prompt. The router also re-runs before every turn (note 4), so the
+   owning specialist has the conversation by the next message.
+
+   `medical` is kept deliberately: a symptom message carrying no strong
+   cue routes here, and that is the one case where a poor first reply
+   is dangerous rather than merely clumsy - see the comment on the
+   unrelated-specialty verifier in graph.py, which names this exact
+   path.
+
+   Set CONCIERGE_FULL_PROMPT=true to restore the old full-prompt
+   fallback without a code change.
 
 2. `reschedule` is given the CANCEL section as well, on purpose - the
    reschedule flow explicitly reuses cancellation's STEP 1-2 for
@@ -41,6 +63,7 @@ from typing import Dict, List, Optional, Tuple
 
 import config
 import tools as tools_module
+from agents.hard_rules import scope_hard_rules
 from agents.response_contract import RESPONSE_FORMAT_CONTRACT
 from agents.sections import PREAMBLE_KEY, extra_keys, has_all_required
 
@@ -113,6 +136,14 @@ class AgentSpec:
     # True -> ignore section_keys/tool_names and use the entire prompt
     # and every tool (the legacy single-agent behaviour).
     full_access: bool = False
+    # True -> use `section_keys` for the prompt, but bind EVERY tool.
+    #
+    # Only `concierge` sets this. Its prompt can be narrowed safely
+    # (see config.CONCIERGE_FULL_PROMPT for exactly why), but its TOOLS
+    # cannot: it is the fallback, and design note 3 below applies with
+    # full force - a fallback that is missing a tool it turns out to
+    # need cannot recover, it simply stalls.
+    full_tools: bool = False
 
     def tools(self) -> List:
         """Resolves this specialist's tools out of tools.ALL_TOOLS.
@@ -123,7 +154,7 @@ class AgentSpec:
         time.
         """
 
-        if self.full_access or not config.AGENT_TOOL_SCOPING:
+        if self.full_access or self.full_tools or not config.AGENT_TOOL_SCOPING:
             return list(tools_module.ALL_TOOLS)
 
         resolved = []
@@ -154,15 +185,28 @@ _SPECS: Tuple[AgentSpec, ...] = (
     AgentSpec(
         name=CONCIERGE,
         title="Concierge / fallback",
-        full_access=True,
+        # PROMPT NARROWED, TOOLS NOT. See config.CONCIERGE_FULL_PROMPT
+        # for the full reasoning and the kill switch; in short, the
+        # openings of the booking and cancel/reschedule flows are
+        # authored in code and already gated to include `concierge`, so
+        # the fallback can start either of them with fixed text and no
+        # model call at all - it does not need their prose. What it does
+        # still need is the medical section (a symptom carrying no
+        # strong cue lands here, and answering that one wrongly is the
+        # dangerous case), plus hospital info and entity lookup for the
+        # questions it genuinely answers itself.
+        #
+        # `full_access=True` is what CONCIERGE_FULL_PROMPT restores.
+        full_access=config.CONCIERGE_FULL_PROMPT,
+        full_tools=True,
+        section_keys=("medical", "faq", "entity_info"),
         job="""\
 ============================================================
 YOUR JOB
 ============================================================
 You are the first point of contact and the fallback for anything that
 hasn't clearly become one specific request yet. Greet the patient, find
-out what they actually need, and start the matching flow yourself - all
-of them are described below.
+out what they actually need, and take the next step with them.
 
 If their message states no intent yet (just "مرحبا", "hi", "صباح
 الخير"), do not guess and do not start asking for a booking reference or
@@ -462,8 +506,20 @@ def build_agent_prompt(sections: Dict[str, str], agent_name: str) -> str:
         seen.add(key)
         parts.append(sections[key])
 
+    # GLOBAL HARD RULES, NARROWED TO THIS SPECIALIST.
+    #
+    # The block is ~7.7k tokens and used to go to every specialist in
+    # full, on every call - the largest single shared cost in the
+    # prompt, and roughly half of it is rules the specialist cannot
+    # act on (see agents/hard_rules.py). `scope_hard_rules` drops only
+    # rules explicitly classified as belonging to another flow;
+    # anything it does not recognise stays, so the default is exactly
+    # the old behaviour and `concierge` is returned untouched.
     for key in _SHARED_TAIL_KEYS:
-        parts.append(sections[key])
+        section = sections[key]
+        if key == "hard_rules":
+            section = scope_hard_rules(section, spec.name)
+        parts.append(section)
 
     return "\n\n".join(part.strip() for part in parts if part and part.strip())
 
