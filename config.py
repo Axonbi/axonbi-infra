@@ -399,6 +399,32 @@ MULTI_AGENT_ENABLED: bool = _flag("MULTI_AGENT_ENABLED", True)
 # a specialist wanted a tool outside its subset.
 AGENT_TOOL_SCOPING: bool = _flag("AGENT_TOOL_SCOPING", True)
 
+# Does the `concierge` fallback carry EVERY flow section, or only the
+# ones it can act on this turn?
+#
+# `concierge` is the router's fallback for any message it cannot
+# classify, and it used to receive the entire prompt - all seven flows,
+# ~47k tokens - on every call, making it far and away the most
+# expensive agent in the system.
+#
+# It does not need most of that, for one specific structural reason:
+# the openings of the booking and cancel/reschedule flows are AUTHORED
+# IN CODE, not composed by the model. `_build_booking_entry_directive`
+# and `_build_identifier_choice_directive` both already list
+# `concierge` in their own agent gates, so a vague "عايز أحجز" or
+# "عايز ألغي" landing on the fallback is answered with fixed text and
+# ZERO model calls, whether or not the flow's prose is in the prompt.
+# What is left for the model to do on a genuinely unclassifiable turn
+# is greet, answer a hospital question, or handle a symptom safely -
+# which is exactly what the sections it keeps cover (see
+# agents/registry.py).
+#
+# Set CONCIERGE_FULL_PROMPT=true to restore the previous behaviour
+# without a code change. It is a real kill switch, not decoration: if a
+# fallback turn is ever observed answering worse than it used to, this
+# is the first thing to flip.
+CONCIERGE_FULL_PROMPT: bool = _flag("CONCIERGE_FULL_PROMPT", False)
+
 # "deterministic" (default) -> routing is pure code: weighted intent
 #     cues + stickiness. Costs zero extra LLM calls and zero extra
 #     latency, and is 100% reproducible - the same message always routes
