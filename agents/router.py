@@ -641,6 +641,74 @@ def _last_ai_text(messages: List) -> str:
 _POSITIONAL_PICK_RE = re.compile(r"^\s*(?:رقم\s*)?([1-9]\d?|[١-٩]\d?)\s*[.!؟?،,]*\s*$")
 
 
+# WHICH AGENTS CAN SHOW A BOOKABLE LIST BUT NOT ACT ON A PICK.
+#
+# Computed from the registry rather than written out, so it stays true
+# when an agent's tool set changes. An agent that cannot reach the slot
+# and booking tools physically cannot take the step after "1" - leaving
+# the patient there strands the flow (see the routing rule that uses
+# this).
+def _agents_without_booking_tools() -> frozenset:
+    from agents.registry import AGENT_SPECS, CONCIERGE
+
+    # The two tools nothing can finish a booking without.
+    required = {"get_available_slots_for_booking", "create_new_booking"}
+
+    # ...and the tools that PRINT a bookable list in the first place.
+    # Both halves matter: `cancel` and `reschedule` also lack the
+    # booking tools, but they never show a specialty or doctor roster -
+    # a number from them is an appointment or a slot, and handing that
+    # to `booking` would break the flow it belongs to.
+    shows_lists = {"list_specialties", "find_available_doctors"}
+
+    stranded = set()
+    for name, spec in AGENT_SPECS.items():
+        if name == CONCIERGE or spec.full_access or spec.full_tools:
+            continue  # has everything
+        held = {getattr(t, "name", "") for t in spec.tools()}
+        if required.issubset(held):
+            continue                      # it can finish the booking itself
+        if not (held & shows_lists):
+            continue                      # it never shows such a list
+        stranded.add(name)
+
+    return frozenset(stranded)
+
+
+def _picks_from_a_specialty_list(messages: List, text: str) -> bool:
+    """True when the patient is choosing a SPECIALTY from a numbered
+    list the assistant just showed.
+
+    The specialty counterpart of `_picks_from_a_doctor_list`, and it
+    matters for the same reason: choosing a specialty is the first step
+    of a BOOKING, and the agents that can print the specialty list
+    (`medical`, `faq`) own none of the tools that come after it.
+
+    CONFIRMED REAL PRODUCTION FAILURE (medtown, 2026-09-07 13:03): the
+    specialty list was shown by `faq`, the patient replied "1", and the
+    flow never left `faq` - so instead of the dentists it showed the
+    clinic's branches, then that branch's service catalogue.
+    """
+
+    if not _POSITIONAL_PICK_RE.match(text.strip()):
+        return False
+
+    for msg in reversed(messages or []):
+        content = getattr(msg, "content", "")
+        content = content if isinstance(content, str) else str(content)
+        if getattr(msg, "type", None) == "human" or not content.strip():
+            continue
+        if getattr(msg, "type", None) != "ai":
+            continue
+        looks_like_specialty_list = (
+            ("تخصص" in content or "التخصصات" in content or "specialt" in content.lower())
+            and re.search(r"[1-9]️?⃣", content) is not None
+        )
+        return bool(looks_like_specialty_list)
+
+    return False
+
+
 def _picks_from_a_doctor_list(messages: List, text: str) -> bool:
     """True when the patient is choosing a doctor from a numbered list
     the assistant just showed.
@@ -733,6 +801,38 @@ _ASKED_SPECIALTY_OR_DOCTOR_RE = re.compile(
 _CRISIS_OVERRIDE_RE = CRISIS_RE
 
 
+# ASKING TO SEE THE OPTIONS IS AN ANSWER, NOT A CHANGE OF SUBJECT.
+#
+# The booking flow's own opening question is "عندك دكتور أو تخصص معيّن
+# في بالك؟". A patient who replies "طيب إيه التخصصات؟" is answering it -
+# they are saying "show me, then I will pick". It is the single most
+# natural reply to that question.
+#
+# But "ايه التخصصات الموجوده" scores faq:10 - identically to "فين عنوان
+# الفرع؟" - and the change-of-subject rule below reads any non-booking
+# score over the threshold as a deliberate switch. So the most natural
+# answer to the booking flow's own question was routed out of booking.
+#
+# CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+# 201158877175+medtown2, 2026-09-07 13:02-13:09): "عاوزه احجز" -> the
+# entry question -> "ايه التخصصات؟" went to `faq`, and stayed there for
+# the rest of the flow. `faq` owns no booking tool, so the patient was
+# shown branches, then a branch's service catalogue, and finally a dead
+# end - never a dentist.
+#
+# `booking` needs no help answering this: it holds `list_specialties`
+# and `find_available_doctors` itself, shows the list, and carries
+# straight on to the doctors.
+_ASKS_TO_SEE_THE_OPTIONS_RE = re.compile(
+    r"(?:ايه|ايش|وش|ما\s*هي|ماهي|انهي|اي)\s*(?:ال)?(?:تخصصات|تخصص|دكاتره|اطباء)|"
+    r"(?:اعرض|وريني|ورينى|شوفني|عايز\s*اشوف|عاوز\s*اشوف|ابغى\s*اشوف|تقدر\s*تعرض)"
+    r"[^\n]{0,15}(?:ال)?(?:تخصصات|دكاتره|اطباء)|"
+    r"(?:مين|من)\s*(?:هم\s*)?(?:ال)?(?:دكاتره|اطباء)|"
+    r"(?:ال)?(?:تخصصات|دكاتره|اطباء)\s*(?:ال)?(?:متاح|موجود)|"
+    r"(?:what|which|show\s*me\s*the)\s*(?:specialt|doctor)"
+)
+
+
 def _answers_booking_entry_question(messages: List, text: str) -> bool:
     """True when the assistant's own previous reply was the booking
     flow's opening doctor-or-specialty question - AND the answer is one
@@ -786,9 +886,19 @@ def _answers_booking_entry_question(messages: List, text: str) -> bool:
     # finally asked "أي دكتور أو تخصص حابة تعدلي موعدك عنده؟" - the
     # booking entry question - to somebody who had asked three times to
     # change an appointment that already exists.
+    # See `_ASKS_TO_SEE_THE_OPTIONS_RE`: this one phrasing scores as an
+    # information question while being the most natural ANSWER to the
+    # question that was just asked.
+    asks_to_see_options = bool(_ASKS_TO_SEE_THE_OPTIONS_RE.search(normalize(text)))
+
     scores = score_message(text)
     for flow, score in scores.items():
         if flow != "booking" and score >= _SWITCH_THRESHOLD:
+            # NARROW ON PURPOSE - only the info flow, and only for this
+            # phrasing. An explicit cancel/reschedule/complaint request
+            # is still a real change of subject and still bails out.
+            if flow == "faq" and asks_to_see_options:
+                continue
             return False
 
     last_ai = _last_ai_text(messages)
@@ -832,6 +942,33 @@ def _affirms_previous_booking_offer(messages: List, text: str) -> bool:
 # The routing decision
 # ==========================================================
 
+_CANNOT_COMPLETE_A_BOOKING_CACHE = None
+
+
+class _StrandedAgents:
+    """`in` support with the registry consulted lazily, once."""
+
+    def __contains__(self, name):
+        global _CANNOT_COMPLETE_A_BOOKING_CACHE
+        if _CANNOT_COMPLETE_A_BOOKING_CACHE is None:
+            try:
+                _CANNOT_COMPLETE_A_BOOKING_CACHE = _agents_without_booking_tools()
+            except Exception:  # pragma: no cover - never break routing
+                logger.warning(
+                    "router: could not work out which agents lack booking tools - "
+                    "falling back to `medical` only", exc_info=True,
+                )
+                _CANNOT_COMPLETE_A_BOOKING_CACHE = frozenset({"medical"})
+            logger.info(
+                "router: agents that cannot complete a booking: %s",
+                sorted(_CANNOT_COMPLETE_A_BOOKING_CACHE),
+            )
+        return name in _CANNOT_COMPLETE_A_BOOKING_CACHE
+
+
+_CANNOT_COMPLETE_A_BOOKING = _StrandedAgents()
+
+
 def route_turn(messages: List, active_agent: Optional[str] = None) -> Tuple[str, str]:
     """
     Returns `(agent_name, reason)`. The reason is logged, never shown to
@@ -872,12 +1009,32 @@ def route_turn(messages: List, active_agent: Optional[str] = None) -> Tuple[str,
     if active_agent != "booking" and _affirms_previous_booking_offer(messages, text):
         return "booking", "bare affirmation answering the assistant's own booking offer"
 
-    # Picking a doctor out of a list is a BOOKING action, wherever the
-    # list was shown. `medical` can display doctors but owns none of the
-    # booking tools, so leaving the patient there strands the turn - see
-    # _picks_from_a_doctor_list.
-    if active_agent == "medical" and _picks_from_a_doctor_list(messages, text):
-        return "booking", "picked a doctor from the list - booking owns the next step"
+    # Picking a DOCTOR or a SPECIALTY out of a list is a BOOKING action,
+    # wherever the list was shown.
+    #
+    # THE GATE IS DERIVED, NOT HARDCODED. This used to read
+    # `active_agent == "medical"`, while its own comment said "wherever
+    # the list was shown" - and `faq` shows exactly the same lists
+    # (`list_specialties`, `find_available_doctors`,
+    # `list_branches_for_specialty`) while owning no booking tool at
+    # all. `_CANNOT_COMPLETE_A_BOOKING` is computed from the registry,
+    # so an agent that gains or loses booking tools cannot silently
+    # reintroduce this.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+    # 201158877175+medtown2, 2026-09-07 13:03-13:09): "ايه التخصصات؟"
+    # routed to `faq`, the specialty list was shown, and the patient's
+    # "1" kept them on `faq` for the entire rest of the flow. Lacking
+    # `find_available_doctors`'s booking siblings it showed BRANCHES,
+    # then branch SERVICES, and finally dead-ended on "لازم تختار أولاً
+    # اليوم" with no way to list the days.
+    if (active_agent in _CANNOT_COMPLETE_A_BOOKING
+            and (_picks_from_a_doctor_list(messages, text)
+                 or _picks_from_a_specialty_list(messages, text))):
+        return "booking", (
+            "picked from a doctor/specialty list - booking owns the next step "
+            f"({active_agent} has no booking tools)"
+        )
 
     # A symptom, a specialty or a doctor name given in answer to the
     # booking flow's own opening question is a BOOKING answer - see
