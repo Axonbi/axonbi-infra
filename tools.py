@@ -2867,6 +2867,114 @@ def _expand_specialty_ids(state, base_url: str, specialty_ids: list) -> list:
         return specialty_ids
 
 
+def _looks_like_a_specialty_id(value: str) -> bool:
+    """Whether `value` is plausibly an ID rather than a name or a list
+    position.
+
+    A DELIBERATELY CHEAP PRE-FILTER, not a format check. The point is to
+    spend nothing on the normal path (real ids pass straight through)
+    while catching the three shapes the model actually gets wrong, all
+    three confirmed in production:
+
+        specialty_ids=['طب الباطنة', 'نساء و توليد', ...]   <- names
+        specialty_ids=['4']                                  <- a list position
+        specialty_ids=['طب اسنان']                           <- one name
+
+    An id in this system is a GUID, but this does NOT require GUID
+    format on purpose - a tenant with some other id scheme must keep
+    working. It only rejects what an id demonstrably never contains:
+    non-ASCII characters, whitespace, or nothing but one or two digits.
+    """
+
+    text = (value or "").strip()
+
+    if not text:
+        return False
+
+    if any(ord(ch) > 127 for ch in text):
+        return False
+
+    if any(ch.isspace() for ch in text):
+        return False
+
+    if text.isdigit() and len(text) <= 3:
+        return False
+
+    return True
+
+
+def _sanitize_specialty_ids(state, base_url: str, specialty_ids: list) -> tuple:
+    """Turn any specialty NAME or list POSITION the model put in
+    `specialty_ids` into the real id, and report what could not be
+    resolved.
+
+    Returns (clean_ids, unresolved_labels).
+
+    WHY THIS EXISTS: `specialty_ids` goes straight to the doctors API as
+    `specialtyIds`. A name or a bare number in there is not a filter the
+    API can apply - it is a 400.
+
+    CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+    201158877175+medtown2, 2026-09-07 11:39-11:40), twice in a row:
+
+        specialty_ids=['طب الباطنة', 'نساء و توليد', 'طب اسنان',
+                       'جراحة الجسم الزجاجي والشبكية']  -> 400
+        specialty_ids=['4']                              -> 400
+
+    Both surfaced to the patient as "فيه مشكلة تقنية الحين 😕" on a
+    perfectly answerable request - the clinic HAS those specialties, and
+    "4" was a valid position in the list the patient had just been
+    shown. Nothing was wrong except the argument's shape.
+
+    Resolution reuses the exact path `specialty_name` already uses, in
+    the same order: the remembered list first (free, and a position can
+    only mean one thing against it), then the clinic's own specialty
+    list from the API.
+    """
+
+    if not specialty_ids:
+        return [], []
+
+    clean = []
+    unresolved = []
+
+    for raw in specialty_ids:
+        value = str(raw or "").strip()
+        if not value:
+            continue
+
+        if _looks_like_a_specialty_id(value):
+            if value not in clean:
+                clean.append(value)
+            continue
+
+        # Not an id. Resolve it the way `specialty_name` is resolved.
+        resolved = _resolve_specialty_for_booking(state, value)
+        if not resolved:
+            named = _specialty_named_by(state, base_url, value)
+            resolved = [named] if named and named.get("id") else []
+
+        if resolved:
+            for item in resolved:
+                if item.get("id") and item["id"] not in clean:
+                    clean.append(item["id"])
+            logger.info(
+                "find_available_doctors: specialty_ids contained %r, which is a "
+                "name or a list position rather than an id - resolved to %s",
+                value, [i.get("id") for i in resolved],
+            )
+        else:
+            unresolved.append(value)
+            logger.error(
+                "find_available_doctors: specialty_ids contained %r, which is "
+                "neither an id nor a specialty this clinic has - dropped rather "
+                "than sent to the doctors API (it answers a non-id with a 400, "
+                "which reaches the patient as a technical error)", value,
+            )
+
+    return clean, unresolved
+
+
 @tool
 def find_available_doctors(
     state: Annotated[AgentState, InjectedState],
@@ -3009,6 +3117,34 @@ def find_available_doctors(
     # `specialty_ids` is optional - a service or a branch is enough on
     # its own. Normalized here so every use below is safe.
     specialty_ids = specialty_ids or []
+
+    # WHATEVER IS IN `specialty_ids`, IT MUST BE IDS BY THE TIME IT
+    # REACHES THE API. A name or a list position in there is a 400, and
+    # a 400 reaches the patient as "فيه مشكلة تقنية" on a request the
+    # clinic could have answered. See `_sanitize_specialty_ids`.
+    specialty_ids, _unresolved_specialty_labels = _sanitize_specialty_ids(
+        state, base_url, specialty_ids,
+    )
+
+    # NOTHING USABLE LEFT, AND NOTHING ELSE ASKED FOR.
+    #
+    # Every id the model passed was a name this clinic does not have,
+    # and it named no `specialty_name` either. Falling through with an
+    # empty list would search every doctor in the clinic - the exact
+    # silent broadening the `specialty_not_resolved` status exists to
+    # prevent - so report it the same way.
+    if (_unresolved_specialty_labels and not specialty_ids
+            and not (specialty_name or "").strip()):
+        logger.error(
+            "find_available_doctors: every specialty_ids entry was unresolvable "
+            "(%s) - returning specialty_not_resolved instead of searching ALL "
+            "doctors unfiltered", _unresolved_specialty_labels,
+        )
+        return {
+            "status": "specialty_not_resolved",
+            "specialty_name": _unresolved_specialty_labels[0],
+            "doctors": [],
+        }
 
     # RESOLVE `specialty_name` (a bare number or raw text picking from
     # the specialty list just shown) INTO ITS REAL ID.
