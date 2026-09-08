@@ -31,7 +31,7 @@ BRANCH="${BRANCH:-multiagent-up1}"
 APP_DIR="${APP_DIR:-/opt/langgraph}"
 BACKUP_ROOT="${BACKUP_ROOT:-/opt/langgraph-backups}"
 SERVICES="${SERVICES:-cancel-agent-api.service langgraph-dev.service}"
-HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8000/chat}"
+HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8001/chat}"
 HEALTH_CLIENT="${HEALTH_CLIENT:-medtown2}"
 KEEP_BACKUPS="${KEEP_BACKUPS:-10}"
 
