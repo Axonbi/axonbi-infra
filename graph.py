@@ -3,7 +3,6 @@ LangGraph graph for the LLM-tool-calling Guest Booking Cancellation Agent.
 
 REWRITTEN (see graph.py.pre_rewrite_backup for the old deterministic
 20-node router). The graph is now a standard two-node ReAct-style loop:
-
     START -> load_config -> agent <-> tools -> END
 
   - load_config: loads/caches the tenant's client_config.csv +
