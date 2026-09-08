@@ -42,7 +42,7 @@ import sys
 import logging
 import re
 import ast
-from datetime import datetime
+from datetime import date, datetime
 from typing import Dict, Optional
 
 from langchain_core.messages import AIMessage, SystemMessage, trim_messages
@@ -1882,6 +1882,155 @@ def _rejected_day_lead_for_day_list(messages: list, session_id: str) -> str:
             if lead:
                 return lead
     return ""
+
+
+# ==========================================================
+# THEY NAMED AN HOUR, NOT JUST A DAY
+# ==========================================================
+#
+# "عايز أحجز مع دكتور أحمد يوم الأحد الساعة 5" is one request with
+# three facts in it, and the third one had no owner. The doctor is
+# resolved by `match_entity_for_booking`, the day by
+# `resolve_available_day` under `_build_named_day_directive` - and the
+# time was left as a one-line hint inside `_build_multi_intent_directive`
+# ("hold on to it... point out the one nearest what they asked for"),
+# which is guidance about presentation, not an instruction about what is
+# true.
+#
+# The three outcomes a patient who names an hour actually needs are:
+#   - that exact time is open -> lock it in and carry on to the review
+#     card, without making them pick it out of a list they have already
+#     answered;
+#   - the day is open but that hour is not -> say exactly that, and show
+#     the hours that ARE open on the day they chose;
+#   - the doctor does not work that day at all -> that is the named-DAY
+#     answer, and `_build_day_unavailable_directive` already owns it.
+#
+# None of those may be decided by reading the slot list by eye, which is
+# how a time gets confirmed that no slot ever carried.
+# `select_appointment_slot` answers all three in code - see
+# `tools._parse_clock_time` - and this directive is what makes the turn
+# go through it.
+
+_REQUESTED_TIME_TOOLS = ("select_appointment_slot", "create_new_booking")
+
+
+def _requested_clock_time_in_latest_human(messages: list) -> str:
+    """The clock time the patient named in their OWN latest message, as
+    they wrote it, or "".
+
+    Gated on `_MULTI_INTENT_TIME_RE` rather than on the time parser
+    alone: a bare "5" parses perfectly well as five o'clock, but in this
+    flow it is overwhelmingly an answer to a numbered list, and reading
+    it as an hour would hijack every positional pick. A real time
+    request carries a cue - ":30", "الساعة", "مساءً", "pm".
+    """
+
+    index = _latest_human_index(messages)
+    if index < 0:
+        return ""
+
+    content = getattr(messages[index], "content", "")
+    text = content if isinstance(content, str) else str(content)
+    if not text.strip():
+        return ""
+
+    match = _MULTI_INTENT_TIME_RE.search(text)
+    if not match:
+        return ""
+
+    # It has to parse as a real clock time too, so "الساعة 40" or a
+    # stray "12:99" cannot produce an instruction about a time that does
+    # not exist.
+    if not tools._parse_clock_time(match.group(0)):
+        return ""
+
+    return match.group(0).strip()
+
+
+def _build_requested_time_directive(messages: list, session_id: str) -> str:
+    """The patient named an hour. Settle it through
+    `select_appointment_slot`, and spell out each of its answers.
+
+    Stands down as soon as that tool (or the booking itself) has run for
+    this message - the time has been dealt with and the normal
+    directives take over - and stands down entirely when there is no
+    doctor anywhere in view, where a time is something mentioned in
+    passing rather than a booking preference.
+    """
+
+    if not messages or not session_id:
+        return ""
+
+    requested = _requested_clock_time_in_latest_human(messages)
+    if not requested:
+        return ""
+
+    # Already settled on this turn.
+    if _tool_results_since_latest_human(messages, _REQUESTED_TIME_TOOLS):
+        return ""
+
+    session = tools._BOOKING_SESSIONS.get(session_id) or {}
+
+    # A slot already locked in for this booking IS the answer to their
+    # time; re-opening it here would fight
+    # `_build_selected_slot_directive`.
+    if session.get("selected_slot"):
+        return ""
+
+    doctor_on_the_table = bool(session.get("doctor_id"))
+    if not doctor_on_the_table:
+        for msg in reversed(messages):
+            if getattr(msg, "name", None) in (
+                "match_entity_for_booking", "find_available_doctors",
+                "find_best_doctor_in_specialty", "list_branches_for_specialty",
+            ):
+                doctor_on_the_table = True
+                break
+
+    if not doctor_on_the_table:
+        return ""
+
+    return (
+        "============================================================\n"
+        "THEY NAMED A TIME - SETTLE IT WITH THE TOOL, NOT BY EYE\n"
+        "============================================================\n"
+        "Their latest message asks for a specific time: \"" + requested
+        + "\".\n\n"
+        "Once this booking's DAY is settled and you have called "
+        "`get_available_slots_for_booking` for it, your next action is:\n"
+        "    select_appointment_slot(user_input=\"" + requested + "\")\n\n"
+        "Pass their own words through unchanged - that tool matches a "
+        "time against the real slots in code, including \"الساعة 5\", "
+        "\"5 مساءً\" and \"11 الصبح\". Do NOT scan the slot list yourself "
+        "to decide whether their time is in it, and do NOT state that it "
+        "is available - or that it is not - before the tool has "
+        "answered. That sentence is the one the patient will act on.\n\n"
+        "WHAT TO DO WITH EACH RESULT:\n"
+        "  - \"selected\": that exact time is theirs. Confirm it back in "
+        "ONE short line and go straight on to the next step of the "
+        "booking - do NOT show the list of times as well, and do NOT ask "
+        "them to pick a time they have just been given.\n"
+        "  - \"not_matched\": the day is open but that hour is not. Say "
+        "exactly that - the time they asked for is not available on that "
+        "day - and in the SAME reply show the times that ARE open on it, "
+        "numbered, from the slot list you just fetched. Never quietly "
+        "offer a different hour as though it were the one they asked "
+        "for, and never move them to another day without saying so.\n"
+        "  - \"ambiguous_time\": they gave an hour with no morning/"
+        "evening word and both halves of the day are open. Show ONLY the "
+        "candidate times the tool returned and ask which of them - never "
+        "choose one for them.\n"
+        "  - \"no_list_shown\": the times for the chosen day have not "
+        "been fetched yet. Fetch them first, then call this again in the "
+        "same turn.\n\n"
+        "If the DAY is not settled yet, deal with the day first (the day "
+        "directive above says how) and then come back to this time in "
+        "the same turn. If the doctor does not work the day they named "
+        "at all, that is the answer to give - the time question does not "
+        "survive it, and you must not offer that hour on some other day "
+        "as if they had asked for it.\n\n"
+    )
 
 
 def _build_day_unavailable_directive(messages: list, session_id: str) -> str:
@@ -3796,18 +3945,127 @@ def _detect_target_language(messages: list) -> Optional[str]:
     signal on its own.
     """
 
+    established = _language_signal_in_messages(messages, ignore_identifiers=True)
+    if established:
+        return established
+
+    # NOTHING in the conversation gave a signal once identifiers were
+    # set aside - e.g. the patient's very first message is a bare
+    # booking reference and there is no earlier turn to fall back on.
+    # Read it the old way rather than returning None: a guess from the
+    # script it happens to be written in is still better than no answer
+    # at all, and it is what this function did before identifiers were
+    # discounted.
+    return _language_signal_in_messages(messages, ignore_identifiers=False)
+
+
+def _language_signal_in_messages(
+    messages: list, ignore_identifiers: bool,
+) -> Optional[str]:
+    """One pass of `_detect_target_language`'s scan.
+
+    With `ignore_identifiers=True`, every language-neutral token is
+    removed from each message before it is read, and a message left
+    with no signal of its own is skipped in favour of an earlier one -
+    see `_strip_language_neutral_tokens`."""
+
     for msg in reversed(messages):
         if getattr(msg, "type", None) != "human":
             continue
         content = msg.content or ""
+
+        # Arabic script settles it wherever it appears, identifier or
+        # not - no identifier this system handles is written in Arabic.
         if _looks_arabic(content):
             return "ar"
-        if _has_latin_letters(content):
-            # Latin letters alone do not mean English - Franco-Arabic is
-            # written in Latin script and is Arabic. See _looks_arabizi.
-            return "ar" if _looks_arabizi(content) else "en"
+
+        readable = (
+            _strip_language_neutral_tokens(content)
+            if ignore_identifiers else content
+        )
+
+        if not _has_latin_letters(readable):
+            continue
+
+        # A SINGLE Latin word DOES NOT SWITCH AN ESTABLISHED LANGUAGE.
+        #
+        # One word is a proper noun, a service name ("gmail"), a
+        # leftover fragment of an identifier, or a bare "ok" - none of
+        # which is a request to be answered in English. A genuine switch
+        # ("English please", "can you speak english") is a phrase, and
+        # still switches. When no earlier message gives a signal either,
+        # the loop simply runs out and the caller's second pass decides.
+        if ignore_identifiers and _latin_word_count(readable) < 2:
+            continue
+
+        # Latin letters alone do not mean English - Franco-Arabic is
+        # written in Latin script and is Arabic. See _looks_arabizi.
+        return "ar" if _looks_arabizi(readable) else "en"
 
     return None
+
+
+# ==========================================================
+# TOKENS THAT ARE NOT WRITTEN IN ANY LANGUAGE
+# ==========================================================
+#
+# CONFIRMED REAL PRODUCTION FAILURE (2026-09-07): a conversation held
+# entirely in Arabic switched to English the moment the patient typed
+# their booking reference - "GBN-2026-09-07-394" - because the whole
+# language decision rests on "does this message contain Latin letters?"
+# and "GBN" is three of them. The same happens for an email address,
+# which is the other thing this flow asks patients to type. Every reply
+# after it came out in English, and because `lookup_appointment` and
+# `check_booking_status` are given the conversation's language, the
+# BOOKING API then returned the doctor and branch names in English too,
+# so the appointment card the patient was shown read "Mohammed Zayed"
+# and "Dokki Branch" under Arabic labels.
+#
+# A booking reference, an email address, a phone number, a national id
+# and a URL are all written the same way whoever is typing them. They
+# carry no information about the language of the conversation, so they
+# are removed before the question is asked.
+_NEUTRAL_URL_RE = re.compile(r"\b(?:https?://|www\.)\S+", re.IGNORECASE)
+_NEUTRAL_EMAIL_RE = re.compile(r"[^\s@]+@[^\s@]+\.[^\s@]+")
+# Letters, then at least one hyphen-joined group, with a digit in it -
+# the same shape `_BOOKING_REF_RE` matches ("GBN-2026-09-07-394",
+# "GuestBookingNum-2026-09-01-076").
+_NEUTRAL_REFERENCE_RE = re.compile(r"\b[A-Za-z]{2,}[A-Za-z0-9]*(?:-[A-Za-z0-9]+)+\b")
+# A bare mail/web domain typed on its own ("gmail.com", "hotmail.co.uk")
+# - which is what patients answer with when asked for an email and they
+# only have one. Deliberately limited to real top-level domains rather
+# than "word.word": the general shape also matches "Dr.Ahmed", and a
+# doctor's name is not a language-neutral token.
+_NEUTRAL_DOMAIN_RE = re.compile(
+    r"\b[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*"
+    r"\.(?:com|net|org|edu|gov|info|io|co|me|sa|eg|ae|uk)\b",
+    re.IGNORECASE,
+)
+# A run of digits long enough to be a phone number, an id or a code,
+# with the separators people actually type.
+_NEUTRAL_NUMBER_RE = re.compile(r"\+?\d[\d\s\-()]{3,}\d")
+
+
+def _strip_language_neutral_tokens(text: str) -> str:
+    """`text` with every language-neutral token removed.
+
+    Order matters: the reference and URL/email forms are cut first,
+    because a reference ends in hyphen-joined digits that the phone
+    pattern would otherwise claim - the same ordering `_supplied_phone_in`
+    already relies on for the same reason.
+    """
+
+    if not text:
+        return ""
+
+    remainder = str(text)
+    for pattern in (
+        _NEUTRAL_URL_RE, _NEUTRAL_EMAIL_RE, _NEUTRAL_REFERENCE_RE,
+        _NEUTRAL_DOMAIN_RE, _NEUTRAL_NUMBER_RE,
+    ):
+        remainder = pattern.sub(" ", remainder)
+
+    return re.sub(r"\s+", " ", remainder).strip()
 
 
 _LANGUAGE_DIRECTIVE = {
@@ -5306,9 +5564,9 @@ _WEEKDAY_WORDS = {
 # hit there would flag a perfectly correct reply as inventing a day,
 # which costs the patient a wasted correction round or, twice in a row,
 # the generic fallback message. An Arabic letter is a \w character, so
-#  does the right thing on both sides of these tokens.
+# \b does the right thing on both sides of these tokens.
 _WEEKDAY_WORD_RES = {
-    word: re.compile(r"" + re.escape(word) + r"")
+    word: re.compile(r"\b" + re.escape(word) + r"\b")
     for word in _WEEKDAY_WORDS
 }
 
@@ -7163,14 +7421,51 @@ def _reply_invents_availability(reply_text, state) -> bool:
         if _normalize_time_token(value) not in known_times:
             return True
 
+    # A WEEKDAY THAT IS THE WEEKDAY OF A DATE THE TOOLS RETURNED IS NOT
+    # INVENTED. The availability tools emit `weekday_display` alongside
+    # every date, so a correct reply usually quotes a name that is
+    # literally in the payload - but naming the day of a date the tools
+    # DID return ("الخميس 10/09/2026") is equally grounded, and a
+    # payload that carries only the date must not turn that into a
+    # fabrication. See `_weekdays_of_dates`.
+    known_weekdays = _weekdays_of_dates(known_dates)
+
     for day in weekdays:
         # The tools return weekday names in both the conversation's
         # language and English, so accept either spelling.
         english = _WEEKDAY_WORDS[day]
-        if day not in joined and english.lower() not in joined.lower():
-            return True
+        if day in joined or english.lower() in joined.lower():
+            continue
+        if english in known_weekdays:
+            continue
+        return True
 
     return False
+
+
+def _weekdays_of_dates(known_dates) -> set:
+    """The English weekday names of every `D/M/YYYY` token in
+    `known_dates`, skipping anything that is not a real date.
+
+    `_availability_values_from_tools` normalizes every date it finds to
+    that one shape, so this reads its output directly."""
+
+    weekdays = set()
+
+    for token in known_dates or ():
+        parts = str(token).split("/")
+        if len(parts) != 3:
+            continue
+        try:
+            day, month, year = (int(part) for part in parts)
+            weekdays.add(
+                ["Monday", "Tuesday", "Wednesday", "Thursday",
+                 "Friday", "Saturday", "Sunday"][date(year, month, day).weekday()]
+            )
+        except (ValueError, TypeError):
+            continue
+
+    return weekdays
 
 
 _AVAILABILITY_CORRECTION_DIRECTIVE = (
@@ -14417,6 +14712,15 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         _build_day_unavailable_directive(state["messages"], state.get("session_id"))
         if booking_side else ""
     )
+    # The TIME half of the same request - see
+    # `_build_requested_time_directive`. Scoped exactly like the day
+    # directives above: it names `select_appointment_slot` and
+    # `get_available_slots_for_booking`, which belong to the new-booking
+    # side only.
+    requested_time_directive = (
+        _build_requested_time_directive(state["messages"], state.get("session_id"))
+        if booking_side else ""
+    )
     # RUNS FOR EVERY SPECIALIST, not just the booking side.
     #
     # The general half of this directive - "they already told you X, do
@@ -14647,6 +14951,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         + identifier_choice_directive
         + symptom_in_booking_directive
         + multi_intent_directive + named_day_directive + day_unavailable_directive
+        + requested_time_directive
         + show_soonest_directive
         + booking_confirmation_directive + booking_success_directive
         + terminal_success_directive
