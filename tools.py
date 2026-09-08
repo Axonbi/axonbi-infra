@@ -3976,6 +3976,14 @@ def find_available_doctors(
 # already used for cancellation. These three tools cover what's new:
 # checking the doctor's schedule/availability and performing the update.
 
+# The shape of a booking reference: letters, a hyphen, then
+# something alphanumeric ("GBN-2026-09-07-398",
+# "GuestBookingNum-2026-09-01-076"). Deliberately loose - it only
+# has to tell a reference apart from a doctor's NAME, which is what
+# was being passed where a reference belongs.
+_LOOKS_LIKE_BOOKING_REF_RE = re.compile(r"[A-Za-z]{2,}[A-Za-z0-9]*-[A-Za-z0-9]")
+
+
 def _resolve_doctor_id(state: AgentState, ref_number: str, language: Optional[str]) -> dict:
     """Internal helper: look up a booking by its reference number and
     return its doctorId, so schedule/slot tools know which doctor to
@@ -4227,9 +4235,24 @@ def get_doctor_schedule(
     row(s) actually valid/effective on that specific date - avoiding
     stale/expired or not-yet-started schedule rows for the same doctor.
     If omitted, defaults to today.
+    `ref_number` IS A BOOKING REFERENCE ("GBN-2026-09-07-398") -
+    NOT a doctor's name and not a doctor id. This tool answers
+    "which days does the doctor on THIS BOOKING work?", so it only
+    works when an existing booking is in hand.
     Returns:
     {"status": "found", "schedules": [{"recurringDaysNames": [...], "fromDateTime": ..., "toDateTime": ...}, ...]}
     {"status": "not_found"}  # booking or schedule doesn't exist
+    {"status": "not_a_booking_reference"}
+        -> what you passed is not a booking reference, so this tool
+           cannot answer. Calling it again with another guess will
+           return this same status every time. If the patient asked
+           about a DOCTOR's own days and hours ("مواعيد دكتور
+           أمنية"), that is a different question: confirm the
+           doctor with `match_entity_for_booking` and then call
+           `get_doctor_schedule_for_booking`. If you do not hold
+           those tools, say plainly that you can look this up once
+           they tell you which doctor and offer to start a booking -
+           never keep retrying this one.
     {"status": "not_configured"}  # this clinic doesn't have this feature set up yet
     {"status": "error"}"""
 
@@ -4250,8 +4273,43 @@ def get_doctor_schedule(
     # it is simply not trusted.
     language = conversation_language(state)
 
+    # A DOCTOR'S NAME IS NOT A BOOKING REFERENCE, AND SAYING SO IS
+    # CHEAPER THAN LETTING IT FAIL QUIETLY.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+    # 201099530009+medtown2, 2026-09-08 09:05-09:07): "مواعيد
+    # دكتوره أمنيه" reached an agent with no booking-flow text,
+    # which reached for THIS tool - the only schedule tool whose name
+    # matches the question - and passed the doctor's name where a
+    # booking reference belongs. `_resolve_doctor_id` looked it up as
+    # a reference, found nothing, and returned a bare "not_found"
+    # with NO log line at all. Nothing in that answer says "you are
+    # holding the wrong end of this tool", so the model guessed
+    # again, fourteen times, until the graph hit its recursion limit
+    # and the patient got nothing. It happened three times in two
+    # minutes, and the logs showed fourteen model calls with not one
+    # tool line between them.
+    #
+    # Two changes, both about making the failure legible: this guard
+    # names the mistake and the tool that actually answers the
+    # question, and the not_found path below now logs.
+    if not _LOOKS_LIKE_BOOKING_REF_RE.search(str(ref_number or "")):
+        logger.warning(
+            "get_doctor_schedule: ref_number=%r is not a booking reference "
+            "(session_id=%s) - this tool reads the doctor off an EXISTING "
+            "booking. For a doctor's own days and hours the caller wants "
+            "get_doctor_schedule_for_booking instead.",
+            ref_number, state.get("session_id"),
+        )
+        return {"status": "not_a_booking_reference"}
+
     resolved = _resolve_doctor_id(state, ref_number, language)
     if resolved["status"] != "found":
+        logger.info(
+            "get_doctor_schedule: no booking for ref_number=%r (status=%s, "
+            "session_id=%s)",
+            ref_number, resolved.get("status"), state.get("session_id"),
+        )
         return resolved
 
     base_url = _doctors_base_url(state)
