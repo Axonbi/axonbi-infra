@@ -280,6 +280,33 @@ _CUES: Dict[str, List[Tuple[int, str]]] = {
         # exactly the kind of message this rule exists to catch.
         (8, r"(?:ايه|إيه|في|فيه|عنده|عندها|فاضي|فاضيه)\s*"
             r"(?:ال)?(?:مواعيد|معاد|ميعاد)(?!\s*(?:العمل|الدوام|الزياره))"),
+        # THE QUESTION WORD COMES FIRST ONLY SOMETIMES. The pattern
+        # above needs "ايه"/"في"/"عنده" in FRONT of "مواعيد", and the
+        # commonest phrasing of all puts the doctor there instead:
+        # "مواعيد دكتور أمنية" - "Dr Omnia's times". That scored ZERO.
+        #
+        # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+        # 201099530009+medtown2, 2026-09-08 09:05-09:07): "مواعيد
+        # دكتوره أمنيه", asked three times in three different
+        # spellings, scored nothing each time, so the turn stayed on
+        # the concierge - every tool, none of the booking flow text -
+        # and it looped on `get_doctor_schedule` (which takes a BOOKING
+        # REFERENCE, not a doctor) until the graph hit its recursion
+        # limit and the patient got nothing. Three times.
+        #
+        # Only `booking` holds `get_doctor_schedule_for_booking`, which
+        # is the tool that actually answers this, so this has to reach
+        # `booking`. "مواعيد العمل/الدوام/الزيارة" cannot match: a
+        # doctor cue word has to follow.
+        (8, r"(?:ال)?(?:مواعيد|معاد|ميعاد|جدول|اوقات|أوقات)\s*(?:ال)?"
+            # `\w*` on the doctor words on purpose: this fires on a
+            # typed WhatsApp message, and the one that started the
+            # incident was "مواعيد دكتووة امتية ايه افهم" - two
+            # typos in four words. A prefix match costs nothing here:
+            # the noun in front of it already fixes the meaning.
+            r"(?:د\.|دكتو\w*|طبيب\w*|استشاري\w*|dr\.?|doctor)"),
+        (8, r"\b(?:times|schedule|hours|availability)\s+(?:for\s+|of\s+)?"
+            r"(?:dr\.?|doctor)\b"),
         (8, r"(?:اقرب|أقرب)\s*(?:معاد|موعد|ميعاد)"),
         (8, r"\b(?:nearest|soonest|earliest)\s+(?:appointment|slot|opening)\b"),
         (8, r"\bwhat\s+(?:appointments|times|slots)\s+(?:are\s+)?(?:available|open)\b"),
