@@ -2127,11 +2127,30 @@ _MULTI_INTENT_PHONE_RE = re.compile(r"(?:\+?\d[\d\s\-()]{7,}\d)")
 
 _MULTI_INTENT_EMAIL_RE = re.compile(r"[^\s@]+@[^\s@]+\.[^\s@]+")
 
-# An explicit clock time: "10:30", "الساعة 10", "10 صباحا", "3 pm".
+# An explicit clock time: "10:30", "الساعة 10", "ساعه 10 الصبح",
+# "10 صباحا", "3 pm".
+#
+# THE DEFINITE ARTICLE IS OPTIONAL, AND THE PERIOD WORDS WERE TOO
+# SHORT A LIST. CONFIRMED REAL PRODUCTION MISS (medtown, session
+# 201158877175+medtown2, 2026-09-08 08:48): "عاوزه احجز مع دكتور
+# محمد زايد يوم التلات ساعه 10 الصبح" carried a day AND an
+# hour. The day resolved correctly and the four real slots were shown
+# - starting with the 10:00 the patient had just asked for - and the
+# reply still asked "أي رقم أو وقت تفضل؟", because "ساعه"
+# (no "ال") and "الصبح" (not in the old alternation) meant this
+# regex saw no time at all, so the requested-time directive never
+# fired.
+_PERIOD_WORD_FRAGMENT = (
+    r"(?:ال|بال)?"
+    r"(?:صباحا|صباحًا|صباح|صبح|مساءً|مساء|مسا|ظهرا|"
+    r"ظهرًا|ظهر|ضهر|عصر|ليلا|ليل|am|pm)"
+)
+
 _MULTI_INTENT_TIME_RE = re.compile(
-    r"\d{1,2}\s*:\s*\d{2}|"
-    r"(?:الساعه|الساعة)\s*\d{1,2}|"
-    r"\d{1,2}\s*(?:صباحا|صباحًا|مساء|مساءً|ظهرا|ظهرًا|am|pm)\b",
+    r"(?:ال)?ساع[ةه]\s*\d{1,2}(?:\s*:\s*\d{2})?"
+    r"(?:\s*" + _PERIOD_WORD_FRAGMENT + r")?|"
+    r"\d{1,2}\s*:\s*\d{2}(?:\s*" + _PERIOD_WORD_FRAGMENT + r")?|"
+    r"\d{1,2}\s*" + _PERIOD_WORD_FRAGMENT + r"\b",
     re.IGNORECASE,
 )
 
@@ -7355,6 +7374,77 @@ def _availability_values_from_tools(tool_texts: list) -> tuple:
     return dates, times
 
 
+# A weekday can appear in a reply for three quite different reasons,
+# and only one of them is a claim about availability:
+#
+#   OFFERED   "1\u20e3 الخميس 2\u20e3 السبت"        -> a claim. Must be backed
+#                                                by a real tool result.
+#   DENIED    "ما عنده عيادة يوم الأحد"       -> the opposite of a claim,
+#                                                and the exact sentence the
+#                                                named-day flow is REQUIRED
+#                                                to produce when a doctor
+#                                                does not work that day.
+#   ILLUSTRATIVE  "اسم اليوم مثل الثلاثاء"    -> naming a weekday as an
+#                                                example of what a weekday
+#                                                is. Not an appointment at
+#                                                all.
+#
+# TWO CONFIRMED REAL FALSE POSITIVES (medtown, 2026-09-08 08:47 and
+# 08:48), both within minutes of this check going live, and both on
+# CORRECT replies:
+#
+#   "الدكتور امنية مغربي ما عنده عيادة يوم الأحد في أي فرع" - rejected,
+#   and the honest sentence was dropped from the reply that replaced it,
+#   leaving the patient with a bare branch list and no answer about
+#   Sunday. That sentence is precisely what the day flow exists to say.
+#
+#   "يوم 30 ما هو يوم من أيام الأسبوع، ممكن تقول لي اسم اليوم مثل
+#   الثلاثاء أو الأربعاء؟" - rejected TWICE, so the turn fell through to
+#   the generic safe fallback and the patient never got the correction.
+#
+# A check that throws away a correct reply is worse than no check, so
+# the scan now reads each SEGMENT (line or sentence) the weekday sits in
+# and ignores the ones that are denying or illustrating rather than
+# offering.
+_WEEKDAY_NOT_A_CLAIM_CUES = (
+    # Arabic negation, in the forms this domain actually produces.
+    "ما عنده", "معندهوش", "ماعندهوش", "مش عنده", "ما عندها", "مش عندها",
+    "ما في", "مافي", "مفيش", "ما يوجد", "لا يوجد", "ليس", "ما هو", "مش",
+    "ما عندنا", "غير متاح", "مش متاح", "مقفول", "مغلق", "ما يشتغل",
+    "مش بيجي", "ما يجي", "ما بيجي", "محجوز بالكامل", "مكتمل",
+    # Given as an EXAMPLE of a weekday name.
+    "مثل", "مثلا", "زي", "على سبيل المثال",
+    # English equivalents.
+    "not ", "no ", "n't", "does not", "isn't", "unavailable", "closed",
+    "fully booked", "for example", "such as", "e.g", "like ",
+)
+
+_SEGMENT_SPLIT_RE = re.compile(r"[\n.!?\u061f]+")
+
+
+def _weekdays_claimed_in(reply_text: str) -> list:
+    """The weekday names this reply OFFERS as bookable - denials and
+    examples excluded. See the note above for the two production false
+    positives that made this necessary."""
+
+    if not reply_text:
+        return []
+
+    claimed = []
+
+    for day, pattern in _WEEKDAY_WORD_RES.items():
+        for segment in _SEGMENT_SPLIT_RE.split(reply_text):
+            if not pattern.search(segment):
+                continue
+            folded = _norm_ar(segment)
+            if any(cue in folded for cue in _WEEKDAY_NOT_A_CLAIM_CUES):
+                continue
+            claimed.append(day)
+            break
+
+    return claimed
+
+
 def _reply_invents_availability(reply_text, state) -> bool:
     """True when the reply states an appointment date or times that no
     availability tool in this conversation ever returned.
@@ -7378,7 +7468,7 @@ def _reply_invents_availability(reply_text, state) -> bool:
     # with no availability tool called at all - it carried no digits, so
     # a date/time-only check saw nothing wrong while the patient was
     # being offered three days the doctor may not work at all.
-    weekdays = [d for d, pattern in _WEEKDAY_WORD_RES.items() if pattern.search(reply_text)]
+    weekdays = _weekdays_claimed_in(reply_text)
 
     if not dates and not times and not weekdays:
         return False
@@ -12528,6 +12618,28 @@ def _build_branch_question_directive(messages: list, session_id: str, agent_name
         return ""
 
     if not _doctor_is_settled(messages, session_id):
+        return ""
+
+    # THE PATIENT ASKED FOR A SPECIFIC DAY - STAND DOWN.
+    #
+    # Same suppression, for the same reason, as
+    # `_build_show_soonest_day_directive` above: this directive is an
+    # imperative ("Call `get_doctor_schedule_for_booking` NOW, with no
+    # question asked first") and `_build_named_day_directive` is the
+    # opposite one ("Your ONLY next action for the day is
+    # resolve_available_day"). With both in the prompt this one wins,
+    # and the day the patient named is thrown away.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+    # 201158877175+medtown2, 2026-09-08 08:46): "عاوزه احجز مع دكتور
+    # امنيه يوم الاحد". The doctor resolved correctly, then the weekly
+    # schedule was printed and the reply ended "حابب تحجز في أنهي فرع
+    # وانهي يوم؟" - asking for the day that was in the patient's very
+    # first message. `resolve_available_day` also settles the BRANCH by
+    # itself whenever the named weekday belongs to only one of the
+    # doctor's branches, so the day-first path answers this directive's
+    # own question as a side effect.
+    if _build_named_day_directive(messages, session_id):
         return ""
 
     return _BRANCH_QUESTION_PHRASING_DIRECTIVE
