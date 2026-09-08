@@ -10389,6 +10389,76 @@ _CLAIM_HANDOFF_RE = re.compile(
 )
 
 
+# ==========================================================
+# DIRECTIVE EXCLUSIVITY AUDIT
+#
+# WHY THIS EXISTS: the confirmed production failure documented on
+# `appointment_display_directive` above - two directives firing on the
+# same tool result and saying opposite things, with concatenation order
+# deciding which one the model obeyed - is a CLASS of bug, not a single
+# instance. `_build_show_soonest_day_directive` documents the same
+# pattern happening a second time (vs `_build_named_day_directive`).
+# Both were fixed the same way: one directive checks the other and
+# stands down. That fix is correct, but it is enforced only by whichever
+# engineer wrote the `if` - nothing re-checks it once written, so a
+# later edit to either builder function can silently reopen the exact
+# failure, and the first sign of it would again be a wrong reply in
+# production, not a test failing in CI.
+#
+# This is a canary, not a new behaviour. It runs AFTER every directive
+# in a declared pair has already been built (so it changes nothing about
+# which one wins - the existing suppression logic still decides that),
+# and it only LOGS when a pair meant to be mutually exclusive is not.
+# Nothing here rewrites a reply or drops a directive; a false positive
+# in this audit costs a log line, not a patient's booking.
+_DIRECTIVE_EXCLUSIVITY_GROUPS = (
+    # The pair from the CRITICAL comment on `appointment_display_directive`
+    # in `_run_agent`: an unrelated patient's booking must never be shown
+    # in the same turn the wrong-tool correction fires.
+    ("wrong_tool_directive", "appointment_display_directive"),
+    # From `_build_show_soonest_day_directive`'s own docstring: "show the
+    # soonest date" and "check the day they named" are opposite
+    # instructions for the same turn.
+    ("show_soonest_directive", "named_day_directive"),
+    # From `_run_agent`'s comment on `booking_entry_directive`: the entry
+    # question and "a specialty is already settled" describe two
+    # different points in the same flow and must not both be asked.
+    ("booking_entry_directive", "established_specialty_directive"),
+    # STEP 1's fixed question ("reference or phone?") vs. "they already
+    # gave you the identifier, don't ask again" - asking after the
+    # patient already answered is the exact bug `supplied_identifier_directive`
+    # exists to prevent.
+    ("identifier_choice_directive", "supplied_identifier_directive"),
+    # "Do you mean the booking you just made?" vs. STEP 1's fixed
+    # identify-yourself question - the patient does not need to be asked
+    # to identify a booking that is already on the table.
+    ("just_booked_directive", "identifier_choice_directive"),
+)
+
+
+def _audit_directive_exclusivity(directives: dict, agent_name: str, session_id) -> None:
+    """Log loudly if two directives declared mutually exclusive are both
+    non-empty for the same turn. See the module comment above.
+
+    `directives` maps directive variable name -> its built string (or
+    ""). Unknown/renamed directive names are skipped rather than raised
+    on, so a refactor that renames a local variable degrades to "this
+    pair stops being audited", not a crash on every turn."""
+
+    for name_a, name_b in _DIRECTIVE_EXCLUSIVITY_GROUPS:
+        val_a = directives.get(name_a)
+        val_b = directives.get(name_b)
+        if val_a and val_b:
+            logger.error(
+                "DIRECTIVE CONFLICT[%s session=%s]: '%s' and '%s' are both "
+                "in the prompt this turn, but are declared mutually "
+                "exclusive - one of them is giving the model a wrong "
+                "instruction. %s=%r | %s=%r",
+                agent_name, session_id, name_a, name_b,
+                name_a, val_a[:160], name_b, val_b[:160],
+            )
+
+
 class _ClaimGate:
     """One irreversible claim, and the tool result that makes it true."""
 
@@ -15211,6 +15281,24 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         scoped_prompt = state.get("system_prompt") or ""
         if not scoped_prompt and templates:
             scoped_prompt = build_system_prompt(templates)
+
+    # See _audit_directive_exclusivity's module comment: this only logs,
+    # it does not change which directive wins - the suppression logic
+    # below (each "" if X else build_Y()) is still what decides that.
+    _audit_directive_exclusivity(
+        {
+            "wrong_tool_directive": wrong_tool_directive,
+            "appointment_display_directive": appointment_display_directive,
+            "show_soonest_directive": show_soonest_directive,
+            "named_day_directive": named_day_directive,
+            "booking_entry_directive": booking_entry_directive,
+            "established_specialty_directive": established_specialty_directive,
+            "identifier_choice_directive": identifier_choice_directive,
+            "supplied_identifier_directive": supplied_identifier_directive,
+            "just_booked_directive": just_booked_directive,
+        },
+        agent_name, state.get("session_id"),
+    )
 
     system_content = (
         # THE LEDGER GOES FIRST, right after the language rule. It is the
