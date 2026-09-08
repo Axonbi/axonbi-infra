@@ -1019,6 +1019,50 @@ class _StrandedAgents:
 _CANNOT_COMPLETE_A_BOOKING = _StrandedAgents()
 
 
+# A message that is ANSWERING the question the assistant just asked,
+# rather than raising a subject of its own. Deliberately only the shapes
+# that carry no content at all beyond the answer - a list position, a
+# yes/no, a code, a bare day or time. Anything with real words in it
+# ("لا مواعيده في فرع زايد؟") is a new subject as much as it is an
+# answer, and the classifier is allowed to have an opinion about it.
+_BARE_POSITION_RE = re.compile(r"^(?:رقم\s*)?\d{1,2}$")
+_BARE_YES_NO_RE = re.compile(
+    r"^(?:اه|ايوه|ايوا|نعم|اجل|تمام|طيب|ماشي|اوك|اوكي|حسنا|صح|"
+    r"لا|لأ|لاء|كلا|مش|"
+    r"ok|okay|yes|yeah|yep|sure|no|nope)$"
+)
+_BARE_CODE_RE = re.compile(r"^\+?[\d\s\-()]{4,}$")
+
+
+def _looks_like_an_answer(text: str) -> bool:
+    """Whether `text` is a bare answer to a question already on the
+    table. See the note above - this is the one thing a single-message
+    classifier cannot judge, because the question is not in front of it.
+    """
+
+    stripped = (text or "").strip(" .!؟?،,\n\t")
+    if not stripped:
+        return True
+
+    normalized = normalize(stripped)
+
+    if _BARE_POSITION_RE.match(normalized) or _BARE_YES_NO_RE.match(normalized):
+        return True
+    if _BARE_CODE_RE.match(stripped):
+        return True
+
+    # A bare day or time, with at most one filler word in front of it
+    # ("الاثنين", "يوم الاثنين", "طب الاثنين", "الساعة 5").
+    words = [w for w in re.split(r"\s+", normalized) if w]
+    if len(words) <= 3:
+        from tools import resolve_weekday_index
+
+        if any(resolve_weekday_index(word) is not None for word in words):
+            return True
+
+    return False
+
+
 def route_turn(messages: List, active_agent: Optional[str] = None) -> Tuple[str, str]:
     """
     Returns `(agent_name, reason)`. The reason is logged, never shown to
@@ -1096,10 +1140,81 @@ def route_turn(messages: List, active_agent: Optional[str] = None) -> Tuple[str,
     scores = score_message(text)
     candidate, score = _best(scores)
 
+    # THE LLM ROUTER IS ASKED ABOUT EVERY UNCUED MESSAGE - IT ADDS REAL
+    # COVERAGE AND MUST KEEP IT.
+    #
+    # The cue lists cannot be complete. "حاسه بحاجه غريبه", "بكره يا
+    # لطيفه احجزيلي بكره" and "طب الاثنين؟" all score ZERO, and the
+    # classifier read all three correctly (medical, booking, booking).
+    # Switching it off to fix the failure below would have cost more
+    # than the failure did.
+    #
+    # What went wrong was narrower than that, and it is worth stating
+    # exactly: `concierge` is this classifier's "I don't know". Its own
+    # prompt says so - "concierge - anything else, a greeting, or
+    # unclear". An abstention is not a routing decision, and it was
+    # being treated as one.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+    # 201003365691+medtown2, 2026-09-08 11:46-11:49, ROUTER_MODE=llm):
+    # the classifier sees ONE message with no history, so every answer
+    # in the conversation came back `concierge` and tore its flow off
+    # its owner:
+    #
+    #   "5"      booking    -> concierge   (a slot pick)
+    #   "لا"      booking    -> concierge   -> asked the CANCEL flow's
+    #            "رقم الجوال أو رقم الحجز؟" in the middle of a NEW
+    #            booking, was flagged twice, and the turn died on the
+    #            safe-recovery line
+    #   "اه"      reschedule -> concierge   -> re-showed the schedule,
+    #            then invented "ما فيه مواعيد متاحة يوم الثلاثاء" and
+    #            "تأكدت لك مرة ثانية" with zero tool calls, and finally
+    #            a technical failure about the Monday it had booked
+    #            three minutes earlier
+    #
+    # So the two rules below. Between them the classifier keeps every
+    # decision it is actually able to make, and loses only the one it
+    # cannot: guessing who owns a bare "اه".
     if config.ROUTER_MODE == "llm" and score < _START_THRESHOLD:
         llm_choice = _classify_with_llm(text, active_agent)
+
         if llm_choice:
-            return llm_choice, "llm router (message had no deterministic cue)"
+            no_flow_to_protect = (
+                active_agent is None
+                or active_agent == CONCIERGE
+                or _flow_just_completed(messages)
+            )
+
+            if no_flow_to_protect:
+                # Nothing is being interrupted - take the answer as
+                # given, `concierge` included. This is the case the
+                # classifier is genuinely good at, and the one that
+                # covers the messages the cue lists miss.
+                return llm_choice, "llm router (message had no deterministic cue)"
+
+            # RULE 1: a specialist owns this flow, so `concierge` is an
+            # abstention and the owner keeps the turn.
+            if llm_choice == CONCIERGE:
+                logger.info(
+                    "router: llm classified %r as concierge, which is its "
+                    "'unclear' answer - %s keeps this flow rather than losing "
+                    "it to the fallback",
+                    text[:40], active_agent,
+                )
+            # RULE 2: it named a real specialist, but a bare answer
+            # belongs to whoever asked the question. One message with no
+            # history cannot tell "5" the slot from "5" the intent.
+            elif _looks_like_an_answer(text):
+                logger.info(
+                    "router: llm classified %r as %s, but it is a bare answer "
+                    "to %s's own question - keeping the flow",
+                    text[:40], llm_choice, active_agent,
+                )
+            else:
+                return llm_choice, (
+                    f"llm router (message had no deterministic cue, "
+                    f"{active_agent} was not answering)"
+                )
 
     if candidate and score >= _SWITCH_THRESHOLD and candidate != active_agent:
         return candidate, f"strong cue for {candidate} (score {score})"
