@@ -153,46 +153,7 @@ INJURY_RE = re.compile(
     r"hurt|banged|sprain)\b[^.\n]{0,20}"
     r"\b(?:my|leg|arm|hand|foot|ankle|wrist|knee|back|head|finger|shoulder|toe|rib)\b|"
     r"\b(?:broken|fractured|sprained|dislocated)\s+"
-    r"(?:leg|arm|hand|foot|ankle|wrist|knee|finger|shoulder|rib|bone)\b|"
-    # PASSIVE/ADJECTIVE FORM - no verb, describes the resulting state
-    # instead of the event. "ايدي مكسورة", "رجله ملتوية", "كتفي مخلوع"
-    # contain no verb from _INJURY_VERB at all (the injury already
-    # happened; the patient is describing how the limb IS, not what
-    # happened to it), so the verb+bodypart patterns above never match
-    # them. Same failure class as the original body-part-with-no-verb
-    # gap this file documents above, just on the other side of the
-    # event: PROBED DIRECTLY AGAINST THIS FILE'S OWN REGEX before this
-    # change - "ايدي مكسورة", "ايدي ملتوية", "كتفي مخلوع" all scored
-    # NOTHING.
-    + _INJURY_BODY_PART + r"\w*\s*[^.\n]{0,8}"
-    r"(?:مكسور|مكسوره|مخلوع|مخلوعه|ملتوي|ملتويه|منتفخ|منتفخه|مجروح|مجروحه)\w*|"
-    # A NOUN NAMING THE INJURY ITSELF, WITH NO VERB EITHER. "عندي حروق
-    # في ايدي" (I have burns on my hand) states the injury as a noun the
-    # patient HAS, not an event that happened to them or a resulting
-    # adjective describing the limb - a third shape none of the patterns
-    # above cover. PROBED: "عندي حروق في ايدي" scored NOTHING before
-    # this change despite containing both a body part and an
-    # unambiguous injury word.
-    r"(?:عندي|فيه|في)\s*(?:حرق|حروق|جرح|جروح|كسر|التواء|نزيف)\w*|"
-    # English adjective/state form - the mirror of the Arabic passive
-    # case above. "my hand is swollen", "my wrist is dislocated" have no
-    # verb from the fell/broke/sprained list, only a state adjective
-    # after "is/looks/seems". PROBED: both scored NOTHING before this
-    # change.
-    r"\b(?:my|the)\s+(?:leg|arm|hand|foot|ankle|wrist|knee|finger|"
-    r"shoulder|toe|rib|back)\s+(?:is|looks|seems|feels)\s+"
-    r"(?:broken|fractured|sprained|dislocated|swollen|bruised)\b|"
-    # English noun form - "I have a burn/cut/wound on my arm" states the
-    # injury as a thing the patient HAS, exactly like the Arabic noun
-    # case above. "i" is OPTIONAL, matching the same convention the
-    # existing English pattern above uses ("(?:i\s+)?(?:fell|broke...")
-    # - this file's INJURY_RE is compiled WITHOUT re.IGNORECASE (see the
-    # bare `re.compile(...)` call below with no flags argument), so a
-    # literal lowercase "i" would silently never match "I have..." with
-    # a capital I. PROBED: "I have a burn on my arm" scored NOTHING
-    # before this change (the existing English injury pattern only
-    # covers the verb form "I ... burned ... my arm").
-    r"\b(?:i\s+)?have\s+a\s+(?:burn|cut|wound|bruise|sprain|fracture)\b"
+    r"(?:leg|arm|hand|foot|ankle|wrist|knee|finger|shoulder|rib|bone)\b"
 )
 
 
@@ -1135,43 +1096,13 @@ def route_turn(messages: List, active_agent: Optional[str] = None) -> Tuple[str,
     scores = score_message(text)
     candidate, score = _best(scores)
 
-    if candidate and score >= _SWITCH_THRESHOLD and candidate != active_agent:
-        return candidate, f"strong cue for {candidate} (score {score})"
-
-    # THE LLM FALLBACK ONLY EVER PICKS A *NEW* FLOW - IT NEVER GETS TO
-    # OVERRIDE STICKINESS FOR ONE ALREADY IN PROGRESS.
-    #
-    # CONFIRMED BY TEST, not by a comment this time: the very first test
-    # that exercised this branch with an `active_agent` already set
-    # ("ok" mid-booking) proved that calling the LLM immediately after
-    # scoring - which is where this branch used to sit, right after
-    # `_best(scores)` and before every stickiness rule below - let the
-    # LLM's classification of an ambiguous, contentless filler message
-    # ("ok" has no cue of its own) override the flow that owned the
-    # conversation, because the LLM prompt has no notion of "active
-    # flow" in it at all. That is precisely the "one conversation
-    # scattered across several specialists" failure this whole
-    # deterministic-by-default design exists to prevent (see this
-    # file's module docstring) - reintroduced by the one branch meant to
-    # be an occasional, careful exception to it.
-    #
-    # So: only reachable from the same two situations the deterministic
-    # weak-cue rules below are already willing to move the conversation
-    # from - nothing active yet, or the active flow just finished. Any
-    # OTHER "no deterministic cue" message (an ambiguous filler mid-flow)
-    # falls straight through to "still owns this flow" below, exactly as
-    # it would with ROUTER_MODE=deterministic. The LLM is a smarter way
-    # to START a conversation, never a way to interrupt one already
-    # running.
-    llm_eligible = (
-        active_agent is None
-        or active_agent == CONCIERGE
-        or _flow_just_completed(messages)
-    )
-    if config.ROUTER_MODE == "llm" and score < _START_THRESHOLD and llm_eligible:
+    if config.ROUTER_MODE == "llm" and score < _START_THRESHOLD:
         llm_choice = _classify_with_llm(text, active_agent)
         if llm_choice:
             return llm_choice, "llm router (message had no deterministic cue)"
+
+    if candidate and score >= _SWITCH_THRESHOLD and candidate != active_agent:
+        return candidate, f"strong cue for {candidate} (score {score})"
 
     # THE CONCIERGE IS NOT A FLOW, SO THERE IS NOTHING TO INTERRUPT.
     #
