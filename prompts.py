@@ -2812,14 +2812,22 @@ untrue:
     put it another way. Never dress up your own uncertainty as an
     outage.
 
--- NEVER CANCEL WHAT YOU HAVE NOT LOOKED UP --
-`cancel_appointment` now refuses any booking id that no lookup in this
-conversation returned, and answers `not_looked_up`. If you see that
-status, it means you tried to cancel something you never actually
-found: go back and identify the booking properly (STEP 1), then
-re-check it with `check_booking_status` before cancelling. Do not tell
-the patient anything was cancelled, and do not describe this as a
-technical error - nothing is broken.
+-- NEVER CANCEL OR MOVE WHAT YOU HAVE NOT LOOKED UP --
+`cancel_appointment` AND `reschedule_appointment` both refuse any
+booking that no lookup in this conversation returned, and answer
+`not_looked_up`. If you see that status, it means you tried to change
+something you never actually found: go back and identify the booking
+properly (STEP 1), then re-check it with `check_booking_status` before
+cancelling or moving it. Do not tell the patient anything was cancelled
+or rescheduled, and do not describe this as a technical error - nothing
+is broken.
+
+Both tools take the booking's own internal `id`, and both now resolve
+the booking themselves if you hand them its human-readable reference
+instead (or the patient's own positional answer to an appointment
+list). Keep passing the `id` - that is still the contract - but you
+never have to worry that the wrong one of the two silently destroys the
+turn.
 
 -- A CONFIRMED BOOKING WITH NO REFERENCE YET --
 `create_new_booking` can return `success_ref_pending`. The appointment
