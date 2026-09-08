@@ -25,6 +25,8 @@ should decide" replaces every heuristic classifier):
   re-lookup, simpler and equally safe since ref numbers are unique).
 """
 
+import ast
+import json
 import logging
 import re
 import smtplib
@@ -917,7 +919,11 @@ def lookup_appointment(
             "lookup_appointment API call failed: base_url=%s ref=%r phone=%r status_code=%s error=%s",
             base_url, ref_number, phone, result.get("status_code"), result.get("error"),
         )
-        return {"status": "error"}
+        # The REASON, not a bare "error" - same as every other tool in
+        # this file. `graph.upstream_api_failed` reads it to decide
+        # whether this turn has earned the clinic's technical-failure
+        # wording, and a 400 on our own request has not. See `_api_error`.
+        return _api_error(result)
 
     items = (result["data"] or {}).get("items", [])
 
@@ -1130,14 +1136,17 @@ def cancel_appointment(
     # up. `_looked_up_booking_ids` records ids as the lookup tools
     # return them, so an id recalled, mistyped or carried over from
     # somewhere else cannot reach the API.
-    if not _booking_was_looked_up(state, booking_id):
+    resolved = _resolve_booking_guid(state, booking_id)
+    if resolved["status"] != "resolved":
         logger.warning(
             "cancel_appointment: refusing to cancel booking_id=%r (session_id=%s) - "
             "no lookup_appointment/check_booking_status in this conversation ever "
-            "returned that id",
+            "returned that booking",
             booking_id, state.get("session_id"),
         )
         return {"status": "not_looked_up"}
+
+    booking_id = resolved["booking_id"]
 
     base_url = _base_url(state)
     result = api.cancel_booking_by_guid(base_url, booking_id)
@@ -1145,7 +1154,22 @@ def cancel_appointment(
     if result["success"]:
         return {"status": "success"}
 
-    return {"status": "error"}
+    # THE REASON, NOT A BARE "error".
+    #
+    # This returned `{"status": "error"}` and nothing else, which cost
+    # two separate things. graph.upstream_api_failed() reads a missing
+    # reason as "upstream is broken", so a 400 on OUR request reached
+    # the patient as the clinic's "there is a technical problem, try
+    # again later" - advice that cannot help, on a fault they cannot
+    # affect. And the log line named no cause at all, on the one
+    # irreversible action in the system. See `_api_error`.
+    logger.error(
+        "cancel_appointment: cancel failed for booking_id=%s (session_id=%s) "
+        "status_code=%s error=%s",
+        booking_id, state.get("session_id"),
+        result.get("status_code"), result.get("error"),
+    )
+    return _api_error(result)
 
 
 # ==========================================================
@@ -1440,13 +1464,79 @@ _LOOKUP_TOOLS_FOR_CANCEL = ("lookup_appointment", "check_booking_status",
                             "get_available_reschedule_slots", "reschedule_appointment")
 
 
-def _booking_was_looked_up(state: AgentState, booking_id: Optional[str]) -> bool:
-    """True when `booking_id` is one a lookup tool actually returned in
-    THIS conversation.
+def _parse_tool_payload(message) -> Optional[dict]:
+    """One ToolMessage's payload as a dict, or None.
+
+    Tool content is not reliably one serialization - LangGraph's
+    ToolNode tries `json.dumps` first, but a fallback path or an older
+    checkpoint can leave a single-quoted Python repr instead. Mirrors
+    graph.parse_tool_content, which cannot be imported here without a
+    circular import (graph imports tools). Never raises."""
+
+    raw = getattr(message, "content", None)
+
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        try:
+            data = ast.literal_eval(raw)
+        except (ValueError, SyntaxError, TypeError, MemoryError):
+            return None
+
+    return data if isinstance(data, dict) else None
+
+
+def _looked_up_bookings(state: AgentState) -> list:
+    """Every booking record a lookup tool actually returned in THIS
+    conversation, oldest first.
 
     Reads the ToolMessages rather than any remembered state, so it works
     on a resumed thread and cannot be satisfied by the model asserting
-    it already checked."""
+    it already checked. Each item is the shaped record
+    `_shape_appointment` produced, so it carries both `id` (the internal
+    GUID) and `ref` (the human-readable reference)."""
+
+    records = []
+
+    for msg in state.get("messages") or []:
+        if getattr(msg, "type", None) != "tool":
+            continue
+        if getattr(msg, "name", None) not in _LOOKUP_TOOLS_FOR_CANCEL:
+            continue
+        data = _parse_tool_payload(msg)
+        if not data:
+            continue
+
+        one = data.get("appointment")
+        if isinstance(one, dict):
+            records.append(one)
+
+        many = data.get("appointments")
+        if isinstance(many, list):
+            records.extend(item for item in many if isinstance(item, dict))
+
+    return records
+
+
+def _booking_was_looked_up(state: AgentState, booking_id: Optional[str]) -> bool:
+    """True when `booking_id` is the internal id of a booking a lookup
+    tool actually returned in THIS conversation.
+
+    COMPARES THE `id` FIELD, NOT THE WHOLE MESSAGE.
+
+    This used to substring-search the raw ToolMessage text, which let
+    the WRONG value through: a booking's own human-readable reference
+    ("GBN-2026-09-07-394") is in that text too, so passing the
+    reference where the GUID belongs sailed past the gate and was then
+    sent to the booking API as an id - where it can only ever fail. See
+    `_resolve_booking_guid`, which is what callers should use: it turns
+    a reference (or a positional pick) into the real id instead of
+    letting it reach the API."""
 
     if not booking_id:
         return False
@@ -1455,16 +1545,85 @@ def _booking_was_looked_up(state: AgentState, booking_id: Optional[str]) -> bool
     if not wanted:
         return False
 
-    for msg in state.get("messages") or []:
-        if getattr(msg, "type", None) != "tool":
-            continue
-        if getattr(msg, "name", None) not in _LOOKUP_TOOLS_FOR_CANCEL:
-            continue
-        content = getattr(msg, "content", "")
-        if wanted in (content if isinstance(content, str) else str(content)):
-            return True
+    return any(
+        str(record.get("id") or "").strip() == wanted
+        for record in _looked_up_bookings(state)
+    )
 
-    return False
+
+def _resolve_booking_guid(state: AgentState, value: Optional[str]) -> dict:
+    """Turn whatever was passed as a booking id into the REAL internal
+    id of a booking this conversation actually looked up.
+
+    Accepts, in this order:
+      - the internal id itself (the normal, correct case);
+      - the booking's human-readable reference ("GBN-2026-09-07-394");
+      - the patient's own positional answer to an appointment list
+        ("2"), resolved against the list `lookup_appointment` showed.
+
+    Returns {"status": "resolved", "booking_id": <guid>} or
+    {"status": "not_looked_up"}.
+
+    WHY THIS EXISTS - CONFIRMED REAL PRODUCTION FAILURE (2026-09-07):
+    a cancellation reached the confirmation card correctly, the patient
+    said "اه", and the reply was the clinic's technical-failure message,
+    twice in a row. The booking was still `New` in the booking system
+    afterwards - nothing had been cancelled. `PUT
+    /api/GuestBookings/Cancel/{id}` takes the GUID in its path, and a
+    reference number there is a 400 every time; the same is true of
+    `/api/GuestBookings/Update`'s `id` field for a reschedule. The
+    difference between the two values is one line in a tool docstring
+    and nothing else, on the two most consequential calls in the whole
+    system, so it is resolved here in code rather than left to be got
+    right every time.
+
+    Note that this is a RESOLVER, not a relaxation: a value matching
+    nothing this conversation looked up still comes back
+    `not_looked_up`, exactly as before."""
+
+    records = _looked_up_bookings(state)
+    wanted = str(value or "").strip()
+
+    if records and wanted:
+        for record in records:
+            if str(record.get("id") or "").strip() == wanted:
+                return {"status": "resolved", "booking_id": wanted}
+
+        # A reference where the id belongs. Folded to be case- and
+        # space-insensitive: the patient's own typing is what a
+        # reference is copied from.
+        folded = wanted.replace(" ", "").lower()
+        for record in records:
+            reference = str(record.get("ref") or record.get("bookingRefNum") or "").strip()
+            if reference and reference.replace(" ", "").lower() == folded and record.get("id"):
+                logger.warning(
+                    "_resolve_booking_guid: %r is the booking REFERENCE, not the "
+                    "internal id - resolving it to id=%s rather than sending a "
+                    "reference to an endpoint that only accepts a GUID",
+                    wanted, record.get("id"),
+                )
+                return {"status": "resolved", "booking_id": str(record["id"])}
+
+    # A positional pick against the list the patient was actually shown
+    # - the same resolution `check_booking_status` already applies to
+    # its own `ref_number` argument, for the same reason.
+    pick = _resolve_appointment_pick(state, wanted)
+    if pick.get("result") == "matched" and (pick.get("item") or {}).get("id"):
+        resolved = str(pick["item"]["id"])
+        logger.info(
+            "_resolve_booking_guid: resolved positional pick %r -> id=%s (%s, %s)",
+            wanted, resolved,
+            (pick["item"] or {}).get("date_display"),
+            (pick["item"] or {}).get("branchName"),
+        )
+        return {"status": "resolved", "booking_id": resolved}
+
+    logger.warning(
+        "_resolve_booking_guid: %r matches no booking any lookup returned in "
+        "this conversation (session_id=%s, %d record(s) on file)",
+        wanted, state.get("session_id"), len(records),
+    )
+    return {"status": "not_looked_up"}
 
 
 def clear_session(session_id: Optional[str]) -> bool:
@@ -1732,6 +1891,139 @@ def get_known_entity_names(session_id: Optional[str], entity_type: str) -> set:
 # old code path only ever handled ASCII, so those replies fell through
 # to fuzzy name matching and failed.
 _ARABIC_DIGIT_MAP = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
+
+
+# ==========================================================
+# A CLOCK TIME THE PATIENT TYPED
+# ==========================================================
+#
+# "عايز أحجز مع دكتور أحمد يوم الأحد الساعة 5" names a time as
+# naturally as it names a day, and the day half has been resolved in
+# code for a while (`resolve_weekday_index`). The time half was not:
+# `select_appointment_slot` compared the patient's raw words against
+# each slot's own `time_display` with a substring test, so "الساعه 5"
+# matched nothing at all against a slot displayed as "5:00 مساءً" - the
+# two strings share only the digit - and the answer came back
+# `not_matched` for a slot that was sitting right there in the list.
+#
+# Written to be forgiving in exactly the ways patients are: either
+# digit set, an optional ":mm", the Arabic period words and their
+# spelling variants, English am/pm, and the Egyptian/Gulf colloquial
+# words for morning and evening.
+_PERIOD_WORDS_AM = (
+    "صباحا", "صباحًا", "صباح", "الصبح", "صبح", "ص",
+    "am", "a.m", "morning",
+)
+_PERIOD_WORDS_PM = (
+    "مساء", "مساءً", "مسا", "المسا", "بالليل", "ليلا", "ليلًا", "الليل",
+    "العصر", "عصرا", "عصرًا", "بعد الضهر", "بعد الظهر", "م",
+    "pm", "p.m", "evening", "afternoon", "night",
+)
+_PERIOD_WORDS_NOON = ("ظهرا", "ظهرًا", "الظهر", "ضهرا", "الضهر", "noon", "midday")
+
+_CLOCK_TIME_RE = re.compile(r"(?<!\d)([01]?\d|2[0-3])\s*(?::\s*([0-5]\d))?(?!\d)")
+
+
+def _parse_clock_time(text: Optional[str]) -> Optional[dict]:
+    """The clock time in `text`, or None.
+
+    Returns {"hour": 0-23 or 1-12, "minute": int or None,
+             "period": "am"/"pm"/None}.
+
+    `period` is None when the patient gave no morning/evening word at
+    all, which is the common case ("الساعة 5") and genuinely ambiguous -
+    callers must resolve it against the real slots rather than guessing,
+    because 5:00 and 17:00 are both ordinary clinic times. `minute` is
+    None when they named only the hour, which means "any slot in that
+    hour" and not "exactly o'clock".
+    """
+
+    if not text:
+        return None
+
+    normalized = _normalize_arabic(str(text).translate(_ARABIC_DIGIT_MAP))
+
+    match = _CLOCK_TIME_RE.search(normalized)
+    if not match:
+        return None
+
+    hour = int(match.group(1))
+    minute = int(match.group(2)) if match.group(2) else None
+
+    period = None
+    for word in _PERIOD_WORDS_NOON:
+        if _normalize_arabic(word) in normalized:
+            period = "noon"
+            break
+    if period is None:
+        for word in _PERIOD_WORDS_PM:
+            candidate = _normalize_arabic(word)
+            # The single letters "م"/"ص" are only a period marker when
+            # they stand alone next to the number - inside a word they
+            # are just a letter, and nearly every Arabic sentence has
+            # one.
+            pattern = (
+                rf"(?:^|\s){re.escape(candidate)}(?:\s|$|\.)"
+                if len(candidate) == 1 else re.escape(candidate)
+            )
+            if re.search(pattern, normalized):
+                period = "pm"
+                break
+    if period is None:
+        for word in _PERIOD_WORDS_AM:
+            candidate = _normalize_arabic(word)
+            pattern = (
+                rf"(?:^|\s){re.escape(candidate)}(?:\s|$|\.)"
+                if len(candidate) == 1 else re.escape(candidate)
+            )
+            if re.search(pattern, normalized):
+                period = "am"
+                break
+
+    return {"hour": hour, "minute": minute, "period": period}
+
+
+def _slot_matches_clock_time(slot: dict, wanted: dict) -> bool:
+    """Whether one remembered slot is at the time the patient named.
+
+    Compared against the slot's `_localStart` - the clinic's own clock,
+    which is what the patient was shown - never the wire `slotStart`,
+    which is a UTC instant three hours away from it. See
+    `to_clinic_local`."""
+
+    local_start = slot.get("_localStart") or slot.get("slotStart")
+    if not local_start:
+        return False
+
+    try:
+        when = datetime.fromisoformat(str(local_start).replace("Z", "").split("+")[0])
+    except ValueError:
+        return False
+
+    if wanted.get("minute") is not None and when.minute != wanted["minute"]:
+        return False
+
+    hour = wanted["hour"]
+    period = wanted.get("period")
+
+    if period == "am":
+        return when.hour == (0 if hour == 12 else hour % 12)
+    if period == "pm":
+        return when.hour == (12 if hour == 12 else (hour % 12) + 12)
+    if period == "noon":
+        return when.hour == 12
+
+    # NO MORNING/EVENING WORD. A 24-hour reading ("17") is exact; a
+    # 12-hour one ("5") could be either half of the day, so both are
+    # accepted here and the CALLER decides what to do when more than one
+    # real slot comes back - it must ask, not guess.
+    if hour > 12:
+        return when.hour == hour
+    return when.hour % 12 == hour % 12
+
+
+def _slots_at_clock_time(slots: list, wanted: dict) -> list:
+    return [slot for slot in (slots or []) if _slot_matches_clock_time(slot, wanted)]
 
 
 def _extract_selection_number(user_input: str) -> Optional[int]:
@@ -4112,7 +4404,9 @@ def reschedule_appointment(
     or reuse an old value from memory. `new_time_from`/`new_time_to` must
     be the EXACT slotStart/slotEnd values from `get_available_reschedule_slots`
     - never modify or recompute them yourself. Returns:
-    {"status": "success"} or {"status": "error"}"""
+    {"status": "success"}, {"status": "not_looked_up"} (this booking was
+    never found by a lookup in this conversation - go and find it
+    first), or {"status": "error"}"""
 
     # NOTE: confirmed directly from the user's own curl - GuestBookings/Update
     # lives on the SAME port as Doctors/Specialties (1302), NOT the regular
@@ -4123,6 +4417,27 @@ def reschedule_appointment(
     if not base_url:
         logger.warning("reschedule_appointment called but no doctors_base_url is configured for client_id=%s", state.get("client_id"))
         return {"status": "error"}
+
+    # THE SAME GATE AND THE SAME RESOLUTION AS CANCELLING.
+    #
+    # This tool had neither, while `cancel_appointment` had both -
+    # despite moving somebody's appointment being just as mutating as
+    # removing it, and despite `id` here having exactly the same
+    # ref-vs-GUID trap: `/api/GuestBookings/Update` takes the booking's
+    # own GUID in its `id` field, and a human-readable reference there
+    # is a 400 that reaches the patient as "الموعد لم يتم تعديله". See
+    # `_resolve_booking_guid` for the confirmed failure.
+    resolved = _resolve_booking_guid(state, booking_id)
+    if resolved["status"] != "resolved":
+        logger.warning(
+            "reschedule_appointment: refusing to move booking_id=%r (session_id=%s) - "
+            "no lookup_appointment/check_booking_status in this conversation ever "
+            "returned that booking",
+            booking_id, state.get("session_id"),
+        )
+        return {"status": "not_looked_up"}
+
+    booking_id = resolved["booking_id"]
 
     result = api.reschedule_booking(base_url, booking_id, new_time_from, new_time_to)
 
@@ -4768,7 +5083,18 @@ def _fuzzy_match(user_input: str, candidates: list, name_keys: list) -> dict:
     if len(close_matches) == 1 or top_score >= 0.98:
         return {"result": "matched", "item": close_matches[0], "score": top_score}
 
-    return {"result": "ambiguous", "items": close_matches[:5]}
+    # ALL OF THEM, NOT THE FIRST FIVE.
+    #
+    # A given name is the normal way patients refer to a doctor
+    # ("دكتور احمد"), and a clinic can easily have more than five of
+    # them. Cutting the list at five silently hid real doctors from a
+    # patient who was being asked to pick one - and the ones hidden are
+    # not the less relevant ones, just the ones sorted later. The band
+    # this list comes from is already narrow (within 0.08 of the best
+    # score), so it holds people who genuinely match what was typed,
+    # not filler. The remaining cap is a sanity bound on a pathological
+    # query, not a display choice.
+    return {"result": "ambiguous", "items": close_matches[:15]}
 
 
 def _branch_alias_map(state) -> dict:
@@ -6321,7 +6647,28 @@ def match_entity_for_booking(
         return {"matched": False, "ambiguous": False}
 
     if match_result["result"] == "ambiguous":
-        return {"matched": False, "ambiguous": True, "candidates": [_shape(i) for i in match_result["items"]]}
+        candidates = [_shape(i) for i in match_result["items"]]
+
+        # REMEMBERED, LIKE EVERY OTHER NUMBERED LIST IN THIS FLOW.
+        #
+        # This is the list the patient is about to be shown - "there
+        # are three doctors called أحمد, which one?" - and it was the
+        # last one in the booking flow that nothing recorded. So a
+        # patient who answered "2" was resolved against whatever list
+        # happened to be in `last_list` from an earlier step (or
+        # against nothing at all, giving "no_list_shown" and the
+        # misleading "that doctor doesn't exist"). Doctor lists, branch
+        # lists, day lists, slot lists and appointment lists all go
+        # through `_remember_list` for exactly this reason.
+        _remember_list(state, entity_type, candidates)
+
+        logger.info(
+            "match_entity_for_booking: %r matches %d %ss - returning them as a "
+            "choice and remembering the order so a numbered answer resolves",
+            user_input, len(candidates), entity_type,
+        )
+
+        return {"matched": False, "ambiguous": True, "candidates": candidates}
 
     # matched - decide confidence: high score (exact/unique) auto-confirms
     # and saves to session; lower score is a likely typo needing "did you
@@ -6363,8 +6710,19 @@ def match_entity_for_booking(
                 # "هنا قائمة الدكاترة المتاحين في الفرع" and then listed
                 # nobody, leaving the patient with a confirmed branch and no
                 # way forward.
+                #
+                # AND IT MUST STAY INSIDE THIS `if`. A stray duplicate of
+                # this line sat one level out, so EVERY branch resolved by
+                # NAME came back flagged as having no doctors - alongside
+                # the full roster it had just fetched. The flag is the
+                # stronger signal, so the model dutifully told patients
+                # that a perfectly well-staffed branch had nobody
+                # available, which is a dead end in the one flow that has
+                # no way around it. The positional-pick path a few
+                # hundred lines above never had the duplicate, which is
+                # why picking "2" worked where typing the branch's own
+                # name did not.
                 response["noDoctorsAtBranch"] = True
-            response["noDoctorsAtBranch"] = True
 
     return response
 
@@ -8425,7 +8783,16 @@ def select_appointment_slot(state: Annotated[AgentState, InjectedState], user_in
     slot yourself from memory.
 
     `user_input`: the patient's raw reply - a bare number ("2", "٢"),
-    or the exact time they typed back ("11:00", "11 الصبح").
+    or the time they typed in their own words ("11:00", "11 الصبح",
+    "الساعة 5", "5 مساءً", "at 3 pm"). Pass it through unchanged; you
+    never need to translate a time or work out which slot it is.
+
+    THIS IS ALSO THE TOOL FOR A TIME THE PATIENT NAMED UP FRONT.
+    When their message asked for a specific hour ("احجزلي يوم الأحد
+    الساعة 5"), call `get_available_slots_for_booking` for that day and
+    then call THIS with their own words. Its answer is what tells you
+    whether that exact time is bookable - never decide that by reading
+    the list yourself.
 
     WHY THIS EXISTS: doctor and branch picks are resolved this same way,
     in code, against the exact list just shown - this was the one
@@ -8450,9 +8817,18 @@ def select_appointment_slot(state: Annotated[AgentState, InjectedState], user_in
         guess a time.
     {"status": "out_of_range", "list_size": N}  # a number outside the
         list that was shown - tell them the valid range, don't guess.
-    {"status": "not_matched"}  # their reply matches no remembered slot
-        by position or by time - show the list again, or ask them to
-        pick from it, never invent a slot to fill the gap."""
+    {"status": "ambiguous_time", "candidates": [slot, ...]}
+        -> they named an hour with no morning/evening word and this day
+           has a slot in BOTH halves of the day (e.g. "5" with a 5:00
+           and a 17:00 open). Show ONLY these candidates' own
+           `time_display` values and ask which one - never pick one
+           yourself.
+    {"status": "not_matched"}  # the time they named is NOT among this
+        day's open slots - which is a real answer, not a failure. Say
+        plainly that that exact time isn't available on that day, then
+        show the times that ARE open (the list you just fetched) and let
+        them pick. Never invent a slot to fill the gap, and never move
+        them to a different day without saying so."""
 
     session_id = state.get("session_id")
     session = _get_booking_session(session_id)
@@ -8467,27 +8843,81 @@ def select_appointment_slot(state: Annotated[AgentState, InjectedState], user_in
 
     slots = last_list.get("items") or []
 
+    wanted_time = _parse_clock_time(user_input)
+
     position = _extract_selection_number(user_input)
     if position is not None:
         if not (1 <= position <= len(slots)):
-            logger.warning(
-                "select_appointment_slot: position %d out of range for %d remembered slot(s)",
-                position, len(slots),
-            )
-            return {"status": "out_of_range", "list_size": len(slots)}
-        chosen = slots[position - 1]
+            # A NUMBER PAST THE END OF THE LIST MAY BE AN HOUR.
+            #
+            # Three slots were shown and the patient typed "5" - not
+            # position five, which does not exist, but five o'clock.
+            # Read as a position that is `out_of_range`, which sends
+            # them back to a list they had already answered. Only tried
+            # after the position reading fails, so a genuine numbered
+            # pick is never reinterpreted.
+            by_time = _slots_at_clock_time(slots, wanted_time) if wanted_time else []
+            if len(by_time) == 1:
+                logger.info(
+                    "select_appointment_slot: %r is past the end of the %d-slot list - "
+                    "reading it as a time instead, which matches exactly one slot (%s)",
+                    user_input, len(slots), by_time[0].get("time_display"),
+                )
+                position = None
+                chosen = by_time[0]
+            else:
+                logger.warning(
+                    "select_appointment_slot: position %d out of range for %d remembered slot(s)",
+                    position, len(slots),
+                )
+                return {"status": "out_of_range", "list_size": len(slots)}
+        else:
+            chosen = slots[position - 1]
     else:
-        # Not a number - try to match the exact time they typed against
-        # each remembered slot's own displayed time. Folded the same way
-        # every other Arabic comparison in this file is, so digit style
-        # and minor spacing differences don't cause a false miss.
-        folded_input = _normalize_arabic((user_input or "").strip())
+        # Not a number - match the TIME they typed against each
+        # remembered slot's real start time.
+        #
+        # This used to compare their raw words against the slot's own
+        # `time_display` with a substring test in both directions, which
+        # only ever matched when they typed the display string almost
+        # exactly. "الساعه 5" and a slot shown as "5:00 مساءً" share
+        # nothing but the digit, so the commonest way of naming a time
+        # came back `not_matched` for a slot that was in the list. See
+        # `_parse_clock_time`.
         chosen = None
-        for slot in slots:
-            folded_time = _normalize_arabic(str(slot.get("time_display") or ""))
-            if folded_time and (folded_time in folded_input or folded_input in folded_time):
-                chosen = slot
-                break
+
+        if wanted_time:
+            by_time = _slots_at_clock_time(slots, wanted_time)
+
+            if len(by_time) == 1:
+                chosen = by_time[0]
+            elif len(by_time) > 1:
+                # They named an hour with no morning/evening word and
+                # this day genuinely has both - e.g. "5" against a 5:00
+                # and a 17:00. Guessing books the wrong half of the day,
+                # so hand the real candidates back and let the reply ask
+                # which one.
+                logger.info(
+                    "select_appointment_slot: %r matches %d slots (%s) - asking rather "
+                    "than guessing which half of the day they meant",
+                    user_input, len(by_time),
+                    [slot.get("time_display") for slot in by_time],
+                )
+                return {
+                    "status": "ambiguous_time",
+                    "candidates": [dict(slot) for slot in by_time],
+                }
+
+        if chosen is None:
+            # Last resort: the display string itself, for a reply that
+            # quotes it back verbatim ("5:00 مساءً") in a form the clock
+            # parser did not recognise.
+            folded_input = _normalize_arabic((user_input or "").strip())
+            for slot in slots:
+                folded_time = _normalize_arabic(str(slot.get("time_display") or ""))
+                if folded_time and (folded_time in folded_input or folded_input in folded_time):
+                    chosen = slot
+                    break
 
         if chosen is None:
             logger.info(
