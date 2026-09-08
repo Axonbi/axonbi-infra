@@ -1449,6 +1449,18 @@ def _new_booking_session() -> dict:
         # settle on. Written by `_set_booking_phone` from the tools that
         # establish it, and read by `create_new_booking`.
         "booking_phone": None,
+        # HOW the branch in this session got there: True when CODE
+        # inferred it (a named weekday that only one of the doctor's
+        # branches works, or a doctor with exactly one branch), False
+        # when the PATIENT actually named or picked it.
+        #
+        # The two are not interchangeable. An inferred branch is a
+        # convenience for the doctor it was inferred from - it saves
+        # asking "which branch?" when the answer is already
+        # determined - and it must never narrow a question the
+        # patient asks about anything else. See
+        # `get_doctor_schedule_for_booking`.
+        "branch_auto_resolved": False,
     }
 
 
@@ -4156,6 +4168,106 @@ def resolve_weekday_index(weekday_text: Optional[str]) -> Optional[int]:
     return None
 
 
+# ==========================================================
+# TODAY, TOMORROW, THE DAY AFTER
+# ==========================================================
+#
+# "بكره" is how people name a day at least as often as they name a
+# weekday, and it was the one kind of day this file could not resolve.
+# `resolve_weekday_index("بكره")` is None - correctly, it is not a
+# weekday - so the named-day directive never fired, no tool computed
+# anything, and the model did the arithmetic itself.
+#
+# CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+# 201003365691+medtown2, 2026-09-08 11:48, a Tuesday): "بكره" was
+# answered with "ما فيه مواعيد متاحة ... يوم الثلاثاء القادم" -
+# tomorrow is WEDNESDAY, and الثلاثاء was that very day. The whole
+# reason `get_next_weekday_date` exists ("your own mental date
+# arithmetic is not reliable enough for this") applied here exactly,
+# and there was nothing for the model to call.
+#
+# Deliberately only the three unambiguous ones. "الأسبوع الجاي" is a
+# RANGE, not a date, and guessing which day inside it the patient meant
+# is how a booking lands on a day nobody asked for - it stays with the
+# normal "which day?" flow.
+_RELATIVE_DATE_OFFSETS = (
+    # Longest first: "بعد بكره" must not be read as "بكره".
+    (2, ("بعد بكره", "بعد بكرة", "بعد بكرا", "بعد غد", "بعد الغد",
+         "day after tomorrow", "after tomorrow")),
+    (1, ("بكره", "بكرة", "بكرا", "غدا", "غد", "غدوه",
+         "تومورو", "tomorrow", "tmrw")),
+    # "اليومين" is NOT here on purpose: "اليومين الجايين" is the next
+    # two days, not today, and reading it as today would answer a
+    # different question than the one asked.
+    (0, ("النهارده", "النهاردة", "اليوم", "today", "tonight")),
+)
+
+
+def resolve_relative_date(text: Optional[str],
+                          timezone_name: str = DEFAULT_TIMEZONE) -> Optional[dict]:
+    """The calendar date `text` names relatively ("بكره"), or None.
+
+    Returns the same shape the day flow already passes around, so a
+    caller can hand `from_date`/`to_date` straight to
+    `get_available_slots_for_booking` exactly as it does with
+    `resolve_available_day`'s result:
+
+        {"offset_days": 1, "matched": "بكره",
+         "date": "2026-09-09", "date_display": "09/09/2026",
+         "weekday_name": "Wednesday", "weekday_display": "الأربعاء",
+         "from_date": "2026-09-09T00:00:00",
+         "to_date": "2026-09-09T23:59:59"}
+
+    Matched on the clinic's own clock, not the process's - "tomorrow"
+    is a different date either side of midnight and this service runs
+    in UTC.
+    """
+
+    if not text:
+        return None
+
+    normalized = _normalize_arabic(str(text))
+    if not normalized:
+        return None
+
+    matched_word = None
+    offset = None
+    for candidate_offset, words in _RELATIVE_DATE_OFFSETS:
+        for word in words:
+            folded = _normalize_arabic(word)
+            # Word-boundary-ish: the phrase has to stand as its own
+            # words, so "اليومين الجايين" or a name containing these
+            # letters cannot trigger it.
+            if re.search(rf"(?:^|\s){re.escape(folded)}(?:\s|$|[.,؟?!])", normalized):
+                matched_word, offset = word, candidate_offset
+                break
+        if matched_word:
+            break
+
+    if matched_word is None:
+        return None
+
+    try:
+        tz = ZoneInfo(timezone_name)
+    except Exception:
+        tz = ZoneInfo(DEFAULT_TIMEZONE)
+
+    target = datetime.now(tz).date() + timedelta(days=offset)
+    english = ["Monday", "Tuesday", "Wednesday", "Thursday",
+               "Friday", "Saturday", "Sunday"][target.weekday()]
+
+    return {
+        "offset_days": offset,
+        "matched": matched_word,
+        "date": target.isoformat(),
+        "date_display": target.strftime("%d/%m/%Y"),
+        "weekday_name": english,
+        "weekday_display": _ARABIC_WEEKDAY_NAMES[target.weekday()],
+        "from_date": f"{target.isoformat()}T00:00:00",
+        "to_date": f"{target.isoformat()}T23:59:59",
+    }
+
+
 @tool
 def get_next_weekday_date(
     weekday_name: str,
@@ -4181,9 +4293,31 @@ def get_next_weekday_date(
       discussed (e.g. "the following Monday" / "الاثنين اللي بعده" after
       you'd already established a specific Monday's date) - do NOT ask
       them to clarify what date they mean, just call this directly.
+    It also accepts a RELATIVE day in place of a weekday name -
+    "بكره"/"tomorrow", "بعد بكره", "النهارده"/"today" - and
+    resolves it against the clinic's own calendar. Pass the
+    patient's own word through; never work out which date "بكره" is
+    yourself.
     Returns:
     {"status": "found", "date": "YYYY-MM-DD", "weekday_name": "Thursday"}
     {"status": "error"}  # unrecognized weekday name or bad after_date"""
+
+    # "بكره"/"today"/"بعد بكره" ARE ANSWERS TO "WHICH DAY?" TOO.
+    #
+    # They are not weekday names, so `resolve_weekday_index` returns
+    # None for them and this tool used to answer `error` - which
+    # left the model to work the date out itself, the one thing this
+    # tool's own docstring forbids. See `resolve_relative_date`.
+    # Checked BEFORE the weekday map so "بكره" cannot be mistaken
+    # for anything in it.
+    relative = resolve_relative_date(weekday_name, timezone_name)
+    if relative and not after_date:
+        logger.info(
+            "get_next_weekday_date: %r is a relative date -> %s (%s)",
+            weekday_name, relative["date"], relative["weekday_name"],
+        )
+        return {"status": "found", "date": relative["date"],
+                "weekday_name": relative["weekday_name"]}
 
     target_weekday = resolve_weekday_index(weekday_name)
 
@@ -6169,6 +6303,52 @@ def _branches_with_real_slots(state: AgentState, base_url: str, doctor_id: str,
     return have_slots
 
 
+def _retire_previous_doctors_branch(session: dict, entity_type: str,
+                                    new_id: Optional[str]) -> None:
+    """A DIFFERENT doctor means the remembered branch belonged to
+    somebody else. Drop it, along with everything else that was chosen
+    for the previous doctor.
+
+    CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+    201158877175+medtown2, 2026-09-08 11:21): the patient was mid-way
+    through a booking with د. أمنية when `resolve_available_day`
+    inferred فرع الدقي for her from the Thursday they had named. They
+    then asked "مواعيد دكتور شريف؟" - a different doctor. His roster was
+    fetched with `branch_ids=['<الدقي>']` and his SCHEDULE was fetched
+    the same way, so the only rota that could come back was الدقي's. The
+    reply showed that one branch, and when the patient asked "لا مواعيده
+    في فرع زايد؟" the answer was "الدكتور شريف شتا ما عنده مواعيد معلنة
+    في فرع الشيخ زايد حاليًا" - a flat negative about a branch no query
+    had ever included. As the patient put it: "مفروض ميحددش فرع طالما
+    أنا محددتوش، وبعدين هو عنده مواعيد بيخترع إنه معندوش ليه".
+
+    Same reasoning, and the same treatment, as the `is_a_specialty`
+    path a few hundred lines below: naming a new DEPARTMENT already
+    retires the doctor and branch that belonged to the old one. Naming
+    a new DOCTOR has to retire the branch for exactly the same reason.
+    """
+
+    if entity_type != "doctor" or not new_id:
+        return
+
+    previous = session.get("doctor_id")
+    if not previous or str(previous) == str(new_id):
+        return
+
+    logger.info(
+        "match_entity_for_booking: doctor changed (%s -> %s) - dropping the "
+        "branch, service and slot chosen for the previous doctor",
+        previous, new_id,
+    )
+
+    session["branch_id"] = None
+    session["branch_display_name"] = None
+    session["branch_auto_resolved"] = False
+    session["service_id"] = None
+    session["selected_slot"] = None
+    session["slots_shown"] = False
+
+
 @tool
 def match_entity_for_booking(
     state: Annotated[AgentState, InjectedState],
@@ -6328,6 +6508,28 @@ def match_entity_for_booking(
 
     if entity_type == "doctor":
         branch_filter = [session["branch_id"]] if session.get("branch_id") else None
+
+        # A DOCTOR NAMED BY THE PATIENT IS NOT SEARCHED INSIDE AN
+        # INFERRED BRANCH.
+        #
+        # The narrowing below is a latency shield and a relevance filter
+        # for a LIST ("who works at the branch we settled on?"). When the
+        # patient has named a specific person, a branch that CODE
+        # inferred - for a different doctor, from a weekday they
+        # mentioned - has no business deciding whether that person
+        # exists. The widening retry further down would usually rescue
+        # it, but only after a wasted round trip, and it cannot rescue a
+        # doctor who is merely MIS-matched rather than missing.
+        #
+        # See `_retire_previous_doctors_branch` for the confirmed
+        # failure this belongs to.
+        if branch_filter and not wants_list and session.get("branch_auto_resolved"):
+            logger.info(
+                "match_entity_for_booking: %r names a doctor, and branch_id=%s was "
+                "inferred rather than chosen - searching every branch",
+                user_input, session.get("branch_id"),
+            )
+            branch_filter = None
 
         # NARROW THE QUERY. This used to ask the hospital's API for every
         # doctor in the system with no filters at all, which on a real
@@ -6685,8 +6887,13 @@ def match_entity_for_booking(
             shaped = _shape(chosen_raw) if chosen_raw else dict(remembered)
 
             if shaped.get("id"):
+                _retire_previous_doctors_branch(session, entity_type, shaped["id"])
                 session[f"{entity_type}_id"] = shaped["id"]
                 session[f"{entity_type}_display_name"] = _arabic_preferred_name(shaped)
+                if entity_type == "branch":
+                    # Picked from a list the patient was shown - their
+                    # choice, not an inference.
+                    session["branch_auto_resolved"] = False
                 logger.info(
                     "match_entity_for_booking: resolved position %d -> %s_id=%s (%s)",
                     position, entity_type, shaped["id"], session[f"{entity_type}_display_name"],
@@ -6818,8 +7025,12 @@ def match_entity_for_booking(
     needs_confirmation = match_result["score"] < 0.95
 
     if not needs_confirmation:
+        _retire_previous_doctors_branch(session, entity_type, shaped.get("id"))
         session[f"{entity_type}_id"] = shaped["id"]
         session[f"{entity_type}_display_name"] = _arabic_preferred_name(shaped)
+        if entity_type == "branch":
+            # Named by the patient - their choice, not an inference.
+            session["branch_auto_resolved"] = False
 
     response = {"matched": True, "needsConfirmation": needs_confirmation, "item": shaped}
 
@@ -7258,6 +7469,7 @@ def resolve_available_day(
             if len(matching_branch_ids) == 1:
                 branch_id = next(iter(matching_branch_ids))
                 session["branch_id"] = branch_id
+                session["branch_auto_resolved"] = True
                 logger.info("resolve_available_day: auto-resolved branch_id=%s from weekday=%s (unique match in doctor's schedule)", branch_id, weekday_name)
                 try:
                     branches_result = api.get_branches(base_url, page_size=200, language=conversation_language(state))
@@ -7957,6 +8169,7 @@ def list_available_days_for_booking(
             if len(branch_ids) == 1:
                 branch_id = next(iter(branch_ids))
                 session["branch_id"] = branch_id
+                session["branch_auto_resolved"] = True
                 # Record the NAME too, not just the id. The booking
                 # confirmation message prints the branch from
                 # branch_display_name, so auto-confirming the id alone
@@ -8622,7 +8835,26 @@ def get_doctor_schedule_for_booking(
         except Exception:
             effective_date = None
 
+    # ONLY A BRANCH THE PATIENT CHOSE MAY NARROW THIS.
+    #
+    # This call is what answers "when does this doctor work?", and
+    # its own contract says the schedule spans EVERY branch until a
+    # branch is confirmed. An INFERRED branch is not a confirmation -
+    # see `branch_auto_resolved` in `_new_booking_session` - and
+    # narrowing by one turns this into a query that can only ever
+    # report the branch it was already pointed at, which is how a
+    # doctor with two rotas was reported as having one. See
+    # `_retire_previous_doctors_branch`.
     branch_id = session.get("branch_id")
+    if branch_id and session.get("branch_auto_resolved"):
+        logger.info(
+            "get_doctor_schedule_for_booking: branch_id=%s was inferred, not "
+            "chosen by the patient - querying every branch this doctor works "
+            "at rather than only that one",
+            branch_id,
+        )
+        branch_id = None
+
     result = api.get_doctor_schedule(
         base_url, doctor_ids=[doctor_id],
         branch_ids=[branch_id] if branch_id else None,
