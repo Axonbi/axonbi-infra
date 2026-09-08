@@ -1450,6 +1450,14 @@ def _build_show_soonest_day_directive(messages: list, session_id: str) -> str:
     if _build_named_day_directive(messages, session_id):
         return ""
 
+    # AND THE SAME FOR A DATE NAMED RELATIVELY. "بكره" is a day
+    # request that `_named_weekday_in_latest_human` cannot see, so
+    # without this the soonest-date directive took those turns and
+    # the date the patient actually named was answered by mental
+    # arithmetic. See `_build_relative_date_directive`.
+    if _relative_date_in_latest_human(messages, None):
+        return ""
+
     from langchain_core.messages import HumanMessage as _HumanMessage
 
     last = messages[-1]
@@ -1882,6 +1890,142 @@ def _rejected_day_lead_for_day_list(messages: list, session_id: str) -> str:
             if lead:
                 return lead
     return ""
+
+
+# ==========================================================
+# THEY NAMED A DATE, NOT A WEEKDAY
+# ==========================================================
+#
+# "بكره" is a day request as much as "يوم الخميس" is, and it was the
+# one shape with no owner: `_named_weekday_in_latest_human` correctly
+# returns None for it (it is not a weekday), so the named-day directive
+# stood down, `_build_show_soonest_day_directive` took the turn, and
+# nothing computed a date at all.
+#
+# CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+# 201003365691+medtown2, 2026-09-08 11:48, a Tuesday): "بكره" was
+# answered "للأسف ما فيه مواعيد متاحة عند الدكتور محمود سليمان يوم
+# الثلاثاء القادم". Tomorrow was WEDNESDAY; الثلاثاء was that day. Two
+# turns later the same flow denied the Monday it had successfully
+# booked minutes earlier. Not one availability tool ran in any of it.
+#
+# A relative day resolves to ONE exact date, which is more than a
+# weekday gives us - so this directive hands the model the date, the
+# weekday it falls on, and the from_date/to_date pair to pass straight
+# to `get_available_slots_for_booking`, exactly as
+# `resolve_available_day` does for a named weekday.
+
+_RELATIVE_DATE_TOOLS = (
+    "get_available_slots_for_booking", "resolve_available_day",
+    "list_available_days_for_booking", "select_appointment_slot",
+    "create_new_booking", "get_available_reschedule_slots",
+)
+
+
+def _relative_date_in_latest_human(messages: list, templates: dict) -> Optional[dict]:
+    """The relative date the patient named in their OWN latest message,
+    resolved on the CLINIC's calendar, or None.
+
+    Deliberately reads only the latest message, for the same reason
+    `_named_weekday_in_latest_human` does: a "بكره" from yesterday's
+    turn is not a request about today.
+    """
+
+    index = _latest_human_index(messages)
+    if index < 0:
+        return None
+
+    content = getattr(messages[index], "content", "")
+    text = content if isinstance(content, str) else str(content)
+    if not text.strip():
+        return None
+
+    timezone_name = (templates or {}).get("_timezone") or tools.DEFAULT_TIMEZONE
+
+    return tools.resolve_relative_date(text, timezone_name)
+
+
+def _build_relative_date_directive(messages: list, session_id: str,
+                                   templates: dict) -> str:
+    """The patient named today/tomorrow/the day after. Give the turn the
+    real date and the range to check it with.
+
+    Stands down as soon as an availability tool has run for this
+    message, and stands down entirely when no doctor is in view - a
+    "بكره" with nobody to check it against is a word in a sentence, not
+    a booking preference.
+    """
+
+    if not messages or not session_id:
+        return ""
+
+    named = _relative_date_in_latest_human(messages, templates)
+    if not named:
+        return ""
+
+    # Already acted on this turn.
+    if _tool_results_since_latest_human(messages, _RELATIVE_DATE_TOOLS):
+        return ""
+
+    session = tools._BOOKING_SESSIONS.get(session_id) or {}
+
+    doctor_on_the_table = bool(session.get("doctor_id"))
+    if not doctor_on_the_table:
+        for msg in reversed(messages):
+            if getattr(msg, "name", None) in (
+                "match_entity_for_booking", "find_available_doctors",
+                "find_best_doctor_in_specialty", "list_branches_for_specialty",
+                "lookup_appointment", "check_booking_status",
+            ):
+                doctor_on_the_table = True
+                break
+
+    if not doctor_on_the_table:
+        return ""
+
+    when = {0: "TODAY", 1: "TOMORROW", 2: "THE DAY AFTER TOMORROW"}.get(
+        named["offset_days"], "THAT DAY"
+    )
+
+    return (
+        "============================================================\n"
+        "THEY NAMED A DATE - IT IS ALREADY WORKED OUT FOR YOU\n"
+        "============================================================\n"
+        "Their latest message says \"" + named["matched"] + "\". On this "
+        "clinic's own calendar that is " + when + ":\n\n"
+        "    date        : " + named["date"] + "\n"
+        "    to show them: " + named["weekday_display"] + " "
+        + named["date_display"] + "\n"
+        "    weekday     : " + named["weekday_name"] + "\n\n"
+        "Do NOT work out which date or which weekday this is yourself. "
+        "It is computed above, from the clinic's timezone, and your own "
+        "date arithmetic has been wrong about exactly this before - "
+        "\"بكره\" was answered as الثلاثاء on a Tuesday, when tomorrow "
+        "was الأربعاء.\n\n"
+        "Your next action for the day is to check THAT DATE, by copying "
+        "these two values verbatim:\n"
+        "    get_available_slots_for_booking(\n"
+        "        from_date=\"" + named["from_date"] + "\",\n"
+        "        to_date=\"" + named["to_date"] + "\")\n\n"
+        "(In the reschedule flow, pass the same two values to "
+        "`get_available_reschedule_slots` instead.)\n\n"
+        "WHAT TO DO WITH THE RESULT:\n"
+        "  - \"found\": show those times for "
+        + named["weekday_display"] + " " + named["date_display"]
+        + " and let them pick. Do not offer a different date.\n"
+        "  - \"not_found\": that exact date has nothing open. Say so "
+        "plainly - naming " + named["weekday_display"] + " " +
+        named["date_display"] + ", not \"" + named["matched"] + "\" alone "
+        "- and then call `list_available_days_for_booking` in the SAME "
+        "turn and show the days that ARE open. Never say a day is full, "
+        "or that the doctor does not work it, without this call having "
+        "answered first.\n"
+        "  - \"missing_branch\": settle the branch, then come straight "
+        "back to this date.\n\n"
+        "If the doctor does not work " + named["weekday_name"] + " at "
+        "all, that is the honest answer to give - say it, then show the "
+        "days they DO work.\n\n"
+    )
 
 
 # ==========================================================
@@ -5890,6 +6034,15 @@ _ORGAN_SPECIALTY_EXPECTATIONS = (
 )
 
 
+# The generic markers that introduce a specialty by name in these
+# replies ("في تخصص طب الأمراض الجلدية", "قسم جراحة العظام").
+# Used only to answer "is there a specialty in this fragment at all" -
+# never to decide WHICH one, which is the organ table's job.
+_NAMES_A_SPECIALTY_RE = re.compile(
+    r"تخصص|قسم|عياد[ةه]|specialt|department|clinic"
+)
+
+
 def _medical_reply_offers_unrelated_specialty(reply_text: str, state: AgentState) -> bool:
     """True when the patient named a clearly organ-specific symptom and
     the reply offers a specialty that plainly does not treat it.
@@ -5980,6 +6133,39 @@ def _medical_reply_offers_unrelated_specialty(reply_text: str, state: AgentState
         or _NUMBERED_LIST_LINE_RE.match(normalized_line)
     ) or folded
 
+    # IF THE SCOPED LINES NAME NO SPECIALTY, THE SCOPING WAS WRONG.
+    #
+    # This is the THIRD reply shape to break the line-guessing above
+    # (see the numbered-roster note for the second). Here the
+    # specialty sits in a plain statement and the offer is a bare
+    # closing question:
+    #
+    #   "الدكتور المتاح عندنا حاليًا في تخصص طب الأمراض الجلدية
+    #    هو استشارى امنية مغربي.
+    #
+    #    تبغين أحجز لك موعد عندها?"
+    #
+    # Only the last line matches `_SPECIALTY_OFFER_RE`, and it names
+    # no specialty - so `offer_text` held no specialty word at all
+    # and the guard flagged a CORRECT dermatology referral for a skin
+    # complaint. CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+    # 201158877175+medtown2, 2026-09-08 11:14): rejected twice, so
+    # the patient got "مش قادرة أحدد لك التخصص الأنسب" and an
+    # offer to be handed to staff, instead of the appointment they
+    # were one word away from.
+    #
+    # The scoping exists for one specific shape - the ADVICE line
+    # naming the right specialty while the OFFER names a wrong one -
+    # and that shape always has a specialty inside the offer. When
+    # the scoped text has none, there is nothing for the scoping to
+    # protect and everything to lose by keeping it.
+    if not _NAMES_A_SPECIALTY_RE.search(offer_text) and not _BARE_SPECIALTY_RE.search(offer_text):
+        logger.info(
+            "_medical_reply_offers_unrelated_specialty: the offer lines name no "
+            "specialty - judging the whole reply instead of a scoped fragment",
+        )
+        offer_text = folded
+
     from langchain_core.messages import HumanMessage as _HumanMessage
 
     # THE MOST RECENT SYMPTOM DECIDES - not every symptom ever mentioned.
@@ -6011,6 +6197,28 @@ def _medical_reply_offers_unrelated_specialty(reply_text: str, state: AgentState
     for text in reversed(human_messages):
         if not text.strip():
             continue
+
+        # THEY CHOSE IT THEMSELVES - THERE IS NOTHING TO SECOND-GUESS.
+        #
+        # Same principle as "the most recent symptom decides" below,
+        # applied to the other kind of message: once the patient has
+        # named a specialty or a doctor of their own accord ("عاوزه
+        # دكتور جلديه", "احجزلي مع دكتورة أمنية"), the reply is
+        # answering THAT request, not a body part they mentioned
+        # earlier. Judging it against the older complaint is how a
+        # patient who asked for dermatology by name gets told the
+        # assistant cannot work out their specialty.
+        #
+        # This guard is about the ASSISTANT mis-referring somebody
+        # who described a symptom and left the choice to it - not
+        # about overruling a choice the patient made out loud.
+        if _DOCTOR_CUE_RE.search(text) or _SPECIALTY_CUE_RE.search(text) \
+                or _BARE_SPECIALTY_RE.search(text):
+            logger.info(
+                "_medical_reply_offers_unrelated_specialty: the patient named a "
+                "specialty or a doctor themselves - no older complaint judges this reply",
+            )
+            return False
         # "Is this a complaint at all?" has to be at least as wide as
         # the table below, or a row can never be reached. `التويت كاحلي`
         # is an injury the table has an opinion about, but the ankle is
@@ -7266,12 +7474,35 @@ def _reply_denies_availability_without_lookup(reply_text: str, state: AgentState
 
     messages = state.get("messages", []) or []
 
-    last_establish_idx = None
-    for i, msg in enumerate(messages):
-        if getattr(msg, "name", None) in _DOCTOR_ESTABLISHING_TOOLS:
-            last_establish_idx = i
-
-    start_idx = last_establish_idx + 1 if last_establish_idx is not None else 0
+    # SCOPED TO THIS TURN, NOT TO THE WHOLE OF THE CURRENT DOCTOR.
+    #
+    # The doctor-scoping described above was already the second
+    # narrowing of this check, and it is still too wide by one axis:
+    # a denial is always about the DAY the patient just named, and a
+    # lookup for some OTHER day earlier in the same doctor's booking
+    # says nothing about it.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+    # 201003365691+medtown2, 2026-09-08 11:48-11:49): a real
+    # `resolve_available_day` + `get_available_slots_for_booking`
+    # pair had run for MONDAY, and a booking had completed on it.
+    # Three turns later, with no availability tool running at all:
+    #
+    #   "بكره"        -> "للأسف ما فيه مواعيد متاحة ... يوم الثلاثاء القادم"
+    #   "متأكده؟"     -> "تأكدت لك مرة ثانية، فعلاً ما فيه أي مواعيد"
+    #   "طب الاثنين؟" -> "يبدو أن فيه مشكلة في جلب مواعيد ... ليوم الاثنين"
+    #
+    # Every one of those went unflagged, because the Monday lookups
+    # from three turns earlier still satisfied the bar. The last one
+    # denied the very day it had successfully booked minutes before,
+    # and the middle one claimed to have re-checked when nothing ran.
+    #
+    # "Since the patient's latest message" is the scope the claim
+    # itself has. A correct flow always has a lookup there - it is
+    # where the answer came from - and the correction directive asks
+    # for exactly one tool call, which is a cheap way to be right.
+    start_idx = _latest_human_index(messages)
+    start_idx = start_idx + 1 if start_idx >= 0 else 0
 
     for msg in messages[start_idx:]:
         if getattr(msg, "name", None) in _AVAILABILITY_LOOKUP_TOOLS:
@@ -15026,6 +15257,16 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         _build_requested_time_directive(state["messages"], state.get("session_id"))
         if booking_side else ""
     )
+    # "بكره"/"today"/"بعد بكره" - the day shape the weekday
+    # machinery cannot see. Given to the RESCHEDULE side too: it runs
+    # its own day flow, but the date arithmetic is the same
+    # arithmetic and it got it wrong there as well.
+    relative_date_directive = (
+        _build_relative_date_directive(
+            state["messages"], state.get("session_id"), state.get("templates"),
+        )
+        if agent_name in _NEW_BOOKING_AGENTS + ("reschedule",) else ""
+    )
     # RUNS FOR EVERY SPECIALIST, not just the booking side.
     #
     # The general half of this directive - "they already told you X, do
@@ -15256,7 +15497,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         + identifier_choice_directive
         + symptom_in_booking_directive
         + multi_intent_directive + named_day_directive + day_unavailable_directive
-        + requested_time_directive
+        + requested_time_directive + relative_date_directive
         + show_soonest_directive
         + booking_confirmation_directive + booking_success_directive
         + terminal_success_directive
