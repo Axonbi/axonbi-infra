@@ -211,6 +211,29 @@ _CUES: Dict[str, List[Tuple[int, str]]] = {
         # "أغيره", "ننقله" - all one word, all meaning "move it".
         (6, r"(?:^|\s)\w{0,2}(?:اجل|تاجيل|غير|نقل)\w*(?:ه|ها)(?:\s|$)"),
         (6, r"\bnew\s+(?:time|date|slot)\s+for\s+(?:my|the)\s+(?:booking|appointment)\b"),
+        # THE BARE WORD, WITH NO OBJECT AFTER IT.
+        #
+        # `cancel` has had this since the beginning
+        # ("(?:الغاء|الغي|ابطل)\w*") and `reschedule` did not, so a bare
+        # "تعديل" scored ZERO while a bare "الغاء" scored 6 - even
+        # though the clinic's own service menu offers the two side by
+        # side, in these exact words: "✏️ تعديل أو إلغاء موعد قائم".
+        #
+        # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+        # 201003365691+medtown2, 2026-09-08 08:47): the patient typed
+        # "تعديل". With no cue at all the conversation stayed on the
+        # concierge - which holds every tool but is given none of the
+        # cancel/reschedule flow text - and it asked "هذا هو موعدك
+        # الذي تبغى تلغيه؟", took the patient's "اه" as consent, and
+        # CANCELLED the appointment. The next message was "قولتلك
+        # تعديل".
+        #
+        # Deliberately limited to the words that mean only this:
+        # "تعديل"/"تأجيل"/"اعدل"/"عدل"/"أجل". The bare "غير", "قدم" and
+        # "نقل" are left out on purpose - each is an ordinary Arabic
+        # word ("شيء غير كده", "قدم لي", "نقل الكلام") and would fire on
+        # messages that are not about an appointment at all.
+        (9, r"(?:^|\s)(?:تعديل|التعديل|تاجيل|التاجيل|اعدل|عدل|اجل)\w*(?:\s|$)"),
     ],
 
     "booking": [
@@ -1054,10 +1077,31 @@ def route_turn(messages: List, active_agent: Optional[str] = None) -> Tuple[str,
     if candidate and score >= _SWITCH_THRESHOLD and candidate != active_agent:
         return candidate, f"strong cue for {candidate} (score {score})"
 
-    if active_agent is None:
+    # THE CONCIERGE IS NOT A FLOW, SO THERE IS NOTHING TO INTERRUPT.
+    #
+    # `None` and `CONCIERGE` are the same situation as far as this
+    # decision goes: no specialist has taken the conversation yet. The
+    # weak-cue rule further down exists to stop "متاح إمتى؟" hijacking
+    # a booking already in progress - it was never meant to keep a
+    # message with a real cue sitting on the fallback.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+    # 201003365691+medtown2, 2026-09-08 08:47): "تعديل" after the
+    # greeting stayed on `concierge`, which has every tool and none of
+    # the cancel/reschedule flow text, and it cancelled the
+    # appointment. A bare "الغاء" (score 6) had exactly the same hole:
+    # strong enough to name the right specialist, not strong enough to
+    # get off the concierge, because the concierge counted as an active
+    # flow.
+    if active_agent is None or active_agent == CONCIERGE:
         if candidate and score >= _START_THRESHOLD:
-            return candidate, f"opening cue for {candidate} (score {score})"
-        return CONCIERGE, "no clear intent yet - concierge opens the conversation"
+            return candidate, (
+                f"opening cue for {candidate} (score {score})"
+                if active_agent is None else
+                f"concierge holds no flow - {candidate} takes it (score {score})"
+            )
+        if active_agent is None:
+            return CONCIERGE, "no clear intent yet - concierge opens the conversation"
 
     if _flow_just_completed(messages):
         # The previous flow finished, so nothing is being interrupted -
