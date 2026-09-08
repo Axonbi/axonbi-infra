@@ -14688,6 +14688,199 @@ def _compact_history_for_llm(history: list, full_messages: list) -> list:
     return compacted
 
 
+# ==========================================================
+# THE SAME TOOL CALL, WITH THE SAME ARGUMENTS, FOREVER
+# ==========================================================
+#
+# CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+# 201099530009+medtown2, 2026-09-08 09:05-09:07, three times in two
+# minutes): "مواعيد دكتوره أمنيه". Fourteen model calls, no tool line
+# between any of them, then GraphRecursionError and nothing at all for
+# the patient. The model had reached for `get_doctor_schedule` - whose
+# `ref_number` is a BOOKING reference - passed the doctor's name, got a
+# bare `not_found` back, and tried again. And again.
+#
+# The routing gap and the tool's silence are both fixed at their own
+# source (see agents/router.py's "مواعيد دكتور" cue and
+# tools.get_doctor_schedule's `not_a_booking_reference`), but neither is
+# the general lesson. The general lesson is that NOTHING in this graph
+# ever noticed a repeat: `route_after_agent` asks only "did the model
+# request a tool?", and `recursion_limit` is a ceiling on the damage,
+# not a handler - it raises, and the patient gets the clinic's failure
+# message thirty steps and two minutes later.
+#
+# A tool call that is byte-identical to one already made THIS TURN
+# cannot return anything new. So the second time it is asked for, the
+# model is told exactly that, once, with the answer it already got; and
+# if it asks a third time it is answered in code instead. Worst case is
+# now four model calls and a real reply, rather than thirty steps and
+# an exception.
+#
+# Deliberately per-turn, and deliberately requires EVERY requested call
+# to be a repeat: a legitimate retry after a transient upstream error is
+# a repeat too, and a turn that asks for one repeat alongside a genuinely
+# new call is making progress.
+_TOOL_CALL_REPEAT_CEILING = 2
+
+
+def _tool_call_key(call: dict) -> tuple:
+    """A tool call's identity: its name and its arguments, canonically
+    ordered so key order cannot make two identical calls look
+    different."""
+
+    try:
+        arguments = json.dumps(call.get("args") or {}, sort_keys=True,
+                               ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        arguments = str(call.get("args"))
+
+    return (call.get("name") or "", arguments)
+
+
+def _tool_calls_made_this_turn(messages: list) -> dict:
+    """{tool call key: how many times it was requested} since the
+    patient's latest message."""
+
+    start = _latest_human_index(messages)
+    counts: dict = {}
+
+    for message in (messages[start + 1:] if start >= 0 else messages or []):
+        for call in getattr(message, "tool_calls", None) or []:
+            if not isinstance(call, dict):
+                continue
+            key = _tool_call_key(call)
+            counts[key] = counts.get(key, 0) + 1
+
+    return counts
+
+
+def _result_of_earlier_call(messages: list, name: str) -> str:
+    """The most recent result `name` returned this turn, as text, for
+    quoting back at the model. Truncated - it only has to be
+    recognisable."""
+
+    start = _latest_human_index(messages)
+
+    for message in reversed(messages[start + 1:] if start >= 0 else messages or []):
+        if getattr(message, "name", None) != name:
+            continue
+        content = getattr(message, "content", "")
+        text = content if isinstance(content, str) else str(content)
+        return text[:300]
+
+    return ""
+
+
+def _repeated_tool_calls(response, messages: list) -> list:
+    """The calls `response` is asking for that were ALREADY made this
+    turn with identical arguments - but only when EVERY requested call
+    is such a repeat. Otherwise empty: the turn is still going
+    somewhere."""
+
+    calls = [c for c in (getattr(response, "tool_calls", None) or [])
+             if isinstance(c, dict)]
+    if not calls:
+        return []
+
+    already = _tool_calls_made_this_turn(messages)
+    repeats = [c for c in calls if already.get(_tool_call_key(c))]
+
+    return repeats if len(repeats) == len(calls) else []
+
+
+def _repeated_call_directive(repeats: list, messages: list) -> str:
+    lines = []
+    for call in repeats:
+        name = call.get("name") or "?"
+        try:
+            arguments = json.dumps(call.get("args") or {}, ensure_ascii=False,
+                                   default=str)
+        except (TypeError, ValueError):
+            arguments = str(call.get("args"))
+        earlier = _result_of_earlier_call(messages, name)
+        lines.append(
+            "  - " + name + "(" + arguments + ")\n"
+            "      already returned: " + (earlier or "(see the history above)")
+        )
+
+    return (
+        "============================================================\n"
+        "YOU HAVE ALREADY MADE THIS EXACT CALL THIS TURN\n"
+        "============================================================\n"
+        "These are the calls you are about to make, and the answers they "
+        "already gave you earlier in THIS turn:\n\n"
+        + "\n".join(lines) + "\n\n"
+        "The arguments are identical, so the result will be identical. "
+        "Repeating it cannot move this turn forward.\n\n"
+        "Do ONE of these instead:\n"
+        "  - read the answer above and reply to the patient with what it "
+        "actually says - including when what it says is that you could "
+        "not find something. An honest \"I could not find that, here is "
+        "what I can do\" is a good reply;\n"
+        "  - or call a DIFFERENT tool, or the same tool with genuinely "
+        "different arguments, if one of those answers the question. Check "
+        "the tool's own description first: a status like "
+        "`not_a_booking_reference` is telling you that you are holding "
+        "the wrong end of the tool, and names the one that fits.\n\n"
+        "Do NOT make the call listed above again.\n\n"
+    )
+
+
+def _break_repeated_tool_loop(response, state: AgentState, agent_name: str,
+                              system_message, history: list,
+                              target_language) -> object:
+    """Stops the agent<->tools cycle from spinning on one unchanging
+    call. Returns `response` untouched in the overwhelming majority of
+    turns - see the note above for the one it exists for."""
+
+    messages = state.get("messages") or []
+    repeats = _repeated_tool_calls(response, messages)
+    if not repeats:
+        return response
+
+    already = _tool_calls_made_this_turn(messages)
+    worst = max(already.get(_tool_call_key(call), 0) for call in repeats)
+
+    if worst >= _TOOL_CALL_REPEAT_CEILING:
+        logger.error(
+            "agent[%s]: %s has now been requested with identical arguments %d "
+            "times in one turn (session_id=%s) - answering in code rather than "
+            "letting the graph spin to its recursion limit",
+            agent_name, repeats[0].get("name"), worst + 1,
+            state.get("session_id"),
+        )
+        return AIMessage(content=_soft_recovery_reply(target_language))
+
+    logger.warning(
+        "agent[%s]: %s was already called with these exact arguments this turn "
+        "(session_id=%s) - re-asking once with the answer it already gave",
+        agent_name, repeats[0].get("name"), state.get("session_id"),
+    )
+
+    from langchain_core.messages import SystemMessage as _SystemMessage
+
+    corrected = _SystemMessage(
+        content=_repeated_call_directive(repeats, messages)
+        + str(getattr(system_message, "content", "") or "")
+    )
+
+    retry = _invoke_llm_resilient(
+        _llm_for(agent_name), [corrected] + history,
+        agent_name=agent_name, target_language=target_language,
+        context="repeated tool call",
+    )
+
+    if _repeated_tool_calls(retry, messages):
+        logger.error(
+            "agent[%s]: still asking for the same %s call after being told it "
+            "had already run (session_id=%s) - answering in code",
+            agent_name, repeats[0].get("name"), state.get("session_id"),
+        )
+        return AIMessage(content=_soft_recovery_reply(target_language))
+
+    return retry
+
+
 def _run_agent(state: AgentState, agent_name: str) -> dict:
     """The body every specialist runs. Calls the LLM with that
     specialist's SCOPED system prompt + the full chat history, and
@@ -15213,6 +15406,15 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         response = _invoke_llm_resilient(
             _llm_for(agent_name), [system_message] + history,
             agent_name=agent_name, target_language=target_language, context="main turn",
+        )
+
+        # A CALL IDENTICAL TO ONE ALREADY MADE THIS TURN CANNOT SAY
+        # ANYTHING NEW. See `_break_repeated_tool_loop` - this is the
+        # only thing in the graph that notices, and without it a turn
+        # spins to the recursion limit and the patient gets nothing.
+        response = _break_repeated_tool_loop(
+            response, state, agent_name, system_message, history,
+            target_language,
         )
 
     updates: dict = {}
