@@ -1119,8 +1119,15 @@ def cancel_appointment(
     number). Always call check_booking_status on the same booking
     immediately before this. Returns {"status": "success"},
     {"status": "not_looked_up"} (this booking was never found by a
-    lookup in this conversation - go and find it first), or
-    {"status": "error"}."""
+    lookup in this conversation - go and find it first),
+    {"status": "not_requested"}, or {"status": "error"}.
+
+    "not_requested" means NOTHING THE PATIENT SAID ASKS TO CANCEL.
+    Nothing has been cancelled and nothing is broken. Do NOT tell them
+    an appointment was cancelled, do not retry, and do not describe it
+    as a technical problem. Almost always they asked to RESCHEDULE
+    ("تعديل"/"تأجيل") and the flow drifted into cancelling: go back and
+    ask which of the two they want, or carry on with the reschedule."""
 
     # SERVER-SIDE ENFORCEMENT, NOT JUST A PROMPT RULE - the same
     # reasoning `lookup_appointment` and `create_new_booking` already
@@ -1136,6 +1143,19 @@ def cancel_appointment(
     # up. `_looked_up_booking_ids` records ids as the lookup tools
     # return them, so an id recalled, mistyped or carried over from
     # somewhere else cannot reach the API.
+    # THEY NEVER ASKED FOR THIS. See `_patient_asked_to_cancel` for the
+    # confirmed failure - "تعديل" ended in a cancelled appointment. The
+    # explicit-confirmation rule cannot catch that on its own, because
+    # the question the patient said yes to was the wrong question.
+    if not _patient_asked_to_cancel(state):
+        logger.error(
+            "cancel_appointment: REFUSING to cancel booking_id=%r (session_id=%s) - "
+            "no message the patient sent in this conversation asks to cancel "
+            "anything. They may have asked to RESCHEDULE.",
+            booking_id, state.get("session_id"),
+        )
+        return {"status": "not_requested"}
+
     resolved = _resolve_booking_guid(state, booking_id)
     if resolved["status"] != "resolved":
         logger.warning(
@@ -1551,6 +1571,69 @@ def _booking_was_looked_up(state: AgentState, booking_id: Optional[str]) -> bool
     )
 
 
+# ==========================================================
+# NOBODY CANCELS AN APPOINTMENT THAT WAS NEVER ASKED ABOUT
+# ==========================================================
+#
+# CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+# 201003365691+medtown2, 2026-09-08 08:47): the patient typed "تعديل"
+# - modify - and the appointment was CANCELLED. The routing bug behind
+# it is fixed in `agents/router.py`, but the reason it could reach this
+# far is structural and worth its own gate: `concierge` is bound to
+# EVERY tool (deliberately - see the design notes in agents/registry.py)
+# while being given none of the cancel or reschedule flow text. Asked
+# to handle something it has no script for, it improvised the shape of
+# a cancellation: it showed the booking, asked "هذا هو موعدك الذي تبغى
+# تلغيه؟", read the patient's "اه" as consent, and destroyed the
+# appointment. The next message was "قولتلك تعديل".
+#
+# Cancelling is the only irreversible action in this system. The
+# confirmation it requires is already enforced - but a confirmation is
+# only worth anything if the QUESTION was the right one, and here it
+# was not. So the check that matters is not "did they say yes", it is
+# "did they ever ask for this at all", and that can only be answered
+# from the PATIENT's own words. An assistant-authored question can
+# never establish it: inventing that question is exactly the failure.
+#
+# Deliberately narrow. It asks one thing - does any message the patient
+# sent in this conversation express wanting to cancel - and it says
+# nothing about which booking, or whether they confirmed. Those are
+# still `_resolve_booking_guid`'s and the flow's own business.
+_CANCEL_INTENT_RE = re.compile(
+    # الغاء / إلغاء / ألغي / ألغيه / الغاءه, and ابطال / ابطل / ابطلها.
+    # `\w*` because Arabic attaches the object pronoun to the verb.
+    r"(?:^|\s)(?:الغاء|الغي|الغ|ابطال|ابطل)\w*|"
+    # "مش عايز الحجز ده" / "ما ابغى الموعد" - refusing the appointment
+    # itself, which is a cancellation in every way but the word.
+    r"(?:مش|ما|لا)\s*(?:عايز|عاوز|عايزه|عاوزه|ابغى|ابغي|ابي|اريد|محتاج|محتاجه)"
+    r"[^.\n]{0,15}(?:ال)?(?:حجز|موعد|معاد|ميعاد)|"
+    # Not coming - the commonest way patients say it without the word.
+    r"(?:مش\s*(?:هقدر|حقدر|راح\s*اقدر)\s*(?:اجي|احضر)|ما\s*اقدر\s*اجي|لن\s*احضر|مش\s*جاي)|"
+    r"\bcancel\w*\b|\bcall\s*off\b|"
+    r"\b(?:delete|remove|drop)\b[^.\n]{0,20}\b(?:booking|appointment|reservation)\b|"
+    r"\b(?:can(?:\'|\u2019)?t|cannot|won(?:\'|\u2019)?t)\s+(?:make|come|attend)\b"
+)
+
+
+def _patient_asked_to_cancel(state: AgentState) -> bool:
+    """True when a message the PATIENT sent in this conversation asks to
+    cancel an appointment.
+
+    Reads only HumanMessages, on purpose: what the assistant asked
+    cannot establish this - see the incident note above, where the
+    assistant's own invented question was the whole problem."""
+
+    for msg in state.get("messages") or []:
+        if getattr(msg, "type", None) != "human":
+            continue
+        content = getattr(msg, "content", "")
+        text = content if isinstance(content, str) else str(content)
+        if _CANCEL_INTENT_RE.search(_normalize_arabic(text)):
+            return True
+
+    return False
+
+
 def _resolve_booking_guid(state: AgentState, value: Optional[str]) -> dict:
     """Turn whatever was passed as a booking id into the REAL internal
     id of a booking this conversation actually looked up.
@@ -1915,8 +1998,8 @@ _PERIOD_WORDS_AM = (
     "am", "a.m", "morning",
 )
 _PERIOD_WORDS_PM = (
-    "مساء", "مساءً", "مسا", "المسا", "بالليل", "ليلا", "ليلًا", "الليل",
-    "العصر", "عصرا", "عصرًا", "بعد الضهر", "بعد الظهر", "م",
+    "مساء", "مساءً", "مسا", "المسا", "بالليل", "ليلا", "ليلًا", "الليل", "ليل",
+    "العصر", "عصرا", "عصرًا", "عصر", "بعد الضهر", "بعد الظهر", "م",
     "pm", "p.m", "evening", "afternoon", "night",
 )
 _PERIOD_WORDS_NOON = ("ظهرا", "ظهرًا", "الظهر", "ضهرا", "الضهر", "noon", "midday")
