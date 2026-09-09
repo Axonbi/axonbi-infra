@@ -186,20 +186,51 @@ def _client_default_country_code(state=None) -> str:
     with a leading 0, or with no country code at all), for this client.
 
     Resolution order:
-      1. The client's own `timezone` column, mapped through
-         _TIMEZONE_COUNTRY_CODES - this is the clinic's actual country.
-      2. `phone_example`'s FIRST fully-written number, if the timezone
+      1. THE PATIENT'S OWN CHANNEL NUMBER. Someone typing a number with
+         no country code is typing one from the country they are
+         messaging from - that is a far better prior than where the
+         clinic happens to be, and unlike the clinic's config it cannot
+         be missing or stale on a live conversation.
+      2. The client's own `timezone` column, mapped through
+         _TIMEZONE_COUNTRY_CODES - the clinic's actual country.
+      3. `phone_example`'s FIRST fully-written number, if the timezone
          is one this map doesn't know - a clinic that writes
          "+201155611045" as its example is telling us plainly which
          country its patients type local numbers for.
-      3. DEFAULT_COUNTRY_CODE.
+      4. DEFAULT_COUNTRY_CODE.
 
-    `country_codes_hint` is deliberately NOT consulted: it lists the
-    codes this clinic ACCEPTS, not the country it is in - see the
-    comment above _TIMEZONE_COUNTRY_CODES.
+    WHY (1) HAD TO GO IN FRONT. Steps 2-4 are all clinic config, and
+    every one of them can silently produce the wrong country:
+    `config.get_messages` falls back to `DEFAULT_TIMEZONE`, which is
+    "Asia/Riyadh", whenever a tenant row arrives without a `timezone` -
+    so an unset column turns every Egyptian patient into a Saudi one
+    with no error anywhere.
+
+    CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+    201003365691+medtown2, 2026-09-09 12:15:44): the patient was
+    messaging from +201003365691, typed "01155611045", and
+    `compare_phone` logged normalized='+9661155611045'. The OTP was
+    sent to a Saudi number that is not theirs; when they then typed the
+    correct "+201155611045" it no longer matched what the flow was
+    waiting for, and the booking could not continue. This is the second
+    time this exact number has been mis-normalised this way - see the
+    `country_codes_hint` note above _TIMEZONE_COUNTRY_CODES for the
+    first.
+
+    `country_codes_hint` is still deliberately NOT consulted: it lists
+    the codes this clinic ACCEPTS, not the country it is in.
     """
 
     templates = (state or {}).get("templates") or {}
+
+    # The number the patient is messaging FROM, which is E.164 without
+    # its "+" ("201003365691"). Longest code first so "20" cannot win
+    # over a longer code that starts with it.
+    channel = re.sub(r"[^\d]", "", str((state or {}).get("channel_phone") or ""))
+    if channel:
+        for code in sorted(_KNOWN_COUNTRY_CODES, key=len, reverse=True):
+            if channel.startswith(code) and len(channel) >= len(code) + 8:
+                return code
 
     timezone_name = str(templates.get("_timezone") or "").strip().lower()
     code = _TIMEZONE_COUNTRY_CODES.get(timezone_name)
@@ -1800,6 +1831,44 @@ def _booking_phone(state: AgentState) -> Optional[str]:
     if not session_id:
         return None
     return (_BOOKING_SESSIONS.get(session_id) or {}).get("booking_phone")
+
+
+def _selected_slot(state: AgentState) -> Optional[dict]:
+    """The slot `select_appointment_slot` locked for this booking, or None.
+
+    The counterpart of `_booking_phone`: the session's record of what the
+    patient actually chose, written only by the tool that establishes
+    it."""
+
+    session_id = state.get("session_id")
+    if not session_id:
+        return None
+    slot = (_BOOKING_SESSIONS.get(session_id) or {}).get("selected_slot")
+    return slot if isinstance(slot, dict) else None
+
+
+def _same_instant(left: Optional[str], right: Optional[str]) -> bool:
+    """Do two slot timestamps name the same moment?
+
+    Compared as instants, not strings, so "2026-09-14T07:24:00" and
+    "2026-09-14T07:24:00+00:00" are equal. A naive value is UTC - that is
+    what the wire format is (see `to_clinic_local`). Unparsable on either
+    side returns False, which makes the caller prefer the session's own
+    value."""
+
+    def instant(raw):
+        if not raw:
+            return None
+        try:
+            parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+
+    a, b = instant(left), instant(right)
+    return a is not None and b is not None and a == b
 
 
 def _phone_is_verified(state: AgentState, phone: Optional[str]) -> bool:
@@ -7094,6 +7163,57 @@ def get_doctor_fees(state: Annotated[AgentState, InjectedState]) -> dict:
     return {"status": "found", "fees": fees}
 
 
+# A phone number shared by a family genuinely has several patients on
+# it. Twenty-one is not a family - it is one clinic record set with the
+# same people entered repeatedly.
+_PATIENT_CHOICE_LIMIT = 8
+
+
+def _patient_choices(items: list) -> dict:
+    """The registered names under one phone, de-duplicated and capped.
+
+    WHY BOTH. `get_patient_info` returned every row the API gave it, in
+    order, with no de-duplication and no ceiling.
+
+    CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+    201003365691+medtown2, 2026-09-09 12:01:58, and again at 12:04:36
+    because the booking then failed): the patient was asked to pick
+    their own name from TWENTY-ONE options, of which "hanine aymen"
+    appeared three times, "حنين ايمن محمد سرى ابراهيم" twice, and
+    "حنين أيمن"/"حنين ايمن" are the same string once Arabic
+    orthography is normalised. Nobody picks a name out of that.
+
+    DE-DUPLICATION IS EXACT-ON-NORMALISED-NAME ONLY, deliberately.
+    Collapsing "حنين ايمن" into "حنين ايمن محمد سرى ابراهيم" would be
+    guessing that a mother and daughter are one person, and each row
+    carries its own email that the booking may use - so only rows whose
+    names are the SAME name are merged, keeping the first occurrence.
+
+    `total` and `truncated` are returned so the reply can be honest
+    about a list it did not show in full."""
+
+    seen = set()
+    unique = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        name = (item.get("patientFullName") or "").strip()
+        if not name:
+            continue
+        key = " ".join(_normalize_arabic(name).split())
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append({"patientFullName": name, "email": item.get("email")})
+
+    shown = unique[:_PATIENT_CHOICE_LIMIT]
+    return {
+        "patients": shown,
+        "total": len(unique),
+        "truncated": len(unique) > len(shown),
+    }
+
+
 @tool
 def get_patient_info(state: Annotated[AgentState, InjectedState], mobile_number: str) -> dict:
     """Look up whether a patient is already registered by phone number,
@@ -7102,7 +7222,13 @@ def get_patient_info(state: Annotated[AgentState, InjectedState], mobile_number:
     {"status": "found", "patientFullName": ..., "mobileNumber": ..., "email": ...}
         # exactly ONE patient is registered under this number - use
         # their name (and email, if present) directly, don't re-ask.
-    {"status": "found_multiple", "patients": [{"patientFullName": ..., "email": ...}, ...]}
+    {"status": "found_multiple", "patients": [{"patientFullName": ..., "email": ...}, ...],
+     "total": N, "truncated": true/false}
+        # Several people are registered on this number, already
+        # de-duplicated. Show `patients` numbered and ask which one.
+        # When `truncated` is true there are more than you were given
+        # (`total` says how many): say so plainly and ask them to TYPE
+        # the name instead of offering a list nobody can pick from.
         # MORE THAN ONE patient is registered under this number (a
         # shared family phone is common). Show each name as a short
         # numbered list and ask which one this booking is for - or
@@ -7183,13 +7309,7 @@ def get_patient_info(state: Annotated[AgentState, InjectedState], mobile_number:
     if len(items) > 1:
         return {
             "status": "found_multiple",
-            "patients": [
-                {
-                    "patientFullName": i.get("patientFullName"),
-                    "email": i.get("email"),
-                }
-                for i in items
-            ],
+            **_patient_choices(items),
         }
 
     item = items[0]
@@ -8346,6 +8466,44 @@ def create_new_booking(
         return {"status": "missing_doctor"}
     if not branch_id:
         return {"status": "missing_branch"}
+
+    # THE SLOT THE PATIENT CHOSE WINS OVER THE ONE THE MODEL PASSED.
+    #
+    # Exactly the same reasoning as the `booking_phone` override below,
+    # and the same shape. `select_appointment_slot` already says it is
+    # "the one place the rest of the booking flow reads the chosen time
+    # from - never the model's own recollection of the conversation" -
+    # but nothing here read it, so this tool was the one step of the
+    # flow still trusting the model's recollection.
+    #
+    # WHY THAT IS NOT A SMALL THING. The wire value is UTC and the reply
+    # shows clinic-local (+3), so the model has both numbers in front of
+    # it and only one of them is bookable. Getting it wrong does not
+    # fail loudly: the re-verification finds no matching slot and
+    # returns `slot_unavailable`, which the patient is told means their
+    # appointment was taken.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+    # 201003365691+medtown2, 2026-09-09 12:02:16 and again 12:04:47):
+    # `select_appointment_slot` logged "locked in
+    # slotStart=2026-09-14T07:24:00 (14/09/2026 10:24 صباحًا)", and
+    # `create_new_booking` was called with
+    # requested_slot_start=2026-09-14T10:24:00. The availability call
+    # returned that very slot as "2026-09-14T07:24:00+00:00". The
+    # patient was told 10:24 was no longer available, picked it again,
+    # and was told the same thing. The booking never completed.
+    locked_slot = _selected_slot(state)
+    if locked_slot and locked_slot.get("slotStart"):
+        if not _same_instant(slot_start, locked_slot.get("slotStart")):
+            logger.warning(
+                "create_new_booking: slot_start=%r is not the slot this session "
+                "locked in (%s) - booking the patient's own choice instead "
+                "(session_id=%s)",
+                slot_start, locked_slot.get("slotStart"), session_id,
+            )
+            slot_start = locked_slot["slotStart"]
+            if locked_slot.get("slotEnd"):
+                slot_end = locked_slot["slotEnd"]
 
     # SERVER-SIDE ENFORCEMENT, NOT JUST A PROMPT RULE. STEP NB6 already
     # instructs asking for the patient's full name (at least two parts)
