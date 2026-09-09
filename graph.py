@@ -6115,6 +6115,38 @@ def _find_invented_doctors(reply_text: str, state: AgentState) -> list:
     if not _DOCTOR_LIST_CUE_RE.search(reply_text):
         return []
 
+    # A REPLY ASKING WHICH BRANCH IS LISTING BRANCHES, WHATEVER ELSE IT
+    # MENTIONS.
+    #
+    # The gate above only asks whether the reply talks about doctors
+    # ANYWHERE - and "في أي فرع تفضل تحجز موعدك عند د. طه مبروك؟" does,
+    # in its question. The numbered entries under it are branches, and
+    # this function only ever looks at numbered entries (see the
+    # docstring), so every one of them gets measured against the doctor
+    # roster and an unknown branch is reported as an invented doctor.
+    #
+    # THIS IS THE THIRD TIME A BRANCH LIST HAS BEEN REJECTED AS AN
+    # INVENTED DOCTOR ROSTER. The two disambiguators below - an
+    # "العنوان" label, and a digits-plus-comma address shape - were both
+    # added for the earlier two (see their comments). Neither covers a
+    # branch list with no address at all.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+    # 201003365691+medtown2, 2026-09-09 12:12:41): after `medical`
+    # offered to book with د. طه مبروك and the patient answered
+    # "ياريت", the draft was "في أي فرع تفضل تحجز موعدك عند د. طه
+    # مبروك؟ / 1️⃣ الشيخ زايد / 2️⃣ فرع آخر". It was rejected here twice
+    # and the patient - who had just said yes - received "ممكن توضحلي
+    # طلبك تاني؟".
+    #
+    # `_find_invented_branches` runs on the same reply and owns this
+    # case properly: it gates on "فرع", it compares against the branch
+    # set, and its correction directive talks about branches, so the
+    # model can act on it. ("فرع آخر" is not a real branch and SHOULD be
+    # rejected - just as a branch, by the guard that can say so.)
+    if _GENERIC_BRANCH_QUESTION_RE.search(_norm_ar(reply_text)):
+        return []
+
     known = _doctor_names_from_tools(state)
 
     # NOTE: `known` being empty is deliberately NOT treated as "nothing
