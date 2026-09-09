@@ -568,6 +568,59 @@ DETERMINISTIC_TURNS: frozenset = _turn_families(os.getenv("DETERMINISTIC_TURNS",
 # staged rollout.
 JIT_FLOW_STEPS: bool = _flag("JIT_FLOW_STEPS", False)
 
+# ASK A CHEAP MODEL WHETHER THE FLAGGED STRING IS EVEN A NAME.
+#
+# `graph._find_invented_branches` decides two different things at once,
+# and it is only competent at one of them:
+#
+#   1. PROVENANCE - "did any tool in this conversation return this
+#      name?"  A string comparison against a closed set. Exact, free,
+#      and the whole reason the guard exists.
+#   2. LANGUAGE - "is this span a branch NAME, or a pronoun that
+#      happens to follow the word فرع?"  Done today by walking words
+#      until one of them appears in `_NOT_A_BRANCH_NAME`, which is a
+#      BLOCKLIST OVER ARABIC. Any word not on the list becomes a branch
+#      name.
+#
+# A blocklist has to be complete to work, and a blocklist over a natural
+# language never is. CONFIRMED REAL PRODUCTION FAILURES (medtown,
+# session 201003365691+medtown2, 2026-09-09) - all three with perfectly
+# correct branch data, the closing sentence being the only variable:
+#
+#   14:40:20  the six REAL branches rejected over "منهم", out of
+#             "تحب تعرف عن خدمات أي فرع منهم؟"
+#   14:41:05  the IDENTICAL list passed, because that reply happened to
+#             close "أحد الفروع؟" - a question mark right after the word
+#   14:53:21  a reply naming NO branch at all rejected over "له بعد"
+#
+# The patient asked for the branch list three times and was told
+# "ممكن توضحلي طلبك تاني؟" twice. Stop-words for those particular words
+# are deployed and they fix those three turns - but the next dialect,
+# the next phrasing, the next pronoun is the same bug again.
+#
+# So: THE CODE KEEPS PROVENANCE, THE MODEL GETS THE LANGUAGE. The regex
+# stays exactly as it is and remains the pre-filter; when it flags
+# something, `OPENAI_MODEL_CHEAP` is asked the one question a regex
+# cannot answer - is this string used as a name in this sentence?
+#
+# WHAT IT COSTS. Nothing at all on a reply the regex does not flag,
+# which is almost all of them - the call happens only on a suspected
+# name, memoised per (reply, candidates) so the verifier table's
+# repeated calls in one turn cost one request. Over the whole 9 Sep log
+# it would have run four times.
+#
+# WHY IT IS SAFE. The verdict can only REMOVE a flag, never add one:
+# the result is intersected with what the regex already found. A wrong
+# answer therefore costs a missed invented branch - the lenient
+# direction this guard has always chosen deliberately - and never a
+# correct reply blocked, which is today's failure. An API error, a
+# timeout or an unparseable answer keeps the regex's verdict, so a
+# broken model is exactly today's behaviour and no worse.
+#
+# OFF BY DEFAULT because it adds a model call to a hot path, and the
+# stop-words already cover every failure actually observed.
+BRANCH_NAME_ADJUDICATOR: bool = _flag("BRANCH_NAME_ADJUDICATOR", False)
+
 # Does the `concierge` fallback carry EVERY flow section, or only the
 # ones it can act on this turn?
 #
@@ -613,6 +666,17 @@ ROUTER_MODE: str = os.getenv("ROUTER_MODE", "deterministic").strip().lower()
 ROUTER_LLM_TIMEOUT_SECONDS: float = float(
     os.getenv("ROUTER_LLM_TIMEOUT_SECONDS", "8")
 )
+
+# WHICH MODEL CLASSIFIES ONE MESSAGE INTO ONE WORD.
+#
+# The router picks one of seven agent names. There is no prose to write,
+# no tool to choose and no judgement to defend - the cheap model does
+# this as well as the primary one, and this call sits BEFORE the turn's
+# real work, so it is the one call whose latency the patient feels
+# directly on top of everything else.
+#
+# Set OPENAI_MODEL_ROUTER=gpt-4.1 to put it back on the primary model.
+OPENAI_MODEL_ROUTER: str = os.getenv("OPENAI_MODEL_ROUTER", OPENAI_MODEL_CHEAP)
 
 # The reply normalizer (agents/response_contract.py) that guarantees
 # every agent's output has identical shape. False -> only the two
