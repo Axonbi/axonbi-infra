@@ -44,6 +44,7 @@ import re
 import uuid
 import ast
 from datetime import date, datetime
+from functools import lru_cache
 from typing import Dict, Optional
 
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage, trim_messages
@@ -104,7 +105,7 @@ _llm_with_tools = _llm.bind_tools(tools.ALL_TOOLS)
 # unavailable costs nothing; a router that blocks the turn costs the
 # conversation.
 _router_llm = ChatOpenAI(
-    model=config.OPENAI_MODEL,
+    model=config.OPENAI_MODEL_ROUTER,
     api_key=config.OPENAI_API_KEY or "sk-not-configured",
     timeout=config.ROUTER_LLM_TIMEOUT_SECONDS,
     temperature=0,
@@ -6394,6 +6395,128 @@ _INVENTED_DOCTORS_CORRECTION_DIRECTIVE = (
 )
 
 
+_BRANCH_ADJUDICATOR_QUESTION = (
+    "You are checking one Arabic sentence written by a clinic booking "
+    "assistant.\n\n"
+    "A regular expression pulled the CANDIDATES below out of that "
+    "sentence as possible BRANCH NAMES - a branch being a physical "
+    "clinic location, like \"الدقي\" or \"الشيخ زايد\". It works by "
+    "taking whatever follows the word \"فرع\", so it has no way to "
+    "tell a name from any other word that can follow it.\n\n"
+    "For each candidate decide ONE thing: in THIS sentence, is it used "
+    "as the NAME of a branch, or is it something else - a pronoun, a "
+    "preposition, an adverb, a question word, or ordinary words that "
+    "merely come after \"فرع\"?\n\n"
+    "NOT names:\n"
+    "  \"منهم\"    in \"تحب تعرف عن خدمات أي فرع منهم؟\"  "
+    "- a pronoun\n"
+    "  \"له بعد\"  in \"ما تم تأكيد فرع له بعد\"  - a preposition "
+    "and an adverb\n"
+    "A name:\n"
+    "  \"النيل\"    in \"متاح في فرع النيل\"\n\n"
+    "You are NOT being asked whether the branch exists, whether it is "
+    "correct, or anything about the clinic. Only whether the string is "
+    "being used as a name.\n\n"
+    "Answer with a JSON array containing ONLY the candidates that "
+    "really are branch names, copied exactly. No other text. An empty "
+    "array is a valid and common answer.\n\n"
+    "SENTENCE:\n{reply}\n\n"
+    "CANDIDATES: {names}\n"
+)
+
+
+@lru_cache(maxsize=256)
+def _branch_names_confirmed(reply_text: str, candidates: tuple) -> tuple:
+    """The candidates a cheap model agrees are actually used as branch
+    NAMES in `reply_text`. See `config.BRANCH_NAME_ADJUDICATOR` for why
+    this exists and what it costs.
+
+    THE ANSWER IS INTERSECTED WITH WHAT WAS PASSED IN, so this can only
+    ever narrow the regex's verdict. That is the property that makes it
+    safe to put a model in the middle of a guard: the worst a wrong
+    answer can do is let an invented branch through - the direction this
+    check has always erred in on purpose, because `_known_branch_text`'s
+    own docstring says a false accusation is worse than a missed one -
+    and it can never block a correct reply, which is the failure it is
+    here to stop.
+
+    ANY FAILURE KEEPS THE REGEX'S VERDICT. A timeout, a refusal, prose
+    instead of JSON, a model that cannot be created - all return
+    `candidates` untouched, which is byte-for-byte today's behaviour. A
+    broken adjudicator is therefore never worse than not having one.
+
+    MEMOISED, AND THAT IS NOT AN OPTIMISATION. The verifier table calls
+    `_find_invented_branches` twice per firing - once for the check,
+    once to format the correction with the names - and the retry pass
+    calls it again. Without the cache one flagged reply would be three
+    or more requests."""
+
+    if not candidates:
+        return candidates
+
+    from langchain_core.messages import HumanMessage as _HumanMessage
+
+    question = _BRANCH_ADJUDICATOR_QUESTION.format(
+        reply=reply_text,
+        names=json.dumps(list(candidates), ensure_ascii=False),
+    )
+
+    try:
+        answer = _llm_for_model(config.OPENAI_MODEL_CHEAP).invoke(
+            [_HumanMessage(content=question)]
+        )
+        raw = (getattr(answer, "content", "") or "").strip()
+    except Exception:
+        logger.warning(
+            "branch adjudicator: the call failed for %s - keeping the regex's "
+            "verdict", list(candidates), exc_info=True,
+        )
+        return candidates
+
+    # THE WHOLE ANSWER MUST BE THE ARRAY, NOT MERELY CONTAIN ONE.
+    # Searching out the first `[...]` span reads the empty array inside
+    # `{"names": []}` as "none of these are names" and clears EVERY
+    # flag - so a model that answered in the wrong shape would be the
+    # thing that decided the guard has nothing to report. Wrong shape
+    # means no opinion, which means the regex stands. (Found by test 29
+    # in test_production_bugs_20260909.py, which is why it is there.)
+    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.S).strip()
+
+    if not (raw.startswith("[") and raw.endswith("]")):
+        logger.warning(
+            "branch adjudicator: the answer is not a JSON array (%r) - keeping "
+            "the regex's verdict for %s", raw[:200], list(candidates),
+        )
+        return candidates
+
+    try:
+        verdict = json.loads(raw)
+    except ValueError:
+        logger.warning(
+            "branch adjudicator: unparseable array %r - keeping the regex's "
+            "verdict for %s", raw[:200], list(candidates),
+        )
+        return candidates
+
+    if not isinstance(verdict, list):
+        return candidates
+
+    kept = {_norm_ar(v) for v in verdict if isinstance(v, str)}
+    confirmed = tuple(
+        name for name in candidates if _norm_ar(name) in kept
+    )
+
+    if confirmed != candidates:
+        logger.info(
+            "branch adjudicator: %s %s not used as branch name(s) in this "
+            "sentence - dropping from the invented-branch verdict",
+            [n for n in candidates if n not in confirmed],
+            "is" if len(candidates) - len(confirmed) == 1 else "are",
+        )
+
+    return confirmed
+
+
 def _find_invented_branches(reply_text: str, state: AgentState) -> list:
     """Branch names the reply mentions that this conversation was never
     actually given. Empty list means nothing to flag."""
@@ -6467,6 +6590,14 @@ def _find_invented_branches(reply_text: str, state: AgentState) -> list:
             continue
         if name not in invented:
             invented.append(name)
+
+    # THE REGEX HAS DONE THE PART IT IS GOOD AT. Everything above is
+    # provenance - a string compared against the closed set of names
+    # this conversation was actually given. What is left is a question
+    # about Arabic, and `_NOT_A_BRANCH_NAME` answers it with a blocklist
+    # that can never be complete. Hand that one question to a model.
+    if invented and config.BRANCH_NAME_ADJUDICATOR:
+        invented = list(_branch_names_confirmed(reply_text, tuple(invented)))
 
     return invented
 
