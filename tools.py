@@ -1871,6 +1871,62 @@ def _same_instant(left: Optional[str], right: Optional[str]) -> bool:
     return a is not None and b is not None and a == b
 
 
+def _reschedule_slot_from_remembered(state: AgentState,
+                                     passed_start: Optional[str]) -> Optional[dict]:
+    """The remembered reschedule slot that `passed_start` refers to, or
+    None when it refers to none of them.
+
+    WHY A LOOKUP AND NOT TRUST. `get_available_reschedule_slots` returns
+    TWO times per slot: `slotStart`, which is the value the booking API
+    must be sent (see the comment there - "byte for byte what this flow
+    has always passed back"), and `time_display`, which is the same
+    instant on the clinic's clock, three hours later, and the only one
+    the patient ever sees. The model has both in front of it and only
+    one of them is correct to send.
+
+    CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+    201003365691+medtown2, 2026-09-09 14:32:35):
+
+        14:31:37  the list showed  7️⃣ 11:12 صباحًا
+        14:32:12  the patient answered "7"
+        14:32:35  PUT /GuestBookings/Update
+                  {'fromBookingTime': '2026-09-22T11:12:00',
+                   'toBookingTime':   '2026-09-22T11:48:00'}
+
+    The slot's own `slotStart` was 08:12. The appointment was moved to
+    14:12 real time - three hours after the time she picked - and the
+    end time was 36 minutes long where the slots are 12. The reply that
+    then correctly read the stored time back as "2:12 مساءً" was
+    rejected by a verifier as a fabricated appointment, so she was told
+    the reschedule had FAILED while it had in fact succeeded at the
+    wrong time. It happened again at 14:34:00.
+
+    MATCHES EITHER TIME, DELIBERATELY. A model that passes the correct
+    `slotStart` is recognised, and so is one that passes the display
+    value - which is the whole failure. Compared as instants so
+    "08:12:00" and "08:12:00+00:00" are one slot."""
+
+    if not passed_start:
+        return None
+
+    session_id = state.get("session_id")
+    if not session_id:
+        return None
+
+    last = (_BOOKING_SESSIONS.get(session_id) or {}).get("last_list") or {}
+    if last.get("entity_type") != "slot":
+        return None
+
+    for slot in last.get("items") or []:
+        if not isinstance(slot, dict):
+            continue
+        if (_same_instant(passed_start, slot.get("slotStart"))
+                or _same_instant(passed_start, slot.get("_localStart"))):
+            return slot
+
+    return None
+
+
 def _phone_is_verified(state: AgentState, phone: Optional[str]) -> bool:
     """True when `phone` is either this conversation's own verified
     channel identity, or has been proven via `_mark_phone_verified`
@@ -1953,6 +2009,81 @@ def _remember_specialty_ids(session: dict, specialty_ids: Optional[list]) -> Non
     session["specialty_ids"] = merged
 
 
+def _retire_doctor_absent_from_roster(session: dict, entity_type: str,
+                                      items: list) -> None:
+    """A newly shown doctor roster retires a confirmed doctor who is not
+    in it.
+
+    THE MIRROR OF `_retire_previous_doctors_branch`. That one says a new
+    DOCTOR retires the branch chosen for the old one. This one says a
+    new ROSTER retires the doctor chosen from an older one - because the
+    patient is about to pick from the list in front of them, and
+    whatever was confirmed before is not what they are answering.
+
+    WHY IT HAS TO BE HERE. `find_available_doctors` shows a roster and
+    remembers it, but it never touched `doctor_id` - correctly, since
+    showing a list is not choosing from one. So `doctor_id` kept
+    whatever an EARLIER, unrelated part of the conversation had
+    confirmed, and any tool reading it from the session got that instead
+    of the person the patient just picked.
+
+    CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+    201003365691+medtown2, 2026-09-09 12:26):
+
+        12:13:27  get_doctor_schedule_for_booking: doctor_id=4f6125f6...
+                  (د. طه مبروك, and his branch auto-confirmed)
+        12:26:07  find_available_doctors -> 1 doctor
+                  _remember_list: entity_type=doctor count=1
+        12:26:10  "الدكاترة المتاحين في تخصص طب الأمراض الجلدية:
+                   1️⃣ استشارى امنية مغربي"
+        12:26:18  the patient answered "1"
+        12:26:20  get_doctor_schedule_for_booking: doctor_id=4f6125f6...
+        12:26:23  "مواعيد الدكتور طه مبروك في فرع الشيخ زايد"
+
+    She picked position 1 out of a ONE-ITEM list and was given a
+    dermatology appointment search against an internal-medicine doctor
+    from thirteen minutes earlier. Two turns later the flow swapped to a
+    third doctor id, and the patient - not any guard - was the one who
+    noticed: "مش كان طه مبروك؟".
+
+    ONLY WHEN THE CONFIRMED DOCTOR IS ABSENT FROM THE NEW LIST. Showing
+    a roster that still contains them changes nothing about their
+    choice, so re-showing the same list must not disturb a booking in
+    progress."""
+
+    if entity_type != "doctor":
+        return
+
+    confirmed = session.get("doctor_id")
+    if not confirmed:
+        return
+
+    roster_ids = {
+        str(item.get("id")) for item in (items or [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    if not roster_ids or str(confirmed) in roster_ids:
+        return
+
+    logger.warning(
+        "_remember_list: a doctor roster was shown that does not include the "
+        "confirmed doctor_id=%s - retiring that choice (and its branch, "
+        "service and slot) so the patient's pick from THIS list decides. "
+        "Roster: %s",
+        confirmed, sorted(roster_ids),
+    )
+
+    session["doctor_id"] = None
+    session["doctor_display_name"] = None
+    session["branch_id"] = None
+    session["branch_display_name"] = None
+    session["branch_auto_resolved"] = False
+    session["service_id"] = None
+    session["service_display_name"] = None
+    session["selected_slot"] = None
+    session["slots_shown"] = False
+
+
 def _remember_list(state: AgentState, entity_type: str, items: list) -> None:
     """Record the list of doctors/branches just returned to the model, so
     a later bare-number reply can be resolved against the SAME ordering
@@ -1990,6 +2121,23 @@ def _remember_list(state: AgentState, entity_type: str, items: list) -> None:
         return
 
     session = _get_booking_session(session_id)
+
+    # BEFORE the new list replaces the old one: a roster that does not
+    # contain the confirmed doctor retires that choice. Done here rather
+    # than at each caller because `find_available_doctors` alone has
+    # three exits that show a roster, and a fourth added later would
+    # otherwise reintroduce the bug. See
+    # `_retire_doctor_absent_from_roster`.
+    _retire_doctor_absent_from_roster(session, entity_type, items)
+
+    # NORMALISED ONCE, HERE. A tool result arriving as None (an API
+    # shape change, an empty response body) used to raise TypeError on
+    # `list(items)` and take the patient's whole turn with it, and the
+    # loop and the log line below would each have done the same.
+    # Remembering an empty list is the correct reading of "nothing was
+    # shown".
+    items = list(items or [])
+
     session["last_list"] = {"entity_type": entity_type, "items": list(items)}
 
     if entity_type in ("branch", "doctor"):
@@ -4660,6 +4808,15 @@ def get_available_reschedule_slots(
         )
         slots = slots[:MAX_SLOTS_TO_SHOW]
 
+    # REMEMBERED, LIKE EVERY OTHER LIST THIS PROJECT SHOWS.
+    #
+    # `get_available_slots_for_booking` has recorded its slot list since
+    # the "picked slot 2 and was asked for the time again" failure; this
+    # one never did, so a bare "7" had nothing to resolve against and
+    # `reschedule_appointment` had nothing to check the model's own
+    # `new_time_from` against. See `_reschedule_slot_from_remembered`.
+    _remember_list(state, "slot", slots)
+
     return {"status": "found", "slots": slots}
 
 
@@ -4713,6 +4870,37 @@ def reschedule_appointment(
         return {"status": "not_looked_up"}
 
     booking_id = resolved["booking_id"]
+
+    # THE SLOT THE PATIENT PICKED WINS OVER THE ONE THE MODEL TYPED.
+    #
+    # The same rule `create_new_booking` applies to `slot_start`, for
+    # the same reason and with the same consequence when it is missing -
+    # except that here the wrong value is not refused by a
+    # re-verification, it is WRITTEN. See
+    # `_reschedule_slot_from_remembered` for the production trace.
+    remembered = _reschedule_slot_from_remembered(state, new_time_from)
+    if remembered and remembered.get("slotStart"):
+        if not _same_instant(new_time_from, remembered.get("slotStart")):
+            logger.warning(
+                "reschedule_appointment: new_time_from=%r is that slot's DISPLAY "
+                "time, not the value the booking API takes (%s) - writing the "
+                "slot the patient actually picked (session_id=%s)",
+                new_time_from, remembered.get("slotStart"), state.get("session_id"),
+            )
+        new_time_from = remembered["slotStart"]
+        if remembered.get("slotEnd"):
+            new_time_to = remembered["slotEnd"]
+    elif new_time_from:
+        # Nothing to check against - either no list was shown this
+        # conversation or the model named a time that is in none of it.
+        # Say so; do NOT block, because a legitimate reschedule can
+        # reach here (a slot list from a tool this flow did not remember,
+        # a resumed thread) and refusing would be a new way to fail.
+        logger.warning(
+            "reschedule_appointment: new_time_from=%r matches no slot this "
+            "conversation showed - writing it as given (session_id=%s)",
+            new_time_from, state.get("session_id"),
+        )
 
     result = api.reschedule_booking(base_url, booking_id, new_time_from, new_time_to)
 
