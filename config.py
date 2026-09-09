@@ -342,6 +342,76 @@ MAX_HISTORY_MESSAGES: int = int(os.getenv("MAX_HISTORY_MESSAGES", "40"))
 
 OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4.1")  # upgraded from gpt-4.1-mini for better dialect/persona instruction-following
+
+# A MODEL PER ROLE, NOT ONE MODEL FOR EVERYTHING.
+#
+# `OPENAI_MODEL` above is the capable model, and it was answering every
+# call in the system: composing a booking reply, giving medical
+# guidance, reproducing an authored template, and emitting a single
+# forced tool call. The last two do not need it.
+#
+# WHAT KEEPS THE CAPABLE MODEL, AND WHY:
+#   booking, medical  - the two flows that reason. Booking carries the
+#                       longest state-dependent flow in the project;
+#                       medical guidance is the one place a wrong
+#                       answer can send a patient to the wrong doctor.
+#   cancel,
+#   reschedule        - they DESTROY or MOVE a real appointment. The
+#                       saving on two short flows is not worth a
+#                       cheaper model on the irreversible ones.
+#   concierge         - the router's fallback for anything it could not
+#                       classify, which is exactly where the least
+#                       predictable messages land.
+#
+# WHAT DOES NOT:
+#   faq, complaint    - retrieval and form-filling. Both read a tool
+#                       result or collect five fields; neither has a
+#                       flow to reason about.
+#
+# Override any of it without a deploy:
+#   OPENAI_MODEL_BY_AGENT=faq:gpt-4.1-mini,cancel:gpt-4.1-mini
+# An unknown agent name is logged and ignored rather than raising - a
+# typo here must not stop the service from starting.
+OPENAI_MODEL_CHEAP: str = os.getenv("OPENAI_MODEL_CHEAP", "gpt-4.1-mini")
+
+_DEFAULT_AGENT_MODELS = {
+    "faq": OPENAI_MODEL_CHEAP,
+    "complaint": OPENAI_MODEL_CHEAP,
+}
+
+# The claim gate's forcing call has one job: emit a tool call, with
+# `tool_choice` already pinned to the tool it must emit. There is no
+# wording to get right and no choice to make.
+OPENAI_MODEL_TOOL_FORCING: str = os.getenv(
+    "OPENAI_MODEL_TOOL_FORCING", OPENAI_MODEL_CHEAP,
+)
+
+
+def _agent_models(raw: str) -> dict:
+    models = dict(_DEFAULT_AGENT_MODELS)
+
+    for part in (raw or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if ":" not in part:
+            logging.getLogger(__name__).warning(
+                "OPENAI_MODEL_BY_AGENT entry %r is not 'agent:model' - ignoring", part,
+            )
+            continue
+        agent, _, model = part.partition(":")
+        agent, model = agent.strip(), model.strip()
+        if not agent or not model:
+            logging.getLogger(__name__).warning(
+                "OPENAI_MODEL_BY_AGENT entry %r is incomplete - ignoring", part,
+            )
+            continue
+        models[agent] = model
+
+    return models
+
+
+OPENAI_MODEL_BY_AGENT: dict = _agent_models(os.getenv("OPENAI_MODEL_BY_AGENT", ""))
 # RAISED FROM 10s. The system prompt alone is ~130 KB before the ~40
 # directive blocks and the trimmed history are added, so a 10-second
 # ceiling was being hit in normal operation - and a second hit turns
@@ -398,6 +468,105 @@ MULTI_AGENT_ENABLED: bool = _flag("MULTI_AGENT_ENABLED", True)
 # needed tool being unavailable). Use this if a flow ever stalls because
 # a specialist wanted a tool outside its subset.
 AGENT_TOOL_SCOPING: bool = _flag("AGENT_TOOL_SCOPING", True)
+
+# PROTOTYPE. Execute the "they picked a specialty -> show its doctors"
+# turn straight from the graph, with no model call at all.
+#
+# WHAT THAT TURN COSTS TODAY: two full LLM calls. One to decide that
+# `find_available_doctors` is the tool to run - a decision the graph has
+# already made in code, in `_build_specialty_picked_directive` - and a
+# second to render the result, which `_build_entity_list_directive` has
+# ALREADY pre-built as an exact block and handed over with "copy this
+# verbatim, then ask one question". At the booking specialist's ~38,600-
+# token floor that is roughly 77,000 input tokens to copy a finished
+# string and append a question.
+#
+# WHY IT IS OFF BY DEFAULT. The wording stops being the tenant's. Every
+# other reply in this project is composed by the model inside that
+# clinic's configured dialect; a code-built one is whatever
+# `_DOCTOR_LIST_QUESTION` says unless the tenant authors
+# `msg_doctor_list_question` in client_config.csv. That is the whole
+# question this prototype exists to answer, and it is a judgement about
+# a client's voice - so it ships switchable and dark, and someone reads
+# a real reply before it carries traffic.
+DETERMINISTIC_DOCTOR_LIST: bool = _flag("DETERMINISTIC_DOCTOR_LIST", False)
+
+# WHICH TURNS THIS GRAPH ANSWERS WITHOUT CALLING THE MODEL.
+#
+# Nine directives in graph.py already pre-build the EXACT text of a
+# reply and hand it to the model with "copy this verbatim, add one
+# question, add nothing else" - several say the block is the entire
+# reply. Each of those turns spends a full call at the specialist's
+# floor (~38,600 tokens for `booking`) copying a finished string.
+# `graph._deterministic_rendered_reply` sends the block directly.
+#
+# EMPTY BY DEFAULT, AND A LIST RATHER THAN A BOOLEAN. What a code-built
+# reply loses is the tenant's dialect: the block is data, but the
+# closing question is phrasing, and unless that clinic has authored
+# `msg_*_question` for the family it gets the built-in wording. That is
+# a judgement about a client's voice, so these ship dark and roll out
+# one family at a time after someone who speaks the dialect has read
+# the replies.
+#
+# Set to a comma-separated list of families, or "all":
+#   DETERMINISTIC_TURNS=entity_doctor,entity_specialty
+#   DETERMINISTIC_TURNS=all
+#
+# Families: slots, available_days, resolved_day, appointment_choice,
+# entity_doctor, entity_specialty, entity_branch, appointment_cancel,
+# appointment_reschedule, terminal_success, booking_success,
+# schedule_display.
+DETERMINISTIC_TURN_FAMILIES: tuple = (
+    "slots", "available_days", "resolved_day", "appointment_choice",
+    "entity_doctor", "entity_specialty", "entity_branch",
+    "appointment_cancel", "appointment_reschedule",
+    "terminal_success", "booking_success", "schedule_display",
+)
+
+
+def _turn_families(raw: str) -> frozenset:
+    """Parse DETERMINISTIC_TURNS. An unknown name is logged and ignored
+    rather than raising - a typo in an env var must not stop the service
+    from starting, and the safe reading of "I don't recognise this" is
+    "leave that turn to the model"."""
+
+    value = (raw or "").strip()
+    if not value:
+        return frozenset()
+
+    if value.lower() == "all":
+        return frozenset(DETERMINISTIC_TURN_FAMILIES)
+
+    wanted = {part.strip() for part in value.split(",") if part.strip()}
+    unknown = wanted - set(DETERMINISTIC_TURN_FAMILIES)
+    if unknown:
+        logging.getLogger(__name__).warning(
+            "DETERMINISTIC_TURNS names %s, which is not a known turn family - "
+            "ignoring those. Known: %s",
+            sorted(unknown), ", ".join(DETERMINISTIC_TURN_FAMILIES),
+        )
+    return frozenset(wanted & set(DETERMINISTIC_TURN_FAMILIES))
+
+
+DETERMINISTIC_TURNS: frozenset = _turn_families(os.getenv("DETERMINISTIC_TURNS", ""))
+
+# JUST-IN-TIME FLOW STEPS. Send the step of the booking flow this
+# conversation is actually on, plus the one it moves to next, instead of
+# all seven.
+#
+# Measured on the real booking prompt: 28,741 tokens unsliced, 14,658 on
+# the smallest step - and 14,027 tokens still shared as a cacheable
+# prefix across every step, because the slice is appended AFTER the hard
+# rules rather than left in the middle. See
+# `agents.registry.build_agent_prompt`, which has the figures for why
+# the position matters more than the size.
+#
+# OFF BY DEFAULT because it is the one change here that alters what the
+# model reads. The steps behind the patient stop being sent, and while
+# every re-entry case ("actually, a different specialty") is also
+# enforced by a runtime directive, that is the thing to watch for on a
+# staged rollout.
+JIT_FLOW_STEPS: bool = _flag("JIT_FLOW_STEPS", False)
 
 # Does the `concierge` fallback carry EVERY flow section, or only the
 # ones it can act on this turn?
