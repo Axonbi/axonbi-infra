@@ -3466,7 +3466,8 @@ def build_system_prompt(templates: dict) -> str:
 # MULTI-AGENT: per-specialist system prompts
 # ==========================================================
 
-def build_agent_system_prompt(templates: dict, agent_name: str) -> str:
+def build_agent_system_prompt(templates: dict, agent_name: str,
+                              step: str = None) -> str:
     """
     The scoped system prompt for ONE specialist.
 
@@ -3495,7 +3496,7 @@ def build_agent_system_prompt(templates: dict, agent_name: str) -> str:
     full_prompt = build_system_prompt(templates)
 
     try:
-        return build_agent_prompt(split_sections(full_prompt), agent_name)
+        return build_agent_prompt(split_sections(full_prompt), agent_name, step)
     except Exception:
         logging.getLogger(__name__).warning(
             "build_agent_system_prompt: could not build the scoped prompt for "
