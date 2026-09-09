@@ -26,6 +26,24 @@ Three reasons, in order of importance:
 version - it only fires on genuinely ambiguous turns, never on clear
 ones - but it is off by default.
 
+WHAT THE CUE LISTS CANNOT DO, AND WHAT THE CLASSIFIER IS FOR
+------------------------------------------------------------
+The cue lists are patterns, and a patient's phrasing is not. "مش عاوزة
+الموعد ده خلاص", "بكره يا لطيفه احجزيلي بكره", "حاسه بحاجه
+غريبه" and "طب الاثنين؟" all score ZERO, and every one of them is
+a clear request to a reader. Adding cues for each is the same losing
+game as adding stop-words to a name guard: the list has to be complete
+to work and never is.
+
+So `ROUTER_MODE=llm` is not a nicety, it is the answer to that - and it
+is asked ONLY about messages the cues scored below the start threshold,
+which is to say only about the messages the cue lists just failed on.
+
+It is shown the assistant's own last message as well as the patient's
+(`_router_context`). Without that it was being asked a question it
+could not answer - see that function for the production failure, and
+`_looks_like_an_answer` for the sentence in this file that predicted it.
+
 STICKINESS IS THE OTHER HALF
 ----------------------------
 Most messages inside a flow carry no intent words at all: "نعم", "١",
@@ -1176,7 +1194,7 @@ def route_turn(messages: List, active_agent: Optional[str] = None) -> Tuple[str,
     # decision it is actually able to make, and loses only the one it
     # cannot: guessing who owns a bare "اه".
     if config.ROUTER_MODE == "llm" and score < _START_THRESHOLD:
-        llm_choice = _classify_with_llm(text, active_agent)
+        llm_choice = _classify_with_llm(text, active_agent, messages)
 
         if llm_choice:
             no_flow_to_protect = (
@@ -1272,22 +1290,81 @@ def route_turn(messages: List, active_agent: Optional[str] = None) -> Tuple[str,
 # Optional LLM routing (ROUTER_MODE=llm)
 # ==========================================================
 
-_LLM_ROUTER_PROMPT = """You classify one patient message for a hospital assistant.
+_LLM_ROUTER_PROMPT = """You decide which specialist owns ONE patient message in a hospital booking assistant.
 
 Reply with EXACTLY ONE of these words and nothing else:
 cancel      - wants to cancel an existing appointment
 reschedule  - wants to move an existing appointment to another time
 booking     - wants a brand new appointment
-medical     - describes a symptom or asks which doctor/specialty they need
-faq         - asks about the hospital: services, branches, hours, policies
+medical     - describes a symptom, or asks which doctor or specialty they need
+faq         - asks about the hospital: services, branches, hours, prices, policies
 complaint   - wants to file a complaint or a suggestion
-concierge   - anything else, a greeting, or unclear
+concierge   - a greeting, or genuinely unclear. Use this ONLY when nothing else fits
 
-Currently active flow: {active}
-Patient message: {message}"""
+READ WHAT THE MESSAGE MEANS, NOT WHICH WORDS IT USES. Patients ask for
+the same thing in completely different ways, in Modern Standard Arabic
+and in Egyptian, Gulf and Levantine dialect, and very often with no
+recognisable keyword at all. "مش عاوزة الموعد ده خلاص" is a
+cancellation. "بكره يا لطيفه احجزيلي بكره" is a booking. "حاسه
+بحاجه غريبه" is medical. None of them contain the obvious word.
+
+AN ANSWER BELONGS TO WHOEVER ASKED THE QUESTION. A bare number, a "yes"
+or "no", a weekday, a time, a name, a phone number or a 6-digit code is
+almost always the patient ANSWERING the assistant's last message, which
+is printed below - not opening a new subject. When the message reads as
+a reply to that question, answer with the ACTIVE FLOW. A "5" while a
+list of appointment times is on the screen is `booking` continuing, not
+a new intent and not unclear.
+
+Only move the conversation to a different specialist when the patient
+has plainly changed what they want.
+
+ACTIVE FLOW: {active}
+
+THE ASSISTANT'S LAST MESSAGE - this is the question the patient is
+replying to:
+{last_reply}
+
+THE PATIENT'S MESSAGE:
+{message}"""
+
+# How much of the assistant's last reply the classifier is shown.
+#
+# THE TAIL, NOT THE HEAD. These replies put the list first and the
+# question last ("... 8️⃣ 11:24  اختار رقم الموعد اللي يناسبك"), so
+# truncating from the front is precisely the way to cut off the one
+# sentence that makes a bare "5" readable.
+_ROUTER_CONTEXT_CHARS = 700
 
 
-def _classify_with_llm(text: str, active_agent: Optional[str]) -> Optional[str]:
+def _router_context(messages: List) -> str:
+    """What the assistant last said, for the classifier to read the
+    patient's message against.
+
+    THIS IS THE FIX FOR THE 2026-09-08 ROUTING FAILURE, AT ITS SOURCE.
+    `_looks_like_an_answer` says of a bare message that judging it "is
+    the one thing a single-message classifier cannot judge, because the
+    question is not in front of it" - and the classifier was being
+    handed the message and nothing else. Every answer in that
+    conversation came back `concierge`, which is its word for "unclear",
+    and a booking, a cancellation and a reschedule were each torn off
+    their owner in turn.
+
+    The question was in `messages` the whole time - `route_turn`
+    receives it and simply was not passing it on."""
+
+    last_reply = _last_ai_text(messages).strip()
+    if not last_reply:
+        return "(nothing yet - the patient has just opened the conversation)"
+
+    if len(last_reply) > _ROUTER_CONTEXT_CHARS:
+        last_reply = "..." + last_reply[-_ROUTER_CONTEXT_CHARS:]
+
+    return last_reply
+
+
+def _classify_with_llm(text: str, active_agent: Optional[str],
+                       messages: Optional[List] = None) -> Optional[str]:
     """Only reached when ROUTER_MODE=llm AND the deterministic cues found
     nothing. Any failure returns None and the deterministic path
     continues - routing must never be able to break a conversation."""
@@ -1304,7 +1381,9 @@ def _classify_with_llm(text: str, active_agent: Optional[str]) -> Optional[str]:
             return None
 
         prompt = _LLM_ROUTER_PROMPT.format(
-            active=active_agent or "none", message=text[:500],
+            active=active_agent or "none",
+            last_reply=_router_context(messages),
+            message=text[:500],
         )
         answer = llm.invoke([HumanMessage(content=prompt)])
         choice = str(getattr(answer, "content", "")).strip().lower()
