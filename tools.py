@@ -802,54 +802,38 @@ def lookup_appointment(
 ) -> dict:
     """Look up bookings by reference number OR phone number.
 
-    If the user chose to cancel by phone number and a verified channel
-    identity (e.g. their WhatsApp number) is already known, call this
-    with `use_channel_identity=True` and leave `phone` empty - this
-    automatically searches using that verified number WITHOUT you ever
-    needing to ask the user to type it, and WITHOUT you ever seeing the
-    actual digits yourself. Any booking found this way is by definition
-    already verified (it was found using their own verified channel
-    number), so NO OTP is ever needed in this case - skip straight to
-    STEP 3/4 of the flow.
+    If the user chose to cancel by phone and a verified channel identity
+    (e.g. their WhatsApp number) is known, call this with
+    `use_channel_identity=True` and leave `phone` empty - it searches
+    using that verified number without you asking the user to type it or
+    ever seeing the digits. A booking found this way is verified by
+    definition, so NO OTP is needed: skip straight to STEP 3/4.
 
     Only ask the user to type a phone number, and only then go through
-    compare_phone/OTP, if `use_channel_identity` returns "no_channel_identity"
-    (there is none available) or if the user explicitly says the booking
-    is under a DIFFERENT number than the one they're messaging from.
+    compare_phone/OTP, if this returns "no_channel_identity" or the user
+    explicitly says the booking is under a DIFFERENT number than the one
+    they are messaging from.
 
-    ALWAYS pass `language` as "ar" if you are about to reply to the user
-    in Arabic (any dialect), or "en" if replying in English - this makes
-    the booking system return doctor/branch/service names already
-    spelled correctly in that language, so you never have to translate
-    or transliterate a name yourself (which risks misspelling it).
+    ALWAYS pass `language` - "ar" if you are about to reply in Arabic
+    (any dialect), "en" for English. The booking system then returns
+    doctor/branch/service names already spelled correctly in that
+    language, so you never transliterate a name yourself.
+
+    Each status below carries its own handling instruction with the result
+    itself (the `_guidance` field) - read that when it arrives.
 
     Returns one of:
     {"status": "not_found"}
     {"status": "found_one", "appointment": {...}}
     {"status": "found_many", "appointments": [...]}
-    {"status": "found_but_inactive"}  # a booking exists under this ref/phone,
-                          # but it's already cancelled, completed, or its
-                          # own date/time has already passed - it can no
-                          # longer be cancelled or rescheduled. Tell the
-                          # user plainly why, don't just say "not found"
-                          # (which would wrongly imply they mistyped
-                          # something).
-    {"status": "error"}  # the booking API call itself failed - a technical
-                          # problem, NOT the same as "no booking exists"
-    {"status": "no_channel_identity"}  # use_channel_identity was True but
-                          # no verified channel number is available - ask
-                          # the user to type their phone number instead
-    {"status": "phone_not_verified"}  # you passed a phone number that
-                          # hasn't been verified in this conversation yet
-                          # (not the channel identity, no successful
-                          # compare_phone match, no successful verify_otp).
-                          # Go call compare_phone (and send_otp/verify_otp
-                          # if it doesn't match) BEFORE calling this tool
-                          # again with that number - never retry this call
-                          # as-is expecting a different result.
+    {"status": "found_but_inactive"}
+    {"status": "no_channel_identity"}
+    {"status": "phone_not_verified"}
+    {"status": "error"}
+
     Appointment fields: ref, doctorName, branchName, serviceName,
-    specialtyName, statusName, date_display, time_display, patientFullName,
-    mobileNumber, email, id."""
+    specialtyName, statusName, date_display, time_display,
+    patientFullName, mobileNumber, email, id."""
 
     # THE CONVERSATION'S LANGUAGE, NOT THE MODEL'S GUESS.
     #
@@ -1117,17 +1101,14 @@ def cancel_appointment(
     """Cancel a booking by its internal id (from a previous tool's
     "appointment"/"id" field - NEVER the human-readable reference
     number). Always call check_booking_status on the same booking
-    immediately before this. Returns {"status": "success"},
-    {"status": "not_looked_up"} (this booking was never found by a
-    lookup in this conversation - go and find it first),
-    {"status": "not_requested"}, or {"status": "error"}.
+    immediately before this.
 
-    "not_requested" means NOTHING THE PATIENT SAID ASKS TO CANCEL.
-    Nothing has been cancelled and nothing is broken. Do NOT tell them
-    an appointment was cancelled, do not retry, and do not describe it
-    as a technical problem. Almost always they asked to RESCHEDULE
-    ("تعديل"/"تأجيل") and the flow drifted into cancelling: go back and
-    ask which of the two they want, or carry on with the reschedule."""
+    Each status below carries its own handling instruction with the result
+    itself (the `_guidance` field) - read that when it arrives.
+
+    Returns one of: {"status": "success"},
+    {"status": "not_looked_up"}, {"status": "not_requested"}, or
+    {"status": "error"}."""
 
     # SERVER-SIDE ENFORCEMENT, NOT JUST A PROMPT RULE - the same
     # reasoning `lookup_appointment` and `create_new_booking` already
@@ -2154,48 +2135,18 @@ def _extract_selection_number(user_input: str) -> Optional[int]:
 def list_specialties(state: Annotated[AgentState, InjectedState]) -> dict:
     """List every medical specialty this clinic actually offers. ALWAYS
     call this before suggesting a specialty to a user describing a
-    symptom/concern - never guess whether this clinic has a given
-    specialty. Returns:
+    symptom - never guess whether this clinic has one.
+
+    Each status below carries its own handling instruction with the result
+    itself (the `_guidance` field) - read that when it arrives.
+
+    Returns one of:
     {"status": "found", "specialties": [{"id": ..., "name": ...,
       "has_available_doctors": true}, ...],
       "unstaffed_specialties": [names]}
-        # TWO LISTS, AND THEY MEAN DIFFERENT THINGS.
-        #
-        # `specialties` are the ones you may OFFER: each has a bookable
-        # doctor right now.
-        #
-        # `unstaffed_specialties` are departments this clinic really
-        # HAS, whose doctors have no open slots at the moment. They are
-        # here so you can tell the patient the truth when the specialty
-        # their symptom needs is one of them:
-        #     "عندنا قسم جلدية بس مفيش دكتور متاح حاليًا - تحب أوصلك
-        #      بموظف؟"
-        # That is a complete, correct answer. It is ALWAYS better than
-        # offering a specialty from the first list that does not treat
-        # what they described - a skin complaint sent to طب الباطنة
-        # costs the patient a trip and they still need a dermatologist.
-        #
-        # NEVER offer to book one of these, and never say "we have
-        # doctors" about one - they exist, but nobody is bookable.
     {"status": "no_bookable_specialties", "unstaffed_specialties": [names]}
-        # The clinic offers specialties on paper but has NO bookable
-        # doctor behind ANY of them right now. Say that plainly in your
-        # very next reply and offer a staff handoff - do NOT name these
-        # specialties as a recommendation, and never ask "shall I fetch
-        # the available doctors?" about them; nobody is available.
-    {"status": "not_found"}  # this clinic has no specialties registered
-    {"status": "not_configured"}  # this clinic doesn't have this feature set up yet
-    {"status": "error"}  # the API call itself failed
-
-    IMPORTANT: `specialties` contains ONLY specialties that actually
-    have a bookable doctor right now. Ones with no available doctor are
-    deliberately left out, so anything in this list is safe to
-    recommend, and you can never accidentally walk a patient toward an
-    empty specialty. Never add a specialty of your own that isn't here.
-    (When availability couldn't be checked at all this call, the
-    `has_available_doctors` field is omitted and nothing is filtered -
-    treat that as unknown, not as unavailable.)
-    """
+    {"status": "not_found"}
+    {"status": "not_configured"} / {"status": "error"}"""
     # ------------------------------------------------------------------
     # MAINTAINER NOTES - MOVED OUT OF THE DOCSTRING.
     # A tool's docstring IS its `description`, sent to the model on every
@@ -3455,112 +3406,95 @@ def find_available_doctors(
     service_name: str = "",
     specialty_name: str = "",
 ) -> dict:
-    """Find doctors who currently have a bookable service AND an available
-    schedule slot within the next `days_ahead` days, across one or more
-    specialties. ALWAYS call `list_specialties` first to get correct ids
-    - never guess or invent one.
+    """Find doctors with a bookable service AND an open slot in the next
+    `days_ahead` days, across one or more specialties. Call
+    `list_specialties` first for real ids - never guess one.
 
-    `specialty_ids` IS OPTIONAL. Leave it out entirely when a SERVICE or
-    a BRANCH is what the patient actually chose - you do NOT need to
-    work out a specialty first, and you must not ask them for one just
-    to satisfy this parameter.
+    ONE CALL, ONE LIST. Pass EVERY plausibly-matching specialty id
+    together in `specialty_ids` - a clinic often has both a general and
+    a sub-specialty covering the same complaint (e.g. Ophthalmology AND
+    Vitreoretinal Surgery for an eye problem). NEVER call this once per
+    specialty instead: the later call's specialty silently becomes the
+    only one this booking remembers, so a doctor correctly shown under
+    the first one comes back "couldn't find them in the system" when the
+    patient tries to book him. Never conclude "no doctors available"
+    after checking only one plausible specialty.
+
+    `specialty_ids` IS OPTIONAL - leave it out entirely when a SERVICE
+    or a BRANCH is what the patient chose. You do NOT need a specialty
+    first, and must not ask for one just to fill this parameter.
 
     `specialty_name`: PREFER THIS over hand-typing `specialty_ids`
-    whenever the patient just answered a specialty list `list_specialties`
-    showed them - pass their raw text here (a bare number like "1", or
-    the name they typed). It is resolved against the EXACT list they
-    were just shown (by position first, then by fuzzy name match) and
-    turned into the correct id for you - you never need to recall or
-    retype an id from memory. Only fall back to typing `specialty_ids`
-    yourself when there is no specialty list in this conversation to
-    resolve against. Leave both empty when neither applies. CONFIRMED
-    REAL PRODUCTION FAILURE: a patient picked "1" from a freshly shown
-    specialty list, and the doctor found for the id then used turned
-    out to be scheduled under an unrelated, more generic service - the
-    same class of bug this parameter's remembered-list resolution
-    exists to prevent for every other list in this project (doctors,
-    branches, services, days).
+    whenever the patient just answered a specialty list
+    `list_specialties` showed them - pass their raw text (a bare number
+    like "1", or the name they typed). It resolves against the EXACT
+    list they were shown (by position first, then fuzzy name), so you
+    never recall or retype an id from memory. Only type `specialty_ids`
+    yourself when this conversation has no specialty list to resolve
+    against. Leave both empty when neither applies.
 
-    `branch_name`: optional. Pass the user's raw branch text when they've
-    said which branch they want (e.g. "الدقي", "فرع زايد") - the branch
-    is resolved and CONFIRMED into the booking session automatically, and
-    only doctors working at that branch are returned. Leave it empty when
-    the user hasn't picked a branch (or said they don't mind). If the
-    user doesn't know which branches exist, call
-    `list_branches_for_specialty` instead of guessing.
+    `branch_name`: optional - the user's raw branch text once they've
+    named one (e.g. "الدقي", "فرع زايد"). The branch is resolved and
+    CONFIRMED into the booking session automatically, and only doctors
+    working there are returned. Leave empty when they haven't picked a
+    branch, or don't mind. If they don't know which branches exist, call
+    `list_branches_for_specialty` rather than guessing.
 
-    `service_name`: pass the SERVICE the patient chose (e.g. "فحص
-    النظر"), or a bare number picking one from a service list you just
-    showed. The service is resolved against the branch's real catalogue
-    and its id is sent as `serviceIds` - so only doctors who actually
-    provide THAT service come back. Use this whenever a service has been
-    chosen: it answers "who can do this for me?" directly, and asking
-    "specialty or doctor?" instead throws away a choice the patient has
-    already made.
+    `service_name`: the SERVICE the patient chose (e.g. "فحص النظر"), or
+    a bare number picking one from a service list you just showed. It is
+    resolved against the branch's real catalogue, so only doctors who
+    actually provide THAT service come back. Use it whenever a service
+    has been chosen - asking "specialty or doctor?" instead throws away
+    a choice the patient already made.
 
-    `all_branches=True`: search the WHOLE hospital, ignoring any branch    settled earlier in the conversation. Pass this whenever the user asks
-    to look more widely - "شوف في أي دكتور في المستشفى", "في فروع
-    ثانية؟", "anywhere", "any branch" - and whenever you are answering a
-    NEW question that has nothing to do with an earlier booking attempt.
-    Without it, a branch chosen earlier keeps narrowing every later
-    search.
+    `all_branches=True`: search the WHOLE hospital, ignoring any branch
+    settled earlier in the conversation. Pass it whenever the user asks
+    to look more widely ("شوف في أي دكتور في المستشفى", "في فروع ثانية؟",
+    "anywhere", "any branch"), and whenever you are answering a NEW
+    question unrelated to an earlier booking attempt. Without it, a
+    branch chosen earlier keeps narrowing every later search.
 
-    The returned list is remembered automatically, so the user can simply
-    reply with its number ("3") and `match_entity_for_booking` will
-    resolve it - you never need to repeat the names back as ids.
+    `allow_broader_search=False`: pass this whenever the specialty was
+    chosen to match a SYMPTOM the patient described. True (the default)
+    falls back to every doctor in the clinic when the given specialties
+    have nobody - useful while BOOKING, where the patient has already
+    decided to be seen here and just needs someone available. It is
+    actively wrong for medical guidance: a patient with abdominal pain
+    offered a list of retina surgeons has been given a worse answer than
+    "we don't have that specialty". False in the MEDICAL GUIDANCE flow,
+    every time.
 
-    IMPORTANT: pass ALL plausibly-matching specialty ids in ONE call as a
-    list, not just the single most obvious one. Clinics often have both
-    a general specialty and a more specific sub-specialty that could
-    both reasonably cover the same complaint (e.g. "Ophthalmology" AND
-    "Vitreoretinal Surgery" both relate to eye problems). If more than
-    one specialty from `list_specialties` could plausibly match what the
-    user described, include all of their ids here together - e.g.
-    specialty_ids=["<ophthalmology-id>", "<vitreoretinal-surgery-id>"] -
-    so a doctor registered under any of them is found. Do not conclude
-    "no doctors available" after checking only one plausible specialty.
+    The returned list is remembered automatically, so the user can reply
+    with its number ("3") and `match_entity_for_booking` will resolve it
+    - you never need to repeat the names back as ids.
 
-    NEVER call this tool ONCE PER SPECIALTY as a substitute for one
-    combined call - e.g. calling it with ["<internal-medicine-id>"] and
-    then immediately again with ["<gynaecology-id>"]. Confirmed real
-    production failure: doing exactly that made the SECOND call's
-    specialty silently become the only one this booking remembers going
-    forward (later steps reuse the session's remembered specialties),
-    so a doctor who was correctly found and shown under the FIRST
-    specialty came back "couldn't find them in the system" minutes
-    later when the patient tried to actually book with him - because
-    the booking lookup was, by then, only searching the second,
-    irrelevant specialty. One call, one list containing every relevant
-    id, every time.
+    Each status below carries its own handling instruction with the result
+    itself (the `_guidance` field) - read that when it arrives.
 
-    `allow_broader_search`: pass False whenever the specialty was chosen
-    to match a SYMPTOM the patient described. With True (the default)
-    this tool falls back to every doctor in the clinic when the given
-    specialties have nobody - useful while BOOKING, where the patient has
-    already decided they want to be seen here and just needs someone
-    available. It is actively wrong for medical guidance: a patient with
-    abdominal pain offered a list of retina surgeons has been given a
-    worse answer than "we don't have that specialty". Confirmed real
-    production failure - pass False in the MEDICAL GUIDANCE flow, every
-    time.
+    Returns, with `doctors` a list of {"id", "name", "specialtyName",
+    "degreeName"}:
+    {"status": "found", "doctors": [...]}
+    {"status": "found_broader_search", "doctors": [...]}
+    {"status": "not_found_in_specialty"}
+    {"status": "specialty_not_resolved", "specialty_name": "...", "doctors": []}
+    {"status": "not_found"}
+    {"status": "branch_not_matched"}
+    {"status": "not_found_in_branch", "branch": {...}}
+    {"status": "not_configured"} / {"status": "error"}"""
 
-    Returns:
-    {"status": "found", "doctors": [{"id", "name", "specialtyName", "degreeName"}, ...]}
-    {"status": "found_broader_search", "doctors": [...]}  # the given specialty_ids had nobody available, but other doctors clinic-wide currently are. These are NOT a specialty match - never offer them as an answer to a symptom
-    {"status": "not_found_in_specialty"}  # allow_broader_search=False and these specialties have nobody available. Say so plainly; do NOT substitute other doctors
-    {"status": "specialty_not_resolved", "specialty_name": "...", "doctors": []}  # the specialty the patient named is not one this clinic has. NO search ran and there are NO doctors to show. Call `list_specialties` and offer only what it returns, or ask which specialty they meant. Never name a doctor after this status
-    {"status": "not_found"}  # nobody at all currently has availability, even clinic-wide
-    {"status": "branch_not_matched"}  # branch_name given but no branch matches it - show the branch list instead
-    {"status": "not_found_in_branch", "branch": {...}}  # the branch is real, but has nobody in these specialties - offer other branches
-    {"status": "not_configured"}  # this clinic doesn't have this feature set up yet
-    {"status": "error"}  # the API call itself failed"""
-    # ------------------------------------------------------------------
     # MAINTAINER NOTES - MOVED OUT OF THE DOCSTRING.
     # A tool's docstring IS its `description`, sent to the model on every
-    # call by every agent bound to it. The incident reports below are for
-    # whoever next edits this function - they are not instructions the
-    # model can act on, so they are kept here rather than re-billed every
-    # turn. Nothing has been deleted.
+    # call by every agent bound to it. The notes below are for whoever
+    # next edits this function - they are not instructions the model can
+    # act on, so they live here rather than being re-billed every turn.
+    # Nothing has been deleted.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (`specialty_name`): a patient
+    # picked "1" from a freshly shown specialty list, and the doctor found
+    # for the id then used turned out to be scheduled under an unrelated,
+    # more generic service - the same class of bug this parameter's
+    # remembered-list resolution exists to prevent for every other list in
+    # this project (doctors, branches, services, days).
     #
     # CONFIRMED REAL PRODUCTION FAILURE: with a service and a branch both
     # already settled, the reply was "راح أحتاج أعرف التخصص المناسب الأول
@@ -4373,22 +4307,16 @@ def get_doctor_schedule(
     NOT a doctor's name and not a doctor id. This tool answers
     "which days does the doctor on THIS BOOKING work?", so it only
     works when an existing booking is in hand.
-    Returns:
-    {"status": "found", "schedules": [{"recurringDaysNames": [...], "fromDateTime": ..., "toDateTime": ...}, ...]}
-    {"status": "not_found"}  # booking or schedule doesn't exist
-    {"status": "not_a_booking_reference"}
-        -> what you passed is not a booking reference, so this tool
-           cannot answer. Calling it again with another guess will
-           return this same status every time. If the patient asked
-           about a DOCTOR's own days and hours ("مواعيد دكتور
-           أمنية"), that is a different question: confirm the
-           doctor with `match_entity_for_booking` and then call
-           `get_doctor_schedule_for_booking`. If you do not hold
-           those tools, say plainly that you can look this up once
-           they tell you which doctor and offer to start a booking -
-           never keep retrying this one.
-    {"status": "not_configured"}  # this clinic doesn't have this feature set up yet
-    {"status": "error"}"""
+
+    Each status below carries its own handling instruction with the result
+    itself (the `_guidance` field) - read that when it arrives.
+
+    Returns one of:
+    {"status": "found", "schedules": [{"recurringDaysNames": [...],
+     "fromDateTime": ..., "toDateTime": ...}, ...]}
+    {"status": "not_found"}
+    {"status": "not_a_booking_reference"}  # see `get_doctor_schedule_for_booking`
+    {"status": "not_configured"} / {"status": "error"}"""
 
     # THE CONVERSATION'S LANGUAGE, NOT THE MODEL'S GUESS.
     #
@@ -4678,10 +4606,13 @@ def reschedule_appointment(
     or `check_booking_status` call in THIS conversation - never invent
     or reuse an old value from memory. `new_time_from`/`new_time_to` must
     be the EXACT slotStart/slotEnd values from `get_available_reschedule_slots`
-    - never modify or recompute them yourself. Returns:
-    {"status": "success"}, {"status": "not_looked_up"} (this booking was
-    never found by a lookup in this conversation - go and find it
-    first), or {"status": "error"}"""
+    - never modify or recompute them yourself.
+
+    Each status below carries its own handling instruction with the result
+    itself (the `_guidance` field) - read that when it arrives.
+
+    Returns one of: {"status": "success"},
+    {"status": "not_looked_up"}, or {"status": "error"}."""
 
     # NOTE: confirmed directly from the user's own curl - GuestBookings/Update
     # lives on the SAME port as Doctors/Specialties (1302), NOT the regular
@@ -5478,76 +5409,54 @@ def match_entity_info(
     user_input: str,
     entity_type: str,
 ) -> dict:
-    """FAQ/info lookup for doctors and branches - fuzzy name matching +
-    listing. READ-ONLY: never touches booking, schedules, or
-    availability - use the other tools for those.
-
-    DUAL MODE:
-      LIST MODE (user_input=""): returns ALL doctors or ALL branches as
-        a list for display.
-      RESOLVE MODE (user_input="user's raw text"): fuzzy-matches to ONE
-        entity and returns its details. Tolerates Arabic typos, letter
-        substitutions, and partial names - always pass the user's raw
-        text, don't pre-process it yourself.
+    """FAQ/info lookup for doctors and branches - fuzzy name matching plus
+    listing. READ-ONLY: never touches booking, schedules or availability
+    - use the other tools for those.
 
     `entity_type`: "doctor" or "branch".
+
+    DUAL MODE:
+      LIST MODE (user_input=""): ALL doctors or ALL branches, for
+        display.
+      RESOLVE MODE (user_input="raw text"): fuzzy-matches ONE entity and
+        returns its details. Tolerates Arabic typos, letter
+        substitutions and partial names - pass the raw text, don't
+        pre-process it.
+
+    NUMBERED SELECTION: after a "list" result (or a "not_matched" with
+    `available_branches`), a later bare number ("2", "٢", "رقم 2")
+    resolves by POSITION against that exact list - pass it straight
+    through as `user_input`; never fuzzy-match a digit against names.
+
+    Each status below carries its own handling instruction with the result
+    itself (the `_guidance` field) - read that when it arrives.
 
     Returns one of:
     {"status": "list", "items": [...]}
     {"status": "matched", "item": {...}}
-    {"status": "possible_match", "item": {...}}  # low-confidence guess
-        (score < 0.95) - likely a typo, OR the input may not really be a
-        branch/doctor in the system at all. Do NOT state this as fact -
-        ask the user "هل تقصد [altName/name]؟" and WAIT for them to
-        confirm before giving out its address/details/etc. For
-        branches, this guess is already restricted to ones that
-        currently have a real available doctor (see the "not_matched" +
-        `available_branches` case below for when none do) - but it is
-        still only a GUESS, never a confirmed fact, until the patient
-        agrees. A user's "yes" to the follow-up question is what makes
-        the match - don't act on the guessed branch/doctor until they've
-        actually agreed it's the one they meant.
-    {"status": "ambiguous", "candidates": [...]}  # show each candidate's
-        name and ask the user which one they meant
-    {"status": "not_matched"}  # doctors, or a branch with no viable
-        alternative available at all
-    {"status": "not_matched", "available_branches": [...]}  # branches
-        only: no confident/real match was found (or the only guesses
-        were branches with zero doctors right now, which are never
-        offered even as a guess) - `available_branches` already lists
-        the branches that DO currently have a doctor. Say plainly you
-        couldn't find a branch by that name, then show this list in the
-        SAME reply - don't ask a follow-up question just to get it.
-    {"status": "not_configured"}  # no doctors_base_url set up for this client
-    {"status": "error"}
-
-    NUMBERED SELECTION: after this tool returns a "list" (or a
-    "not_matched" with `available_branches`), a later bare number reply
-    ("2", "٢", "رقم 2") resolves by POSITION against that exact list -
-    pass it straight through as `user_input`, don't fuzzy-match a digit
-    against names yourself. Extra statuses only for that case:
-    {"status": "out_of_range", "list_size": N}  # number bigger than the
-        list you showed - say how many there are, ask them to pick
-        within it. Never say the doctor/branch "doesn't exist".
-    {"status": "no_list_shown"}  # a number was given but nothing was
-        listed for this entity_type yet in this conversation - show the
-        list first (user_input="").
+    {"status": "possible_match", "item": {...}}
+    {"status": "ambiguous", "candidates": [...]}
+    {"status": "not_matched"}
+    {"status": "not_matched", "available_branches": [...]}
+    {"status": "out_of_range", "list_size": N}
+    {"status": "no_list_shown"}
+    {"status": "not_configured"} / {"status": "error"}
 
     Doctor fields: formatedName, altName, degreeName, specialtyName,
-    defaultServiceName (serviceName). Fees are NOT included here - use
-    `get_doctor_fees` if (and only if) the user explicitly asks a price.
+    defaultServiceName (serviceName). Fees are NOT here - use
+    `get_doctor_fees`, and only if the user explicitly asks a price.
     Branch fields: name, altName, address, cityName, countryName,
     stateName, email, mobile, hasAvailableDoctors.
 
     `hasAvailableDoctors` appears ONLY on a SINGLE matched branch (a
-    positional pick or a name match) - never on a branch LIST, so a list
+    positional pick or a name match), never on a branch LIST, so a list
     can never be filtered or annotated by it. FALSE means that branch
     has no bookable doctor right now. Its only purpose: never offer to
-    book at, or start a booking flow for, such a branch - not even as a
-    friendly "...or would you like to book there?". Give the address,
-    offer its SERVICES, and leave booking out of it. If THEY ask to book
-    there, only then say the branch has nobody available and offer the
-    branches that do, by name."""
+    book there or start a booking flow for it - not even as a friendly
+    "...or would you like to book there?". Give the address, offer its
+    SERVICES, leave booking out. If THEY ask to book there, only then
+    say it has nobody available and offer the branches that do, by
+    name."""
     # ------------------------------------------------------------------
     # MAINTAINER NOTES - MOVED OUT OF THE DOCSTRING.
     # A tool's docstring IS its `description`, sent to the model on every
@@ -6355,92 +6264,41 @@ def match_entity_for_booking(
     user_input: str,
     entity_type: str,
 ) -> dict:
-    """Resolve a doctor or branch by the user's raw text for a NEW
-    BOOKING, AND automatically confirm+remember it in this booking's
-    session - you NEVER need to track, save, or pass any ID yourself;
-    this tool handles that entirely, including filtering doctors to an
-    already-confirmed branch automatically.
-
-    DUAL MODE:
-      LIST MODE (user_input=""): lists all doctors/branches. If a
-        branch is already confirmed in this booking session and
-        entity_type="doctor", the list is automatically filtered to
-        doctors at that branch only - you don't need to filter it
-        yourself or pass the branch.
-      RESOLVE MODE (user_input="user's raw text"): matches to ONE
-        entity. This also accepts a bare number referring to a position
-        in the list you most recently showed via this same tool (e.g.
-        user replies "2" after you displayed a numbered list) - always
-        pass the user's raw text/number as-is, the tool handles both
-        cases.
+    """Resolve a doctor or branch from the user's raw text for a NEW
+    BOOKING, and automatically confirm+remember it on this booking's
+    session. You NEVER track, save or pass an ID yourself - including
+    filtering doctors to an already-confirmed branch.
 
     `entity_type`: "doctor" or "branch".
 
+    DUAL MODE:
+      LIST MODE (user_input=""): lists all doctors/branches. With a
+        branch already confirmed and entity_type="doctor", the list is
+        filtered to that branch automatically - don't filter it or pass
+        the branch yourself.
+      RESOLVE MODE (user_input="raw text"): matches ONE entity. Also
+        accepts a bare number for a position in the list you most
+        recently showed via this same tool ("2" after a numbered list).
+        Always pass the raw text/number as-is; both cases are handled.
+
+    Each status below carries its own handling instruction with the result
+    itself (the `_guidance` field) - read that when it arrives.
+
     Returns one of:
     {"matched": true, "needsConfirmation": false, "item": {...}}
-        -> CONFIRMED AND SAVED to the booking session automatically -
-           do NOT ask "are you sure" for this case, proceed directly.
-           When entity_type="branch" AND no doctor was already confirmed
-           in this booking, this ALSO carries "doctorsAtBranch": [...] -
-           the doctors who actually work at that branch (narrowed to
-           this booking's specialty when known) and already remembered
-           for numeric selection. Show THAT list, numbered - never
-           re-show doctor names from before the branch was chosen,
-           because not every doctor works at every branch.
+        - saved automatically. For entity_type="branch" with no doctor
+          confirmed yet this also carries "doctorsAtBranch": [...].
     {"matched": true, ..., "fullyBooked": true}
-        -> the branch is REAL and this doctor does work there, but has
-           no open slot in the booking window right now. Say exactly
-           that - "الفرع ده محجوز بالكامل حاليًا عند د. [name]" - and
-           offer the other branch, or a later date. NEVER say the
-           branch doesn't exist, and never act as though the patient
-           named something wrong: they named a branch you yourself
-           showed them.
     {"matched": true, ..., "doctorAlreadyConfirmed": true}
-        -> the branch was confirmed while a DOCTOR was already
-           confirmed earlier in this booking. There is no doctor list
-           here on purpose - one was already picked, so do not ask
-           "which doctor?" or show any doctor roster. Go straight to
-           `list_available_days_for_booking` for the doctor+branch pair
-           already on file.
+    {"matched": true, ..., "noDoctorsAtBranch": true}
     {"matched": true, "needsConfirmation": true, "item": {...}}
-        -> a close-but-not-exact match (likely a typo) - nothing was
-           saved yet. Ask the user "did you mean [item]?" and WAIT.
-           Their "yes" is NOT a confirmation by itself - call this tool
-           AGAIN with the corrected name on that turn (that call is what
-           actually saves it) before proceeding.
     {"matched": false, "ambiguous": true, "candidates": [...]}
-        -> multiple similarly-close matches - show each candidate's name
-           and ask the user to pick one; nothing was saved.
     {"matched": false, "ambiguous": false}
-        -> no match at all.
     {"matched": false, "status": "is_a_specialty", "specialty_name": ...,
      "specialty_id": ...}
-        -> what they typed is not a doctor's name, it is one of this
-           clinic's SPECIALTIES (e.g. they answered "اسنان" when asked
-           which doctor). This is a normal, sensible answer - most
-           patients know the department, not the doctor.
-           Call `find_available_doctors` with `specialty_name` set to
-           the `specialty_name` returned here and show the doctors,
-           numbered, ending with ONE question: which doctor.
-           Do it in THIS SAME TURN. NEVER say "ما لقيت دكتور باسم ..."
-           for this status - they never claimed it was a name - and
-           never ask permission first ("تحب أشوف لك قائمة
-           الدكاترة؟"): they have already told you what they want.
-    {"matched": true, ..., "noDoctorsAtBranch": true}
-        -> the branch was confirmed but NOBODY works there (for this
-           booking's specialty). Never claim there's a list of doctors:
-           say plainly that this branch has no available doctors right
-           now and offer the branches that do.
     {"matched": false, "status": "out_of_range", "list_size": N}
-        -> they gave a number bigger than the list you showed. Say the
-           list only has N options and ask them to pick within it - do
-           NOT say the doctor/branch "doesn't exist".
     {"matched": false, "status": "no_list_shown"}
-        -> they gave a number but no list has been shown yet for this
-           entity_type. Show the list first (user_input=""), then let
-           them pick - again, never say the doctor "doesn't exist".
     {"status": "list", "items": [...]}
-        -> list mode result (user_input was empty).
     {"status": "not_configured"} / {"status": "error"}"""
 
     # ------------------------------------------------------------------
@@ -7349,60 +7207,37 @@ def resolve_available_day(
     weekday_name: str,
     after_date: str = "",
 ) -> dict:
-    """For a NEW BOOKING: find the NEAREST date of a given weekday that
-    the currently-confirmed doctor (and branch, if also confirmed)
-    ACTUALLY has a real, non-booked slot available - not just any
-    calendar date matching that weekday. Reads doctor_id/branch_id from
-    the booking session automatically - both must already be confirmed
-    via `match_entity_for_booking` first, or this returns an error
-    telling you which is missing.
+    """For a NEW BOOKING: find the NEAREST date of a given weekday on
+    which the confirmed doctor (and branch, if also confirmed) ACTUALLY
+    has a real, non-booked slot - not just any calendar date matching
+    that weekday. Reads doctor_id/branch_id from the booking session;
+    both must be confirmed via `match_entity_for_booking` first, or this
+    returns an error naming which is missing.
 
     NEVER compute or guess a date yourself for a new booking - always
-    call this. `after_date` (format "YYYY-MM-DD"), if given, finds the
-    next occurrence STRICTLY AFTER that date - use this for "next
-    Thursday"/"الخميس اللي بعده" relative to one already discussed, or
-    to retry after a day turned out fully booked.
-    Returns:
+    call this. `after_date` ("YYYY-MM-DD"), if given, finds the next
+    occurrence STRICTLY AFTER that date - use it for "next Thursday"/
+    "الخميس اللي بعده" relative to one already discussed, or to retry
+    after a day turned out fully booked.
+
+    WEEKDAY SPELLING: pass the patient's own word through unchanged.
+    Egyptian/Gulf colloquial ("التلات", "الاتنين", "الحد"), MSA
+    ("الثلاثاء"), English ("Tuesday"/"tue") and franco-arabe ("eltalat")
+    all resolve - never translate or "correct" a day name first.
+
+    Each status below carries its own handling instruction with the result
+    itself (the `_guidance` field) - read that when it arrives.
+
+    Returns one of:
     {"status": "found", "date": "YYYY-MM-DD", "weekday_name": "Thursday",
      "date_display": "25/08/2026", "weekday_display": "الثلاثاء",
      "first_time_display": "11:00 صباحًا", "last_time_display": "3:00 مساءً",
      "from_date": ..., "to_date": ...}
-        # SHOW `weekday_display` and `date_display` to the patient -
-        # never `date`, which is a machine value in ISO format and reads
-        # as a raw timestamp inside a sentence. Pass `from_date`/
-        # `to_date` VERBATIM into `get_available_slots_for_booking`.
-        # `first_time_display`/`last_time_display` are the EARLIEST and
-        # LATEST open slot start times on that day - present them as a
-        # RANGE ("من 11:00 صباحًا إلى 3:00 مساءً"), never as one specific
-        # appointment time. The DAY itself, not one slot in it, is what
-        # you're offering at this step; the individual bookable times
-        # only come after the patient confirms the day, via
-        # `get_available_slots_for_booking`.
-    {"status": "fully_booked", "weekday_name": "Thursday", "weekday_display": "الخميس"}
-        # The doctor DOES work that weekday here, but every slot is
-        # taken. Say exactly that - "الخميس محجوز بالكامل حاليًا" - and
-        # offer the days that ARE available. This is the only place that
-        # fact should be volunteered: the schedule list deliberately
-        # leaves full days out so nobody is invited to pick one, and
-        # this status is what comes back when they ask anyway.
-    {"status": "not_found"}  # the doctor does not work that weekday here at all
-        # Say EXACTLY that - the doctor has no clinic on that weekday at
-        # this branch - and then, in the SAME turn, call
-        # `list_available_days_for_booking` and show the days they DO
-        # have. Never answer a named day by quietly showing the soonest
-        # date as if the patient had not named one.
+    {"status": "fully_booked", "weekday_name": ..., "weekday_display": ...}
+    {"status": "not_found"}
     {"status": "unrecognized_day", "weekday_text": "..."}
-        # `weekday_name` was not a day of the week at all. Ask which day
-        # they meant - do NOT guess one, and do NOT fall through to
-        # showing the soonest date.
     {"status": "missing_doctor"} / {"status": "missing_branch"}
-    {"status": "not_configured"} / {"status": "error"}
-
-    WEEKDAY SPELLING: pass the patient's own word through unchanged if
-    you like - Egyptian/Gulf colloquial ("التلات", "الاتنين", "الحد"),
-    MSA ("الثلاثاء"), English ("Tuesday"/"tue") and franco-arabe
-    ("eltalat") all resolve. You never need to translate or "correct"
-    the day name before calling."""
+    {"status": "not_configured"} / {"status": "error"}"""
 
     session_id = state.get("session_id")
     session = _get_booking_session(session_id)
@@ -8065,45 +7900,40 @@ def list_available_days_for_booking(
     offset: int = 0,
 ) -> dict:
     """For a NEW BOOKING: list the doctor's REAL upcoming days that
-    actually have open slots, each with its actual calendar date. Reads
+    actually have open slots, each with its calendar date. Reads
     doctor_id/branch_id from the booking session automatically.
 
-    CALL THIS IMMEDIATELY AFTER A DOCTOR IS CONFIRMED - it replaces
-    asking the patient which day they want before they have any idea
-    when the doctor works. Patients do not know a doctor's schedule;
-    asking them to name a day first means they guess, hit a day the
-    doctor doesn't work or that's fully booked, and get stuck.
+    CALL THIS IMMEDIATELY AFTER A DOCTOR IS CONFIRMED, instead of asking
+    which day they want. Patients don't know a doctor's schedule; asking
+    first makes them guess a day he doesn't work or that is full, and
+    they get stuck.
 
-    This is different from `get_doctor_schedule_for_booking`, which only
-    returns the doctor's GENERAL recurring weekdays with no dates and no
-    guarantee anything is actually free. Every day returned here is
-    confirmed to have at least one genuinely open slot, so you can show
-    its date directly without any further checking.
+    Not the same as `get_doctor_schedule_for_booking`, which returns
+    only GENERAL recurring weekdays with no dates and no guarantee
+    anything is free. Every day here has at least one genuinely open
+    slot, so you can show its date without further checking.
 
-    SHOW THE NEAREST FEW DAYS: `limit` defaults to 3. When the doctor
-    genuinely has more than one day open at this branch, show them as a
-    numbered list and let the patient pick - they can then choose the
-    day that actually suits them in ONE message instead of rejecting a
-    single offered date and waiting for the next one. When only one day
-    is open, that single date is shown on its own and the patient is
-    simply asked whether it suits them.
+    SHOW THE NEAREST FEW: `limit` defaults to 3. With more than one day
+    open, show a numbered list so the patient picks a day that suits
+    them in ONE message instead of rejecting single dates one at a time.
+    With one day open, show that date alone and ask if it suits.
 
-    ONE DATE PER WEEKDAY. The days returned are always DIFFERENT days of
-    the week - the doctor's actual working days, each at its own soonest
-    date. A weekly clinic can never come back as "Monday 24/08, Monday
-    31/08, Monday 07/09": that is one option printed three times, and it
-    is filtered out here rather than left for you to notice. So a doctor
-    who works only Mondays returns exactly ONE day, and you should
-    present it as the soonest available date rather than as a list.
+    ONE DATE PER WEEKDAY. Days returned are always different weekdays -
+    the doctor's real working days, each at its soonest date. A weekly
+    clinic can never come back as "Monday 24/08, Monday 31/08, Monday
+    07/09"; that duplicate is filtered out here. So a Mondays-only
+    doctor returns exactly ONE day - present it as the soonest available
+    date, not as a list.
 
-    If none of them suit ("مش مناسب", "معاد أبعد", "في مواعيد تانية؟")
-    call this AGAIN with the result's own `next_offset` to show the
-    following few. Never invent or calculate a date yourself, and never
-    dump the whole window on the first reply.
+    If none suit ("مش مناسب", "معاد أبعد", "في مواعيد تانية؟") call this
+    AGAIN with the result's own `next_offset`. Never invent or calculate
+    a date yourself, and never dump the whole window on the first reply.
 
-    `has_more` in the response tells you whether further days exist
-    beyond the ones returned, so you can say so honestly instead of
-    implying these are the only dates the doctor has.
+    `has_more` says whether further days exist beyond those returned, so
+    you can say so honestly instead of implying these are all he has.
+
+    Each status below carries its own handling instruction with the result
+    itself (the `_guidance` field) - read that when it arrives.
 
     Returns:
     {"status": "found", "days": [{"date": "2026-08-11", "weekday_name": "Tuesday",
@@ -8111,18 +7941,10 @@ def list_available_days_for_booking(
       "firstTime": "10:15 صباحًا", "lastTime": "11:45 صباحًا",
       "from_date": ..., "to_date": ...}, ...],
      "has_more": true, "total_available_days": 9, "next_offset": 3}
-    {"status": "not_found"}  # this doctor has no open slot at all in the booking window
-    {"status": "no_more_days"}  # `offset` is past the last available day
+    {"status": "not_found"}
+    {"status": "no_more_days"}
     {"status": "missing_doctor"}
     {"status": "missing_branch", "branches": [{"name": ...}, ...]}
-        # This doctor works at MORE THAN ONE branch, so which one they
-        # want must be settled first - their days and times differ per
-        # branch. `branches` lists that doctor's real branches: show
-        # those names, ask which one, confirm it with
-        # `match_entity_for_booking(entity_type="branch")`, then call
-        # this again. Never name a branch that isn't in this list.
-        # A doctor working at only ONE branch never returns this - the
-        # branch is confirmed silently and the days come back directly.
     {"status": "not_configured"} / {"status": "error"}
 
     Pass a chosen day's `from_date`/`to_date` VERBATIM into
@@ -8491,49 +8313,29 @@ def create_new_booking(
     email: str = "",
 ) -> dict:
     """Create a brand new appointment booking. Reads the confirmed
-    doctor_id/branch_id from the booking session automatically - you
-    never pass an ID. `slot_start`/`slot_end` MUST be the EXACT values
-    from a `resolve_available_day` + slot-lookup step in THIS
-    conversation - never modified, recomputed, or invented.
+    doctor_id/branch_id from the booking session - you never pass an ID.
+    `slot_start`/`slot_end` MUST be the EXACT values from a
+    `resolve_available_day` + slot-lookup step in THIS conversation,
+    never modified, recomputed or invented.
 
-    CRITICAL SAFETY CHECK (always performed automatically, you don't
-    need to do anything extra): before creating the booking, this tool
-    RE-VERIFIES the exact requested slot is still genuinely available
-    right now (someone else may have booked it in the meantime) - this
-    is not optional and cannot be skipped.
+    A doctor AND branch must both already be confirmed via
+    `match_entity_for_booking` first. The exact slot is automatically
+    RE-VERIFIED as still free before the booking is created (someone
+    else may have taken it meanwhile); that check is not optional and
+    you need do nothing extra for it.
 
-    A doctor AND branch must both already be confirmed (via
-    `match_entity_for_booking`) before calling this. Returns:
+    Each status below carries its own handling instruction with the result
+    itself (the `_guidance` field) - read that when it arrives.
+
+    Returns one of:
     {"status": "success", "booking_ref": "GBN-..."}
     {"status": "success_ref_pending", "booking_id": "..."}
-        # THE BOOKING WAS CREATED - it is real and confirmed - but the
-        # follow-up call that fetches its human-readable reference
-        # number failed. Tell the patient plainly that the appointment
-        # is confirmed and that the booking number will reach them
-        # shortly by SMS. NEVER write a reference number of your own in
-        # this case, in any format: there is no value to write, and an
-        # invented one is worse than none - they will try to cancel with
-        # it and be told no such booking exists.
-    {"status": "slot_unavailable"}  # the requested slot is no longer free - tell the user and offer to pick again
+    {"status": "slot_unavailable"}
     {"status": "missing_doctor"} / {"status": "missing_branch"}
     {"status": "invalid_details", "rejected": [{"field": ..., "message": ...}]}
-        # the booking system REFUSED one of the patient's own details
-        # (e.g. field "MobileNumber" -> "Mobile Number Not Valid"). This
-        # is NOT a technical fault and NOT worth retrying: tell the
-        # patient plainly which detail wasn't accepted, ask for a
-        # corrected one, and try the booking again with it. Never
-        # describe this as a temporary technical problem.
-    {"status": "not_configured"} / {"status": "error"}
-    {"status": "phone_not_verified"}  # mobile_number isn't the channel
-        # identity and hasn't been verified in this conversation (no
-        # successful compare_phone match, no successful verify_otp). Go
-        # complete that verification for this exact number BEFORE
-        # calling this tool again - never retry as-is.
-    {"status": "missing_patient_name"}  # patient_full_name is empty or
-        # doesn't look like a real full name (at least two name parts).
-        # Go ask the patient for their full name FIRST - never call
-        # this tool with a placeholder, a single word, or an empty
-        # string just to see what the API says."""
+    {"status": "phone_not_verified"}
+    {"status": "missing_patient_name"}
+    {"status": "not_configured"} / {"status": "error"}"""
 
     session_id = state.get("session_id")
     session = _get_booking_session(session_id)
@@ -9152,56 +8954,55 @@ def get_available_slots_for_booking(
 def select_appointment_slot(state: Annotated[AgentState, InjectedState], user_input: str) -> dict:
     """For a NEW BOOKING: resolve the patient's reply to ONE exact slot
     from the list `get_available_slots_for_booking` just showed, and
-    LOCK IT IN for this booking - CALL THIS instead of matching the
-    slot yourself from memory.
+    LOCK IT IN - call this instead of matching the slot yourself from
+    memory.
 
-    `user_input`: the patient's raw reply - a bare number ("2", "٢"),
-    or the time they typed in their own words ("11:00", "11 الصبح",
-    "الساعة 5", "5 مساءً", "at 3 pm"). Pass it through unchanged; you
-    never need to translate a time or work out which slot it is.
+    `user_input`: their raw reply - a bare number ("2", "٢") or the time
+    in their own words ("11:00", "11 الصبح", "الساعة 5", "5 مساءً", "at
+    3 pm"). Pass it unchanged; you never need to translate a time or
+    work out which slot it is.
 
-    THIS IS ALSO THE TOOL FOR A TIME THE PATIENT NAMED UP FRONT.
-    When their message asked for a specific hour ("احجزلي يوم الأحد
-    الساعة 5"), call `get_available_slots_for_booking` for that day and
-    then call THIS with their own words. Its answer is what tells you
-    whether that exact time is bookable - never decide that by reading
-    the list yourself.
+    THIS IS ALSO THE TOOL FOR A TIME NAMED UP FRONT. When their message
+    asked for a specific hour ("احجزلي يوم الأحد الساعة 5"), call
+    `get_available_slots_for_booking` for that day and then call THIS
+    with their own words. Its answer is what tells you whether that time
+    is bookable - never decide that by reading the list yourself.
 
-    WHY THIS EXISTS: doctor and branch picks are resolved this same way,
-    in code, against the exact list just shown - this was the one
-    remaining numbered list left entirely to your own memory of the
-    conversation. CONFIRMED REAL PRODUCTION FAILURE: a patient picked
-    slot "2", was asked to confirm their WhatsApp number, said "yes" -
-    and was then asked to give the time again, because nothing had
-    actually recorded which slot "2" was; it only existed as something
-    to recall several turns later, and that recall failed. Once this
-    tool resolves a slot, it is saved on the booking session and stays
-    there - you never need to re-derive it, including across the phone
-    number question, and a directive will remind you of the exact
-    values when it's time to call `create_new_booking`.
+    Once this resolves a slot it is saved on the booking session and
+    stays there, including across the phone-number question, so you
+    never re-derive it; a directive will remind you of the exact values
+    when it is time to call `create_new_booking`.
 
-    Returns:
+    Each status below carries its own handling instruction with the result
+    itself (the `_guidance` field) - read that when it arrives.
+
+    Returns one of:
     {"status": "selected", "slot": {"slotStart", "slotEnd", "date_display",
      "weekday_display", "time_display", "serviceName"}}
-        -> confirm it back in ONE short line and move on to STEP NB6 -
-           never re-ask for the time now that this succeeded.
-    {"status": "no_list_shown"}  # no slot list is remembered for this
-        session - call `get_available_slots_for_booking` first, never
-        guess a time.
-    {"status": "out_of_range", "list_size": N}  # a number outside the
-        list that was shown - tell them the valid range, don't guess.
+    {"status": "no_list_shown"}
+    {"status": "out_of_range", "list_size": N}
     {"status": "ambiguous_time", "candidates": [slot, ...]}
-        -> they named an hour with no morning/evening word and this day
-           has a slot in BOTH halves of the day (e.g. "5" with a 5:00
-           and a 17:00 open). Show ONLY these candidates' own
-           `time_display` values and ask which one - never pick one
-           yourself.
-    {"status": "not_matched"}  # the time they named is NOT among this
-        day's open slots - which is a real answer, not a failure. Say
-        plainly that that exact time isn't available on that day, then
-        show the times that ARE open (the list you just fetched) and let
-        them pick. Never invent a slot to fill the gap, and never move
-        them to a different day without saying so."""
+    {"status": "not_matched"}"""
+
+    # ------------------------------------------------------------------
+    # MAINTAINER NOTES - MOVED OUT OF THE DOCSTRING.
+    # A tool's docstring IS its `description`, sent to the model on
+    # every call by every agent bound to it. The notes below are for
+    # whoever next edits this function - they are not instructions the
+    # model can act on, so they live here rather than being re-billed
+    # every turn. Nothing has been deleted.
+    #
+    # WHY THIS TOOL EXISTS. Doctor and branch picks are resolved in code
+    # against the exact list just shown; this was the one remaining
+    # numbered list left entirely to the model's memory of the
+    # conversation.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE: a patient picked slot "2", was
+    # asked to confirm their WhatsApp number, said "yes" - and was then
+    # asked to give the time again, because nothing had actually recorded
+    # which slot "2" was. It only existed as something to recall several
+    # turns later, and that recall failed.
+    # ------------------------------------------------------------------
 
     session_id = state.get("session_id")
     session = _get_booking_session(session_id)
@@ -9601,19 +9402,13 @@ def send_complaint_email(
     recalled or amended once it reaches the quality team, so collect
     the details, name, and phone first and confirm them.
 
-    Returns:
+    Each status below carries its own handling instruction with the result
+    itself (the `_guidance` field) - read that when it arrives.
+
+    Returns one of:
     {"status": "sent"}
     {"status": "incomplete", "missing": [...], "reason": ...}
-        # Required details are missing or too thin to act on, OR the
-        # patient's own explicit confirmation to STEP C6's "تأكيد إرسال
-        # الشكوى بهذا الشكل؟" question was not the immediately-preceding
-        # exchange (missing item "explicit_confirmation") - NOTHING was
-        # sent either way. Go back and collect what's listed in
-        # `missing` (one question per message), show the full summary,
-        # get an explicit yes to THAT summary, then call this again.
-        # Do NOT tell them the complaint was submitted.
-    {"status": "not_configured"}  # this clinic has no complaint recipient email(s) set up
-    {"status": "error"}  # sending failed (webhook or SMTP error)"""
+    {"status": "not_configured"} / {"status": "error"}"""
 
     # Deterministic completeness check, BEFORE any delivery attempt.
     # The flow in prompts.py already spells out collecting these one at
@@ -9792,59 +9587,51 @@ def request_human_handoff(
     reason: str,
     patient_agreed: bool,
 ) -> dict:
-    """Signal the surrounding system (n8n) to hand this patient off to a
-    human staff member RIGHT NOW.
+    """Signal the surrounding system (n8n) to hand this patient to a human
+    staff member RIGHT NOW.
 
-    A handoff ENDS the patient's conversation with you and puts them in a
-    queue, so it only ever happens with the patient's own say-so. There
-    are exactly two ways to get that, and `patient_agreed` must be True
-    for both:
-      - They ASKED for a person themselves ("موظف", "عايز أتكلم مع حد",
-        "حد يرد عليا", "human agent"), or
-      - You OFFERED a handoff in an earlier turn (e.g. after a real
-        failure you couldn't work around) and they said yes to that
-        offer in this turn.
+    A handoff ENDS the conversation with you and queues them, so it only
+    happens with the patient's own say-so. Exactly two ways to get it,
+    and `patient_agreed` must be True for both:
+      - they ASKED for a person ("موظف", "عايز أتكلم مع حد", "حد يرد
+        عليا", "human agent"), or
+      - you OFFERED a handoff in an earlier turn (e.g. after a real
+        failure you couldn't work around) and they said yes this turn.
 
-    Frustration is NOT agreement. A patient complaining that this isn't
-    working, insulting you, or saying "انت مش بتعرف تعمل حاجة" is telling
-    you they're upset - not asking to be transferred. In that situation
-    do NOT call this tool: apologize, and ASK whether they'd like you to
-    transfer them to a staff member. Then call it only after they say
-    yes.
+    FRUSTRATION IS NOT AGREEMENT. A patient complaining this isn't
+    working, insulting you, or saying "انت مش بتعرف تعمل حاجة" is upset,
+    not asking to be transferred. Do NOT call this: apologize, ASK
+    whether they want a staff member, and call it only after they agree.
 
-    WANTING TO FILE A COMPLAINT IS ALSO NOT AGREEMENT. "شكوى"/"شكوي"/"عاوزه
-    اعمل شكوه"/"I have a complaint" states a TOPIC, not a request for a
-    person - filing a complaint has its own flow (ask what happened,
-    which doctor/branch if relevant, then call `send_complaint_email`)
-    and stays with you unless the patient separately, explicitly asks
-    for a human. The word "complaint"/"شكوى" appearing anywhere in the
-    message is never, by itself, grounds to call this tool.
+    WANTING TO FILE A COMPLAINT IS NOT AGREEMENT EITHER. "شكوى"/"شكوي"/
+    "عاوزه اعمل شكوه"/"I have a complaint" states a TOPIC, not a request
+    for a person. Complaints have their own flow (ask what happened,
+    which doctor/branch if relevant, then `send_complaint_email`) and
+    stay with you unless the patient separately and explicitly asks for
+    a human. The word "complaint"/"شكوى" is never by itself grounds to
+    call this.
 
-    Pass `patient_agreed=False` if you are unsure whether they actually
-    agreed - the handoff is then NOT raised, and you should ask them
-    instead. Never set it True to describe a handoff you are about to
-    offer but they haven't accepted yet.
+    Pass `patient_agreed=False` when unsure - the handoff is then NOT
+    raised and you should ask them. Never pass True for a handoff you
+    are about to offer but they haven't accepted.
 
-    This tool does NOT contact anyone itself and returns no
-    patient-facing text - it only raises a flag that n8n reads from this
-    turn's response and acts on. It does NOT replace your own reply:
-    still say the clinic's own handoff-confirmation line to the patient
-    in this same turn, exactly as usual.
+    This tool contacts nobody itself and returns no patient-facing text
+    - it raises a flag n8n reads from this turn's response. It does NOT
+    replace your reply: still say the clinic's own handoff-confirmation
+    line in this same turn.
 
-    `reason` is for logs only, never shown to the patient - one short
-    phrase describing what they actually said (e.g. "patient asked for
-    staff", "patient accepted handoff offer after booking API failure").
+    `reason` is for logs only, never shown - one short phrase on what
+    they actually said (e.g. "patient asked for staff", "patient
+    accepted handoff offer after booking API failure").
 
-    Returns {"status": "handoff_requested"} when raised, or
+    Returns {"status": "handoff_requested"}, or
     {"status": "not_requested", "reason": "patient_has_not_agreed"} when
-    `patient_agreed` was False - in which case ask them first.
+    `patient_agreed` was False - ask them first in that case.
 
-    HARD GUARD (enforced here, not left to this docstring alone - see
-    the module-level comment above `_COMPLAINT_ROOTS_FOR_HANDOFF_GUARD`):
-    if the patient's own latest message names a complaint ("شكوى"/
-    "اشتكي"/"complaint" or similar) and does NOT also separately name a
-    person/staff/representative, the call is downgraded to
-    "not_requested" regardless of what `patient_agreed` was passed as."""
+    HARD GUARD, enforced in code: if the patient's latest message names
+    a complaint ("شكوى"/"اشتكي"/"complaint") and does NOT also
+    separately name a person/staff/representative, the call is
+    downgraded to "not_requested" whatever `patient_agreed` said."""
     # ------------------------------------------------------------------
     # MAINTAINER NOTES - MOVED OUT OF THE DOCSTRING.
     # A tool's docstring IS its `description`, sent to the model on every
@@ -9862,6 +9649,10 @@ def request_human_handoff(
     # was immediately transferred with reason="patient asked for staff" -
     # they had said nothing of the kind, and never got the chance to
     # actually describe the complaint at all.
+    #
+    # The HARD GUARD above is enforced here, not left to the docstring
+    # alone - see the module-level comment above
+    # `_COMPLAINT_ROOTS_FOR_HANDOFF_GUARD`.
     # ------------------------------------------------------------------
 
 
