@@ -5672,6 +5672,38 @@ _NOT_A_BRANCH_NAME = {
     # retries.
     "اني", "أني", "انهي", "أنهي", "وانهي", "وأنهي", "اي", "أي", "وأي", "واي",
     "يوم", "ايه", "إيه",
+    # PRONOUNS AND PARTICLES, WHICH IS WHAT ACTUALLY FOLLOWS "فرع" IN A
+    # QUESTION - and the shape that broke this guard three times in one
+    # session while the branch data was perfectly correct every time.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURES (medtown, session
+    # 201003365691+medtown2, 2026-09-09):
+    #
+    #   14:53:21  "الدكتور طه مبروك ما تم تأكيد فرع له بعد، ممكن تحدد لي
+    #              الفرع اللي تفضل تحجز فيه؟" - a reply that names NO
+    #              branch at all was rejected for the invented branch
+    #              "له بعد", and the patient who had just answered
+    #              "التلات" got "ممكن توضحلي طلبك تاني؟".
+    #
+    #   14:40:20  and again 14:40:39 - the clinic's six REAL branches,
+    #              recorded by `_remember_list` in that same turn, were
+    #              rejected because the closing question read "تحب تعرف
+    #              عن خدمات أي فرع منهم؟" and "منهم" was captured as a
+    #              seventh, invented branch. The patient asked "what
+    #              branches do you have" three times and was told to
+    #              rephrase twice.
+    #
+    #   14:41:05  the IDENTICAL list went out fine, because that reply
+    #              happened to close with "أحد الفروع؟" - a question
+    #              mark straight after the word, so nothing was
+    #              captured. That is what made this look intermittent:
+    #              the branch list was never the variable, the closing
+    #              sentence was.
+    "له", "لها", "لهم", "لك", "لكم", "لي", "لنا",
+    "منهم", "منها", "منه", "منك", "منكم", "مننا",
+    "بيهم", "بيها", "بيه", "فيهم", "عليهم", "عليها", "عنده", "عندها",
+    "بعد", "بعده", "بعدها", "بعدين", "لسه", "لسة", "قبل",
+    "حاليا", "حاليًا", "دلوقتي", "الحين", "هنا", "هناك",
     # CONFIRMED REAL PRODUCTION FAILURE (medtown, 2026-08-30): "ما لقيت
     # فرع اسمه \"فرع النيل\"" - a correct denial that a patient-invented
     # branch exists - was itself parsed as naming a branch, because
@@ -5913,6 +5945,110 @@ _TIME_LIST_RE = re.compile(r"[1-9]\uFE0F?\u20E3\s*\d{1,2}\s*[:：]\s*\d{2}")
 _SOONEST_OFFER_RE = re.compile(
     r"اقرب\s*موعد|أقرب\s*موعد|هل\s*يناسبك|يناسبك\s*(?:هذا|ده|هالموعد)|"
     r"earliest\s*(?:available\s*)?appointment|does\s*(?:this|that)\s*work"
+)
+
+
+# Every tool that can put a clock time in a reply: the two slot lists,
+# the two rota readers and the day resolver. The check below asks whether
+# ANY of them ran this turn, not whether the right one did - see its
+# docstring on why it is deliberately that lenient.
+_TIME_BEARING_TOOLS = (
+    "get_available_slots_for_booking",
+    "get_available_reschedule_slots",
+    "get_doctor_schedule_for_booking",
+    "get_doctor_schedule",
+    "resolve_available_day",
+)
+
+
+def _reply_lists_times_with_no_lookup_this_turn(reply_text: str, state: AgentState) -> bool:
+    """True when a reply prints a numbered list of TIMES and no
+    availability tool ran in this turn at all.
+
+    THE ONE LIST THAT HAD NO GUARD ON IT. `_find_invented_doctors` and
+    `_find_invented_branches` both exist because a roster from earlier in
+    the conversation was recalled and presented as current. The slot
+    list - the list that decides when somebody turns up at a hospital -
+    was the one nothing checked.
+
+    `_reply_states_unavailable_appointment` does not cover it. That check
+    asks whether any availability result in the CONVERSATION contains
+    these times, and after a real lookup twenty minutes ago the answer is
+    yes. It catches invented times, not stale ones.
+
+    AND A STALE LIST DOES NOT ONLY MISLEAD - IT DEADLOCKS THE FLOW. The
+    numbering the patient answers against is recorded by
+    `_remember_list`, which runs INSIDE the tool that was skipped. So the
+    list is displayed, nothing is remembered, and their "5" resolves
+    against nothing.
+
+    CONFIRMED REAL PRODUCTION FAILURE (medtown, session
+    201003365691+medtown2, 2026-09-09). Last real lookup 14:28:42, then:
+
+        14:44:36  ten numbered times printed - no tool call in the turn
+        14:48:28  the same ten printed again - no tool call
+        14:48:41  the patient answered "5"
+        14:48:50  "before a doctor was confirmed and a time slot was
+                   selected in the booking session"
+        14:50:16  get_patient_info ... refusing
+        14:52:32  get_patient_info ... refusing
+        14:53:02  select_appointment_slot: no slot list is remembered
+
+    Five minutes of a closed loop, and every tool downstream was right to
+    refuse - the state they each demanded is written by the call that
+    never happened.
+
+    DELIBERATELY LENIENT IN TWO WAYS, because this is a SAFETY check and
+    a SAFETY check that misfires twice costs the patient the whole turn:
+
+    - ANY of `_TIME_BEARING_TOOLS` clears it, not just the slot lists. A
+      reply that numbers a doctor's clinic hours straight out of
+      `get_doctor_schedule_for_booking` is not this failure, and reading
+      the rota rows closely enough to tell them apart from slots is how
+      a guard starts firing on correct replies.
+    - THREE numbered times is the threshold, matching
+      `_reply_dumps_times_without_offering_soonest`. One or two times in
+      prose ("from 10:00 to 12:00") is a sentence, not a pick-a-slot
+      list."""
+
+    if not reply_text:
+        return False
+
+    if len(_TIME_LIST_RE.findall(reply_text)) < 3:
+        return False
+
+    messages = (state or {}).get("messages") or []
+    if _latest_human_index(messages) < 0:
+        # No patient message to measure a turn from. Nothing to say, so
+        # say nothing.
+        return False
+
+    return not _tool_results_since_latest_human(messages, _TIME_BEARING_TOOLS)
+
+
+_STALE_TIME_LIST_CORRECTION_DIRECTIVE = (
+    "============================================================\n"
+    "THOSE TIMES DID NOT COME FROM A TOOL THIS TURN\n"
+    "============================================================\n"
+    "Your previous draft printed a numbered list of appointment times, "
+    "and no availability tool ran in this turn. Those times were written "
+    "from memory of an earlier point in the conversation.\n\n"
+    "A slot that was free twenty minutes ago may be booked now, so that "
+    "is a list of appointments you cannot promise. It also breaks the "
+    "very next step: the numbering the patient replies against is "
+    "recorded by the availability tool itself, so a list you typed "
+    "yourself resolves to nothing and their \"3\" cannot be matched to "
+    "any slot - they pick a time, and the booking cannot proceed.\n\n"
+    "Call `get_available_slots_for_booking` NOW (or "
+    "`get_available_reschedule_slots` when you are moving an existing "
+    "appointment), for the doctor and the day already settled in this "
+    "conversation, and show ONLY the times it returns, in its exact "
+    "order. Do not reprint the list you just wrote. If it returns "
+    "nothing, say that plainly instead of offering any time.\n\n"
+    "CONFIRMED REAL PRODUCTION FAILURE: ten times were printed from "
+    "memory, twice, sixteen minutes after the last real lookup. The "
+    "patient answered \"5\", nothing could resolve it, and every tool "
+    "in the booking flow refused for the next five minutes.\n\n"
 )
 
 
@@ -12014,6 +12150,15 @@ _REPLY_VERIFIERS = (
         lambda reply, state, agent_name: bool(_find_invented_doctors(reply, state)),
         lambda reply, state: _INVENTED_DOCTORS_CORRECTION_DIRECTIVE,
         "reply listed doctor(s) that appear in no tool result in this conversation",
+    ),
+    (
+        lambda reply, state, agent_name: _reply_lists_times_with_no_lookup_this_turn(
+            reply, state
+        ),
+        lambda reply, state: _STALE_TIME_LIST_CORRECTION_DIRECTIVE,
+        "reply printed a numbered list of appointment times with no availability "
+        "tool call in this turn - the times are recalled, and nothing recorded "
+        "the numbering the patient will answer against",
     ),
     (
         lambda reply, state, agent_name: bool(_find_invented_branches(reply, state)),
