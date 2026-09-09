@@ -153,6 +153,111 @@ def split_sections(built_prompt: str) -> Dict[str, str]:
     return sections
 
 
+
+# A step HEADING inside a flow section: "STEP NB3 - Show the doctor's ..."
+#
+# THE SEPARATOR IS WHAT MAKES IT A HEADING RATHER THAN A SENTENCE. The
+# booking flow opens by cross-referencing a later step in prose - "STEP
+# NB6 below, and the SAME OTP/phone rules throughout." - and names
+# another mid-paragraph as "STEP NB6. Confirmed real production
+# failure...". Matching a bare "STEP NBn" pulled both in as headings,
+# which put NB6 first in the flow order and swallowed the flow's own
+# preamble into it. A real heading always separates key from title.
+_STEP_RE = re.compile(
+    r"^STEP (?P<key>[A-Z]*[0-9][0-9A-Za-z]*)[ \t]*[-\u2013\u2014:][ \t]+\S.*$",
+    re.MULTILINE,
+)
+
+# Which flow sections are worth slicing by step, and in what order the
+# steps run.
+#
+# ONLY `booking`. Measured on the real prompt: the booking flow is
+# 14,758 tokens of which STEP NB1 alone is 7,964 - a patient choosing a
+# time is carrying eight thousand tokens about how to START a booking.
+# Every other flow is small enough that slicing it would cost more in
+# cache misses than it saves: cancel is 3,388 tokens in total,
+# complaint 3,805, reschedule 1,649. `medical`, `faq` and `entity_info`
+# have no step structure at all.
+FLOW_STEP_ORDER = {
+    "booking": ("NB1", "NB2", "NB3", "NB4", "NB5", "NB6", "NB7"),
+}
+
+
+def split_flow_steps(section_text: str):
+    """(head, [(step_key, text), ...]) for a flow section.
+
+    `head` is everything before the first step marker - the flow's own
+    banner and any preamble - and each step keeps its marker line.
+
+    A step key that appears more than once (the prompt cross-references
+    "STEP NB6" from inside NB4, for instance) has its parts concatenated
+    under that key, so nothing is lost and nothing is duplicated."""
+
+    if not section_text:
+        return "", []
+
+    matches = list(_STEP_RE.finditer(section_text))
+    if not matches:
+        return section_text, []
+
+    head = section_text[: matches[0].start()].rstrip()
+
+    steps = {}
+    order = []
+    for index, match in enumerate(matches):
+        end = (matches[index + 1].start() if index + 1 < len(matches)
+               else len(section_text))
+        key = match.group("key")
+        body = section_text[match.start():end].strip("\n")
+        if key in steps:
+            steps[key] = steps[key] + "\n\n" + body
+        else:
+            steps[key] = body
+            order.append(key)
+
+    return head, [(key, steps[key]) for key in order]
+
+
+def flow_is_sliceable(flow_key: str, section_text: str) -> bool:
+    """True only when EVERY step `FLOW_STEP_ORDER` declares was actually
+    found in the section.
+
+    This is the guard that makes rewording prompts.py safe. If a heading
+    is edited into a shape `_STEP_RE` no longer recognises, this goes
+    False and the caller sends the whole flow - the unsliced behaviour -
+    rather than a flow quietly missing a step."""
+
+    declared = FLOW_STEP_ORDER.get(flow_key)
+    if not declared:
+        return False
+
+    _head, steps = split_flow_steps(section_text)
+    return set(declared) == {key for key, _ in steps}
+
+
+def steps_to_send(flow_key: str, step: str):
+    """Which step keys a turn on `step` should carry: that step and the
+    one after it.
+
+    THE LOOKAHEAD IS NOT OPTIONAL. Each step ends by moving to the next
+    one, and a model that cannot see where it is going writes a reply
+    that stops short - so the next step travels with the current one.
+
+    An unknown flow or an unrecognised step returns None, and the caller
+    then sends the whole flow, which is exactly the unsliced behaviour."""
+
+    order = FLOW_STEP_ORDER.get(flow_key)
+    if not order or not step:
+        return None
+
+    try:
+        at = order.index(step)
+    except ValueError:
+        return None
+
+    return tuple(order[at:at + 2])
+
+
 def has_all_required(sections: Dict[str, str]) -> bool:
     """True when every section the specialists rely on was found."""
 
