@@ -65,7 +65,8 @@ import config
 import tools as tools_module
 from agents.hard_rules import scope_hard_rules
 from agents.response_contract import RESPONSE_FORMAT_CONTRACT
-from agents.sections import PREAMBLE_KEY, extra_keys, has_all_required
+from agents.sections import (PREAMBLE_KEY, extra_keys, flow_is_sliceable,
+                             has_all_required, split_flow_steps, steps_to_send)
 
 logger = logging.getLogger(__name__)
 
@@ -454,14 +455,35 @@ _SHARED_MID_KEYS = ("reference_phrases", "fixed_templates")
 _SHARED_TAIL_KEYS = ("hard_rules",)
 
 
-def build_agent_prompt(sections: Dict[str, str], agent_name: str) -> str:
+def build_agent_prompt(sections: Dict[str, str], agent_name: str,
+                       step: str = None) -> str:
     """
     Composes one specialist's system prompt out of the already-split
     sections of the tenant's real, fully-substituted prompt.
 
-    FAIL-SAFE: if the split didn't produce everything expected (someone
-    renamed a heading in prompts.py), this returns the full prompt
-    unchanged, which is the previous single-agent behaviour.
+    `step` (e.g. "NB3") asks for JUST-IN-TIME delivery of that flow: the
+    flow's step blocks are dropped from their usual position and only
+    the current step and the next one are appended, at the very end.
+
+    WHY THE END, AND NOT IN PLACE. Sending only the current step is the
+    obvious version of this and it is the expensive one. OpenAI's cache
+    matches a leading PREFIX, so a step block sitting in its usual
+    position - a third of the way in - makes everything after it
+    uncacheable too, including the 7.7k of hard rules. Measured on the
+    booking prompt, per call:
+
+        whole flow, one prefix      28,741 tokens   $0.0144 cached
+        step in place               16,173 tokens   $0.0258 cached
+        step at the end             16,173 tokens   $0.0113 cached
+
+    Slicing in place sends 44% fewer tokens and costs 79% MORE once the
+    cache is warm. Moving the slice past the hard rules keeps 14,015
+    tokens in the stable prefix and is cheaper at every hit rate.
+
+    FAIL-SAFE, twice: if the split didn't produce everything expected
+    (someone renamed a heading in prompts.py) this returns the full
+    prompt, and if `step` is unknown or the flow has no step structure
+    the flow is sent whole - both of which are the unsliced behaviour.
     """
 
     spec = get_spec(agent_name)
@@ -499,12 +521,57 @@ def build_agent_prompt(sections: Dict[str, str], agent_name: str) -> str:
     parts.append(spec.job)
     parts.append(SERVICE_INDEX)
 
+    # Step blocks held back to the very end - see this function's
+    # docstring for why the position, not the size, is what decides
+    # whether this saves anything.
+    deferred: List[str] = []
+
     seen = set(_SHARED_HEAD_KEYS + _SHARED_MID_KEYS + _SHARED_TAIL_KEYS)
     for key in flow_keys:
         if key in seen or key not in sections:
             continue
         seen.add(key)
-        parts.append(sections[key])
+
+        wanted = steps_to_send(key, step) if step else None
+        if wanted and not flow_is_sliceable(key, sections[key]):
+            logger.warning(
+                "agents.registry: %s's step headings no longer split cleanly - "
+                "sending the whole flow rather than one with a step missing", key,
+            )
+            wanted = None
+        if not wanted:
+            parts.append(sections[key])
+            continue
+
+        head, steps = split_flow_steps(sections[key])
+        if not steps:
+            parts.append(sections[key])
+            continue
+
+        # The flow's banner and preamble stay where they were, so the
+        # prompt still reads as having that flow in it.
+        if head.strip():
+            parts.append(head)
+
+        chosen = [text for step_key, text in steps if step_key in wanted]
+        if not chosen:
+            # Asked for steps that this flow does not contain - send it
+            # whole rather than a flow with its body missing.
+            parts.append("\n\n".join(text for _, text in steps))
+            continue
+
+        deferred.append(
+            "============================================================\n"
+            f"WHERE THIS BOOKING HAS GOT TO - STEP {wanted[0]}\n"
+            "============================================================\n"
+            "The step below is the one this conversation is actually on, "
+            "followed by the one it moves to next. The earlier steps of "
+            "this flow are behind you and are not repeated here.\n\n"
+            "This does NOT override the GLOBAL HARD RULES above - it "
+            "comes after them only so the rules stay identical on every "
+            "turn of every conversation.\n\n"
+            + "\n\n".join(chosen)
+        )
 
     # GLOBAL HARD RULES, NARROWED TO THIS SPECIALIST.
     #
@@ -520,6 +587,8 @@ def build_agent_prompt(sections: Dict[str, str], agent_name: str) -> str:
         if key == "hard_rules":
             section = scope_hard_rules(section, spec.name)
         parts.append(section)
+
+    parts.extend(deferred)
 
     return "\n\n".join(part.strip() for part in parts if part and part.strip())
 
