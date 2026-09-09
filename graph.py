@@ -3,6 +3,7 @@ LangGraph graph for the LLM-tool-calling Guest Booking Cancellation Agent.
 
 REWRITTEN (see graph.py.pre_rewrite_backup for the old deterministic
 20-node router). The graph is now a standard two-node ReAct-style loop:
+
     START -> load_config -> agent <-> tools -> END
 
   - load_config: loads/caches the tenant's client_config.csv +
@@ -40,14 +41,16 @@ import os
 import sys
 import logging
 import re
+import uuid
 import ast
 from datetime import date, datetime
 from typing import Dict, Optional
 
-from langchain_core.messages import AIMessage, SystemMessage, trim_messages
+from langchain_core.messages import AIMessage, SystemMessage, ToolMessage, trim_messages
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
+from langchain_core.runnables import RunnableConfig
 from langgraph.prebuilt import ToolNode
 from openai import APIConnectionError as _OpenAIAPIConnectionError
 from openai import APITimeoutError as _OpenAIAPITimeoutError
@@ -58,6 +61,7 @@ import progress
 import tools
 from prompts import build_agent_system_prompt, build_system_prompt
 from state import AgentState
+import tool_result_guidance
 
 logger = logging.getLogger(__name__)
 
@@ -116,13 +120,64 @@ _router_llm = ChatOpenAI(
 # bypass the substitution the moment routing picked a specialist.
 _DEFAULT_LLM_WITH_TOOLS = _llm_with_tools
 
+# A CLIENT PER MODEL, BUILT ONCE. Most specialists share `_llm`; the
+# ones config.OPENAI_MODEL_BY_AGENT puts on a different model get their
+# own client. Keyed by model name so two specialists on the same cheap
+# model share one client rather than opening two.
+_LLM_BY_MODEL = {config.OPENAI_MODEL: _llm}
+
+
+def _llm_for_model(model: str):
+    """The ChatOpenAI client for `model`, created on first use.
+
+    Falls back to the primary client if a model name cannot be
+    instantiated - a bad value in OPENAI_MODEL_BY_AGENT should cost the
+    saving, not the service."""
+
+    if not model or model == config.OPENAI_MODEL:
+        return _llm
+
+    existing = _LLM_BY_MODEL.get(model)
+    if existing is not None:
+        return existing
+
+    try:
+        client = ChatOpenAI(
+            model=model,
+            api_key=config.OPENAI_API_KEY or "sk-not-configured",
+            timeout=config.OPENAI_TIMEOUT_SECONDS,
+            temperature=config.OPENAI_TEMPERATURE,
+        )
+    except Exception:
+        logger.warning(
+            "could not create a client for model %r - falling back to %s",
+            model, config.OPENAI_MODEL, exc_info=True,
+        )
+        client = _llm
+
+    _LLM_BY_MODEL[model] = client
+    return client
+
+
 # One binding per specialist, built once at import. Binding is pure
 # schema work - no network call, no API key needed - so this is cheap
 # and safe even where OPENAI_API_KEY is absent.
+#
+# THE MODEL IS PART OF THE BINDING, NOT A PARAMETER. Retrieval and
+# form-filling do not need the model that reasons about a booking flow -
+# see config.OPENAI_MODEL_BY_AGENT for which roles keep which, and why.
 _AGENT_LLMS = {
-    name: _llm.bind_tools(agents.tools_for(name))
+    name: _llm_for_model(
+        config.OPENAI_MODEL_BY_AGENT.get(name, config.OPENAI_MODEL)
+    ).bind_tools(agents.tools_for(name))
     for name in agents.AGENT_NAMES
 }
+
+for _name in agents.AGENT_NAMES:
+    _model = config.OPENAI_MODEL_BY_AGENT.get(_name)
+    if _model and _model != config.OPENAI_MODEL:
+        logger.info("agent[%s]: using %s rather than %s", _name, _model,
+                    config.OPENAI_MODEL)
 
 
 # ==========================================================
@@ -193,6 +248,601 @@ def _llm_for(agent_name: str):
         return _llm_with_tools
 
     return _AGENT_LLMS.get(agent_name, _llm_with_tools)
+
+
+# ==========================================================
+# WHERE A BOOKING HAS GOT TO
+# ==========================================================
+
+def _booking_step(session_id: Optional[str]) -> Optional[str]:
+    """Which STEP of the new-booking flow this conversation is on, read
+    from the booking session rather than inferred from the text.
+
+    Every one of these fields is written by a tool that SUCCEEDED, so
+    this is a record of what has actually happened, not a guess:
+    `specialty_ids` and `doctor_id` by `match_entity_for_booking` /
+    `find_available_doctors`, `slots_shown` by
+    `get_available_slots_for_booking`, `selected_slot` by
+    `select_appointment_slot`, `booking_phone` by the phone step.
+
+    Read in reverse flow order - the furthest thing that has happened
+    wins - so a conversation that has a slot locked in is on the phone
+    step even though it also, still, has a specialty.
+
+    Returns None when nothing has been settled, which sends the whole
+    flow: a patient at the start genuinely needs STEP NB1, and NB1 is
+    where every "they named a doctor / a service / a symptom instead"
+    branch lives."""
+
+    session = tools._BOOKING_SESSIONS.get(session_id) or {}
+    if not session:
+        return None
+
+    if session.get("selected_slot"):
+        return "NB7" if session.get("booking_phone") else "NB6"
+
+    if session.get("slots_shown"):
+        return "NB5"
+
+    if session.get("doctor_id"):
+        return "NB3" if session.get("branch_id") else "NB2"
+
+    if session.get("specialty_ids") or session.get("service_id"):
+        return "NB2"
+
+    return None
+
+
+# ==========================================================
+# DETERMINISTIC TURNS - replies this graph can write itself
+# ==========================================================
+#
+# THE OBSERVATION THIS IS BUILT ON. Nine directives in this file already
+# pre-build the EXACT text of a reply in code - the slot list, the day
+# list, every entity list, the resolved-day confirmation, the doctor's
+# schedule, the appointment list, one found appointment, and both
+# success cards - and hand it to the model wrapped in
+# `[BEGIN-EXACT-TEXT] ... [END-EXACT-TEXT]` with an instruction that
+# amounts to "copy this verbatim, add one question, add nothing else".
+# Several of them say outright that the block is the ENTIRE reply.
+#
+# Every one of those turns costs a full LLM call at the specialist's
+# floor - ~38,600 tokens for `booking` - to copy a finished string.
+#
+# WHAT IS AND IS NOT DECIDED HERE. The block is not rebuilt: the same
+# directive strings `_run_agent` was about to send to the model are read
+# back, and the block is taken out from between the markers. So the text
+# the patient gets is byte-for-byte the text the model was being told to
+# reproduce, and the two cannot drift apart - if a builder changes, this
+# changes with it. The only thing added is the closing question, which
+# is the one part of these replies that was ever phrasing rather than
+# data, and a clinic can own it per turn through a template key.
+#
+# WHY THERE IS A FLAG AND WHY IT IS OFF. A code-written reply is not in
+# the tenant's dialect unless that tenant has authored the closing
+# question. That is a judgement about a client's voice, not an
+# engineering question, so nothing here carries traffic until someone
+# who speaks the dialect has read the replies. `DETERMINISTIC_TURNS`
+# selects which families are live, so it can be rolled out one at a
+# time rather than all nine at once.
+
+_EXACT_TEXT_RE = re.compile(
+    r"\[BEGIN-EXACT-TEXT\]\n(.*?)\n\[END-EXACT-TEXT\]", re.DOTALL,
+)
+
+
+def _exact_block(directive: str) -> Optional[str]:
+    """The pre-built reply text out of a directive, or None.
+
+    Returns None for a directive with no block, more than one block, or
+    an empty one - "I am not sure what the reply is" has to fall through
+    to the model rather than guess."""
+
+    if not directive:
+        return None
+
+    found = _EXACT_TEXT_RE.findall(directive)
+    if len(found) != 1:
+        return None
+
+    block = found[0].strip()
+    return block or None
+
+
+# The closing question for each family. `None` means the block is the
+# whole reply - which is what the directive itself says for the success
+# cards ("Do NOT add a question - this message already closes the
+# conversation on its own terms") and for the schedule display, whose
+# lead-in sentence it explicitly makes optional.
+_TURN_CLOSINGS = {
+    "slots": {
+        "ar": "أي وقت منهم يناسبك؟ اكتب لي الرقم أو الوقت بالظبط.",
+        "en": "Which time works for you? Send me the number, or the "
+              "exact time.",
+    },
+    "available_days": {
+        "ar": "أي يوم منهم يناسبك؟ اكتب لي رقمه.",
+        "en": "Which day suits you? Send me its number.",
+    },
+    "resolved_day": {
+        "ar": "اليوم ده يناسبك؟",
+        "en": "Does that day work for you?",
+    },
+    "appointment_choice": {
+        "ar": "أي موعد منهم؟ اكتب لي رقمه.",
+        "en": "Which appointment do you mean? Send me its number.",
+    },
+    "entity_doctor": {
+        "ar": "تحب تحجز مع مين منهم؟ اكتب لي رقمه أو اسمه.",
+        "en": "Which of them would you like to book with? Send me their "
+              "number or their name.",
+    },
+    "entity_specialty": {
+        "ar": "أي تخصص تحب تحجز فيه؟ اكتب لي رقمه أو اسمه.",
+        "en": "Which specialty would you like to book in? Send me its "
+              "number or its name.",
+    },
+    "entity_branch": {
+        "ar": "أي فرع يناسبك؟ اكتب لي رقمه أو اسمه.",
+        "en": "Which branch suits you? Send me its number or its name.",
+    },
+    # One found appointment. The directive asks for "one yes/no question
+    # appropriate to what's happening" - which is not open judgement
+    # here, because the specialist that owns the turn IS what is
+    # happening. Any other specialist declines rather than guess.
+    "appointment_cancel": {
+        "ar": "ده الموعد اللي تحب تلغيه؟",
+        "en": "Is this the appointment you'd like to cancel?",
+    },
+    "appointment_reschedule": {
+        "ar": "ده الموعد اللي تحب تعدله؟",
+        "en": "Is this the appointment you'd like to reschedule?",
+    },
+    "terminal_success": None,
+    "booking_success": None,
+    "schedule_display": None,
+}
+
+# Tenant override per family, read from client_config.csv the same way
+# `msg_booking_entry` already is.
+_TURN_TEMPLATE_KEYS = {
+    "slots": "msg_slot_list_question",
+    "available_days": "msg_day_list_question",
+    "resolved_day": "msg_day_confirm_question",
+    "appointment_choice": "msg_appointment_choice_question",
+    "entity_doctor": "msg_doctor_list_question",
+    "entity_specialty": "msg_specialty_list_question",
+    "entity_branch": "msg_branch_list_question",
+    "appointment_cancel": "msg_appointment_cancel_question",
+    "appointment_reschedule": "msg_appointment_reschedule_question",
+}
+
+# Which specialists may answer each family in code. Deliberately never
+# `concierge`: it is the legacy full-access path whose whole purpose is
+# to behave exactly as the pre-multi-agent single agent did, and its
+# scripted-LLM tests assert one reply per invoke.
+_TURN_AGENTS = {
+    "slots": frozenset({"booking", "reschedule"}),
+    "available_days": frozenset({"booking", "reschedule"}),
+    "resolved_day": frozenset({"booking", "reschedule"}),
+    "appointment_choice": frozenset({"cancel", "reschedule"}),
+    "appointment_cancel": frozenset({"cancel"}),
+    "appointment_reschedule": frozenset({"reschedule"}),
+    "entity_doctor": frozenset({"booking"}),
+    "entity_specialty": frozenset({"booking"}),
+    "entity_branch": frozenset({"booking"}),
+    "terminal_success": frozenset({"booking", "cancel", "reschedule"}),
+    "booking_success": frozenset({"booking"}),
+    "schedule_display": frozenset({"booking", "reschedule", "faq"}),
+}
+
+
+def _turn_closing(family: str, templates: dict,
+                  target_language: Optional[str]) -> Optional[str]:
+    """The closing line for a family - the tenant's own wording when they
+    have authored one, otherwise the built-in."""
+
+    closings = _TURN_CLOSINGS.get(family)
+    if closings is None:
+        return None
+
+    key = _TURN_TEMPLATE_KEYS.get(family)
+    if key:
+        authored = (templates or {}).get(key)
+        if authored and str(authored).strip():
+            return str(authored).replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    is_english = (target_language or "").strip().lower().startswith("en")
+    return closings["en" if is_english else "ar"]
+
+
+def _entity_list_family(messages: list) -> Optional[str]:
+    """Which kind of list `_build_entity_list_directive` just built.
+
+    Read from the tool call the same way the builder itself reads it,
+    rather than by looking at the block's heading - a heading is display
+    text and two of them are built from a branch name."""
+
+    for message in reversed(messages or []):
+        name = getattr(message, "name", None)
+        if not name:
+            continue
+        if name in ("find_available_doctors", "find_best_doctor_in_specialty"):
+            return "entity_doctor"
+        if name == "list_specialties":
+            return "entity_specialty"
+        if name in ("list_branches_for_specialty", "list_available_days_for_booking"):
+            # `list_branches_for_specialty` collapses to that branch's
+            # DOCTORS when there is exactly one branch, and
+            # `list_available_days_for_booking` only produces a list at
+            # all when it is asking which branch. Both are settled by
+            # what the block actually lists, so read the payload.
+            payload = parse_tool_content(message) or {}
+            branches = payload.get("branches") or payload.get("items") or []
+            if (name == "list_branches_for_specialty" and len(branches) == 1
+                    and isinstance(branches[0], dict) and branches[0].get("doctors")):
+                return "entity_doctor"
+            return "entity_branch"
+        if name == "match_entity_for_booking":
+            entity_type = _entity_type_for_tool_call(messages, message)
+            if entity_type == "doctor":
+                return "entity_doctor"
+            if entity_type == "branch":
+                return "entity_branch"
+            return None
+        # Any other tool result means this is not the list-producing call.
+        return None
+
+    return None
+
+
+def _appointment_display_family(agent_name: str) -> Optional[str]:
+    if agent_name == "cancel":
+        return "appointment_cancel"
+    if agent_name == "reschedule":
+        return "appointment_reschedule"
+    return None
+
+
+# THE DIRECTIVES THAT ARE ALWAYS ON, AND SAY NOTHING ABOUT CONTENT.
+#
+# These four fire on essentially every turn and none of them asks for
+# anything to be ADDED to the reply: the language rule, the grounded
+# ledger, the channel-identity override, and the out-of-scope refusal
+# rule. Anything else being non-empty means some directive is asking
+# for words that a pre-built block does not contain.
+#
+# CONFIRMED BY RUNNING THE SUITE WITH EVERY FAMILY LIVE: a turn where
+# `list_available_days_for_booking` returned `found` ALSO had to open
+# with "د. أحمد العقيل ما عنده عيادة يوم الثلاثاء في فرع الدقي." - the
+# patient had named Tuesday and the doctor has no Tuesday clinic. The
+# day list is a correct reply to "which day?", and sending it alone
+# silently dropped the only sentence that answered what they asked.
+# See test_named_day_flow's "the 'no Tuesday clinic' sentence leads the
+# day list".
+_ALWAYS_ON_DIRECTIVES = frozenset({
+    "language_directive",
+    "established_facts_directive",
+    "channel_identity_directive",
+    "scope_directive",
+})
+
+
+def _deterministic_rendered_reply(state: AgentState, agent_name: str,
+                                  target_language: Optional[str],
+                                  candidates: list,
+                                  directives: dict) -> Optional[str]:
+    """The reply for this turn, written from a directive's own pre-built
+    block, or None to let the model have the turn.
+
+    `candidates` is [(family, directive_text), ...] in the order they
+    appear in the concatenated prompt.
+
+    `directives` is every `*_directive` local this turn computed, which
+    is how "is the block the WHOLE reply?" gets answered - see
+    `_ALWAYS_ON_DIRECTIVES`.
+
+    DECLINES WHENEVER MORE THAN ONE FAMILY FIRED. Their precedence in
+    the prompt is a documented, tuned ordering of INSTRUCTIONS - later
+    and more emphatic wins - and that says nothing about which pre-built
+    block should become the whole reply. Rather than invent an answer,
+    hand the turn to the model, which reads all of them."""
+
+    enabled = config.DETERMINISTIC_TURNS
+    if not enabled:
+        return None
+
+    # A CALLER HAS SWAPPED IN THEIR OWN LLM. That is the test suite
+    # scripting one reply per invoke, and the same signal `_llm_for`
+    # already reads to decide whose model to use. Skipping a call
+    # desynchronises such a script from the turn it belongs to - which
+    # is exactly how the end-to-end cancellation tests failed on the
+    # first cut of this: the scripted GUID cancellation was consumed by
+    # the wrong turn. Whoever has taken control of the model's replies
+    # gets every call they are expecting.
+    if _llm_with_tools is not _DEFAULT_LLM_WITH_TOOLS:
+        return None
+
+    if (target_language or "ar").strip().lower().startswith("en"):
+        # Every block's heading and labels are Arabic, and the model is
+        # what currently translates them (see each directive's own
+        # "translate the LABELS only if..." instruction). Until the
+        # blocks are built per language, English keeps the model.
+        return None
+
+    # The opening greeting is stapled on by a hundred lines of
+    # production-hardened logic further down this function, including a
+    # mixed-language guard and two confirmed-failure exclusions. A
+    # first-turn reply is not worth reimplementing that for.
+    if not state.get("greeted"):
+        return None
+
+    messages = state.get("messages") or []
+
+    fired = []
+    for family, directive in candidates:
+        if not directive:
+            continue
+        if family == "entity_list":
+            family = _entity_list_family(messages)
+        elif family == "appointment_display":
+            family = _appointment_display_family(agent_name)
+        if not family:
+            return None                      # fired, but not identifiable
+        fired.append((family, directive))
+
+    if len(fired) != 1:
+        if len(fired) > 1:
+            logger.info(
+                "agent[%s]: %d pre-built blocks fired at once (%s) - the model "
+                "takes this turn", agent_name, len(fired),
+                ", ".join(f for f, _ in fired),
+            )
+        return None
+
+    family, directive = fired[0]
+
+    if family not in enabled:
+        return None
+
+    # IS THE BLOCK THE WHOLE REPLY? Any other directive still asking for
+    # words means no. Checked against everything this turn computed
+    # rather than a hand-kept list, so a directive added later makes
+    # this MORE conservative by default instead of being silently
+    # dropped from the reply.
+    # Matched by VALUE, not by name: a candidate is passed in as the same
+    # string object the local holds, so this cannot drift the way
+    # mapping "available_days" onto "available_days_directive" would.
+    rendering = {text for _, text in candidates if text}
+    extra = sorted(
+        name for name, value in (directives or {}).items()
+        if isinstance(value, str) and value.strip()
+        and name not in _ALWAYS_ON_DIRECTIVES
+        and value not in rendering
+    )
+    if extra:
+        logger.info(
+            "agent[%s]: %s has a pre-built block, but %s also asked for content - "
+            "the model takes this turn", agent_name, family, ", ".join(extra),
+        )
+        return None
+
+    if agent_name not in _TURN_AGENTS.get(family, frozenset()):
+        return None
+
+    block = _exact_block(directive)
+    if not block:
+        logger.info(
+            "agent[%s]: %s fired but carries no single exact-text block - the "
+            "model takes this turn", agent_name, family,
+        )
+        return None
+
+    closing = _turn_closing(family, state.get("templates") or {}, target_language)
+    reply = f"{block}\n\n{closing}" if closing else block
+
+    logger.info(
+        "agent[%s]: %s reply written from its own pre-built block - no model "
+        "call this turn", agent_name, family,
+    )
+    return reply
+
+
+# ==========================================================
+# PROTOTYPE: one turn executed without the model
+# ==========================================================
+
+_DOCTOR_LIST_QUESTION = {
+    "ar": "تحب تحجز مع مين منهم؟ اكتب لي رقمه أو اسمه.",
+    "en": "Which of them would you like to book with? Send me their "
+          "number or their name.",
+}
+
+
+def _doctor_list_question(templates: dict, target_language: Optional[str]) -> str:
+    """The one question that closes a code-built doctor list.
+
+    Prefers the tenant's own authored wording, exactly as
+    `_booking_entry_message` does - this is the only part of the reply
+    that is phrasing rather than data, so it is the only part a clinic
+    could reasonably want to own."""
+
+    authored = (templates or {}).get("msg_doctor_list_question")
+    if authored and str(authored).strip():
+        return str(authored).replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    is_english = (target_language or "").strip().lower().startswith("en")
+    return _DOCTOR_LIST_QUESTION["en" if is_english else "ar"]
+
+
+def _forge_tool_pair(tool_name: str, args: dict, payload: dict):
+    """An `AIMessage(tool_calls=[...])` / `ToolMessage` pair for a tool
+    the GRAPH ran, shaped so nothing downstream can tell the difference.
+
+    BOTH HALVES ARE MANDATORY, and this is the part that makes
+    graph-executed tools non-trivial rather than a one-liner.
+
+    A ToolMessage with no matching `tool_calls` entry is not a cosmetic
+    problem: OpenAI rejects the whole conversation with a 400, and the
+    half-pair is PERSISTED by the checkpointer, so every later turn on
+    that thread replays it and gets the same 400 forever. See
+    `_drop_orphaned_tool_calls`, which exists because that has already
+    happened here.
+
+    And the ToolMessage is not optional either. `build_evidence_ledger`
+    reads ToolMessages ONLY - an AIMessage cannot contribute a fact. A
+    tool run in code without one would leave the doctors it found
+    outside the ledger, so the next turn's model would treat them as
+    unknown and the hallucination verifiers would read any mention of
+    them as invented.
+
+    The guidance field is attached the same way `_tool_node` attaches it,
+    so a forged result carries exactly what a real one would."""
+
+    call_id = f"graph-{uuid.uuid4().hex[:12]}"
+
+    guidance = tool_result_guidance.guidance_for(tool_name, payload)
+    if guidance:
+        payload = {**payload, tool_result_guidance.GUIDANCE_KEY: guidance}
+
+    request = AIMessage(
+        content="",
+        tool_calls=[{"name": tool_name, "args": args, "id": call_id}],
+    )
+    result = ToolMessage(
+        content=json.dumps(payload, ensure_ascii=False, default=str),
+        name=tool_name,
+        tool_call_id=call_id,
+    )
+    return request, result
+
+
+def _deterministic_doctor_list(state: AgentState, agent_name: str,
+                               target_language: Optional[str]) -> Optional[list]:
+    """The doctor list for a just-picked specialty, fetched and written
+    entirely in code. Returns the messages to append, or None to let the
+    model have the turn as before.
+
+    RETURNS None ON ANYTHING UNEXPECTED, DELIBERATELY. Only the plain
+    happy path is handled here - a specialty resolved, two or more
+    doctors found. Every other status carries real judgement about what
+    to tell the patient (`specialty_not_resolved` has to offer the real
+    catalogue, `not_found_in_specialty` must not substitute anyone,
+    `found_broader_search` must not be offered against a symptom at
+    all), all of it already written as guidance on the result, and none
+    of it worth reproducing in code for a first cut. A single doctor
+    falls through too, matching `_build_entity_list_directive`'s own
+    rule that one result is not a list.
+
+    ARABIC ONLY for now: the pre-built list heading is Arabic and the
+    model is what currently translates it (see
+    `_build_entity_list_directive`), so an English conversation keeps
+    the model rather than getting an Arabic heading."""
+
+    if not config.DETERMINISTIC_DOCTOR_LIST:
+        return None
+
+    # `booking` only, for the same reason the fixed flow-entry questions
+    # are scoped that way: `concierge` is the legacy full-access path
+    # whose whole purpose is to behave as the pre-multi-agent agent did,
+    # and its scripted-LLM tests assert one reply per invoke.
+    if agent_name != "booking":
+        return None
+
+    if (target_language or "ar").strip().lower().startswith("en"):
+        return None
+
+    # Never on the opening turn - the greeting logic downstream owns
+    # that, and a specialty list must already have been shown anyway.
+    if not state.get("greeted"):
+        return None
+
+    messages = state.get("messages") or []
+    index = _latest_human_index(messages)
+    if index < 0:
+        return None
+
+    content = getattr(messages[index], "content", "")
+    specialty_text = (content if isinstance(content, str) else str(content)).strip()
+    if not specialty_text:
+        return None
+
+    # THE TOOL'S OWN CLINIC-API CALL IS THE SLOW PART, so the interim
+    # "جاري البحث عن الأطباء" is armed BEFORE it runs, exactly as the
+    # model-driven path arms it before the tools node. A fast turn still
+    # cancels the timer and stays one message.
+    progress.schedule(
+        session_id=state.get("session_id") or "",
+        client_id=state.get("client_id") or "",
+        tool_names=["find_available_doctors"],
+        language=target_language,
+        templates=state.get("templates"),
+        answering_a_list=True,
+        tool_args={"find_available_doctors": {"specialty_name": specialty_text}},
+        agent_name=agent_name,
+        channel_phone=state.get("channel_phone"),
+        bsuid=state.get("bsuid"),
+    )
+
+    # `target_language` is written into state by this node for the tools
+    # node's benefit, and the tools validate it strictly - so a direct
+    # call has to supply it too, or every human-readable field comes
+    # back in the wrong language. See tools.conversation_language.
+    args = {"specialty_name": specialty_text}
+    try:
+        payload = tools.find_available_doctors.func(
+            {**state, "target_language": target_language}, **args
+        )
+    except Exception:  # noqa: BLE001
+        # A tool raising is exactly what the model-driven path survives
+        # by getting an error result back and explaining it. Hand the
+        # turn over rather than inventing an apology here.
+        logger.warning(
+            "agent[%s]: deterministic doctor list - find_available_doctors raised; "
+            "handing the turn to the model", agent_name, exc_info=True,
+        )
+        return None
+
+    if not isinstance(payload, dict) or payload.get("status") != "found":
+        logger.info(
+            "agent[%s]: deterministic doctor list declined (status=%r) - the model "
+            "takes this turn", agent_name,
+            (payload or {}).get("status") if isinstance(payload, dict) else None,
+        )
+        return None
+
+    doctors = payload.get("doctors") or []
+    if not isinstance(doctors, list) or len(doctors) < 2:
+        return None
+
+    # BUILT FROM THE SAME HELPERS THE DIRECTIVE USES, on purpose. The
+    # numbering the patient sees has to be the tool's own array order,
+    # because that is the order `_remember_list` stored for resolving
+    # their "2" later. Rendering it any other way here would recreate
+    # the confirmed bug where a patient picked 1 and got item 2.
+    lines = []
+    for doctor in doctors:
+        if not isinstance(doctor, dict):
+            continue
+        text = _entity_list_line(doctor)
+        if text:
+            lines.append(f"{_numbered_prefix(len(lines) + 1)} {text}")
+
+    if len(lines) < 2:
+        return None
+
+    heading = _ENTITY_LIST_TOOLS["find_available_doctors"][1]
+    question = _doctor_list_question(state.get("templates") or {}, target_language)
+    reply = f"{heading}:\n" + "\n".join(lines) + f"\n\n{question}"
+
+    request, result = _forge_tool_pair("find_available_doctors", args, payload)
+
+    logger.info(
+        "agent[%s]: doctor list for %r built in code from %d doctors - no model "
+        "call this turn", agent_name, specialty_text, len(lines),
+    )
+
+    return [request, result, _tag_author(AIMessage(content=reply), agent_name)]
 
 
 # ==========================================================
@@ -9001,7 +9651,7 @@ def _safe_fallback_is_generic(reply_text: str, state: AgentState,
 #
 # Each entry is (check, correction_directive, description):
 #   check(reply, state, agent_name) -> True when the reply is wrong
-#   correction_directive(reply, state) -> the text prepended to the
+#   correction_directive(reply, state) -> the text appended to the
 #       system message for the single corrective retry
 #   description -> what gets logged
 #
@@ -10780,8 +11430,14 @@ def _llm_forcing_tool(agent_name: str, tool_name: str):
     if tool_name not in [getattr(t, "name", "") for t in tool_list]:
         return None
 
+    # A SMALLER MODEL IS ENOUGH HERE. `tool_choice` pins which tool the
+    # provider must emit, so there is no choice to make and no prose to
+    # write - the only possible outputs are that call, or a failure the
+    # caller already handles by sending the safe message.
     try:
-        return _llm.bind_tools(tool_list, tool_choice=tool_name)
+        return _llm_for_model(config.OPENAI_MODEL_TOOL_FORCING).bind_tools(
+            tool_list, tool_choice=tool_name,
+        )
     except Exception:
         logger.warning(
             "claim gate: could not pin tool_choice=%s for %s - falling back to "
@@ -15446,18 +16102,60 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     templates = state.get("templates") or {}
 
     if config.MULTI_AGENT_ENABLED and templates:
-        scoped_prompt = build_agent_system_prompt(templates, agent_name)
+        # JUST-IN-TIME: the step this conversation is on, or None for
+        # the whole flow. Only the booking flow has step structure worth
+        # slicing (see agents.sections.FLOW_STEP_ORDER), so every other
+        # specialist passes None and is assembled exactly as before.
+        step = (
+            _booking_step(state.get("session_id"))
+            if config.JIT_FLOW_STEPS and agent_name == "booking" else None
+        )
+        if step:
+            logger.info("agent[%s]: booking is on STEP %s - sending that step "
+                        "and the next, not all seven", agent_name, step)
+        scoped_prompt = build_agent_system_prompt(templates, agent_name, step)
     else:
         scoped_prompt = state.get("system_prompt") or ""
         if not scoped_prompt and templates:
             scoped_prompt = build_system_prompt(templates)
 
     system_content = (
-        # THE LEDGER GOES FIRST, right after the language rule. It is the
-        # frame every other directive is read against - "here is what is
-        # actually known" has to be in place before any instruction that
-        # says what to do about it.
-        established_facts_directive
+        # THE STATIC SCOPED PROMPT GOES FIRST - THIS IS WHAT MAKES PROMPT
+        # CACHING WORK, AND IT IS WORTH ROUGHLY HALF THE API BILL.
+        #
+        # `scoped_prompt` is ~28,000 tokens and depends on nothing but
+        # the tenant's templates and which specialist owns the turn -
+        # byte-identical on every call of a conversation. Every one of
+        # the ~59 directives below is per-turn and volatile.
+        #
+        # OpenAI's automatic prompt cache matches on an EXACT LEADING
+        # PREFIX of the request. With the directives first, the very
+        # first bytes changed as soon as any of them became non-empty
+        # (a known name, a chosen doctor, a picked day), so the 28,000
+        # static tokens sat BEHIND the volatile text and were billed at
+        # full price on every single call. Measured on a 7-turn booking
+        # conversation: the prefix shared between consecutive calls was
+        # 227-852 tokens out of 29,500 - a 1% cache rate.
+        #
+        # With the static block leading, the shared prefix is the whole
+        # 28,000 tokens and the cache bills it at a quarter of the rate.
+        #
+        # WHY THIS IS ALSO THE SAFE DIRECTION SEMANTICALLY. Later and
+        # more emphatic instructions win - that is exactly why CHANNEL
+        # IDENTITY, medication and crisis were already moved BELOW the
+        # scoped prompt to fix a confirmed production bug (see their
+        # comment at the bottom of this concatenation). Moving the
+        # scoped prompt to the top puts every per-turn directive after
+        # the general flow rules it is meant to override, which is the
+        # same direction that fix went in. The directives' order
+        # RELATIVE TO EACH OTHER is unchanged, so every tuning decision
+        # recorded in the comments below still holds.
+        scoped_prompt
+        # THE LEDGER LEADS THE DIRECTIVES, right before the language
+        # rule. It is the frame every other directive is read against -
+        # "here is what is actually known" has to be in place before any
+        # instruction that says what to do about it.
+        + established_facts_directive
         + language_directive + no_symptom_directive
         + services_directive + how_to_book_directive
         + slots_directive + available_days_directive
@@ -15500,8 +16198,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         + show_soonest_directive
         + booking_confirmation_directive + booking_success_directive
         + terminal_success_directive
-        + scoped_prompt
-        # CHANNEL IDENTITY goes LAST, after scoped_prompt (STEP NB6/
+        # CHANNEL IDENTITY goes LAST, after the scoped prompt (STEP NB6/
         # complaint flow), not before it. Confirmed real production bug:
         # with this directive earlier in the concatenation, the model
         # still obeyed STEP NB6's own "ALWAYS ASK THIS - NOT OPTIONAL"
@@ -15609,6 +16306,78 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     # as the pre-multi-agent single agent did (and would desynchronise
     # the scripted-LLM tests that assert precisely that, one reply per
     # invoke).
+    # DETERMINISTIC RENDER HOOK - see `_deterministic_rendered_reply`.
+    #
+    # Every candidate below has ALREADY been built, above, as the exact
+    # text of this turn's reply; the model's whole job on these turns is
+    # to copy it out and add one question. The directives are passed as
+    # they were computed rather than rebuilt, so the reply the patient
+    # gets cannot drift from the reply the model was being told to give.
+    #
+    # Listed in the order they appear in `system_content` below, because
+    # that order is the only record of how they relate to each other -
+    # and if more than one has fired, this declines and the model reads
+    # all of them, as before.
+    # `locals()` deliberately, not a list of names. The gate has to see
+    # EVERY directive this turn computed - see `_ALWAYS_ON_DIRECTIVES` -
+    # and a hand-kept list is one refactor away from silently dropping a
+    # new directive's content from a code-written reply. Reading the
+    # frame means a directive added tomorrow is included for free.
+    _all_directives = {
+        _name: _value for _name, _value in locals().items()
+        if _name.endswith("_directive")
+    }
+
+    rendered = _deterministic_rendered_reply(
+        state, agent_name, target_language,
+        [
+            ("slots", slots_directive),
+            ("available_days", available_days_directive),
+            ("resolved_day", resolved_day_directive),
+            ("entity_list", entity_list_directive),
+            ("appointment_display", appointment_display_directive),
+            ("appointment_choice", appointment_choice_directive),
+            ("schedule_display", schedule_display_directive),
+            ("booking_success", booking_success_directive),
+            ("terminal_success", terminal_success_directive),
+        ],
+        _all_directives,
+    )
+    if rendered:
+        return {
+            "established_facts": evidence_ledger,
+            "target_language": target_language,
+            "messages": [_tag_author(AIMessage(content=rendered), agent_name)],
+        }
+
+    # PROTOTYPE HOOK - see `_deterministic_doctor_list`.
+    #
+    # Placed here, after every directive has been computed, because the
+    # trigger is one of those directives having fired: the graph has
+    # ALREADY decided in code that this turn's next action is
+    # `find_available_doctors`. Running it here rather than describing
+    # it to the model skips both of this turn's LLM calls.
+    #
+    # Returns early with a three-message update - the forged tool-call
+    # pair plus the reply - rather than falling through to the single
+    # `updates["messages"] = [response]` at the end of this function.
+    # `route_after_agent` looks at the LAST message, which is a plain
+    # reply, so the turn ends here as it should.
+    #
+    # The dict is built here rather than reusing `updates`, which this
+    # function does not create until after the model call. The three
+    # fields are the same three that path ends up publishing:
+    # `established_facts` for observability, `target_language` because
+    # tools read it from state, and the messages themselves.
+    if specialty_picked_directive:
+        prebuilt = _deterministic_doctor_list(state, agent_name, target_language)
+        if prebuilt is not None:
+            return {
+                "established_facts": evidence_ledger,
+                "target_language": target_language,
+                "messages": prebuilt,
+            }
+
     deterministic_reply = (
         _booking_entry_message(state.get("templates") or {}, target_language)
         if (agent_name == "booking"
@@ -15883,9 +16652,26 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
 
                 directive = correction_directive(normalized, state)
 
+                # THE CORRECTION GOES LAST, NOT FIRST. Two reasons,
+                # pointing the same way.
+                #
+                # Precedence: this file's rule is that the later, more
+                # emphatic instruction wins - see the channel-identity
+                # block in `agent`, moved after `scoped_prompt` for
+                # exactly that reason. A correction is the one
+                # instruction that should have the final word, not sit
+                # at the front arguing with the ~40 directives and the
+                # entire scoped prompt that follow it.
+                #
+                # Cost: OpenAI's prefix cache matches from the START of
+                # the request. Prepending fresh text here gave this call
+                # a prefix that diverged at character 0 from the main
+                # turn's, so a ~40K-token system message was re-billed
+                # at full rate on every correction. Appending leaves
+                # `system_content` a byte-identical prefix, which hits.
                 try:
                     retry = _llm_for(agent_name).invoke(
-                        [SystemMessage(content=directive + system_content)] + history
+                        [SystemMessage(content=system_content + directive)] + history
                     )
                 except (_OpenAIAPITimeoutError, _OpenAIAPIConnectionError) as exc:
                     # Unlike the main turn's call, there is already a usable
@@ -16066,9 +16852,12 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                     + gate.directive + "\n\n"
                     "Call the tool now. Do not write a reply this turn.\n\n"
                 )
+                # Appended, not prepended - same two reasons as the
+                # verifier retry above. "Call the tool now" is also
+                # strictly stronger as the last thing the model reads.
                 try:
                     forced = forcing_llm.invoke(
-                        [SystemMessage(content=directive + system_content)] + history
+                        [SystemMessage(content=system_content + directive)] + history
                     )
                 except (_OpenAIAPITimeoutError, _OpenAIAPIConnectionError) as exc:
                     logger.error(
@@ -16430,7 +17219,68 @@ def _node_name(agent_name: str) -> str:
 # ToolNode automatically injects graph state into any tool parameter
 # annotated with InjectedState (see tools.py's `state` params) without
 # exposing it to the LLM's function-calling schema.
-_tool_node = ToolNode(tools.ALL_TOOLS)
+_base_tool_node = ToolNode(tools.ALL_TOOLS)
+
+
+def _tool_node(state: AgentState, config: RunnableConfig) -> dict:
+    """`ToolNode`, plus the handling instruction for whatever each tool
+    just returned.
+
+    THE `config` PARAMETER IS NOT OPTIONAL AND ITS NAME IS NOT FREE.
+    LangGraph injects the run config only into a parameter literally
+    named `config` and annotated `RunnableConfig`, and `ToolNode`
+    REQUIRES it - forwarding nothing raises "Missing required config key"
+    before a single tool runs. It does shadow this module's `import
+    config` for the length of this function, which is why nothing in
+    here touches project config.
+
+    WHY THE INSTRUCTION TRAVELS WITH THE RESULT. It used to live in the
+    tool's docstring, which is its OpenAI `description` - re-sent for
+    every tool a specialist holds, on every one of the 4-6 LLM calls a
+    single patient message costs, whether or not any tool was called at
+    all. Measured: 5,303 of 12,749 description tokens across ALL_TOOLS
+    were this `Returns:` prose. It is only ever useful AFTER a result
+    exists, and only for the one status that actually came back.
+
+    So `tool_result_guidance` now holds the same wording, keyed by tool
+    and status, and it is attached here as the payload's `_guidance`
+    field. A status that never occurs is never billed.
+
+    ATTACHED INSIDE THE JSON, NOT APPENDED AFTER IT. Several places read
+    a ToolMessage back with `parse_tool_content` and would break on text
+    trailing the JSON; an extra key is invisible to every one of them.
+    A payload that isn't a dict, or a tool with nothing to say about
+    this status, is passed through completely untouched."""
+
+    result = _base_tool_node.invoke(state, config)
+    messages = result.get("messages") if isinstance(result, dict) else None
+
+    for message in messages or []:
+        tool_name = getattr(message, "name", None)
+        payload = parse_tool_content(message)
+
+        if not isinstance(payload, dict) or tool_result_guidance.GUIDANCE_KEY in payload:
+            continue
+
+        guidance = tool_result_guidance.guidance_for(tool_name, payload)
+        if not guidance:
+            continue
+
+        try:
+            message.content = json.dumps(
+                {**payload, tool_result_guidance.GUIDANCE_KEY: guidance},
+                ensure_ascii=False, default=str,
+            )
+        except (TypeError, ValueError):
+            # A payload that cannot be re-serialized keeps the content
+            # ToolNode produced. Losing one guidance line is nothing;
+            # corrupting a tool result the flow depends on is not.
+            logger.warning(
+                "tools: could not attach guidance to %r's result - leaving it as-is",
+                tool_name,
+            )
+
+    return result
 
 
 # ==========================================================
