@@ -998,6 +998,22 @@ def get_messages(client_id: str, dialect: Optional[str] = None, client_row_overr
             break
     merged["_branch_aliases"] = branch_aliases
     merged["_country_codes_hint"] = client_row.get("country_codes_hint")
+    # A MISSING TIMEZONE IS A WRONG COUNTRY, NOT A COSMETIC DEFAULT.
+    #
+    # `DEFAULT_TIMEZONE` is "Asia/Riyadh", and tools._client_default_
+    # country_code maps the timezone to the country code a bare local
+    # number gets. So a tenant row that arrives without a `timezone`
+    # silently turns every "01..." number into +966 - which is how an
+    # Egyptian patient's OTP went to a Saudi number on 2026-09-09. Say
+    # so in the log rather than letting it pass as a default.
+    if not (client_row.get("timezone") or "").strip():
+        logger.warning(
+            "client %r has no timezone - falling back to %s. Bare local phone "
+            "numbers will be read as that country's unless the patient's own "
+            "channel number says otherwise.",
+            client_row.get("client_id") or client_row.get("id") or "?",
+            DEFAULT_TIMEZONE,
+        )
     merged["_timezone"] = client_row.get("timezone") or DEFAULT_TIMEZONE
     merged["_knowledge_base_file"] = client_row.get("knowledge_base_file") or ""
     merged["_complaint_email_to"] = client_row.get("complaint_email_to") or ""
