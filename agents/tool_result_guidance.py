@@ -45,10 +45,21 @@ RESULT_GUIDANCE: dict = {
 
     # ------------------------------------------------------------------
     "find_available_doctors": {
+        "found":
+            "If `doctors` has exactly ONE entry and it carries an "
+            "`about` field, weave a short, natural mention of it into "
+            "your reply when you name that doctor (one sentence, in "
+            "your own words - never paste the field verbatim as a "
+            "separate block). If `doctors` has more than one entry, "
+            "ignore any `about` field entirely and give names only - "
+            "reading out several bios makes comparing the list harder, "
+            "not easier.",
         "found_broader_search":
             "The given specialty_ids had nobody available; these are "
             "OTHER doctors clinic-wide and NOT a specialty match - never "
-            "offer them as an answer to a symptom.",
+            "offer them as an answer to a symptom. The same `about` rule "
+            "as `found` applies: only if there is exactly one doctor "
+            "here, and only a short natural mention, never for a list.",
         "not_found_in_specialty":
             "allow_broader_search=False and these specialties have "
             "nobody available. Say so plainly; do NOT substitute other "
