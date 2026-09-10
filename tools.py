@@ -158,7 +158,7 @@ _KNOWN_COUNTRY_CODES = (
 # written most-important-first for the reader, not for a parser. Both
 # rows in client_config.csv read "+966, +20" - so taking the first code
 # out of it made the EGYPTIAN clinic (Africa/Cairo) treat every bare
-# local number as Saudi: "01155611045" became "+9661155611045", a number
+# local number as Saudi: "01000000004" became "+966000000004", a number
 # belonging to nobody, which was then sent to the booking API and used
 # as the OTP storage key. The timezone column is unambiguous, already
 # per-client, and already correct in every row.
@@ -195,7 +195,7 @@ def _client_default_country_code(state=None) -> str:
          _TIMEZONE_COUNTRY_CODES - the clinic's actual country.
       3. `phone_example`'s FIRST fully-written number, if the timezone
          is one this map doesn't know - a clinic that writes
-         "+201155611045" as its example is telling us plainly which
+         "+201000000004" as its example is telling us plainly which
          country its patients type local numbers for.
       4. DEFAULT_COUNTRY_CODE.
 
@@ -206,12 +206,12 @@ def _client_default_country_code(state=None) -> str:
     so an unset column turns every Egyptian patient into a Saudi one
     with no error anywhere.
 
-    CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-    201003365691+medtown2, 2026-09-09 12:15:44): the patient was
-    messaging from +201003365691, typed "01155611045", and
-    `compare_phone` logged normalized='+9661155611045'. The OTP was
+    CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+    201000000001+tenant2, 2026-09-09 12:15:44): the patient was
+    messaging from +201000000001, typed "01000000004", and
+    `compare_phone` logged normalized='+966000000004'. The OTP was
     sent to a Saudi number that is not theirs; when they then typed the
-    correct "+201155611045" it no longer matched what the flow was
+    correct "+201000000004" it no longer matched what the flow was
     waiting for, and the booking could not continue. This is the second
     time this exact number has been mis-normalised this way - see the
     `country_codes_hint` note above _TIMEZONE_COUNTRY_CODES for the
@@ -224,7 +224,7 @@ def _client_default_country_code(state=None) -> str:
     templates = (state or {}).get("templates") or {}
 
     # The number the patient is messaging FROM, which is E.164 without
-    # its "+" ("201003365691"). Longest code first so "20" cannot win
+    # its "+" ("201000000001"). Longest code first so "20" cannot win
     # over a longer code that starts with it.
     channel = re.sub(r"[^\d]", "", str((state or {}).get("channel_phone") or ""))
     if channel:
@@ -447,7 +447,7 @@ def to_local_wallclock(value: Optional[str], timezone_name: str = DEFAULT_TIMEZO
 #     08:00 -> 15:00, which is what a clinic day actually looks like.
 #
 # THE FLAG EXISTS BECAUSE THIS IS PER-DEPLOYMENT, NOT UNIVERSAL. The
-# original (a) finding came from a different tenant (medtown). If any
+# original (a) finding came from a different tenant. If any
 # deployment genuinely does store local time with a decorative offset,
 # set SCHEDULE_TIMES_ARE_UTC=false for it and every reading below
 # reverts to the old behaviour in one step.
@@ -874,8 +874,8 @@ def lookup_appointment(
     # they land verbatim in an otherwise-Arabic reply, because the model
     # is (correctly) forbidden from altering tool values.
     #
-    # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-    # 201003365691+medtown2, 2026-09-07 10:48:55): an Arabic reschedule
+    # CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+    # 201000000001+tenant2, 2026-09-07 10:48:55): an Arabic reschedule
     # confirmation read "الطبيب: Taha Mabrouk" and "الفرع: AlSheikh
     # Zayedd". `conversation_language` computes this deterministically
     # from state and exists for exactly this class of bug - see its own
@@ -975,8 +975,8 @@ def lookup_appointment(
     # against and the model had to recall which one was second from the
     # conversation text.
     #
-    # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-    # 201158877175+medtown2, 2026-09-07 10:22): two appointments were
+    # CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+    # 201000000002+tenant2, 2026-09-07 10:22): two appointments were
     # shown, the patient typed "2" (فرع الشيخ زايد, 12/09), and the
     # confirmation that came back was the OTHER one (فرع الدقي, 26/09,
     # under a different patient name). This is a CANCELLATION flow, so
@@ -1058,8 +1058,8 @@ def check_booking_status(
     # they land verbatim in an otherwise-Arabic reply, because the model
     # is (correctly) forbidden from altering tool values.
     #
-    # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-    # 201003365691+medtown2, 2026-09-07 10:48:55): an Arabic reschedule
+    # CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+    # 201000000001+tenant2, 2026-09-07 10:48:55): an Arabic reschedule
     # confirmation read "الطبيب: Taha Mabrouk" and "الفرع: AlSheikh
     # Zayedd". `conversation_language` computes this deterministically
     # from state and exists for exactly this class of bug - see its own
@@ -1303,7 +1303,7 @@ def verify_otp(state: Annotated[AgentState, InjectedState], phone: str, otp: str
     # CONFIRMED REAL PRODUCTION BUG this fixes: `send_otp` normalized with
     # the client's own country code while this function normalized without
     # it (plain module default). For any patient who typed a local number
-    # ("01155611045") the two produced DIFFERENT keys - the code was stored
+    # ("01000000004") the two produced DIFFERENT keys - the code was stored
     # under one and looked up under the other - so a correct OTP was
     # rejected 100% of the time and identity verification could never
     # complete.
@@ -1421,8 +1421,8 @@ def _prune_booking_sessions() -> None:
 # reset left it: no `verified_phones`, no `known_*_names`, no
 # `booking_phone`, for the rest of its life.
 #
-# CONFIRMED REAL PRODUCTION CRASH (medtown, session
-# 201158877175+medtown2, 2026-09-06 13:10:57, and again at 13:11:08 when
+# CONFIRMED REAL PRODUCTION CRASH (tenant, session
+# 201000000002+tenant2, 2026-09-06 13:10:57, and again at 13:11:08 when
 # the patient retried): `KeyError: verified_phones` inside
 # `_mark_phone_verified`, raised out of `verify_otp` - so somebody who
 # had just typed a CORRECT OTP got a hard 500 and the turn died with no
@@ -1599,8 +1599,8 @@ def _booking_was_looked_up(state: AgentState, booking_id: Optional[str]) -> bool
 # NOBODY CANCELS AN APPOINTMENT THAT WAS NEVER ASKED ABOUT
 # ==========================================================
 #
-# CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-# 201003365691+medtown2, 2026-09-08 08:47): the patient typed "تعديل"
+# CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+# 201000000001+tenant2, 2026-09-08 08:47): the patient typed "تعديل"
 # - modify - and the appointment was CANCELLED. The routing bug behind
 # it is fixed in `agents/router.py`, but the reason it could reach this
 # far is structural and worth its own gate: `concierge` is bound to
@@ -1798,12 +1798,12 @@ def _set_booking_phone(state: AgentState, phone: Optional[str]) -> None:
     booking. Last deliberate choice wins, so a patient who changes their
     mind again is followed.
 
-    CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-    201003365691+medtown2, 2026-09-06 12:19-12:20): the patient answered
+    CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+    201000000001+tenant2, 2026-09-06 12:19-12:20): the patient answered
     "لا" to "نكمل الحجز على نفس رقم واتساب ده؟", typed
-    +201155611045, passed the OTP for it, and picked their name out of
+    +201000000004, passed the OTP for it, and picked their name out of
     THAT number's patient list. `create_new_booking` was then called
-    with mobile_number='201003365691' - the channel number - and the
+    with mobile_number='201000000001' - the channel number - and the
     booking was created against it. `_phone_is_verified` waved it
     through, because the channel identity is verified by definition; the
     gate was answering "is this number allowed" when the question was
@@ -1884,8 +1884,8 @@ def _reschedule_slot_from_remembered(state: AgentState,
     the patient ever sees. The model has both in front of it and only
     one of them is correct to send.
 
-    CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-    201003365691+medtown2, 2026-09-09 14:32:35):
+    CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+    201000000001+tenant2, 2026-09-09 14:32:35):
 
         14:31:37  the list showed  7️⃣ 11:12 صباحًا
         14:32:12  the patient answered "7"
@@ -2027,8 +2027,8 @@ def _retire_doctor_absent_from_roster(session: dict, entity_type: str,
     confirmed, and any tool reading it from the session got that instead
     of the person the patient just picked.
 
-    CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-    201003365691+medtown2, 2026-09-09 12:26):
+    CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+    201000000001+tenant2, 2026-09-09 12:26):
 
         12:13:27  get_doctor_schedule_for_booking: doctor_id=4f6125f6...
                   (د. طه مبروك, and his branch auto-confirmed)
@@ -2105,7 +2105,7 @@ def _remember_list(state: AgentState, entity_type: str, items: list) -> None:
     conversation", which must NOT be forgotten the moment a newer list
     is shown. Before this, those guards read only `state["messages"]`
     (the raw chat history) - CONFIRMED REAL PRODUCTION FAILURE
-    (medtown, 2026-08-31): a reply correctly named "فرع الطوارئ" (a
+    (tenant, 2026-08-31): a reply correctly named "فرع الطوارئ" (a
     branch the patient had already been shown by name three turns
     earlier) and was rejected twice as an invented branch, forcing the
     generic fallback error, because whatever the guard could still see
@@ -2554,6 +2554,7 @@ def _shape_doctor_list(raw_items: list, language: str = "ar") -> list:
     """
 
     doctors = []
+    surviving_raw_items = []  # kept in lockstep with `doctors`, for the "about" step below
 
     for i in raw_items:
         name = _preferred_name(i, language) or i.get("name") or i.get("formatedName") or i.get("altName")
@@ -2570,6 +2571,24 @@ def _shape_doctor_list(raw_items: list, language: str = "ar") -> list:
             "specialtyName": i.get("specialtyAltName") if (language != "en" and i.get("specialtyAltName")) else i.get("specialtyName"),
             "degreeName": i.get("degreeAltName") if (language != "en" and i.get("degreeAltName")) else i.get("degreeName"),
         })
+        surviving_raw_items.append(i)
+
+    # THE DOCTOR'S OWN "about" BIO - ONLY WHEN THEY ARE THE SOLE RESULT.
+    #
+    # `/api/Doctors/GetList` returns an `about` field per doctor
+    # (confirmed field name, 2026-09). Surfacing it for every doctor in
+    # a multi-doctor list would make the patient read several bios just
+    # to compare names, which is worse than the plain list they get
+    # today - it only earns its place when the patient is being pointed
+    # at ONE specific doctor and would naturally want to know more about
+    # them before booking. Matched against `surviving_raw_items`, not
+    # `raw_items[0]`, because a doctor earlier in `raw_items` may have
+    # been skipped above for having no usable name - the one remaining
+    # entry in `doctors` is not necessarily `raw_items[0]`.
+    if len(doctors) == 1:
+        about = (surviving_raw_items[0].get("about") or "").strip()
+        if about:
+            doctors[0]["about"] = about
 
     return doctors
 
@@ -2699,7 +2718,7 @@ def _doctors_at_branch(state: AgentState, base_url: str, branch_id: str) -> list
     there) and unselectable (the remembered list at that point is the
     BRANCH list, so a reply of "2" resolves to nothing).
 
-    CONFIRMED REAL PRODUCTION FAILURE (medtown, 2026-08-31): a booking
+    CONFIRMED REAL PRODUCTION FAILURE (tenant, 2026-08-31): a booking
     that started from a SERVICE pick ("جلسة إستشارة أخصائي التغذية")
     never had `specialty_ids` set on the session - only `service_id`
     was. The patient then typed a branch name directly ("النزهة"),
@@ -3014,8 +3033,8 @@ def list_branches_for_specialty(
     # SAME GUARD AS `find_available_doctors` - these ids go to the same
     # doctors API, which answers a name or a list position with a 400.
     #
-    # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-    # 201158877175+medtown2, 2026-09-07 12:26): the patient picked "3"
+    # CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+    # 201000000002+tenant2, 2026-09-07 12:26): the patient picked "3"
     # from a specialty list, the model called this tool with
     # `specialty_ids=['نساء و توليد']`, and it 400ed - twice, because
     # "حاول تاني" reproduced it exactly. Sanitising only
@@ -3331,7 +3350,7 @@ def _resolve_specialty_for_booking(state, specialty_text: str) -> list:
     (`list_specialties`) that never called `_remember_list`, leaving the
     model to recall the specialty id from memory/context instead of
     from a deterministic lookup. CONFIRMED REAL PRODUCTION FAILURE
-    (medtown, 2026-08-30): the patient picked "1" for طب الأطفال
+    (tenant, 2026-08-30): the patient picked "1" for طب الأطفال
     (position 1 in the list just shown), and the doctor returned for
     that specialty was later shown with a schedule labelled "إستشارة
     الطبيب العام" (general physician consultation) - the same class of
@@ -3372,8 +3391,8 @@ def _specialty_named_by(state, base_url: str, text: str) -> Optional[dict]:
     perfectly sensible answer to a question about who to see, and the
     only thing wrong with it is that it went into a doctor-NAME match.
 
-    CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-    201158877175+medtown2, 2026-09-06 13:28:58): the patient typed
+    CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+    201000000002+tenant2, 2026-09-06 13:28:58): the patient typed
     "اسنان" and got
         "ما لقيت دكتور باسم \"أسنان\" 🔍، تحب أشوف لك قائمة الدكاترة
          المتاحين في تخصص طب اسنان؟"
@@ -3551,8 +3570,8 @@ def _sanitize_specialty_ids(state, base_url: str, specialty_ids: list) -> tuple:
     `specialtyIds`. A name or a bare number in there is not a filter the
     API can apply - it is a 400.
 
-    CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-    201158877175+medtown2, 2026-09-07 11:39-11:40), twice in a row:
+    CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+    201000000002+tenant2, 2026-09-07 11:39-11:40), twice in a row:
 
         specialty_ids=['طب الباطنة', 'نساء و توليد', 'طب اسنان',
                        'جراحة الجسم الزجاجي والشبكية']  -> 400
@@ -3689,7 +3708,9 @@ def find_available_doctors(
     itself (the `_guidance` field) - read that when it arrives.
 
     Returns, with `doctors` a list of {"id", "name", "specialtyName",
-    "degreeName"}:
+    "degreeName"}, plus an "about" key ONLY when exactly one doctor is
+    returned (see the `_guidance` on "found"/"found_broader_search" for
+    how to use it):
     {"status": "found", "doctors": [...]}
     {"status": "found_broader_search", "doctors": [...]}
     {"status": "not_found_in_specialty"}
@@ -3862,8 +3883,8 @@ def find_available_doctors(
     # deliberate widening; it is the filter going missing, and
     # `api.get_doctors` answers it with the clinic's entire roster.
     #
-    # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-    # 201003365691+medtown2, 2026-09-07 10:37:56): the patient was
+    # CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+    # 201000000001+tenant2, 2026-09-07 10:37:56): the patient was
     # booking DENTISTRY, was asked which doctor, answered "معرفش اسمه"
     # (I don't know the name) - and the reply listed six doctors across
     # internal medicine, vitreoretinal surgery and obstetrics. The
@@ -4329,8 +4350,8 @@ def resolve_weekday_index(weekday_text: Optional[str]) -> Optional[int]:
 # weekday - so the named-day directive never fired, no tool computed
 # anything, and the model did the arithmetic itself.
 #
-# CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-# 201003365691+medtown2, 2026-09-08 11:48, a Tuesday): "بكره" was
+# CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+# 201000000001+tenant2, 2026-09-08 11:48, a Tuesday): "بكره" was
 # answered with "ما فيه مواعيد متاحة ... يوم الثلاثاء القادم" -
 # tomorrow is WEDNESDAY, and الثلاثاء was that very day. The whole
 # reason `get_next_weekday_date` exists ("your own mental date
@@ -4543,8 +4564,8 @@ def get_doctor_schedule(
     # they land verbatim in an otherwise-Arabic reply, because the model
     # is (correctly) forbidden from altering tool values.
     #
-    # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-    # 201003365691+medtown2, 2026-09-07 10:48:55): an Arabic reschedule
+    # CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+    # 201000000001+tenant2, 2026-09-07 10:48:55): an Arabic reschedule
     # confirmation read "الطبيب: Taha Mabrouk" and "الفرع: AlSheikh
     # Zayedd". `conversation_language` computes this deterministically
     # from state and exists for exactly this class of bug - see its own
@@ -4555,8 +4576,8 @@ def get_doctor_schedule(
     # A DOCTOR'S NAME IS NOT A BOOKING REFERENCE, AND SAYING SO IS
     # CHEAPER THAN LETTING IT FAIL QUIETLY.
     #
-    # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-    # 201099530009+medtown2, 2026-09-08 09:05-09:07): "مواعيد
+    # CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+    # 201000000003+tenant2, 2026-09-08 09:05-09:07): "مواعيد
     # دكتوره أمنيه" reached an agent with no booking-flow text,
     # which reached for THIS tool - the only schedule tool whose name
     # matches the question - and passed the doctor's name where a
@@ -4663,8 +4684,8 @@ def get_available_reschedule_slots(
     # they land verbatim in an otherwise-Arabic reply, because the model
     # is (correctly) forbidden from altering tool values.
     #
-    # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-    # 201003365691+medtown2, 2026-09-07 10:48:55): an Arabic reschedule
+    # CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+    # 201000000001+tenant2, 2026-09-07 10:48:55): an Arabic reschedule
     # confirmation read "الطبيب: Taha Mabrouk" and "الفرع: AlSheikh
     # Zayedd". `conversation_language` computes this deterministically
     # from state and exists for exactly this class of bug - see its own
@@ -6475,8 +6496,8 @@ def _retire_previous_doctors_branch(session: dict, entity_type: str,
     somebody else. Drop it, along with everything else that was chosen
     for the previous doctor.
 
-    CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-    201158877175+medtown2, 2026-09-08 11:21): the patient was mid-way
+    CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+    201000000002+tenant2, 2026-09-08 11:21): the patient was mid-way
     through a booking with د. أمنية when `resolve_available_day`
     inferred فرع الدقي for her from the Thursday they had named. They
     then asked "مواعيد دكتور شريف؟" - a different doctor. His roster was
@@ -6575,7 +6596,7 @@ def match_entity_for_booking(
     # doctor had ever been chosen.
     #
     # `is_a_specialty` exists because of a confirmed real production
-    # failure (medtown, session 201158877175+medtown2, 2026-09-06
+    # failure (tenant, session 201000000002+tenant2, 2026-09-06
     # 13:28:58): the patient typed "اسنان" and got "ما لقيت دكتور باسم
     # أسنان 🔍، تحب أشوف لك قائمة الدكاترة المتاحين في تخصص طب اسنان؟"
     # - a reply that names the specialty it claims not to have found,
@@ -6699,8 +6720,8 @@ def match_entity_for_booking(
             # possible answer: "that doctor does not exist" about a
             # doctor who does.
             #
-            # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-            # 201158877175+medtown2, 2026-09-06 13:45:39, repeated at
+            # CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+            # 201000000002+tenant2, 2026-09-06 13:45:39, repeated at
             # 13:46:18 and 13:47:31): the session still carried
             # `specialty_ids` for dentistry and internal medicine from
             # earlier in the conversation, so the fetch returned 2
@@ -7084,8 +7105,8 @@ def match_entity_for_booking(
                 # `get_doctor_schedule_for_booking` above all - keeps
                 # answering about the OLD doctor.
                 #
-                # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-                # 201158877175+medtown2, 2026-09-06 13:45:47-13:45:55):
+                # CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+                # 201000000002+tenant2, 2026-09-06 13:45:47-13:45:55):
                 # "لا عاوزه دكتور باطنه" resolved correctly to
                 # طب الباطنة, `find_available_doctors` returned د. طه
                 # مبروك for it - and the reply that went out was
@@ -7201,7 +7222,7 @@ def match_entity_for_booking(
 # falling through to whatever the API actually has. Only used as a
 # LAST RESORT below, when the API row has no altName at all.
 #
-# WHY THIS EXISTS: CONFIRMED REAL PRODUCTION FAILURE (medtown,
+# WHY THIS EXISTS: CONFIRMED REAL PRODUCTION FAILURE (tenant,
 # 2026-08-31, recurring across 3 separate turns/sessions) - the
 # "Emergency" branch has no Arabic altName on file in the API, so this
 # function correctly (per its own contract) fell back to the raw
@@ -7363,8 +7384,8 @@ def _patient_choices(items: list) -> dict:
     WHY BOTH. `get_patient_info` returned every row the API gave it, in
     order, with no de-duplication and no ceiling.
 
-    CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-    201003365691+medtown2, 2026-09-09 12:01:58, and again at 12:04:36
+    CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+    201000000001+tenant2, 2026-09-09 12:01:58, and again at 12:04:36
     because the booking then failed): the patient was asked to pick
     their own name from TWENTY-ONE options, of which "hanine aymen"
     appeared three times, "حنين ايمن محمد سرى ابراهيم" twice, and
@@ -8032,7 +8053,7 @@ _EFFECTIVE_FROM_CANDIDATE_KEYS = (
     "effectiveFrom", "fromDateTimeFrom", "effectiveDate", "effectiveFromDate",
     "validFrom", "startDate", "fromDate", "scheduleFrom", "startEffectiveDate",
     # ANSWERED, 2026-08-31: the warning below finally fired on a real
-    # medtown row and printed its actual keys. There is no
+    # tenant row and printed its actual keys. There is no
     # "effectiveFrom"-style field on this API at all - the row's
     # validity window is `fromDateTime`/`toDateTime`, both of which
     # api.py already marks as confirmed against a real response
@@ -8671,8 +8692,8 @@ def create_new_booking(
     # returns `slot_unavailable`, which the patient is told means their
     # appointment was taken.
     #
-    # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-    # 201003365691+medtown2, 2026-09-09 12:02:16 and again 12:04:47):
+    # CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+    # 201000000001+tenant2, 2026-09-09 12:02:16 and again 12:04:47):
     # `select_appointment_slot` logged "locked in
     # slotStart=2026-09-14T07:24:00 (14/09/2026 10:24 صباحًا)", and
     # `create_new_booking` was called with
@@ -8731,11 +8752,11 @@ def create_new_booking(
     # here anyway. `booking_phone` is the session's record of the number
     # actually settled on, written only by the tools that establish it.
     #
-    # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-    # 201003365691+medtown2, 2026-09-06 12:20): "لا" to the
-    # same-WhatsApp-number question, +201155611045 typed and OTP-proved,
+    # CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+    # 201000000001+tenant2, 2026-09-06 12:20): "لا" to the
+    # same-WhatsApp-number question, +201000000004 typed and OTP-proved,
     # that number's patient list shown and a name picked from it - and
-    # then `create_new_booking(mobile_number='201003365691')`. The
+    # then `create_new_booking(mobile_number='201000000001')`. The
     # appointment was created against the number the patient had
     # refused, under a name registered to the other one.
     chosen_phone = _booking_phone(state)
@@ -8849,7 +8870,7 @@ def create_new_booking(
         return {"status": "slot_unavailable"}
 
     # Normalize to E.164 at the API boundary. The channel identity
-    # (WhatsApp's wa_id) arrives as bare digits - "201158877175" - and
+    # (WhatsApp's wa_id) arrives as bare digits - "201000000002" - and
     # the booking API rejects that shape outright with
     # MobileNumber -> "Mobile Number Not Valid", even though the number
     # itself is perfectly valid and the patient can do nothing about it.
@@ -9656,7 +9677,7 @@ def find_best_doctor_in_specialty(
 # booking an appointment), with STEP C6's summary-and-confirm question
 # never actually asked for THIS complaint.
 #
-# CONFIRMED REAL PRODUCTION FAILURE (medtown, 2026-08-30): the patient
+# CONFIRMED REAL PRODUCTION FAILURE (tenant, 2026-08-30): the patient
 # said "الدواء اللي اتوصفلي غلط" (the medication I was prescribed was
 # wrong) and `send_complaint_email` fired in that SAME turn - no
 # question about which doctor, no phone confirmation (or offer to use
