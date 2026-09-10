@@ -438,7 +438,8 @@ def send_message_with_signals(
                     )
                 else:
                     reply = soft_recovery_reply(
-                        (result.get("target_language") if isinstance(result, dict) else None)
+                        (result.get("target_language") if isinstance(result, dict) else None),
+                        (result.get("messages") if isinstance(result, dict) else None),
                     )
                 logger.error(
                     "session_id=%s: the turn produced an EMPTY reply - sent the failure "
