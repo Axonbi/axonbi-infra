@@ -2552,8 +2552,8 @@ def _rejected_day_lead_for_day_list(messages: list, session_id: str) -> str:
 # stood down, `_build_show_soonest_day_directive` took the turn, and
 # nothing computed a date at all.
 #
-# CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-# 201003365691+medtown2, 2026-09-08 11:48, a Tuesday): "بكره" was
+# CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+# 201000000001+tenant2, 2026-09-08 11:48, a Tuesday): "بكره" was
 # answered "للأسف ما فيه مواعيد متاحة عند الدكتور محمود سليمان يوم
 # الثلاثاء القادم". Tomorrow was WEDNESDAY; الثلاثاء was that day. Two
 # turns later the same flow denied the Monday it had successfully
@@ -2925,8 +2925,8 @@ _MULTI_INTENT_EMAIL_RE = re.compile(r"[^\s@]+@[^\s@]+\.[^\s@]+")
 # "10 صباحا", "3 pm".
 #
 # THE DEFINITE ARTICLE IS OPTIONAL, AND THE PERIOD WORDS WERE TOO
-# SHORT A LIST. CONFIRMED REAL PRODUCTION MISS (medtown, session
-# 201158877175+medtown2, 2026-09-08 08:48): "عاوزه احجز مع دكتور
+# SHORT A LIST. CONFIRMED REAL PRODUCTION MISS (tenant, session
+# 201000000002+tenant2, 2026-09-08 08:48): "عاوزه احجز مع دكتور
 # محمد زايد يوم التلات ساعه 10 الصبح" carried a day AND an
 # hour. The day resolved correctly and the four real slots were shown
 # - starting with the 10:00 the patient had just asked for - and the
@@ -3741,8 +3741,8 @@ def _build_specialty_picked_directive(messages: list, agent_name: str) -> str:
     specialty. Not the clinic's branches, not that branch's service
     catalogue, not a question about the day.
 
-    CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-    201158877175+medtown2, 2026-09-07 13:03-13:09). The patient picked
+    CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+    201000000002+tenant2, 2026-09-07 13:03-13:09). The patient picked
     "1" (طب اسنان) from a four-item specialty list and received, in
     order: the clinic's three BRANCHES, then that branch's two
     SERVICES ("فحص النظر", "كشف عيادة النساء" - neither of them
@@ -4346,8 +4346,8 @@ def _build_appointment_choice_directive(messages: list) -> str:
     number the patient reads and the number the tool resolves disagree,
     and the disagreement is silent.
 
-    CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-    201158877175+medtown2, 2026-09-07 10:22): the patient was shown
+    CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+    201000000002+tenant2, 2026-09-07 10:22): the patient was shown
     "1️⃣ فرع الدقي 26/09 · 2️⃣ فرع الشيخ زايد 12/09", typed "2", and the
     confirmation named فرع الدقي 26/09 - the other row, under another
     patient's name. On a cancellation that destroys the wrong booking.
@@ -4573,7 +4573,7 @@ def _build_greeting(templates: dict, user_message: str, target_language: str) ->
     #
     # Some clients author `msg_unknown_fallback` as one English
     # paragraph followed by one Arabic paragraph in a SINGLE field -
-    # CONFIRMED REAL PRODUCTION FAILURE (medtown, 2026-08-30): an
+    # CONFIRMED REAL PRODUCTION FAILURE (tenant, 2026-08-30): an
     # English "hi" got the full English AND the full Arabic paragraph
     # back, one after the other, in the very first message the clinic
     # sent. Isolating the half that matches this turn's language here
@@ -4614,7 +4614,7 @@ def _build_greeting(templates: dict, user_message: str, target_language: str) ->
         english_greeting = templates.get("msg_unknown_fallback_en")
         if english_greeting:
             greeting = english_greeting.replace("\r\n", "\n").replace("\r", "\n")
-            return _personalized_greeting(greeting, user_message, target_language)
+            return _personalized_greeting(greeting, user_message)
 
         if not greeting or _looks_arabic(greeting):
             lowered = (user_message or "").lower()
@@ -4645,10 +4645,10 @@ def _build_greeting(templates: dict, user_message: str, target_language: str) ->
     # we emit.
     greeting = greeting.replace("\r\n", "\n").replace("\r", "\n")
 
-    return _personalized_greeting(greeting, user_message, target_language)
+    return _personalized_greeting(greeting, user_message)
 
 
-def _personalized_greeting(greeting: str, user_message: str, language_hint: str) -> str:
+def _personalized_greeting(greeting: str, user_message: str) -> str:
     """
     Swap ONLY the official greeting's fixed opening line ("أهلاً بيك 👋" /
     "أهلاً وسهلاً بك 👋") for a time-of-day salutation ("صباح النور!"/
@@ -4722,7 +4722,7 @@ _ARABIZI_RE = re.compile(
 def _looks_arabizi(text: str) -> bool:
     """Whether Latin-script text is actually Arabic written in Franco.
 
-    CONFIRMED REAL PRODUCTION FAILURE (medtown, 2026-08-31): the first
+    CONFIRMED REAL PRODUCTION FAILURE (tenant, 2026-08-31): the first
     message of a conversation was "mass2oo" (مسعود). Classified as
     English on the strength of its Latin letters alone, it produced an
     English greeting stapled to the model's own Arabic question - one
@@ -5283,8 +5283,8 @@ def _split_sentences(text: str) -> list:
 # the probe is rhetorical, while the offer is the whole reason the turn
 # exists.
 #
-# CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-# 201158877175+medtown2, 2026-09-07 11:54): "سناني وجعاني وبتجيب دم".
+# CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+# 201000000002+tenant2, 2026-09-07 11:54): "سناني وجعاني وبتجيب دم".
 # Dentistry IS bookable at this clinic, the model correctly offered it -
 # and the trimmer kept "هل الألم مستمر؟" and deleted "تحب أحجز لك موعد
 # عند واحد منهم؟". The patient was left with advice and no way to act
@@ -5537,8 +5537,8 @@ def _greeting_without_its_closing_question(greeting: str) -> str:
     greeting is prepended, so the second question is introduced by our
     own code after the last thing that could have caught it.
 
-    CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-    201158877175+medtown2, 2026-09-06 13:43:01): the reply carried the
+    CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+    201000000002+tenant2, 2026-09-06 13:43:01): the reply carried the
     full welcome menu ending "كيف أستطيع مساعدتك اليوم؟ 😊", then a
     doctor answer ending "تحب أساعدك بحاجة ثانية؟" - two questions, and
     the first one was already answered by the second half of the same
@@ -5661,7 +5661,7 @@ _NOT_A_BRANCH_NAME = {
     # name, forcing a pointless correction retry over a perfectly
     # accurate reply.
     "واحد", "واحده", "واحدة", "اثنين", "اثنان", "تلاته", "ثلاثة", "التالي",
-    # CONFIRMED REAL PRODUCTION FAILURE (medtown, 2026-08-30): "حابب
+    # CONFIRMED REAL PRODUCTION FAILURE (tenant, 2026-08-30): "حابب
     # تحجز في أنهي فرع وانهي يوم؟" ("which branch and which day would
     # you like?") was parsed as a branch literally named "وانهي يوم" -
     # the second question word ("وانهي"/"which... and") landed right
@@ -5677,8 +5677,8 @@ _NOT_A_BRANCH_NAME = {
     # QUESTION - and the shape that broke this guard three times in one
     # session while the branch data was perfectly correct every time.
     #
-    # CONFIRMED REAL PRODUCTION FAILURES (medtown, session
-    # 201003365691+medtown2, 2026-09-09):
+    # CONFIRMED REAL PRODUCTION FAILURES (tenant, session
+    # 201000000001+tenant2, 2026-09-09):
     #
     #   14:53:21  "الدكتور طه مبروك ما تم تأكيد فرع له بعد، ممكن تحدد لي
     #              الفرع اللي تفضل تحجز فيه؟" - a reply that names NO
@@ -5705,14 +5705,14 @@ _NOT_A_BRANCH_NAME = {
     "بيهم", "بيها", "بيه", "فيهم", "عليهم", "عليها", "عنده", "عندها",
     "بعد", "بعده", "بعدها", "بعدين", "لسه", "لسة", "قبل",
     "حاليا", "حاليًا", "دلوقتي", "الحين", "هنا", "هناك",
-    # CONFIRMED REAL PRODUCTION FAILURE (medtown, 2026-08-30): "ما لقيت
+    # CONFIRMED REAL PRODUCTION FAILURE (tenant, 2026-08-30): "ما لقيت
     # فرع اسمه \"فرع النيل\"" - a correct denial that a patient-invented
     # branch exists - was itself parsed as naming a branch, because
     # "اسمه" ("named") introduces someone else's claim about a branch,
     # not a branch name. Without this the denial sentence gets treated
     # as the invention it's actually refuting.
     "اسمه", "اسمها", "اسمك", "اسمكم", "اسم",
-    # CONFIRMED REAL PRODUCTION FAILURE (medtown, 2026-08-31): a
+    # CONFIRMED REAL PRODUCTION FAILURE (tenant, 2026-08-31): a
     # perfectly correct recovery message - "ما قدرنا نلاقي فرع بالرقم
     # 1... تختار من: 1️⃣ المنار 2️⃣ النزهة" - was rejected as naming an
     # invented branch. "فرع بالرقم" ("branch BY NUMBER") refers to the
@@ -5827,7 +5827,7 @@ def _known_branch_text(state: AgentState) -> str:
             parts.append(value)
 
     # PERSISTENT MEMORY, NOT JUST THIS TURN'S MESSAGE HISTORY.
-    # CONFIRMED REAL PRODUCTION FAILURE (medtown, 2026-08-31): a reply
+    # CONFIRMED REAL PRODUCTION FAILURE (tenant, 2026-08-31): a reply
     # correctly named "فرع الطوارئ" - a branch the patient had already
     # been shown by name three turns earlier - and was rejected twice
     # as an invented branch anyway, because scanning `state["messages"]`
@@ -5983,8 +5983,8 @@ def _reply_lists_times_with_no_lookup_this_turn(reply_text: str, state: AgentSta
     list is displayed, nothing is remembered, and their "5" resolves
     against nothing.
 
-    CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-    201003365691+medtown2, 2026-09-09). Last real lookup 14:28:42, then:
+    CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+    201000000001+tenant2, 2026-09-09). Last real lookup 14:28:42, then:
 
         14:44:36  ten numbered times printed - no tool call in the turn
         14:48:28  the same ten printed again - no tool call
@@ -6268,8 +6268,8 @@ def _find_invented_doctors(reply_text: str, state: AgentState) -> list:
     # added for the earlier two (see their comments). Neither covers a
     # branch list with no address at all.
     #
-    # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-    # 201003365691+medtown2, 2026-09-09 12:12:41): after `medical`
+    # CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+    # 201000000001+tenant2, 2026-09-09 12:12:41): after `medical`
     # offered to book with د. طه مبروك and the patient answered
     # "ياريت", the draft was "في أي فرع تفضل تحجز موعدك عند د. طه
     # مبروك؟ / 1️⃣ الشيخ زايد / 2️⃣ فرع آخر". It was rejected here twice
@@ -6292,7 +6292,7 @@ def _find_invented_doctors(reply_text: str, state: AgentState) -> list:
     # guard actually exists, and this exact gap is what let a fully
     # invented 4-doctor roster (covering four different specialties)
     # through with zero tool activity anywhere in the turn. CONFIRMED
-    # REAL PRODUCTION FAILURE (medtown, 2026-08-30): the patient said
+    # REAL PRODUCTION FAILURE (tenant, 2026-08-30): the patient said
     # "معرفوش" (I don't know [which doctor]) and got "أعرض لك الدكاترة
     # المتاحين عندنا الحين" followed by four names and specialties, none
     # of which any tool in this conversation had ever returned. With
@@ -6315,12 +6315,12 @@ def _find_invented_doctors(reply_text: str, state: AgentState) -> list:
         # normally followed by an address, which no doctor entry ever
         # has - use that as the disambiguator so branch lists don't get
         # misread as an invented doctor roster.
-        # CONFIRMED REAL FALSE POSITIVE (medtown, 2026-08-30): a 2-branch
+        # CONFIRMED REAL FALSE POSITIVE (tenant, 2026-08-30): a 2-branch
         # list ("1️⃣ المنار / العنوان: ...", "2️⃣ النزهة / العنوان: ...")
         # was rejected twice as invented doctors, forcing the generic
         # fallback error message to go out instead of a valid answer.
         lookahead = reply_text[match.end():match.end() + 120]
-        # SECOND CONFIRMED REAL FALSE POSITIVE (medtown, 2026-08-30,
+        # SECOND CONFIRMED REAL FALSE POSITIVE (tenant, 2026-08-30,
         # same session, immediately after the first fix landed): the
         # literal word "العنوان" is not the only way an address shows
         # up. The model also writes it inline with no label at all -
@@ -6535,7 +6535,7 @@ def _find_invented_branches(reply_text: str, state: AgentState) -> list:
     # them ('ما لقيت فرع اسمه "فرع النيل"') - the quoted text is being
     # referenced, not asserted, and scanning it anyway means the denial
     # sentence gets flagged as the very invention it's refuting.
-    # CONFIRMED REAL PRODUCTION FAILURE (medtown, 2026-08-30): exactly
+    # CONFIRMED REAL PRODUCTION FAILURE (tenant, 2026-08-30): exactly
     # this sentence, followed by two genuinely correct branches, was
     # discarded twice and replaced with the generic fallback error.
     scan_text = re.sub(r"[\"'«»\u201c\u201d][^\"'«»\u201c\u201d\n]{1,40}[\"'«»\u201c\u201d]", " ", reply_text)
@@ -6885,8 +6885,8 @@ _NOT_A_DIAGNOSIS_RE = re.compile(
 # doctor names and the closing question, neither of which repeats the
 # specialty, and rejected a perfectly correct referral.
 #
-# CONFIRMED REAL PRODUCTION FALSE POSITIVE (medtown, session
-# 201003365691+medtown2, 2026-09-07 10:38:48): "انا عيني بتوجعني" was
+# CONFIRMED REAL PRODUCTION FALSE POSITIVE (tenant, session
+# 201000000001+tenant2, 2026-09-07 10:38:48): "انا عيني بتوجعني" was
 # answered with "الدكاتره المتاحين في تخصص جراحة الجسم الزجاجي
 # والشبكية" - vitreoretinal surgery, exactly the right eye specialty,
 # and on the guard's own eye row - and was flagged as unrelated.
@@ -6908,7 +6908,7 @@ _SPECIALTY_OFFER_RE = re.compile(
 # judging it anyway compares the patient's body part against an empty
 # offer, which never matches and therefore always fails.
 #
-# CONFIRMED REAL PRODUCTION FALSE POSITIVE (medtown, 2026-09-07
+# CONFIRMED REAL PRODUCTION FALSE POSITIVE (tenant, 2026-09-07
 # 10:18:42): the authored booking-entry wording was flagged as
 # "offered a specialty that does not treat the body part the patient
 # named", twice, and replaced with the safe fallback - for a message
@@ -7067,7 +7067,7 @@ def _medical_reply_offers_unrelated_specialty(reply_text: str, state: AgentState
     # specialty word, so scoping to _SPECIALTY_OFFER_RE lines only was
     # throwing away the very lines that name the specialty being
     # offered - the roster entries above it.
-    # CONFIRMED REAL PRODUCTION FAILURE (medtown, 2026-08-30): "1️⃣ ...
+    # CONFIRMED REAL PRODUCTION FAILURE (tenant, 2026-08-30): "1️⃣ ...
     # · جراحة العظام\n2️⃣ ... · جراحة العظام\nتحب تحجز عند أي واحد
     # فيهم؟" for a patient who said "وجع في عظام رجلي" - the roster
     # lines correctly named جراحة العظام, but only the closing question
@@ -7096,8 +7096,8 @@ def _medical_reply_offers_unrelated_specialty(reply_text: str, state: AgentState
     # Only the last line matches `_SPECIALTY_OFFER_RE`, and it names
     # no specialty - so `offer_text` held no specialty word at all
     # and the guard flagged a CORRECT dermatology referral for a skin
-    # complaint. CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-    # 201158877175+medtown2, 2026-09-08 11:14): rejected twice, so
+    # complaint. CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+    # 201000000002+tenant2, 2026-09-08 11:14): rejected twice, so
     # the patient got "مش قادرة أحدد لك التخصص الأنسب" and an
     # offer to be handed to staff, instead of the appointment they
     # were one word away from.
@@ -7123,7 +7123,7 @@ def _medical_reply_offers_unrelated_specialty(reply_text: str, state: AgentState
     # two different complaints over a conversation therefore had the
     # older one judging replies about the newer one, forever.
     #
-    # CONFIRMED IN A REAL CONVERSATION (session 201003365691, medtown):
+    # CONFIRMED IN A REAL CONVERSATION (session 201000000001, tenant):
     # the patient said "رجلي وقعت عليها" earlier, then later "بطني
     # وجعاني". The reply correctly advised and offered طب الباطنة - the
     # right specialty for abdominal pain - and this check rejected it
@@ -7352,8 +7352,8 @@ def _build_unstaffed_specialty_directive(messages: list, agent_name: str) -> str
     names in it, rather than as a rule about a list the model has to
     remember to re-read.
 
-    CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-    201158877175+medtown2, 2026-09-06 11:41): "رجلي وقعت عليها".
+    CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+    201000000002+tenant2, 2026-09-06 11:41): "رجلي وقعت عليها".
     `list_specialties` returned 17 specialties, 4 bookable, and
     جراحة العظام among the 13 unstaffed. The first draft got the
     conclusion right - "للأسف تخصص جراحة العظام غير متوفر حاليًا. تحب
@@ -7470,7 +7470,7 @@ def _medical_reply_names_two_specialties(reply_text: str, state: AgentState) -> 
     # bookable one". Reading only `specialties` meant the advised half
     # counted as no specialty at all, so `mentioned` never reached two.
     #
-    # CONFIRMED REAL PRODUCTION FAILURE (medtown, 2026-09-06): "رجلي
+    # CONFIRMED REAL PRODUCTION FAILURE (tenant, 2026-09-06): "رجلي
     # وقعت عليها" was answered "لازم تراجع دكتور جراحة العظام فورًا ...
     # عندنا دكاترة في تخصص طب الباطنة، تحب أحجز لك موعد مع واحد منهم؟".
     # Orthopaedics was in `unstaffed_specialties`, internal medicine in
@@ -8404,7 +8404,7 @@ def _reply_denies_availability_without_lookup(reply_text: str, state: AgentState
     much later in the same session (a new search, a fresh
     `find_available_doctors` result) went unflagged, because the bar
     had already been satisfied by unrelated history. CONFIRMED REAL
-    PRODUCTION FAILURE (medtown, 2026-08-30): `find_available_doctors`
+    PRODUCTION FAILURE (tenant, 2026-08-30): `find_available_doctors`
     found "بدر تميمي" again for a fresh pediatrics search, the patient
     agreed to book ("اه"), and the reply was "ما عندي مواعيد لدكتور بدر
     تميمي الحين" with no availability tool called anywhere near that
@@ -8430,8 +8430,8 @@ def _reply_denies_availability_without_lookup(reply_text: str, state: AgentState
     # lookup for some OTHER day earlier in the same doctor's booking
     # says nothing about it.
     #
-    # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-    # 201003365691+medtown2, 2026-09-08 11:48-11:49): a real
+    # CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+    # 201000000001+tenant2, 2026-09-08 11:48-11:49): a real
     # `resolve_available_day` + `get_available_slots_for_booking`
     # pair had run for MONDAY, and a booking had completed on it.
     # Three turns later, with no availability tool running at all:
@@ -8568,7 +8568,7 @@ def _availability_values_from_tools(tool_texts: list) -> tuple:
 #                                                is. Not an appointment at
 #                                                all.
 #
-# TWO CONFIRMED REAL FALSE POSITIVES (medtown, 2026-09-08 08:47 and
+# TWO CONFIRMED REAL FALSE POSITIVES (tenant, 2026-09-08 08:47 and
 # 08:48), both within minutes of this check going live, and both on
 # CORRECT replies:
 #
@@ -8768,7 +8768,7 @@ _AVAILABILITY_CORRECTION_DIRECTIVE = (
 # (from its own point of view) say the fixed "we couldn't find a
 # doctor by that name" apology and stop the complaint entirely.
 #
-# CONFIRMED REAL PRODUCTION FAILURE (medtown, 2026-08-30): the patient's
+# CONFIRMED REAL PRODUCTION FAILURE (tenant, 2026-08-30): the patient's
 # entire message was "عاوزه اشتكي علشان الدواء اتوصفلي غلط" ("I want to
 # complain because the medication I was prescribed was wrong") - no
 # doctor name, no word for "doctor" even appears in it - and the reply
@@ -8843,7 +8843,7 @@ def _reply_fabricates_doctor_not_found_stop(reply_text: str, state: AgentState) 
     # never a real name no matter what the surrounding message looked
     # like - flag it regardless of the heuristics below.
     #
-    # CONFIRMED REAL PRODUCTION FAILURE (medtown, 2026-08-30): the
+    # CONFIRMED REAL PRODUCTION FAILURE (tenant, 2026-08-30): the
     # patient said "دكتور كتبلي دواء غلط مش لحالتي" (a/the doctor
     # prescribed me the wrong medication) - genuinely mentions "دكتور"
     # as a common noun, with no name attached - and the call was made
@@ -8922,7 +8922,7 @@ _DOCTOR_NOT_FOUND_STOP_CORRECTION_DIRECTIVE = (
 # and STEP C8 only directs the PATIENT to ask for "موظف" themselves if
 # THEY want that - it is not something to proactively offer mid-flow.
 #
-# CONFIRMED REAL PRODUCTION FAILURE (medtown, 2026-08-30): after "لا"
+# CONFIRMED REAL PRODUCTION FAILURE (tenant, 2026-08-30): after "لا"
 # to the STEP C1b question, the reply asked "هل تحبني أساعدك في
 # التواصل مع أحد ممثلي خدمة العملاء مباشرةً؟" instead of asking for the
 # patient's name - and when the patient said "لا" to THAT too, the
@@ -9578,10 +9578,48 @@ _SOFT_RECOVERY_TEXT = {
     "en": "Could you tell me what you need again? I want to make sure I help you properly 🌷",
 }
 
+# CROSS-TURN LOOP BREAKER.
+#
+# CONFIRMED REAL PRODUCTION FAILURE (tenant2, +201000000001,
+# 2026-09-10): OTP verified, then `lookup_appointment` could not find a
+# booking under that number. The agent kept re-hitting the same missing
+# -booking condition on every following turn - "عاوزه اعدل المعاد", then
+# "طب الغي" - and `_soft_recovery_reply` fired the IDENTICAL generic
+# line each time, because nothing about the underlying condition had
+# changed and the line itself carries no memory of having been said
+# before. To the patient this reads as the assistant ignoring
+# everything they type.
+#
+# `_SOFT_RECOVERY_TEXT` is deliberately static and content-free (see its
+# own note above - it must never itself invent a doctor/branch/claim),
+# so it cannot become smarter about WHY it fired. What it CAN do is
+# notice it already said this exact line last turn and stop repeating
+# itself - handing off to a human is honest and moves the conversation
+# forward; a third identical message would not.
+_SOFT_RECOVERY_ESCALATION_TEXT = {
+    "ar": "معلش، شكلي مش قادرة أوصل لطلبك ده صح دلوقتي 🌷\n"
+          "حابب أحولك لأحد ممثلي خدمة العملاء يكمل معاك؟",
+    "en": "Sorry - it looks like I'm not able to get to this properly right "
+          "now 🌷\nWould you like me to connect you with one of our "
+          "customer service team to continue with you?",
+}
 
-def _soft_recovery_reply(target_language: Optional[str]) -> str:
+
+def _soft_recovery_reply(target_language: Optional[str],
+                         messages: Optional[list] = None) -> str:
     is_english = (target_language or "").strip().lower().startswith("en")
-    return _SOFT_RECOVERY_TEXT["en" if is_english else "ar"]
+    lang_key = "en" if is_english else "ar"
+
+    # `messages` is optional (main.py/app.py call this from outside the
+    # graph, before any turn's messages exist in that shape) - only the
+    # in-graph callers, which already hit this condition once and know
+    # it, can supply it and get the escalation behaviour.
+    if messages is not None:
+        previous_reply = _last_ai_reply_text(messages)
+        if previous_reply in _SOFT_RECOVERY_TEXT.values():
+            return _SOFT_RECOVERY_ESCALATION_TEXT[lang_key]
+
+    return _SOFT_RECOVERY_TEXT[lang_key]
 
 
 # Public aliases: main.py and app.py both need to make the same
@@ -9660,8 +9698,8 @@ def _honest_unstaffed_reply(draft: str, messages: list,
     the clinic does not have. And `list_specialties` has already said,
     in the same turn, which department that is and that it is unstaffed.
 
-    CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-    201158877175+medtown2, 2026-09-07 11:35): "رجلي وقعت عليها". Three
+    CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+    201000000002+tenant2, 2026-09-07 11:35): "رجلي وقعت عليها". Three
     drafts each claimed orthopaedic doctors; the availability check had
     spent its one rewrite on the first, so the third fell through to the
     safe fallback and the patient received "معلش، ما لقيتش دكتور متاح
@@ -9820,7 +9858,7 @@ def _safe_fallback_reply(
              # طلبك تاني؟") says nothing. On a first turn it is dropped
              # entirely (see the greeting step), so a patient who had
              # just described an injury received the service menu and
-             # nothing else - confirmed medtown 2026-09-07 10:17:55,
+             # nothing else - confirmed tenant 2026-09-07 10:17:55,
              # "رجلي وقعت عليها", answered with the greeting alone.
              #
              # The message below is exactly right for it: we could not
@@ -9890,7 +9928,7 @@ def _safe_fallback_reply(
     # `msg_On_failure` is reserved for the case where a tool THIS TURN
     # actually reported an upstream failure - see upstream_api_failed().
     if not upstream_api_failed(state.get("messages") or []):
-        return _soft_recovery_reply(target_language)
+        return _soft_recovery_reply(target_language, state.get("messages"))
 
     templates = state.get("templates") or {}
     authored = (templates.get("msg_On_failure") or "").strip()
@@ -10522,7 +10560,7 @@ def _reply_scope_refuses_an_answer_to_our_own_question(
     wrong thing, it may say they don't have what we asked for - but it
     is not off-topic, because we chose the topic one message ago.
 
-    CONFIRMED IN A REAL CONVERSATION (session 201158877175, medtown):
+    CONFIRMED IN A REAL CONVERSATION (session 201000000002, tenant):
         bot: "ممكن تعطيني رقم الحجز أو رقم جوالك عشان أقدر أجيب بيانات
               موعدك؟"
         patient: "مش معايا بس اسمي فاطمه ناصر"
@@ -10633,8 +10671,8 @@ def _health_message_refusal_correction(reply_text: str, state: AgentState) -> st
 # message already contains a booking reference or a phone number, use it
 # and skip the "reference or phone?" question. It was not followed.
 #
-# CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-# 201003365691+medtown2, 2026-09-01 09:00):
+# CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+# 201000000001+tenant2, 2026-09-01 09:00):
 #
 #   patient : تعديل موعد برقم GuestBookingNum-2026-09-01-076
 #   reply   : نكمل تعديل موعدك على نفس رقم الواتساب ده؟ ✅
@@ -11034,7 +11072,7 @@ def _just_booked_correction(reply_text: str, state: AgentState) -> str:
 #           still act on it. Replacing it with a technical error turns a
 #           slightly awkward turn into a dead one.
 #
-# CONFIRMED REAL PRODUCTION FAILURE (medtown, 2026-09-01 09:12): a
+# CONFIRMED REAL PRODUCTION FAILURE (tenant, 2026-09-01 09:12): a
 # FLOW verifier misfired on a completely correct reply - "معنديش فرع
 # اسمه النيل. لكن عندنا هالفروع المتاحة حاليًا: 1️⃣ المنار 2️⃣ النزهة" -
 # fired again on the retry, and the patient received "حدث خطأ تقني 😕.
@@ -11617,8 +11655,8 @@ _CLAIM_GATES = (
         # and `cancel_appointment` of course never ran - so a completed
         # reschedule was reported to the patient as a FAILED one.
         #
-        # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-        # 201003365691+medtown2, 2026-09-06 13:45:49 and again at
+        # CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+        # 201000000001+tenant2, 2026-09-06 13:45:49 and again at
         # 13:47:35): `PUT /api/GuestBookings/Update` had already gone
         # out and succeeded, the draft correctly read "تم تعديل موعدك
         # بنجاح ✅", and the patient was sent "معلش، ما قدرتش أنفّذ
@@ -11793,7 +11831,7 @@ def _claim_gate_retries_exhausted(state: AgentState) -> bool:
 # question with no usable "no" branch.
 #
 # CONFIRMED REAL PRODUCTION FAILURE (booking flow, STEP NB6): the
-# patient typed +201155611045, the assistant answered "رقم الجوال اللي
+# patient typed +201000000004, the assistant answered "رقم الجوال اللي
 # أعطيته مختلف عن رقم الواتساب اللي تستخدمه. من فضلك، هل تبي نرسل لك
 # رمز التحقق على هذا الرقم؟ (نعم/لا)". They said "لا" - and the flow had
 # nowhere to go, so it asked for the number again. The same two messages
@@ -12045,7 +12083,7 @@ _REPLY_VERIFIERS = (
         # on `cancel`, and because it is SAFETY severity a second firing
         # replaces the reply outright. It destroyed, among others, a
         # correct 20-name patient picker, a correct "رمز التحقق تم
-        # إرساله على +201155611045", a correct "ما لقيت موعد مرتبط
+        # إرساله على +201000000004", a correct "ما لقيت موعد مرتبط
         # بالرقم ده", and - worst - the reply to "مش معايا التليفون
         # ارجوك ساعدني", which became "ممكن توضحلي طلبك تاني؟".
         lambda reply, state, agent_name: (
@@ -12507,8 +12545,8 @@ _SINGLE_DOCTOR_AFFIRMED_DIRECTIVE = (
     "user_input=\"{name}\" and entity_type=\"doctor\" to confirm them "
     "properly, then continue the flow from STEP NB2 - their real days "
     "and branches.\n\n"
-    "CONFIRMED REAL PRODUCTION FAILURE (medtown, session "
-    "201158877175+medtown2, 2026-09-06 14:21:44-14:21:56): "
+    "CONFIRMED REAL PRODUCTION FAILURE (tenant, session "
+    "201000000002+tenant2, 2026-09-06 14:21:44-14:21:56): "
     "\"الدكتور المتاح عندنا حاليًا في تخصص طب الباطنة هو د. طه مبروك "
     "- تحب أحجز لك موعد عنده؟\" -> \"اه\" -> \"ما زلت أحتاج لتأكيد اسم "
     "الدكتور... من فضلك اكتب لي اسم الدكتور اللي حابب تحجز عنده.\" The "
@@ -13824,8 +13862,8 @@ def _build_branch_question_directive(messages: list, session_id: str, agent_name
     # resolve_available_day"). With both in the prompt this one wins,
     # and the day the patient named is thrown away.
     #
-    # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-    # 201158877175+medtown2, 2026-09-08 08:46): "عاوزه احجز مع دكتور
+    # CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+    # 201000000002+tenant2, 2026-09-08 08:46): "عاوزه احجز مع دكتور
     # امنيه يوم الاحد". The doctor resolved correctly, then the weekly
     # schedule was printed and the reply ended "حابب تحجز في أنهي فرع
     # وانهي يوم؟" - asking for the day that was in the patient's very
@@ -15160,7 +15198,7 @@ _NEW_BOOKING_DIFFERENT_NUMBER_DIRECTIVE = (
     "for something that cannot exist, and it belongs to the "
     "CANCELLATION flow, which is a different conversation about an "
     "appointment they already hold.\n\n"
-    "CONFIRMED REAL PRODUCTION FAILURE (medtown, 2026-09-06 12:19): "
+    "CONFIRMED REAL PRODUCTION FAILURE (tenant, 2026-09-06 12:19): "
     "that exact sentence went out mid-booking, was flagged for asking "
     "the patient to identify a booking they had never mentioned, was "
     "rewritten the same way a second time, and the patient ended up "
@@ -15304,7 +15342,7 @@ _FORGOT_TO_LOCK_SLOT_CORRECTION_DIRECTIVE = (
     "which day or which time, and do NOT drop the confirmation sentence "
     "- the patient must always be told exactly which appointment they "
     "are confirming before being asked about the phone number.\n\n"
-    "CONFIRMED REAL PRODUCTION FAILURE (medtown, 2026-08-31 12:46:47): "
+    "CONFIRMED REAL PRODUCTION FAILURE (tenant, 2026-08-31 12:46:47): "
     "the draft correctly said \"تم اختيار موعد الساعة 2:30 مساءً يوم "
     "الأحد 06/09/2026 مع دكتور نور عبد الرحمن\" followed by the "
     "WhatsApp question. The correction dropped that first sentence "
@@ -15886,8 +15924,8 @@ def _compact_history_for_llm(history: list, full_messages: list) -> list:
 # THE SAME TOOL CALL, WITH THE SAME ARGUMENTS, FOREVER
 # ==========================================================
 #
-# CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-# 201099530009+medtown2, 2026-09-08 09:05-09:07, three times in two
+# CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+# 201000000003+tenant2, 2026-09-08 09:05-09:07, three times in two
 # minutes): "مواعيد دكتوره أمنيه". Fourteen model calls, no tool line
 # between any of them, then GraphRecursionError and nothing at all for
 # the patient. The model had reached for `get_doctor_schedule` - whose
@@ -16043,7 +16081,7 @@ def _break_repeated_tool_loop(response, state: AgentState, agent_name: str,
             agent_name, repeats[0].get("name"), worst + 1,
             state.get("session_id"),
         )
-        return AIMessage(content=_soft_recovery_reply(target_language))
+        return AIMessage(content=_soft_recovery_reply(target_language, messages))
 
     logger.warning(
         "agent[%s]: %s was already called with these exact arguments this turn "
@@ -16070,7 +16108,7 @@ def _break_repeated_tool_loop(response, state: AgentState, agent_name: str,
             "had already run (session_id=%s) - answering in code",
             agent_name, repeats[0].get("name"), state.get("session_id"),
         )
-        return AIMessage(content=_soft_recovery_reply(target_language))
+        return AIMessage(content=_soft_recovery_reply(target_language, messages))
 
     return retry
 
@@ -16831,8 +16869,8 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         # everything else, for the same reason it already excludes scope
         # refusals: "حدث خطأ تقني" is not a substantive reply the
         # greeting should introduce, it is this turn failing outright.
-        # CONFIRMED REAL PRODUCTION FAILURE: medtown, session
-        # 201158877175+medtown2, 2026-08-30 11:30 - the fallback message
+        # CONFIRMED REAL PRODUCTION FAILURE: tenant, session
+        # 201000000002+tenant2, 2026-08-30 11:30 - the fallback message
         # was sent glued underneath the full opening greeting/menu,
         # because nothing downstream distinguished it from a normal
         # first reply.
@@ -16844,8 +16882,8 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         # before it. Every earlier check has already been passed - on a
         # draft that no longer exists.
         #
-        # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-        # 201158877175+medtown2, 2026-09-06 11:41): "رجلي وقعت عليها".
+        # CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+        # 201000000002+tenant2, 2026-09-06 11:41): "رجلي وقعت عليها".
         # The first draft ended correctly - orthopaedics is unstaffed,
         # here is a staff handoff - but listed the four bookable
         # specialties on the way, one of which was نساء وتوليد, so the
@@ -16869,8 +16907,8 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         # The table holds thirty-odd checks and each one that fires costs
         # a model call. Nothing bounded the TOTAL, so a draft that
         # displeased many checks at once could spend a dozen calls inside
-        # this single node - confirmed in production (medtown, session
-        # 201003365691+medtown2, 2026-09-06 12:23): thirteen completions
+        # this single node - confirmed in production (tenant, session
+        # 201000000001+tenant2, 2026-09-06 12:23): thirteen completions
         # roughly 1.2s apart on one turn, sixteen seconds of silence, and
         # the turn ended in the graph's recursion limit with the patient
         # getting the generic "ممكن توضحلي طلبك تاني؟".
@@ -17239,8 +17277,8 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         # that puts both languages in the very first message the clinic
         # ever sends.
         #
-        # CONFIRMED REAL PRODUCTION FAILURE: medtown, session
-        # 201003365691+medtown2, 2026-08-30 - the patient's first
+        # CONFIRMED REAL PRODUCTION FAILURE: tenant, session
+        # 201000000001+tenant2, 2026-08-30 - the patient's first
         # message was the English word "hi"; the reply sent back was
         # the full English paragraph immediately followed by the full
         # Arabic paragraph, one after another in the same message.
@@ -17263,8 +17301,8 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         # from the API in English ("Al Nozha", "Dr Smith") and land in
         # an otherwise perfectly Arabic reply.
         #
-        # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-        # 201158877175+medtown2, 2026-08-31 12:44:53): a correct 576-
+        # CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+        # 201000000002+tenant2, 2026-08-31 12:44:53): a correct 576-
         # character Arabic reply listing a doctor's weekly schedule was
         # discarded in full and replaced by the bare greeting, because
         # its branch name rendered as "Al Nozha" - two Latin words.
@@ -17335,8 +17373,8 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                 # Dropping those left a patient who had described an
                 # INJURY with nothing but the service menu.
                 #
-                # CONFIRMED REAL PRODUCTION FAILURE (medtown, session
-                # 201158877175+medtown2, 2026-09-07 10:17:55): "رجلي
+                # CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+                # 201000000002+tenant2, 2026-09-07 10:17:55): "رجلي
                 # وقعت عليها" on the very first turn. The availability
                 # guard correctly rejected an offer of orthopaedic
                 # doctors (the specialty is unstaffed), the fallback
