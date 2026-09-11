@@ -504,6 +504,21 @@ DETERMINISTIC_DOCTOR_LIST: bool = _flag("DETERMINISTIC_DOCTOR_LIST", False)
 # same discipline as its sibling above.
 DETERMINISTIC_SLOT_LOCK: bool = _flag("DETERMINISTIC_SLOT_LOCK", False)
 
+# OFF BY DEFAULT, DELIBERATELY, FOR A DIFFERENT REASON THAN ITS TWO
+# SIBLINGS ABOVE. Those two are prototypes not yet watched on real
+# traffic; this one is a FUZZY MATCH that loosens a SAFETY guard
+# (`_find_invented_branches`) rather than a deterministic code path -
+# see `_transliteration_skeleton`'s own docstring for what it does and
+# does not prove. `_known_branch_text`'s own docstring states the
+# guard's founding principle explicitly: "a false accusation is worse
+# than a missed one, because it would block a correct reply." This flag
+# trades a little of that safety margin for fewer false accusations on
+# branches whose Arabic name was never configured - a real, confirmed
+# gap (see the function's own docstring) - and that trade should be
+# reviewed against real branch names before it carries traffic, not
+# assumed safe by default.
+BRANCH_TRANSLITERATION_FALLBACK: bool = _flag("BRANCH_TRANSLITERATION_FALLBACK", False)
+
 # WHICH TURNS THIS GRAPH ANSWERS WITHOUT CALLING THE MODEL.
 #
 # Nine directives in graph.py already pre-build the EXACT text of a
