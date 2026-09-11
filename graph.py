@@ -846,6 +846,102 @@ def _deterministic_doctor_list(state: AgentState, agent_name: str,
     return [request, result, _tag_author(AIMessage(content=reply), agent_name)]
 
 
+def _deterministic_slot_lock(state: AgentState, agent_name: str):
+    """When the patient's message is a BARE NUMBER answering the slot
+    list `get_available_slots_for_booking` just showed, resolve and
+    LOCK the slot in code via `select_appointment_slot`, rather than
+    leaving that call to the model's own tool-calling judgement.
+    Returns the forged (AIMessage, ToolMessage) pair to splice into
+    this turn's history, or None to let the model's own path handle it
+    exactly as before.
+
+    WHY A REPLY-VERIFIER ALONE IS NOT ENOUGH HERE. A verifier can only
+    catch a skipped `select_appointment_slot` call AFTER the model has
+    already drafted a reply that assumes it happened, and its
+    correction is still a second LLM call free to skip the tool again -
+    which is exactly what happened in production (see below). This is
+    the same gap `_deterministic_doctor_list` above closes for the
+    doctor list: for the one case that is genuinely unambiguous (a bare
+    number against a list already on file), make it a fact of the
+    session state instead of a decision the model gets to make.
+
+    CONFIRMED REAL PRODUCTION FAILURE (tenant): the patient answered
+    "1" to a shown slot list; the reply jumped straight to STEP NB6
+    ("نكمل الحجز على نفس رقم الواتساب؟") with `select_appointment_slot`
+    never called. The FLOW-severity verifier that exists for exactly
+    this flagged it, failed its one rewrite, and (being FLOW at the
+    time) kept the reply anyway - see the marker moved to SAFETY
+    elsewhere in this file. With no slot locked, the model later had to
+    reconstruct `slot_start` from memory for `create_new_booking` and
+    passed the DISPLAYED local hour instead of the tool's own UTC wire
+    value, three hours apart in representation - and a genuinely open
+    slot came back "no longer available". Locking the slot here, before
+    the model ever gets a turn, removes the chance of any of that: the
+    model is handed the real tool result and composes its reply around
+    a fact, not a memory.
+
+    NARROWLY SCOPED, DELIBERATELY - same reasoning as
+    `_deterministic_doctor_list`. Only the plain bare-number case is
+    handled; a named time in free text, an out-of-range number, or no
+    slot list on file at all all return None and fall through to the
+    model's own path (which will either call the tool itself or trip
+    the existing reply-verifiers if it doesn't) - nothing here narrows
+    what the model can still do, it only removes the one
+    already-confirmed failure mode."""
+
+    if not config.DETERMINISTIC_SLOT_LOCK:
+        return None
+
+    if agent_name not in ("booking", "medical"):
+        return None
+
+    session_id = state.get("session_id")
+    session = tools._get_booking_session(session_id)
+    last_list = session.get("last_list") or {}
+    if last_list.get("entity_type") != "slot":
+        return None
+
+    if session.get("selected_slot"):
+        return None  # already locked - nothing for this hook to do
+
+    messages = state.get("messages") or []
+    index = _latest_human_index(messages)
+    if index < 0:
+        return None
+
+    content = getattr(messages[index], "content", "")
+    text = (content if isinstance(content, str) else str(content)).strip()
+    if not _POSITIONAL_ANSWER_RE.match(text):
+        return None  # only the unambiguous bare-number case is handled here
+
+    try:
+        payload = tools.select_appointment_slot.func(state, user_input=text)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "_deterministic_slot_lock: select_appointment_slot raised for "
+            "session_id=%s - handing the turn to the model", session_id,
+            exc_info=True,
+        )
+        return None
+
+    if not isinstance(payload, dict) or payload.get("status") != "selected":
+        # out_of_range / not_matched / no_list_shown - the model's own
+        # path sees the same result if it calls the tool itself, and
+        # each of those genuinely needs judgement this hook is not
+        # written to supply (e.g. offering the list again).
+        logger.info(
+            "_deterministic_slot_lock: declined (status=%r) - the model "
+            "takes this turn", (payload or {}).get("status") if isinstance(payload, dict) else None,
+        )
+        return None
+
+    logger.info(
+        "_deterministic_slot_lock: locked slot in code for session_id=%s "
+        "(user_input=%r)", session_id, text,
+    )
+    return _forge_tool_pair("select_appointment_slot", {"user_input": text}, payload)
+
+
 # ==========================================================
 # Nodes
 # ==========================================================
@@ -11178,6 +11274,27 @@ _FLOW = "flow"
 #
 # They are SAFETY now, which is this table's default, so failing twice
 # sends the safe fallback instead of the flagged text.
+#
+# A FIFTH MARKER MOVED HERE FOR THE SAME REASON, LATER.
+#
+# "before a doctor was confirmed and a time slot was selected" sat in
+# the FLOW list below on the same mistaken premise as the four above -
+# but it is also a claim about a locked slot: asking STEP NB6 ("نكمل
+# الحجز على نفس رقم الواتساب؟") is only truthful once
+# `select_appointment_slot` has actually run, because create_new_booking
+# later trusts `session["selected_slot"]` as the exact wire value to
+# book. CONFIRMED REAL PRODUCTION FAILURE (tenant): this check fired,
+# failed its one rewrite, and FLOW's "keep the reply anyway" sent NB6
+# with NO slot ever locked. The model then had to reconstruct
+# `slot_start` from memory for `create_new_booking` and passed the
+# DISPLAYED local hour ("...T17:00:00") instead of the real UTC wire
+# value ("...T14:00:00+00:00") - the two are the same instant three
+# hours apart in representation, so the re-verification step (which is
+# otherwise correct - see its own comment on comparing instants, not
+# naive clocks) could not find a match and rejected a genuinely open
+# slot. The patient re-tried the exact same slot on the clinic's own
+# website and it booked successfully, confirming the slot was never the
+# problem.
 _FLOW_VERIFIER_MARKERS = (
     "already contained",
     "already on the table",
@@ -11185,7 +11302,6 @@ _FLOW_VERIFIER_MARKERS = (
     "generic out-of-scope service menu",
     "reference-or-phone question ever being asked",
     "already specifically chose to identify by",
-    "before a doctor was confirmed and a time slot was selected",
     "should have been treated as another OTP retry",
     "right after the patient agreed to proceed on the channel number",
     "whether to send the verification code instead of",
@@ -12204,6 +12320,16 @@ _REPLY_VERIFIERS = (
         "new-booking reply demanded the phone number directly instead of asking "
         "STEP NB6's same-WhatsApp-number yes/no question, even though a doctor "
         "and slot are already confirmed",
+    ),
+    (
+        lambda reply, state, agent_name: (
+            (agent_name in ("booking", "concierge") or _in_medical_guidance_handoff(state))
+            and _reply_skips_patient_lookup_before_asking_name(reply, state)
+        ),
+        lambda reply, state: _SKIPPED_PATIENT_LOOKUP_CORRECTION_DIRECTIVE,
+        "new-booking reply asked for the patient's full name without first "
+        "calling get_patient_info, even though its own precondition (a slot "
+        "already shown, phone already verified) was already met",
     ),
     (
         lambda reply, state, agent_name: _reply_wrongly_scope_refuses_after_otp_failure(reply, state),
@@ -15636,6 +15762,69 @@ _SKIPPED_SAME_NUMBER_CORRECTION_DIRECTIVE = (
 )
 
 
+_ASKS_FOR_FULL_NAME_RE = re.compile(
+    r"اسمك\s*الكامل|الاسم\s*الكامل|full\s*name"
+)
+
+
+def _reply_skips_patient_lookup_before_asking_name(reply_text: str, state: AgentState) -> bool:
+    """True when a NEW BOOKING reply asks the patient for their full
+    name, even though `get_patient_info` was never called this
+    conversation - despite its own precondition (a slot already shown)
+    already being met, so the call was legitimate to make right now.
+
+    `get_patient_info` exists specifically so a returning patient is
+    never asked to retype what the clinic already has on file - see its
+    own docstring: "to avoid re-asking for their name/email if they've
+    booked before." Skipping straight to the generic name question
+    throws that away even when the lookup would have succeeded, and if
+    more than one person is registered under the number (a shared
+    family phone), the patient never gets the "which one is this
+    booking for?" picker `get_patient_info`'s own "found_multiple"
+    status exists to offer.
+    """
+
+    if not reply_text or not _ASKS_FOR_FULL_NAME_RE.search(_norm_ar(reply_text)):
+        return False
+
+    session_id = state.get("session_id")
+    session = tools._BOOKING_SESSIONS.get(session_id) or {}
+
+    # Mirrors get_patient_info's OWN gate exactly - if the tool itself
+    # would refuse right now (too_early / not verified), asking for the
+    # name plainly is the correct fallback, not a skipped lookup.
+    if not session.get("slots_shown"):
+        return False
+
+    booking_phone = session.get("booking_phone")
+    if not booking_phone or not tools._phone_is_verified(state, booking_phone):
+        return False
+
+    for msg in (state.get("messages") or []):
+        if getattr(msg, "name", None) == "get_patient_info":
+            return False  # already called this conversation - not a skip
+
+    return True
+
+
+_SKIPPED_PATIENT_LOOKUP_CORRECTION_DIRECTIVE = (
+    "============================================================\n"
+    "CALL get_patient_info BEFORE ASKING FOR THE PATIENT'S NAME\n"
+    "============================================================\n"
+    "A phone number is already verified and a time slot has already "
+    "been shown, so `get_patient_info` can and should be called right "
+    "now, before asking for the patient's name. If they are already "
+    "registered, use their name (and email, if present) directly - do "
+    "not ask them to retype it. If more than one person is registered "
+    "under this number, show the names as a short numbered list and ask "
+    "which one this booking is for, or whether to add a new name. Only "
+    "ask for a full name yourself when `get_patient_info` returns "
+    "\"not_found\".\n\n"
+    "Call `get_patient_info` now instead of asking for the name "
+    "directly.\n\n"
+)
+
+
 def _reply_wrongly_scope_refuses_after_otp_failure(reply_text: str, state: AgentState) -> bool:
     """True when the reply is the fixed out-of-scope refusal, but the
     most recent tool call in this conversation was `verify_otp`
@@ -16886,6 +17075,18 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     # results are left completely intact - see _compact_history_for_llm.
     history = _compact_history_for_llm(history, state["messages"])
 
+    # DETERMINISTIC SLOT LOCK - see `_deterministic_slot_lock`. Placed
+    # here, before the model ever sees this turn, so a bare-number
+    # answer to a just-shown slot list is resolved in code and the
+    # model's own call (below) already has the real tool result in its
+    # history - it cannot skip `select_appointment_slot` for a case
+    # that never reaches it as a choice. `slot_lock_pair` is spliced
+    # into `updates["messages"]` at this function's normal return point
+    # so it is persisted, not just used for this one call.
+    slot_lock_pair = _deterministic_slot_lock(state, agent_name)
+    if slot_lock_pair is not None:
+        history = history + list(slot_lock_pair)
+
     # THE BOOKING FLOW'S OPENING QUESTION IS WRITTEN IN CODE, NOT ASKED
     # FOR IN A DIRECTIVE.
     #
@@ -17685,7 +17886,10 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
 
         updates["greeted"] = True
 
-    updates["messages"] = [_tag_author(response, agent_name)]
+    updates["messages"] = (
+        (list(slot_lock_pair) if slot_lock_pair is not None else [])
+        + [_tag_author(response, agent_name)]
+    )
 
     return updates
 
