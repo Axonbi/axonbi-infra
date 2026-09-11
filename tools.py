@@ -2441,7 +2441,11 @@ def list_specialties(state: Annotated[AgentState, InjectedState]) -> dict:
     availability_known = False
     if doctors_result["success"]:
         availability_known = True
-        for doctor in (doctors_result["data"] or {}).get("items", []):
+        items_for_staffing = (doctors_result["data"] or {}).get("items", [])
+
+        excluded_for_rescue = []  # (doctor_id, specialty_id) pairs to re-check below
+
+        for doctor in items_for_staffing:
             # Apply the SAME hasSlots filter find_available_doctors uses.
             # Counting every registered doctor here made this check
             # weaker than the tool it's meant to protect: a specialty
@@ -2453,10 +2457,44 @@ def list_specialties(state: Annotated[AgentState, InjectedState]) -> dict:
             # stays optimistic in both places instead of silently
             # hiding a bookable specialty.
             if doctor.get("hasSlots") is False:
+                doctor_id = doctor.get("id")
+                specialty_id = doctor.get("specialtyId")
+                if doctor_id and specialty_id:
+                    excluded_for_rescue.append((doctor_id, specialty_id))
                 continue
             specialty_id = doctor.get("specialtyId")
             if specialty_id:
                 staffed_specialty_ids.add(specialty_id)
+
+        # RESCUE STALE hasSlots=False FLAGS - SAME REASONING AS
+        # `find_available_doctors`'s own rescue, applied here because
+        # this check can independently mark a WHOLE SPECIALTY as
+        # unstaffed on the strength of a flag that may simply be wrong.
+        #
+        # Confirmed real production gap: this function trusted
+        # `hasSlots=False` at face value with no cross-check, while
+        # `find_available_doctors` and `_doctors_at_branch` both already
+        # verify against the real schedule-slots endpoint before
+        # excluding a doctor for the same reason. A specialty whose only
+        # doctors carry a stale False flag was reported here as having
+        # NO available doctors ("عندنا قسم جراحة العظام بس للأسف ما فيه
+        # دكتور متاح حاليًا") while the clinic's own admin view showed
+        # real, currently-registered doctors in that specialty.
+        if excluded_for_rescue:
+            excluded_ids = [doctor_id for doctor_id, _ in excluded_for_rescue]
+            verified_ids = _doctors_with_real_slots(state, base_url, excluded_ids, None)
+            if verified_ids:
+                rescued_specialty_ids = {
+                    specialty_id for doctor_id, specialty_id in excluded_for_rescue
+                    if doctor_id in verified_ids
+                }
+                if rescued_specialty_ids:
+                    logger.info(
+                        "list_specialties: rescued %d specialty/specialties whose only "
+                        "doctor(s) had hasSlots=False but real open slots on cross-check: %s",
+                        len(rescued_specialty_ids), rescued_specialty_ids,
+                    )
+                    staffed_specialty_ids |= rescued_specialty_ids
     else:
         logger.warning(
             "list_specialties: could not check doctor availability per specialty (status_code=%s error=%s) - "
@@ -2554,7 +2592,6 @@ def _shape_doctor_list(raw_items: list, language: str = "ar") -> list:
     """
 
     doctors = []
-    surviving_raw_items = []  # kept in lockstep with `doctors`, for the "about" step below
 
     for i in raw_items:
         name = _preferred_name(i, language) or i.get("name") or i.get("formatedName") or i.get("altName")
@@ -2563,32 +2600,50 @@ def _shape_doctor_list(raw_items: list, language: str = "ar") -> list:
             logger.warning("Skipping doctor with no usable name: id=%s", i.get("id"))
             continue
 
-        doctors.append({
+        doctor = {
             "id": i.get("id"),
             "name": str(name).strip(),
             "formatedName": i.get("formatedName") or i.get("name"),
             "altName": i.get("altName"),
             "specialtyName": i.get("specialtyAltName") if (language != "en" and i.get("specialtyAltName")) else i.get("specialtyName"),
             "degreeName": i.get("degreeAltName") if (language != "en" and i.get("degreeAltName")) else i.get("degreeName"),
-        })
-        surviving_raw_items.append(i)
+        }
 
-    # THE DOCTOR'S OWN "about" BIO - ONLY WHEN THEY ARE THE SOLE RESULT.
-    #
-    # `/api/Doctors/GetList` returns an `about` field per doctor
-    # (confirmed field name, 2026-09). Surfacing it for every doctor in
-    # a multi-doctor list would make the patient read several bios just
-    # to compare names, which is worse than the plain list they get
-    # today - it only earns its place when the patient is being pointed
-    # at ONE specific doctor and would naturally want to know more about
-    # them before booking. Matched against `surviving_raw_items`, not
-    # `raw_items[0]`, because a doctor earlier in `raw_items` may have
-    # been skipped above for having no usable name - the one remaining
-    # entry in `doctors` is not necessarily `raw_items[0]`.
-    if len(doctors) == 1:
-        about = (surviving_raw_items[0].get("about") or "").strip()
+        # ALWAYS carried through here (never conditioned on this list's
+        # length) - see `_finalize_doctor_about` below for WHY the
+        # single-doctor decision cannot be made in this function.
+        about = (i.get("about") or "").strip()
         if about:
-            doctors[0]["about"] = about
+            doctor["about"] = about
+
+        doctors.append(doctor)
+
+    return doctors
+
+
+def _finalize_doctor_about(doctors: list) -> list:
+    """Keep `about` ONLY when `doctors` is down to its FINAL length of
+    exactly one; strip it from every entry otherwise.
+
+    WHY THIS IS A SEPARATE STEP FROM `_shape_doctor_list`: some callers
+    (`_doctors_at_branch`) run FURTHER filtering - the real-open-slots
+    cross-check - AFTER calling `_shape_doctor_list`, which can shrink a
+    multi-doctor result down to one. `_shape_doctor_list` itself has no
+    way to know the count is not yet final, so deciding "about" there
+    means a doctor who becomes the sole survivor only after that later
+    filtering never gets it, even though the FINAL list shown to the
+    patient has exactly one name in it. Confirmed real production
+    instance: a branch/service doctor list started with more than one
+    candidate, one was dropped by the real-slots check, and the single
+    remaining doctor's `about` was silently absent from the reply.
+
+    Every caller that returns a doctor list to the model must call this
+    as the LAST step, after any filtering of its own - not rely on
+    `_shape_doctor_list` alone."""
+
+    if len(doctors) != 1:
+        for doctor in doctors:
+            doctor.pop("about", None)
 
     return doctors
 
@@ -2786,6 +2841,7 @@ def _doctors_at_branch(state: AgentState, base_url: str, branch_id: str) -> list
             )
 
     if doctors:
+        doctors = _finalize_doctor_about(doctors)
         _remember_list(state, "doctor", doctors)
 
     # KEEP THE "THIS BRANCH IS EMPTY" NOTE HONEST.
@@ -4060,6 +4116,35 @@ def find_available_doctors(
         specialty_ids, len(items), len(available),
     )
 
+    # THE SOLE CANDIDATE IS THE ONE CASE THAT MUST NOT BE WRONG.
+    #
+    # `available` above trusts `hasSlots` leniently on purpose (True or
+    # missing/null both pass) - see the comment above it. That is the
+    # right default for a LIST, where a wrongly-included doctor is one
+    # option among several. It is the wrong default when only one doctor
+    # remains: presenting them as "the doctor available" and then, the
+    # instant the patient says yes, discovering `list_available_days_
+    # for_booking` has nothing at all is a dead end with no fallback in
+    # the same breath the patient was told yes. Confirmed real production
+    # sequence (tenant): doctor shown as available for طب الباطنة, patient
+    # said "ايه" to book, reply immediately after was "معلش، مش قادرة
+    # أتأكد من موعد فعلي متاح دلوقتي" - the one option offered evaporated
+    # one turn later. A multi-doctor list absorbs one bad flag; a
+    # single-doctor list cannot, so only THIS case pays for the extra
+    # verification call.
+    if len(available) == 1:
+        only_id = available[0].get("id")
+        if only_id:
+            verify_branch_id = branch_ids[0] if branch_ids else None
+            confirmed_ids = _doctors_with_real_slots(state, base_url, [only_id], verify_branch_id)
+            if confirmed_ids is not None and only_id not in confirmed_ids:
+                logger.warning(
+                    "find_available_doctors: the only candidate (id=%s, hasSlots=%s) has no "
+                    "real open slots on cross-check - not presenting them as available",
+                    only_id, available[0].get("hasSlots"),
+                )
+                available = []
+
     if not available and branch_ids:
         # The user explicitly named a branch. Broadening clinic-wide here
         # would silently hand back doctors at OTHER branches as if they
@@ -4129,9 +4214,27 @@ def find_available_doctors(
                 "find_available_doctors: narrow search found 0, broadened to all specialties: api_returned=%d after_hasSlots_filter=%d",
                 len(broader_items), len(broader_available),
             )
+
+            # Same reasoning as the narrow search above: a lone candidate
+            # from the clinic-wide broadening is just as much a dead end
+            # if `list_available_days_for_booking` turns out to have
+            # nothing for them.
+            if len(broader_available) == 1:
+                only_broader_id = broader_available[0].get("id")
+                if only_broader_id:
+                    broader_confirmed = _doctors_with_real_slots(state, base_url, [only_broader_id], None)
+                    if broader_confirmed is not None and only_broader_id not in broader_confirmed:
+                        logger.warning(
+                            "find_available_doctors (broader search): the only candidate "
+                            "(id=%s) has no real open slots on cross-check - not presenting "
+                            "them as available", only_broader_id,
+                        )
+                        broader_available = []
+
             if broader_available:
                 doctors = _shape_doctor_list(broader_available, conversation_language(state))
                 if doctors:
+                    doctors = _finalize_doctor_about(doctors)
                     _remember_list(state, "doctor", doctors)
                     return {"status": "found_broader_search", "doctors": doctors}
 
@@ -4141,6 +4244,8 @@ def find_available_doctors(
 
     if not doctors:
         return {"status": "not_found"}
+
+    doctors = _finalize_doctor_about(doctors)
 
     # CRITICAL: record the exact list, in the exact order, that the model
     # is about to show. Without this a reply of "6" cannot be resolved -
