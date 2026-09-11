@@ -449,6 +449,44 @@ def send_message_with_signals(
 
             logger.info("session_id=%s: reply=%r", session_id, reply)
 
+            # BELT-AND-BRACES: `greeted` must never read False again once
+            # a real reply has actually gone out to the patient on THIS
+            # thread - see state.py's own field and graph.py's
+            # `_run_agent`, which is the only place that normally sets it
+            # True.
+            #
+            # CONFIRMED REAL PRODUCTION FAILURE (tenant, session
+            # 201000000002+tenant2): several turns into an ongoing
+            # conversation (already past its true opening turn), a bare
+            # "مساء الخير" got the FULL first-turn greeting - the
+            # complete "أنا لطيفة، المساعدة الافتراضية..." menu - as if
+            # the conversation had just started. `_run_agent` only ever
+            # sets `greeted=True` at the tail of its own function, and it
+            # has more than one internal path that can produce a
+            # patient-facing reply without ever reaching that tail (a
+            # deterministic reply, a claim-gate/safe-fallback message, an
+            # early return) - so a session whose true first reply took
+            # one of THOSE paths could carry `greeted=False` forward for
+            # several more turns undetected, until a turn that happened
+            # to reach the normal path finally (and wrongly) fired the
+            # opening greeting mid-conversation.
+            #
+            # Rather than auditing every internal path in `_run_agent`
+            # for this one flag, enforce the actual invariant at the
+            # single point that matters: a reply already went out, full
+            # stop, so from here on this thread has been greeted. Only
+            # writes when it is not already True, so a normal turn (the
+            # overwhelming majority) costs nothing extra.
+            if isinstance(result, dict) and result.get("greeted") is not True:
+                try:
+                    graph.update_state(thread_config, {"greeted": True})
+                except Exception:
+                    logger.exception(
+                        "session_id=%s: could not force-persist greeted=True after a "
+                        "successful reply - a later turn may re-send the opening greeting",
+                        session_id,
+                    )
+
             new_messages_this_turn = result["messages"][previous_count:]
 
             if _cancellation_just_succeeded(new_messages_this_turn):
