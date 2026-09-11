@@ -6492,7 +6492,7 @@ _INVENTED_DOCTORS_CORRECTION_DIRECTIVE = (
 
 
 _NAMES_SERVICE_OR_SPECIALTY_CONTEXT_RE = re.compile(
-    r"لخدمه|في\s*تخصص|لتخصص|for\s*the\s*service|in\s*the\s*specialty"
+    r"(?<!\S)لخدمه|(?<!\S)لتخصص|في\s*تخصص|for\s*the\s*service|in\s*the\s*specialty"
 )
 
 
@@ -6681,6 +6681,64 @@ def _branch_names_confirmed(reply_text: str, candidates: tuple) -> tuple:
     return confirmed
 
 
+_ARABIC_TO_LATIN_CONSONANT = {
+    "ب": "b", "ت": "t", "ث": "th", "ج": "j", "ح": "h", "خ": "kh",
+    "د": "d", "ذ": "th", "ر": "r", "ز": "z", "س": "s", "ش": "sh",
+    "ص": "s", "ض": "d", "ط": "t", "ظ": "z", "غ": "gh", "ف": "f",
+    "ق": "q", "ك": "k", "ل": "l", "م": "m", "ن": "n", "ه": "h", "ة": "h",
+}
+_LATIN_VOWELS = frozenset("aeiou")
+
+
+def _transliteration_skeleton(text: str) -> str:
+    """A rough, script-independent "consonant skeleton" for a place
+    name, so an Arabic transliteration of a Latin-only branch name
+    (e.g. "Al Nozha" -> "النزهة") can be recognized as the same word
+    without the clinic having configured an alias for it. Vowels are
+    dropped from BOTH scripts (they vary the most between
+    transliteration conventions - "Nozha"/"Nuzha"/"Nozhah" are all the
+    same word) and Arabic letters are mapped to their common Latin
+    consonant equivalent.
+
+    DELIBERATELY LOSSY, AND DELIBERATELY NARROW. This is a coarse
+    heuristic for one purpose only - deciding whether to accept a
+    branch name `_find_invented_branches` would otherwise reject - not
+    a general transliteration engine. A skeleton match is corroborating
+    evidence, consulted only when nothing else already confirmed the
+    name (see its one call site); nothing else in this codebase treats
+    it as proof of identity."""
+
+    if not text:
+        return ""
+
+    folded = _norm_ar(text).lower()
+    # A leading definite article means nothing for identity comparison
+    # - "ال" in Arabic, "al " in Latin (the overwhelmingly common
+    # pattern for these branch names specifically).
+    folded = re.sub(r"^ال", "", folded)
+    folded = re.sub(r"^al\s+", "", folded)
+
+    skeleton = []
+    for ch in folded:
+        if ch in _ARABIC_TO_LATIN_CONSONANT:
+            skeleton.append(_ARABIC_TO_LATIN_CONSONANT[ch])
+        elif ch.isalpha() and ch.isascii() and ch not in _LATIN_VOWELS:
+            skeleton.append(ch)
+        # everything else - Arabic vowels/harakat/alef, spaces, Latin
+        # vowels, punctuation - carries no comparable signal and is
+        # dropped.
+
+    # Collapse doubled letters ("النزهة" naturally maps two separate
+    # Arabic letters to the same Latin consonant here) so trivial
+    # gemination differences don't break an otherwise exact match.
+    collapsed = []
+    for ch in skeleton:
+        if not collapsed or collapsed[-1] != ch:
+            collapsed.append(ch)
+
+    return "".join(collapsed)
+
+
 def _find_invented_branches(reply_text: str, state: AgentState) -> list:
     """Branch names the reply mentions that this conversation was never
     actually given. Empty list means nothing to flag."""
@@ -6752,6 +6810,26 @@ def _find_invented_branches(reply_text: str, state: AgentState) -> list:
         }
         if translated_parts and any(_norm_ar(en) in known for en in translated_parts):
             continue
+        # A NARROWER FALLBACK FOR PROPER PLACE NAMES, NOT GENERIC WORDS.
+        #
+        # `translated_parts` above only covers a fixed dict of generic
+        # institutional words ("Emergency" -> "الطوارئ"). A branch whose
+        # official name is a Latin-script place name with no configured
+        # Arabic alias ("Al Nozha", say) is not in that dict and never
+        # will be - every clinic's branch names are its own. Confirmed
+        # real production failure: the patient could not even SELECT
+        # "فرع النزهه" by typing it (`match_entity_info` returned
+        # `not_matched` for that exact input against the real "Al
+        # Nozha" branch), and the model's own Arabic rendering of that
+        # same real branch, in a later reply, was rejected here as
+        # invented - twice, replacing a fully correct answer with the
+        # generic fallback message.
+        if config.BRANCH_TRANSLITERATION_FALLBACK:
+            candidate_skeleton = _transliteration_skeleton(name)
+            if candidate_skeleton and len(candidate_skeleton) >= 2:
+                known_names = tools.get_known_entity_names(state.get("session_id"), "branch")
+                if any(_transliteration_skeleton(kn) == candidate_skeleton for kn in known_names):
+                    continue
         if name not in invented:
             invented.append(name)
 
