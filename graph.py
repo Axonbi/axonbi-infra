@@ -10150,8 +10150,15 @@ def _named_day_correction_directive(reply_text: str, state: AgentState) -> str:
 
 # NB1-Q1's own question. Legitimate as an opener; a failure once the
 # patient has already named a doctor, specialty or service.
+#
+# BROADENED 2026-09: the original pattern only matched the OLDER
+# wording ("تبدأ بالتخصص ولا بالدكتور"). prompts.py's own current "GOOD"
+# example of this opener - "عندك دكتور أو تخصص معيّن في بالك؟" - never
+# matched it at all, so a reply re-asking in the CURRENT recommended
+# wording sailed past this check entirely.
 _PATH_CHOICE_QUESTION_RE = re.compile(
     r"تبدا\s*بالتخصص|تبدأ\s*بالتخصص|بالتخصص\s*ولا\s*بالدكتور|"
+    r"دكتور\s*او\s*تخصص\s*معين|تخصص\s*او\s*دكتور\s*معين|"
     r"start\s*with\s*(?:the\s*)?(?:specialty|speciality)"
 )
 
@@ -10306,6 +10313,66 @@ def _reasked_information_correction_directive(reply_text: str, state: AgentState
         "match one of them, say what could not be found and offer the "
         "real options - that is a different message from asking the "
         "question over as though they had never answered it.\n\n"
+    )
+
+
+def _reply_reasks_specialty_already_established(reply_text: str, state: AgentState) -> bool:
+    """True when the reply asks NB1-Q1's specialty-vs-doctor opener
+    again, even though this booking session ALREADY has a specialty (or
+    a doctor) on file from earlier in the conversation.
+
+    `_reply_reasks_something_just_given` above only fires when the
+    doctor/specialty cue is in the patient's OWN LATEST message - see
+    its `len(text.split()) < 3` stand-down, which deliberately ignores
+    bare replies like "اه" because most of the time a lone "yes" proves
+    nothing on its own. That reasoning holds for a truly fresh opener;
+    it fails once the session itself already has a specialty, because
+    then the "yes" is answering an offer that already named one, and
+    the opener being re-asked is not a fresh question at all.
+
+    CONFIRMED REAL PRODUCTION FAILURE (tenant): "وقعت علي رجلي" ->
+    `medical` correctly triaged جراحة العظام and asked "تحب أحجز لك
+    موعد عند واحد منهم؟"; the patient said "اه"; the very next reply
+    was "عندك دكتور أو تخصص معيّن في بالك؟ اكتب لي الاسم أو قل لي وش
+    تحس فيه" - the FIRST-TURN opener, as if the specialty had never
+    been established. The patient then repeated the symptom, and the
+    turn after THAT claimed no orthopaedic doctors were available at
+    all - a single dropped fact cascading into a worse, contradictory
+    answer two turns later.
+    """
+
+    if not reply_text or not _PATH_CHOICE_QUESTION_RE.search(_norm_ar(reply_text)):
+        return False
+
+    session = tools._get_booking_session(state.get("session_id"))
+    return bool(session.get("specialty_ids") or session.get("known_doctor_names"))
+
+
+def _specialty_already_established_correction(reply_text: str, state: AgentState) -> str:
+    session = tools._get_booking_session(state.get("session_id"))
+    specialty_ids = session.get("specialty_ids") or []
+    known_doctors = sorted(session.get("known_doctor_names") or [])
+
+    established = []
+    if specialty_ids:
+        established.append("specialty_ids already on file: " + str(specialty_ids))
+    if known_doctors:
+        established.append("doctor(s) already shown this conversation: " + ", ".join(known_doctors))
+
+    return (
+        "============================================================\n"
+        "YOU RE-ASKED WHICH SPECIALTY - IT IS ALREADY ESTABLISHED\n"
+        "============================================================\n"
+        "Your draft asked the opening \"do you have a specific doctor or "
+        "specialty in mind?\" question, but this booking already has one:\n\n"
+        + "\n".join("    - " + item for item in established) + "\n\n"
+        "The patient's last message may be a bare confirmation (\"اه\", "
+        "\"yes\") answering something YOU already offered using that "
+        "specialty - it is not a signal that the specialty was forgotten. "
+        "Rewrite the turn to continue from the specialty/doctor already on "
+        "file (call `find_available_doctors` with it if you have not shown "
+        "a doctor yet, or proceed with the doctor already shown). Do not "
+        "ask which specialty or doctor again.\n\n"
     )
 
 
@@ -12023,6 +12090,18 @@ _REPLY_VERIFIERS = (
         "already supplied",
     ),
     (
+        # UNGATED, unlike the check above: this one does NOT depend on
+        # anything being in the patient's latest message - it fires
+        # whenever the session itself already has a specialty/doctor on
+        # file, regardless of what prompted the reply. See the
+        # function's own docstring for the confirmed production case
+        # this covers that the check above (by design) does not.
+        lambda reply, state, agent_name: _reply_reasks_specialty_already_established(reply, state),
+        lambda reply, state: _specialty_already_established_correction(reply, state),
+        "reply re-asked which specialty/doctor when the booking session already "
+        "has one on file from earlier in the conversation",
+    ),
+    (
         lambda reply, state, agent_name: _reply_asks_for_a_slot_already_locked_in(reply, state),
         lambda reply, state: _selected_slot_correction_directive(reply, state),
         "reply asked for the appointment time, but a slot has already been locked in "
@@ -12068,6 +12147,17 @@ _REPLY_VERIFIERS = (
         "phone at STEP 1",
     ),
     (
+        lambda reply, state, agent_name: (
+            agent_name in ("cancel", "reschedule", "concierge")
+            and _reply_mishandles_rejected_single_booking(reply, state)
+        ),
+        lambda reply, state: _REJECTED_SINGLE_BOOKING_CORRECTION_DIRECTIVE,
+        "reply mishandled the patient rejecting the single booking found (treated "
+        "it as a new-booking request, or asked for the phone number alone) instead "
+        "of asking for the booking reference or phone number the other appointment "
+        "is registered under",
+    ),
+    (
         # GATED TO THE EXISTING-BOOKING FLOWS.
         #
         # The confirmed failure this guard exists for is a RESCHEDULE
@@ -12104,6 +12194,16 @@ _REPLY_VERIFIERS = (
         "new-booking reply asked STEP NB6's same-WhatsApp-number question before "
         "a doctor was confirmed and a time slot was selected in the booking "
         "session",
+    ),
+    (
+        lambda reply, state, agent_name: (
+            (agent_name in ("booking", "concierge") or _in_medical_guidance_handoff(state))
+            and _reply_skips_same_number_question_when_ready(reply, state)
+        ),
+        lambda reply, state: _SKIPPED_SAME_NUMBER_CORRECTION_DIRECTIVE,
+        "new-booking reply demanded the phone number directly instead of asking "
+        "STEP NB6's same-WhatsApp-number yes/no question, even though a doctor "
+        "and slot are already confirmed",
     ),
     (
         lambda reply, state, agent_name: _reply_wrongly_scope_refuses_after_otp_failure(reply, state),
@@ -15068,6 +15168,98 @@ def _build_identifier_choice_directive(messages: list, agent_name: str) -> str:
     return _IDENTIFIER_CHOICE_ASK_DIRECTIVE
 
 
+_REJECTS_SHOWN_BOOKING_RE = re.compile(
+    r"(?:^|\s)لا(?:\s|$)|لأ\b|مش\s*(?:ده|دي|هو|هي|هذا|هذه)|"
+    r"غير\s*(?:ده|هذا|كده)|واحد\s*غيره|غيره\s*انا|"
+    r"(?:^|\s)no(?:\s|$)|not\s*this|different\s*one"
+)
+
+
+def _reply_mishandles_rejected_single_booking(reply_text: str, state: AgentState) -> bool:
+    """True when the patient just rejected the ONE booking
+    `lookup_appointment`/`check_booking_status` found and the assistant
+    showed them ("is this your appointment?" -> "لا, واحد غيره"), and
+    the reply does anything OTHER than asking for the booking reference
+    number or the phone number (with country code) the OTHER
+    appointment is registered under.
+
+    Grounded in the TOOL RESULT (`status: "found_one"`) rather than in
+    matching the confirmation question's own wording, because that
+    question is LLM-composed and its phrasing varies - the one fixed,
+    checkable fact is that exactly one booking was found and shown.
+
+    A rejection almost always means the appointment they actually mean
+    is registered under a DIFFERENT phone number (a family member's,
+    say) or is better found by its reference number - it is essentially
+    never a request to book a brand-new appointment, and treating it as
+    one strands the patient in the wrong flow entirely.
+
+    CONFIRMED REAL PRODUCTION FAILURE (tenant): the one booking on file
+    (د. رانيا عبد الرحمن, Al Nozha, 15/09/2026 1:50pm) was shown and
+    confirmed-checked; "لا واحد غيره" was answered with "ما عندي غير
+    هذا الموعد المسجل عندي. تبغى أساعدك تدور موعد ثاني بنفس الدكتور أو
+    مع دكتور ثاني؟" - reframing this as a brand-new booking. Clarified
+    with "على رقم تاني" (a different number), the very next reply asked
+    for the phone number ALONE, with no mention of the booking
+    reference as an alternative. Applies equally to cancel and
+    reschedule - same fix, same reasoning, in both flows.
+    """
+
+    if not reply_text:
+        return False
+
+    messages = state.get("messages") or []
+    index = _latest_human_index(messages)
+    if index < 0:
+        return False
+
+    last_human_text = getattr(messages[index], "content", "")
+    last_human_text = last_human_text if isinstance(last_human_text, str) else str(last_human_text or "")
+    if not _REJECTS_SHOWN_BOOKING_RE.search(_norm_ar(last_human_text)):
+        return False
+
+    # A single booking must actually have been found and shown BEFORE
+    # this rejection - otherwise "لا" could be answering anything.
+    found_single_booking = False
+    for msg in messages[:index]:
+        if getattr(msg, "name", None) in ("lookup_appointment", "check_booking_status"):
+            payload = parse_tool_content(msg)
+            if isinstance(payload, dict) and payload.get("status") == "found_one":
+                found_single_booking = True
+    if not found_single_booking:
+        return False
+
+    folded_reply = _norm_ar(reply_text)
+
+    # Already doing the right thing: offering reference-or-phone as a
+    # pair is exactly the correct response to this rejection.
+    if _REFERENCE_OR_PHONE_CHOICE_RE.search(folded_reply):
+        return False
+
+    return True
+
+
+_REJECTED_SINGLE_BOOKING_CORRECTION_DIRECTIVE = (
+    "============================================================\n"
+    "THEY REJECTED THE ONE BOOKING SHOWN - ASK FOR REFERENCE OR PHONE\n"
+    "============================================================\n"
+    "The patient just said the ONE booking you found and confirmed is "
+    "NOT the one they mean. This almost always means the appointment "
+    "they want is registered under a DIFFERENT phone number (a family "
+    "member's, say) or is best found by its reference number - it is "
+    "not a request to book a brand-new appointment, and treating it as "
+    "one takes the patient down the wrong flow entirely.\n\n"
+    "Ask them directly: please send the booking reference number OR "
+    "the phone number (with country code) the appointment is "
+    "registered under, so you can look it up. Do not suggest booking a "
+    "new appointment, and do not ask for the phone number alone "
+    "without also offering the reference number as an alternative. "
+    "This applies the same way whether the flow is a reschedule or a "
+    "cancellation.\n\n"
+)
+
+
+
 def _reply_reasks_identity_after_verification(reply_text: str, state: AgentState) -> bool:
     """True when the reply asks for a phone number or booking reference
     to identify the patient, even though identity is ALREADY fully
@@ -15368,6 +15560,80 @@ def _premature_same_number_directive(reply_text: str, state: AgentState) -> str:
         return _FORGOT_TO_LOCK_SLOT_CORRECTION_DIRECTIVE
 
     return _PREMATURE_SAME_NUMBER_CORRECTION_DIRECTIVE
+
+
+def _reply_skips_same_number_question_when_ready(reply_text: str, state: AgentState) -> bool:
+    """The mirror image of `_reply_asks_same_number_before_booking_ready`
+    above: true when a NEW BOOKING reply jumps straight to an explicit
+    "send me your phone number" instead of first asking STEP NB6's own
+    courtesy question ("نكمل الحجز على نفس رقم الواتساب ده؟") - even
+    though a doctor AND a time slot are already locked into this
+    booking session, i.e. NB6 is exactly the step that should fire
+    right now, in its own "same number?" form, not a bare request.
+
+    CONFIRMED REAL PRODUCTION FAILURE (tenant): a doctor and a 1:50pm
+    slot were both confirmed, and the very next reply was "من فضلك
+    أرسل رقم الجوال مع رمز الدولة" - skipping past the yes/no courtesy
+    question the patient could have answered in one word, since they
+    are already messaging from a real WhatsApp number.
+    """
+
+    if not reply_text:
+        return False
+
+    folded = _norm_ar(reply_text)
+
+    if not _ASKS_FOR_PHONE_DIRECTLY_RE.search(folded):
+        return False
+
+    # The same-number question IS present (possibly alongside a mention
+    # of "phone number" while explaining it) - NB6 is being asked
+    # correctly, not skipped.
+    if _SAME_WHATSAPP_QUESTION_RE.search(folded) or _NEW_BOOKING_SAME_NUMBER_QUESTION_RE.search(folded):
+        return False
+
+    session_id = state.get("session_id")
+    session = tools._BOOKING_SESSIONS.get(session_id) or {}
+
+    if not (session.get("doctor_id") and session.get("selected_slot")):
+        return False
+
+    # The patient already explicitly settled which number to use -
+    # asking for it plainly now is a legitimate later step (e.g. they
+    # said "no, a different number"), not a skipped NB6 courtesy
+    # question.
+    if session.get("booking_phone"):
+        return False
+
+    # NB6's own question already appeared earlier in this conversation
+    # - a direct phone request now is a legitimate follow-up (e.g. they
+    # said "no"), not a fresh skip.
+    from langchain_core.messages import AIMessage as _AIMessage4
+    for msg in (state.get("messages") or []):
+        if isinstance(msg, _AIMessage4):
+            content = getattr(msg, "content", "")
+            text = content if isinstance(content, str) else str(content or "")
+            text_folded = _norm_ar(text)
+            if (_SAME_WHATSAPP_QUESTION_RE.search(text_folded)
+                    or _NEW_BOOKING_SAME_NUMBER_QUESTION_RE.search(text_folded)):
+                return False
+
+    return True
+
+
+_SKIPPED_SAME_NUMBER_CORRECTION_DIRECTIVE = (
+    "============================================================\n"
+    "ASK STEP NB6 AS A YES/NO QUESTION FIRST - DON'T DEMAND A NUMBER\n"
+    "============================================================\n"
+    "Your previous draft asked the patient to send their phone number, "
+    "but the patient is already messaging you from a real WhatsApp "
+    "number. STEP NB6 exists so they can answer with one word instead "
+    "of typing a number out: ask \"نكمل الحجز على نفس رقم الواتساب "
+    "ده؟\" (or the English equivalent) FIRST. Only ask them to type a "
+    "number if they say no to that question.\n\n"
+    "Rewrite the reply to ask the same-WhatsApp-number question "
+    "instead of demanding the number directly.\n\n"
+)
 
 
 def _reply_wrongly_scope_refuses_after_otp_failure(reply_text: str, state: AgentState) -> bool:
