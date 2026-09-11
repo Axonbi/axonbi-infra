@@ -491,6 +491,19 @@ AGENT_TOOL_SCOPING: bool = _flag("AGENT_TOOL_SCOPING", True)
 # a real reply before it carries traffic.
 DETERMINISTIC_DOCTOR_LIST: bool = _flag("DETERMINISTIC_DOCTOR_LIST", False)
 
+# SAME PROTOTYPE-HOOK PATTERN AS ABOVE, DIFFERENT REASON FOR SHIPPING
+# DARK. This one does not touch the tenant's wording at all - it only
+# locks a slot into session state via `select_appointment_slot`
+# in code, then hands the turn to the model exactly as if it had called
+# the tool itself, in whatever dialect the client is configured for.
+# What it changes is which decision-maker resolves a bare number
+# against the shown slot list - code, instead of the model's own
+# tool-calling judgement - closing a confirmed production failure (see
+# `_deterministic_slot_lock`'s docstring). Still switchable and dark
+# until someone has watched it run against real conversations, on the
+# same discipline as its sibling above.
+DETERMINISTIC_SLOT_LOCK: bool = _flag("DETERMINISTIC_SLOT_LOCK", False)
+
 # WHICH TURNS THIS GRAPH ANSWERS WITHOUT CALLING THE MODEL.
 #
 # Nine directives in graph.py already pre-build the EXACT text of a
