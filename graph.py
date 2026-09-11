@@ -881,13 +881,28 @@ def _deterministic_slot_lock(state: AgentState, agent_name: str):
     a fact, not a memory.
 
     NARROWLY SCOPED, DELIBERATELY - same reasoning as
-    `_deterministic_doctor_list`. Only the plain bare-number case is
-    handled; a named time in free text, an out-of-range number, or no
-    slot list on file at all all return None and fall through to the
-    model's own path (which will either call the tool itself or trip
-    the existing reply-verifiers if it doesn't) - nothing here narrows
-    what the model can still do, it only removes the one
-    already-confirmed failure mode."""
+    `_deterministic_doctor_list`. Only two unambiguous cases are
+    handled - a bare number, or a clock time named in the patient's own
+    words (matched the same way `_build_requested_time_directive`
+    already does, via `_requested_clock_time_in_latest_human`) - both
+    resolved by passing the patient's own text straight through to
+    `select_appointment_slot`, never by reading the list in code. An
+    out-of-range number, an unparsable time, or no slot list on file at
+    all all return None and fall through to the model's own path.
+
+    CONFIRMED REAL PRODUCTION FAILURE FOR THE SECOND CASE: "عاوزه احجز
+    مع دكتور تسبيح يوم السبت الساعه 6 مساء" named a time up front. The
+    day resolved, `get_available_slots_for_booking` ran and returned 4
+    real slots including 6:00 مساءً - but the draft that triggered this
+    (a claim-gate correction retry, not the model's first attempt) just
+    displayed the list and asked which one, never calling
+    `select_appointment_slot("الساعة 6 مساء")` to settle the time the
+    patient had already given. The correction directive that should
+    have reminded it to do so is recomputed fresh on the model's own
+    path each hop - but a retry forced by a DIFFERENT verifier's
+    correction prompt is not guaranteed to still carry it in the same
+    turn. Locking the slot here removes that dependency entirely for
+    this one unambiguous case."""
 
     if not config.DETERMINISTIC_SLOT_LOCK:
         return None
@@ -911,8 +926,14 @@ def _deterministic_slot_lock(state: AgentState, agent_name: str):
 
     content = getattr(messages[index], "content", "")
     text = (content if isinstance(content, str) else str(content)).strip()
-    if not _POSITIONAL_ANSWER_RE.match(text):
-        return None  # only the unambiguous bare-number case is handled here
+
+    if _POSITIONAL_ANSWER_RE.match(text):
+        pass  # the unambiguous bare-number case
+    else:
+        named_time = _requested_clock_time_in_latest_human(messages)
+        if not named_time:
+            return None  # neither case applies - the model's own path handles it
+        text = named_time
 
     try:
         payload = tools.select_appointment_slot.func(state, user_input=text)
@@ -5817,6 +5838,12 @@ _NOT_A_BRANCH_NAME = {
     # "برقم"/"رقم") wasn't, so it was captured alone as if it were the
     # branch's actual name.
     "رقم", "بالرقم", "برقم", "الرقم", "لرقم",
+    # CONFIRMED REAL FALSE POSITIVE: "فرع النزهه عنوانه: ..." ("branch
+    # Al Nozha, its address is: ...") glued "عنوانه" onto the branch
+    # name as its second word, extending "النزهه" into "النزهه عنوانه"
+    # - which then matches nothing, real branch or otherwise, and a
+    # correct address sentence gets rejected as an invented branch name.
+    "عنوان", "عنوانه", "عنوانها", "عنوانهم", "عنوانك",
 }
 
 _NOT_A_BRANCH_NAME_NORM = {tools._normalize_arabic(w) for w in _NOT_A_BRANCH_NAME}
@@ -11691,6 +11718,26 @@ def build_evidence_ledger(messages: list) -> dict:
                 _collect_strings(data, _LEDGER_NAME_KEYS, raw[bucket])
                 if _is_current_turn:
                     _collect_strings(data, _LEDGER_NAME_KEYS, current[bucket])
+
+            # A BRANCH MATCH CAN ALSO CONFIRM REAL DOCTORS.
+            #
+            # `match_entity_for_booking(entity_type="branch")` attaches
+            # the branch's own roster under `doctorsAtBranch` (see
+            # tools.py) so the model doesn't need a second call - but
+            # the dispatch above files this WHOLE call under "branches"
+            # (from the call's own entity_type argument), so those real
+            # doctor names never reached the "doctors" bucket at all.
+            #
+            # CONFIRMED REAL PRODUCTION FAILURE (tenant): a branch match
+            # returned 6 real doctors this way; the reply correctly
+            # listed them, and was rejected twice as a "fabricated
+            # availability claim" - because `ledger["doctors"]`/
+            # `current["doctors"]` were empty despite the doctors being
+            # right there in the same tool result, one dict key over.
+            if isinstance(data, dict) and isinstance(data.get("doctorsAtBranch"), list):
+                _collect_strings(data["doctorsAtBranch"], _LEDGER_NAME_KEYS, raw["doctors"])
+                if _is_current_turn:
+                    _collect_strings(data["doctorsAtBranch"], _LEDGER_NAME_KEYS, current["doctors"])
 
         # --- availability ------------------------------------------
         if name in _LEDGER_AVAILABILITY_TOOLS:
