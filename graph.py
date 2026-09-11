@@ -6491,6 +6491,74 @@ _INVENTED_DOCTORS_CORRECTION_DIRECTIVE = (
 )
 
 
+_NAMES_SERVICE_OR_SPECIALTY_CONTEXT_RE = re.compile(
+    r"لخدمه|في\s*تخصص|لتخصص|for\s*the\s*service|in\s*the\s*specialty"
+)
+
+
+def _reply_shows_doctor_for_service_with_no_lookup_this_turn(reply_text: str, state: AgentState) -> bool:
+    """True when the reply presents a doctor as available for a NAMED
+    service or specialty, but no doctor-lookup tool
+    (`find_available_doctors` / `match_entity_for_booking`) actually ran
+    THIS TURN.
+
+    `_find_invented_doctors` above treats any doctor name EVER seen in
+    this whole conversation as "known" - by design, see its own
+    docstring, and right for a name being mentioned again in the SAME
+    context. What it cannot catch is that name being carried into a
+    DIFFERENT, later-named service/specialty context with nothing
+    re-verifying the doctor actually provides THAT one. A doctor
+    genuinely returned for one specialty is not thereby confirmed for
+    every other service the conversation goes on to discuss.
+
+    CONFIRMED REAL PRODUCTION FAILURE (tenant): "تسبيح العسكر" was
+    validly returned earlier for جراحة العظام (orthopaedics surgery).
+    Several turns later - after the patient had moved on to browsing
+    branches and services, with zero doctor-lookup tool calls anywhere
+    in that turn - the reply presented the SAME name as "الأطباء
+    المتاحين لخدمة جلسة إستشارة أخصائي التغذية في فرع Emergency", a
+    completely different service and branch no tool had ever connected
+    to this doctor. `_find_invented_doctors` did not catch it because
+    the name itself was genuinely "known" from the earlier, unrelated
+    lookup.
+
+    Scoped to a NAMED service/specialty context specifically (not every
+    doctor mention) so a doctor already confirmed for the CURRENT
+    booking in progress - discussed again without a fresh lookup, which
+    is normal and correct - is never flagged."""
+
+    if not reply_text or not _DOCTOR_LIST_CUE_RE.search(reply_text):
+        return False
+
+    if not _NAMES_SERVICE_OR_SPECIALTY_CONTEXT_RE.search(_norm_ar(reply_text)):
+        return False
+
+    ran_this_turn = _tool_results_since_latest_human(
+        state.get("messages") or [],
+        ("find_available_doctors", "match_entity_for_booking"),
+    )
+    return not ran_this_turn
+
+
+_STALE_DOCTOR_CONTEXT_CORRECTION_DIRECTIVE = (
+    "============================================================\n"
+    "THAT DOCTOR WAS NOT LOOKED UP FOR THIS SERVICE/SPECIALTY\n"
+    "============================================================\n"
+    "Your previous draft named a doctor as available for a specific "
+    "service or specialty, but no doctor-lookup tool "
+    "(`find_available_doctors` or `match_entity_for_booking`) actually "
+    "ran THIS turn. A doctor mentioned earlier for a DIFFERENT specialty "
+    "or service is not thereby confirmed for this one - being real and "
+    "being right for what is being discussed right now are two "
+    "different facts, and only a fresh tool call establishes the "
+    "second.\n\n"
+    "Call `find_available_doctors` (with this service/specialty) now "
+    "and show only the doctor(s) it actually returns for it. If it "
+    "returns nobody, say that plainly - never reuse a name from an "
+    "earlier, different part of this conversation.\n\n"
+)
+
+
 _BRANCH_ADJUDICATOR_QUESTION = (
     "You are checking one Arabic sentence written by a clinic booking "
     "assistant.\n\n"
@@ -12547,6 +12615,12 @@ _REPLY_VERIFIERS = (
         "reply listed doctor(s) that appear in no tool result in this conversation",
     ),
     (
+        lambda reply, state, agent_name: _reply_shows_doctor_for_service_with_no_lookup_this_turn(reply, state),
+        lambda reply, state: _STALE_DOCTOR_CONTEXT_CORRECTION_DIRECTIVE,
+        "reply named a doctor for a specific service/specialty with no doctor-lookup "
+        "tool call this turn - the name is real but not verified for THIS context",
+    ),
+    (
         lambda reply, state, agent_name: _reply_lists_times_with_no_lookup_this_turn(
             reply, state
         ),
@@ -15669,21 +15743,50 @@ _FORGOT_TO_LOCK_SLOT_CORRECTION_DIRECTIVE = (
 )
 
 
-def _premature_same_number_directive(reply_text: str, state: AgentState) -> str:
-    """Which of the two corrections this actually needs.
+_PREMATURE_SAME_NUMBER_FOR_SERVICE_DIRECTIVE = (
+    "============================================================\n"
+    "A SERVICE WAS ALREADY CHOSEN - SHOW ITS DOCTORS, DON'T RESTART\n"
+    "============================================================\n"
+    "Your previous draft asked whether to continue the booking on the "
+    "same WhatsApp number - STEP NB6 - but no doctor is confirmed yet. "
+    "The patient's own messages already named a SPECIFIC SERVICE (the "
+    "last numbered list you showed them was a list of services, not "
+    "doctors or specialties) - most likely they were reading about it "
+    "(branch services, an FAQ answer) and then said yes to booking it.\n\n"
+    "Resolve exactly which service they picked, the same way you "
+    "resolve any other numbered pick from a list you just showed. Then "
+    "call `find_available_doctors` with `service_name` set to that "
+    "service - NOT `specialty_ids`, a service does not need one - and "
+    "show the doctor(s) who provide it. Ask which doctor they'd like, "
+    "not whether to continue on this WhatsApp number - that question "
+    "comes only after a doctor AND a time slot are both settled.\n\n"
+    "Never fall back to STEP NB1's opening question (specialty or "
+    "doctor?) here - a service already named is MORE specific than "
+    "either, so there is nothing left for that question to ask.\n\n"
+)
 
-    The guard fires for two genuinely different situations, and telling
+
+def _premature_same_number_directive(reply_text: str, state: AgentState) -> str:
+    """Which of the three corrections this actually needs.
+
+    The guard fires for genuinely different situations, and telling
     them apart matters: a booking that has not started yet must go back
-    to STEP NB1, but a booking whose doctor is confirmed and whose slot
-    list has already been shown is in exactly the right place and just
-    needs the slot committing - sending it back to NB1 there destroys
-    correct work."""
+    to STEP NB1, a booking whose doctor is confirmed and whose slot
+    list has already been shown just needs the slot committing, and a
+    booking that started from a SERVICE (not yet a doctor) - typically
+    via an FAQ service description the patient then said yes to booking
+    - needs to show the doctors who provide THAT service, not restart
+    at the specialty/doctor question as though nothing had been
+    chosen."""
 
     session = tools._BOOKING_SESSIONS.get(state.get("session_id")) or {}
     last_list = session.get("last_list") or {}
 
     if session.get("doctor_id") and last_list.get("entity_type") == "slot":
         return _FORGOT_TO_LOCK_SLOT_CORRECTION_DIRECTIVE
+
+    if not session.get("doctor_id") and last_list.get("entity_type") == "service":
+        return _PREMATURE_SAME_NUMBER_FOR_SERVICE_DIRECTIVE
 
     return _PREMATURE_SAME_NUMBER_CORRECTION_DIRECTIVE
 
@@ -15887,6 +15990,26 @@ _OTP_FAILURE_SCOPE_REFUSAL_CORRECTION_DIRECTIVE = (
 )
 
 
+# get_patient_info's "found_multiple" picker mentions the phone number
+# only DESCRIPTIVELY ("more than one person is registered under THIS
+# number") while actually asking the patient to pick a NAME from a list
+# - not asking them to supply a phone number at all. `_ASKS_FOR_PHONE_RE`
+# cannot tell "رقم الجوال هذا" (this phone number, describing whose
+# records these are) from a genuine request to type one.
+#
+# CONFIRMED REAL FALSE POSITIVE (tenant): "في أكثر من شخص مسجلين على
+# رقم الجوال هذا: 1️⃣ fatma sharaf 2️⃣ مريم شرف - من فضلك اختار رقم
+# الاسم..." - the CORRECT `get_patient_info` "found_multiple" reply -
+# was flagged as re-asking for the phone number, failed its rewrite
+# twice, and only survived because this check happened to be FLOW
+# severity (kept on repeat failure) rather than SAFETY (which would
+# have replaced it with the generic fallback).
+_PATIENT_NAME_PICKER_CUE_RE = re.compile(
+    r"اكثر\s*من\s*شخص|مسجلين\s*على|اختار\s*رقم\s*الاسم|"
+    r"more\s*than\s*one\s*(?:person|patient)|which\s*name\s*(?:is\s*)?this\s*booking"
+)
+
+
 def _reply_asks_for_a_phone_already_known(reply_text: str, state: AgentState) -> bool:
     """True when the reply asks the patient for their phone number (or a
     booking reference in its place) immediately after they agreed to
@@ -15913,6 +16036,11 @@ def _reply_asks_for_a_phone_already_known(reply_text: str, state: AgentState) ->
         # A summary/confirmation message restating the phone as an
         # already-settled field, not a request for it - see the
         # comment above _SUMMARY_OR_CONFIRMATION_CUE_RE.
+        return False
+
+    if _PATIENT_NAME_PICKER_CUE_RE.search(_norm_ar(reply_text)):
+        # get_patient_info's own "found_multiple" picker - see the
+        # comment above _PATIENT_NAME_PICKER_CUE_RE.
         return False
 
     from langchain_core.messages import HumanMessage as _HumanMessage
