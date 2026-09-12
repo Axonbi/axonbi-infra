@@ -1064,6 +1064,148 @@ def _deterministic_doctor_schedule_lookup(state: AgentState, agent_name: str):
     return _forge_tool_pair("get_doctor_schedule_for_booking", {}, payload)
 
 
+def _deterministic_day_and_slot_resolution(state: AgentState, agent_name: str) -> list:
+    """When a doctor is confirmed and the patient's OWN message named a
+    weekday - and, in the same message, a clock time - resolve as much
+    of that chain as the patient actually specified, in code:
+    `resolve_available_day` for the day, then (if that succeeds)
+    `get_available_slots_for_booking` for its real open slots, then (if
+    a time was also named) `select_appointment_slot` to lock it.
+    Returns the list of forged (AIMessage, ToolMessage) pairs to splice
+    into this turn's history - as few as ONE pair if only the day
+    resolves, as many as THREE if the whole chain does - or an empty
+    list to let the model's own path handle it exactly as before.
+
+    WHY THE WHOLE CHAIN, NOT JUST THE FIRST STEP. Each of these calls
+    genuinely needs the one before it to have run - `resolve_available_
+    day` needs a confirmed doctor, `get_available_slots_for_booking`
+    needs its from_date/to_date, `select_appointment_slot` needs a slot
+    list on file - so a model that stops after any ONE of them, having
+    already been HANDED the earlier result, is not showing judgement;
+    it is leaving unambiguous work undone that its own tool result
+    already answers. `_deterministic_doctor_schedule_lookup` above
+    closes the step before this one; this closes the ones after it, for
+    exactly the same reason.
+
+    CONFIRMED REAL PRODUCTION FAILURE (tenant): "عاوزه احجز مع دكتور
+    تسبيح يوم السبت الساعه 6 مساء" named a doctor, a day AND a time in
+    one message. The doctor's schedule was fetched (correctly), but the
+    reply then asked "وش تفضل تحجز يوم أي يوم؟" - which day do you
+    want? - re-asking a question the patient had already answered in
+    the very message that started the turn, instead of resolving
+    Saturday's real slots and settling on 6pm.
+
+    NARROWLY SCOPED, DELIBERATELY - same reasoning as its siblings.
+    Any step failing (an unrecognised day, a fully-booked day, no
+    matching time) simply stops the chain there and returns whatever
+    was resolved so far; the model's own path takes over from that
+    point with real tool results already in hand, exactly as if it had
+    called those itself."""
+
+    if not config.DETERMINISTIC_DAY_RESOLUTION:
+        return []
+
+    if agent_name not in ("booking", "medical"):
+        return []
+
+    session_id = state.get("session_id")
+    session = tools._get_booking_session(session_id)
+    if not session.get("doctor_id"):
+        return []
+
+    messages = state.get("messages") or []
+    index = _latest_human_index(messages)
+    if index < 0:
+        return []
+
+    content = getattr(messages[index], "content", "")
+    text = (content if isinstance(content, str) else str(content)).strip()
+
+    weekday_index = tools.resolve_weekday_index(text)
+    if weekday_index is None:
+        return []  # no day named - nothing for this hook to resolve
+
+    # Don't duplicate work already done this turn, by this hook or by
+    # the model calling the same tools itself.
+    if _tool_results_since_latest_human(messages, (
+        "resolve_available_day", "get_available_slots_for_booking",
+        "select_appointment_slot",
+    )):
+        return []
+
+    pairs: list = []
+
+    try:
+        day_payload = tools.resolve_available_day.func(state, weekday_name=text)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "_deterministic_day_and_slot_resolution: resolve_available_day raised "
+            "for session_id=%s - handing the turn to the model", session_id,
+            exc_info=True,
+        )
+        return []
+
+    if not isinstance(day_payload, dict) or day_payload.get("status") != "found":
+        logger.info(
+            "_deterministic_day_and_slot_resolution: day lookup declined "
+            "(status=%r) - the model takes this turn",
+            (day_payload or {}).get("status") if isinstance(day_payload, dict) else None,
+        )
+        return []
+
+    pairs.extend(_forge_tool_pair("resolve_available_day", {"weekday_name": text}, day_payload))
+
+    from_date = day_payload.get("from_date")
+    to_date = day_payload.get("to_date")
+    if not from_date or not to_date:
+        return pairs  # got the day; nothing more this hook can safely chain
+
+    try:
+        slots_payload = tools.get_available_slots_for_booking.func(
+            state, from_date=from_date, to_date=to_date,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "_deterministic_day_and_slot_resolution: get_available_slots_for_booking "
+            "raised for session_id=%s - stopping the chain here", session_id,
+            exc_info=True,
+        )
+        return pairs
+
+    if not isinstance(slots_payload, dict) or slots_payload.get("status") != "found":
+        return pairs  # the day resolved; the model shows what the slot lookup found
+
+    pairs.extend(_forge_tool_pair(
+        "get_available_slots_for_booking",
+        {"from_date": from_date, "to_date": to_date}, slots_payload,
+    ))
+
+    named_time = _requested_clock_time_in_latest_human(messages)
+    if not named_time:
+        return pairs  # no specific time named - the model shows the slot list
+
+    try:
+        slot_payload = tools.select_appointment_slot.func(state, user_input=named_time)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "_deterministic_day_and_slot_resolution: select_appointment_slot raised "
+            "for session_id=%s - stopping the chain here", session_id,
+            exc_info=True,
+        )
+        return pairs
+
+    if isinstance(slot_payload, dict) and slot_payload.get("status") == "selected":
+        pairs.extend(_forge_tool_pair(
+            "select_appointment_slot", {"user_input": named_time}, slot_payload,
+        ))
+        logger.info(
+            "_deterministic_day_and_slot_resolution: resolved day+slot in code "
+            "for session_id=%s (weekday=%r, time=%r)", session_id, text, named_time,
+        )
+
+    return pairs
+
+
 # ==========================================================
 # Nodes
 # ==========================================================
@@ -12597,7 +12739,13 @@ _REPLY_VERIFIERS = (
     ),
     (
         lambda reply, state, agent_name: (
-            agent_name in ("booking", "concierge")
+            # CONFIRMED REAL PRODUCTION CASE: the router kept `faq` as
+            # the active agent for a bare "اه" answering FAQ's own
+            # "تحب أحجز لك موعد في هذه الخدمة؟" - and the reply that
+            # came out was STEP NB6's own same-number question, agent
+            # label notwithstanding. The content decides what this is,
+            # not which specialist happened to be holding the turn.
+            agent_name in ("booking", "concierge", "faq")
             and _reply_asks_same_number_before_booking_ready(reply, state)
         ),
         lambda reply, state: _premature_same_number_directive(reply, state),
@@ -12607,7 +12755,7 @@ _REPLY_VERIFIERS = (
     ),
     (
         lambda reply, state, agent_name: (
-            (agent_name in ("booking", "concierge") or _in_medical_guidance_handoff(state))
+            (agent_name in ("booking", "concierge", "faq") or _in_medical_guidance_handoff(state))
             and _reply_skips_same_number_question_when_ready(reply, state)
         ),
         lambda reply, state: _SKIPPED_SAME_NUMBER_CORRECTION_DIRECTIVE,
@@ -12617,7 +12765,7 @@ _REPLY_VERIFIERS = (
     ),
     (
         lambda reply, state, agent_name: (
-            (agent_name in ("booking", "concierge") or _in_medical_guidance_handoff(state))
+            (agent_name in ("booking", "concierge", "faq") or _in_medical_guidance_handoff(state))
             and _reply_skips_patient_lookup_before_asking_name(reply, state)
         ),
         lambda reply, state: _SKIPPED_PATIENT_LOOKUP_CORRECTION_DIRECTIVE,
@@ -15974,18 +16122,22 @@ _PREMATURE_SAME_NUMBER_FOR_SERVICE_DIRECTIVE = (
     "A SERVICE WAS ALREADY CHOSEN - SHOW ITS DOCTORS, DON'T RESTART\n"
     "============================================================\n"
     "Your previous draft asked whether to continue the booking on the "
-    "same WhatsApp number - STEP NB6 - but no doctor is confirmed yet. "
+    "same WhatsApp number - STEP NB6 - but no time slot is selected yet. "
     "The patient's own messages already named a SPECIFIC SERVICE (the "
     "last numbered list you showed them was a list of services, not "
     "doctors or specialties) - most likely they were reading about it "
     "(branch services, an FAQ answer) and then said yes to booking it.\n\n"
-    "Resolve exactly which service they picked, the same way you "
-    "resolve any other numbered pick from a list you just showed. Then "
-    "call `find_available_doctors` with `service_name` set to that "
-    "service - NOT `specialty_ids`, a service does not need one - and "
-    "show the doctor(s) who provide it. Ask which doctor they'd like, "
-    "not whether to continue on this WhatsApp number - that question "
-    "comes only after a doctor AND a time slot are both settled.\n\n"
+    "If a `doctor_id` is already on file from an EARLIER, different part "
+    "of this conversation (a specialty search, an unrelated doctor "
+    "lookup) that is leftover context, not a confirmation that doctor "
+    "provides THIS service - do not trust it here. Resolve exactly which "
+    "service they picked, the same way you resolve any other numbered "
+    "pick from a list you just showed. Then call `find_available_doctors` "
+    "with `service_name` set to that service - NOT `specialty_ids`, a "
+    "service does not need one - and show the doctor(s) who ACTUALLY "
+    "provide it. Ask which doctor they'd like, not whether to continue "
+    "on this WhatsApp number - that question comes only after a doctor "
+    "AND a time slot are both settled.\n\n"
     "Never fall back to STEP NB1's opening question (specialty or "
     "doctor?) here - a service already named is MORE specific than "
     "either, so there is nothing left for that question to ask.\n\n"
@@ -15999,11 +16151,22 @@ def _premature_same_number_directive(reply_text: str, state: AgentState) -> str:
     them apart matters: a booking that has not started yet must go back
     to STEP NB1, a booking whose doctor is confirmed and whose slot
     list has already been shown just needs the slot committing, and a
-    booking that started from a SERVICE (not yet a doctor) - typically
-    via an FAQ service description the patient then said yes to booking
-    - needs to show the doctors who provide THAT service, not restart
-    at the specialty/doctor question as though nothing had been
-    chosen."""
+    booking that started from a SERVICE - typically via an FAQ service
+    description the patient then said yes to booking - needs to show
+    the doctors who provide THAT service, not restart at the
+    specialty/doctor question as though nothing had been chosen.
+
+    THE SERVICE BRANCH NO LONGER REQUIRES `doctor_id` TO BE EMPTY. It
+    used to, on the assumption that a `doctor_id` on file meant a
+    doctor was already confirmed for the CURRENT context - but a
+    `doctor_id` set during an earlier, abandoned attempt (a specialty
+    search the patient never finished booking, say) is not evidence of
+    that; it is stale context left over from a different topic. What
+    actually matters is whether a SLOT is locked - `session.get(
+    "selected_slot")` - since that is the one fact this whole guard
+    exists to protect. A `doctor_id` with no slot, sitting underneath a
+    freshly-shown SERVICE list, means the patient moved on to something
+    new without this session's booking half noticing."""
 
     session = tools._BOOKING_SESSIONS.get(state.get("session_id")) or {}
     last_list = session.get("last_list") or {}
@@ -16011,7 +16174,7 @@ def _premature_same_number_directive(reply_text: str, state: AgentState) -> str:
     if session.get("doctor_id") and last_list.get("entity_type") == "slot":
         return _FORGOT_TO_LOCK_SLOT_CORRECTION_DIRECTIVE
 
-    if not session.get("doctor_id") and last_list.get("entity_type") == "service":
+    if last_list.get("entity_type") == "service" and not session.get("selected_slot"):
         return _PREMATURE_SAME_NUMBER_FOR_SERVICE_DIRECTIVE
 
     return _PREMATURE_SAME_NUMBER_CORRECTION_DIRECTIVE
@@ -17429,13 +17592,15 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     # results are left completely intact - see _compact_history_for_llm.
     history = _compact_history_for_llm(history, state["messages"])
 
-    # DETERMINISTIC HOOKS - see `_deterministic_slot_lock` and
-    # `_deterministic_doctor_schedule_lookup`. Placed here, before the
+    # DETERMINISTIC HOOKS - see `_deterministic_slot_lock`,
+    # `_deterministic_doctor_schedule_lookup`, and
+    # `_deterministic_day_and_slot_resolution`. Placed here, before the
     # model ever sees this turn, so a bare-number answer to a just-shown
-    # slot list, or a doctor just confirmed by name, is resolved in code
-    # and the model's own call (below) already has the real tool
-    # result(s) in its history - it cannot skip either step for a case
-    # that never reaches it as a choice. `deterministic_pairs` is
+    # slot list, a doctor just confirmed by name, or a day/time named in
+    # the same message that confirmed the doctor, are all resolved in
+    # code and the model's own call (below) already has the real tool
+    # result(s) in its history - it cannot skip any of these steps for
+    # a case that never reaches it as a choice. `deterministic_pairs` is
     # spliced into `updates["messages"]` at this function's normal
     # return point so it is persisted, not just used for this one call.
     deterministic_pairs: list = []
@@ -17447,6 +17612,10 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     if schedule_pair is not None:
         deterministic_pairs.extend(schedule_pair)
         history = history + list(schedule_pair)
+    day_and_slot_pairs = _deterministic_day_and_slot_resolution(state, agent_name)
+    if day_and_slot_pairs:
+        deterministic_pairs.extend(day_and_slot_pairs)
+        history = history + list(day_and_slot_pairs)
 
     # THE BOOKING FLOW'S OPENING QUESTION IS WRITTEN IN CODE, NOT ASKED
     # FOR IN A DIRECTIVE.
