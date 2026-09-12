@@ -963,14 +963,16 @@ def _deterministic_slot_lock(state: AgentState, agent_name: str):
     return _forge_tool_pair("select_appointment_slot", {"user_input": text}, payload)
 
 
-def _deterministic_doctor_schedule_lookup(state: AgentState, agent_name: str):
+def _deterministic_doctor_schedule_lookup(state: AgentState, agent_name: str) -> list:
     """Once a doctor is confirmed BY NAME via `match_entity_for_booking`
-    THIS TURN, fetch their schedule in code via
-    `get_doctor_schedule_for_booking` - which reads `doctor_id` off the
-    booking session automatically - rather than leaving that follow-up
-    call to the model's own judgement. Returns the forged (AIMessage,
-    ToolMessage) pair to splice into this turn's history, or None to
-    let the model's own path handle it exactly as before.
+    THIS TURN, fetch their schedule AND their real bookable days in code
+    - via `get_doctor_schedule_for_booking` then `list_available_days_
+    for_booking`, both of which read `doctor_id` off the booking session
+    automatically - rather than leaving either follow-up call to the
+    model's own judgement. Returns the list of forged (AIMessage,
+    ToolMessage) pairs to splice into this turn's history (as few as
+    zero, as many as four messages), or an empty list to let the
+    model's own path handle it exactly as before.
 
     WHY THIS ONE STEP SPECIFICALLY. Confirming a doctor by name settles
     WHO; it says nothing about WHEN or WHERE they can actually be seen,
@@ -978,23 +980,32 @@ def _deterministic_doctor_schedule_lookup(state: AgentState, agent_name: str):
     judgement, it can compose an answer about the doctor's schedule from
     context alone - most dangerously, a branch or day discussed
     EARLIER in the conversation, for an unrelated reason - instead of
-    calling the one tool that actually knows.
+    calling the tools that actually know.
 
-    CONFIRMED REAL PRODUCTION FAILURE (tenant): the patient had asked
-    about "فرع النزهه"'s services several turns earlier (a plain FAQ
-    lookup, unrelated to any booking). Later, "عاوزه احجز مع دكتور
-    تسبيح يوم السبت الساعه 6 مساء" matched the doctor by name -
+    CONFIRMED REAL PRODUCTION FAILURE, PART ONE (tenant): the patient
+    had asked about "فرع النزهه"'s services several turns earlier (a
+    plain FAQ lookup, unrelated to any booking). Later, "عاوزه احجز مع
+    دكتور تسبيح يوم السبت الساعه 6 مساء" matched the doctor by name -
     `get_doctor_schedule_for_booking` never ran - and the reply said
     "لكن ما قدرت أحدد يوم السبت لأنه ما عندي معلومات كافية عن مواعيد
     الدكتور في فرع النزهه": a specific branch, asserted with no tool
-    call behind it, for a doctor nothing in this turn had connected to
-    that branch at all. The claim-gate caught it and fell back to a
-    generic message, so no wrong appointment was confirmed - but the
-    patient still had to start over. Fetching the real schedule the
-    moment the doctor is confirmed removes the chance of this
-    particular guess entirely: the model's next turn works from the
-    doctor's actual branches and hours, not from whatever branch was
-    last mentioned for an unrelated reason.
+    call behind it. The claim-gate caught it, so no wrong appointment
+    was confirmed - but the patient had to start over.
+
+    CONFIRMED REAL PRODUCTION FAILURE, PART TWO, discovered once part
+    one was fixed: fetching ONLY the general schedule and handing it to
+    the model produced "مواعيد الدكتور أحمد عبدالرحمن في فرع Al Nozha:
+    الثلاثاء: من 3:00 مساءً لـ 6:00 مساءً..." - rejected twice as a
+    fabricated appointment, because `get_doctor_schedule_for_booking`'s
+    own docstring is explicit that it is only a GENERAL recurring
+    schedule with "no guarantee anything is free" - presenting it as
+    bookable availability is exactly the claim-gate's job to catch. The
+    patient then said "شوف" and the model called `list_available_days_
+    for_booking` itself - the tool whose own docstring says "CALL THIS
+    IMMEDIATELY AFTER A DOCTOR IS CONFIRMED" - and it worked cleanly
+    with real dates. This hook now makes that second call itself too,
+    so the model is handed real bookable days from the start instead of
+    only the general schedule that tempted the fabrication.
 
     NARROWLY SCOPED. Only fires once, right after a genuine
     `match_entity_for_booking(entity_type="doctor")` match THIS turn,
@@ -1004,15 +1015,15 @@ def _deterministic_doctor_schedule_lookup(state: AgentState, agent_name: str):
     turn's doctor confirmation to re-run something settled long ago."""
 
     if not config.DETERMINISTIC_DOCTOR_SCHEDULE_LOOKUP:
-        return None
+        return []
 
     if agent_name not in ("booking", "medical"):
-        return None
+        return []
 
     session_id = state.get("session_id")
     session = tools._get_booking_session(session_id)
     if not session.get("doctor_id"):
-        return None
+        return []
 
     messages = state.get("messages") or []
 
@@ -1020,9 +1031,9 @@ def _deterministic_doctor_schedule_lookup(state: AgentState, agent_name: str):
     # already made (correctly or otherwise).
     if _tool_results_since_latest_human(messages, (
         "get_doctor_schedule_for_booking", "resolve_available_day",
-        "get_available_slots_for_booking",
+        "get_available_slots_for_booking", "list_available_days_for_booking",
     )):
-        return None
+        return []
 
     doctor_confirmed_this_turn = False
     match_results_seen = 0
@@ -1048,7 +1059,7 @@ def _deterministic_doctor_schedule_lookup(state: AgentState, agent_name: str):
                 "result(s) this turn but none matched session.doctor_id=%s - handing "
                 "the turn to the model", match_results_seen, session.get("doctor_id"),
             )
-        return None
+        return []
 
     try:
         payload = tools.get_doctor_schedule_for_booking.func(state)
@@ -1058,7 +1069,7 @@ def _deterministic_doctor_schedule_lookup(state: AgentState, agent_name: str):
             "raised for session_id=%s - handing the turn to the model", session_id,
             exc_info=True,
         )
-        return None
+        return []
 
     if not isinstance(payload, dict) or payload.get("status") != "found":
         # not_found / missing_doctor / not_configured / error - the
@@ -1070,13 +1081,55 @@ def _deterministic_doctor_schedule_lookup(state: AgentState, agent_name: str):
             "model takes this turn",
             (payload or {}).get("status") if isinstance(payload, dict) else None,
         )
-        return None
+        return []
 
     logger.info(
         "_deterministic_doctor_schedule_lookup: fetched schedule in code for "
         "session_id=%s", session_id,
     )
-    return _forge_tool_pair("get_doctor_schedule_for_booking", {}, payload)
+    pairs = list(_forge_tool_pair("get_doctor_schedule_for_booking", {}, payload))
+
+    # ALSO FETCH REAL BOOKABLE DAYS - NOT JUST THE GENERAL SCHEDULE.
+    #
+    # `get_doctor_schedule_for_booking`'s own docstring is explicit that
+    # it returns "only GENERAL recurring weekdays with no dates and no
+    # guarantee anything is free" - `list_available_days_for_booking`
+    # is the one whose own docstring says "CALL THIS IMMEDIATELY AFTER
+    # A DOCTOR IS CONFIRMED, instead of asking which day they want."
+    # Stopping at the general schedule left the model with only that to
+    # work from, and presenting recurring hours as if they were
+    # confirmed availability is exactly a fabricated-appointment claim.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (tenant): this hook fired
+    # correctly (see the log line above - it now does, after the id-
+    # matching fix), handed the model the general schedule alone, and
+    # the reply that resulted - "مواعيد الدكتور أحمد عبدالرحمن في فرع
+    # Al Nozha: الثلاثاء: من 3:00 مساءً لـ 6:00 مساءً..." - was rejected
+    # twice as a fabricated appointment claim, falling back to the
+    # generic message. The patient then said "شوف" and the model called
+    # `list_available_days_for_booking` itself, which succeeded cleanly
+    # with real dates - proving this second call is exactly what closes
+    # the gap.
+    try:
+        days_payload = tools.list_available_days_for_booking.func(state)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "_deterministic_doctor_schedule_lookup: list_available_days_for_booking "
+            "raised for session_id=%s - proceeding with the general schedule only",
+            session_id, exc_info=True,
+        )
+        return pairs
+
+    if isinstance(days_payload, dict) and days_payload.get("status") == "found":
+        pairs.extend(_forge_tool_pair("list_available_days_for_booking", {}, days_payload))
+    else:
+        logger.info(
+            "_deterministic_doctor_schedule_lookup: list_available_days_for_booking "
+            "declined (status=%r) - proceeding with the general schedule only",
+            (days_payload or {}).get("status") if isinstance(days_payload, dict) else None,
+        )
+
+    return pairs
 
 
 def _deterministic_day_and_slot_resolution(state: AgentState, agent_name: str) -> list:
@@ -17741,10 +17794,10 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     if slot_lock_pair is not None:
         deterministic_pairs.extend(slot_lock_pair)
         history = history + list(slot_lock_pair)
-    schedule_pair = _deterministic_doctor_schedule_lookup(state, agent_name)
-    if schedule_pair is not None:
-        deterministic_pairs.extend(schedule_pair)
-        history = history + list(schedule_pair)
+    schedule_pairs = _deterministic_doctor_schedule_lookup(state, agent_name)
+    if schedule_pairs:
+        deterministic_pairs.extend(schedule_pairs)
+        history = history + list(schedule_pairs)
     day_and_slot_pairs = _deterministic_day_and_slot_resolution(state, agent_name)
     if day_and_slot_pairs:
         deterministic_pairs.extend(day_and_slot_pairs)
