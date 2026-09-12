@@ -492,17 +492,18 @@ AGENT_TOOL_SCOPING: bool = _flag("AGENT_TOOL_SCOPING", True)
 DETERMINISTIC_DOCTOR_LIST: bool = _flag("DETERMINISTIC_DOCTOR_LIST", False)
 
 # SAME PROTOTYPE-HOOK PATTERN AS ABOVE, DIFFERENT REASON FOR SHIPPING
-# DARK. This one does not touch the tenant's wording at all - it only
-# locks a slot into session state via `select_appointment_slot`
+# DARK ORIGINALLY. This one does not touch the tenant's wording at all -
+# it only locks a slot into session state via `select_appointment_slot`
 # in code, then hands the turn to the model exactly as if it had called
 # the tool itself, in whatever dialect the client is configured for.
 # What it changes is which decision-maker resolves a bare number
 # against the shown slot list - code, instead of the model's own
 # tool-calling judgement - closing a confirmed production failure (see
-# `_deterministic_slot_lock`'s docstring). Still switchable and dark
-# until someone has watched it run against real conversations, on the
-# same discipline as its sibling above.
-DETERMINISTIC_SLOT_LOCK: bool = _flag("DETERMINISTIC_SLOT_LOCK", False)
+# `_deterministic_slot_lock`'s docstring). Now ON BY DEFAULT at the
+# team's request, after being verified against the confirmed failure
+# case; set DETERMINISTIC_SLOT_LOCK=false in the environment to turn it
+# back off if something unexpected shows up.
+DETERMINISTIC_SLOT_LOCK: bool = _flag("DETERMINISTIC_SLOT_LOCK", True)
 
 # OFF BY DEFAULT, DELIBERATELY, FOR A DIFFERENT REASON THAN ITS TWO
 # SIBLINGS ABOVE. Those two are prototypes not yet watched on real
@@ -525,9 +526,10 @@ BRANCH_TRANSLITERATION_FALLBACK: bool = _flag("BRANCH_TRANSLITERATION_FALLBACK",
 # `get_doctor_schedule_for_booking` rather than leaving that follow-up
 # call to the model's own judgement. See
 # `_deterministic_doctor_schedule_lookup`'s own docstring for the
-# confirmed production failure this closes. Off by default until
-# watched on real traffic, same discipline as its siblings.
-DETERMINISTIC_DOCTOR_SCHEDULE_LOOKUP: bool = _flag("DETERMINISTIC_DOCTOR_SCHEDULE_LOOKUP", False)
+# confirmed production failure this closes. Now ON BY DEFAULT at the
+# team's request; set DETERMINISTIC_DOCTOR_SCHEDULE_LOOKUP=false in the
+# environment to turn it back off if needed.
+DETERMINISTIC_DOCTOR_SCHEDULE_LOOKUP: bool = _flag("DETERMINISTIC_DOCTOR_SCHEDULE_LOOKUP", True)
 
 # SAME PROTOTYPE-HOOK PATTERN, THE STEP BETWEEN THE TWO ABOVE: once a
 # doctor is confirmed and the patient's own message named a weekday
@@ -536,9 +538,10 @@ DETERMINISTIC_DOCTOR_SCHEDULE_LOOKUP: bool = _flag("DETERMINISTIC_DOCTOR_SCHEDUL
 # slots and locking the named time - in code, rather than leaving any
 # of that chain to the model's own judgement. See
 # `_deterministic_day_and_slot_resolution`'s own docstring for the
-# confirmed production failure this closes. Off by default until
-# watched on real traffic, same discipline as its siblings.
-DETERMINISTIC_DAY_RESOLUTION: bool = _flag("DETERMINISTIC_DAY_RESOLUTION", False)
+# confirmed production failure this closes. Now ON BY DEFAULT at the
+# team's request; set DETERMINISTIC_DAY_RESOLUTION=false in the
+# environment to turn it back off if needed.
+DETERMINISTIC_DAY_RESOLUTION: bool = _flag("DETERMINISTIC_DAY_RESOLUTION", True)
 
 # WHICH TURNS THIS GRAPH ANSWERS WITHOUT CALLING THE MODEL.
 #
