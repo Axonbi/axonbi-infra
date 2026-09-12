@@ -1014,17 +1014,6 @@ def _deterministic_doctor_schedule_lookup(state: AgentState, agent_name: str) ->
     already made correctly, and it never reaches back into an earlier
     turn's doctor confirmation to re-run something settled long ago."""
 
-    # TEMPORARY DIAGNOSTIC - UNCONDITIONAL, before any gate. Confirms
-    # whether this hook is even being invoked each hop, independent of
-    # whatever it decides to do. Safe to remove once the deployment
-    # question is settled.
-    logger.info(
-        "_deterministic_doctor_schedule_lookup: ENTRY agent_name=%r session_id=%r "
-        "flag=%r doctor_id=%r",
-        agent_name, state.get("session_id"), config.DETERMINISTIC_DOCTOR_SCHEDULE_LOOKUP,
-        tools._get_booking_session(state.get("session_id")).get("doctor_id"),
-    )
-
     if not config.DETERMINISTIC_DOCTOR_SCHEDULE_LOOKUP:
         return []
 
@@ -1037,18 +1026,6 @@ def _deterministic_doctor_schedule_lookup(state: AgentState, agent_name: str) ->
         return []
 
     messages = state.get("messages") or []
-
-    # TEMPORARY DIAGNOSTIC - shows exactly what this hop's message list
-    # looks like, so a silent empty result can be told apart from a
-    # genuine "nothing to do" case.
-    latest_human_idx = _latest_human_index(messages)
-    after_human = messages[latest_human_idx + 1:] if latest_human_idx >= 0 else []
-    logger.info(
-        "_deterministic_doctor_schedule_lookup: DIAG total_messages=%d "
-        "latest_human_idx=%d messages_after_human=%s",
-        len(messages), latest_human_idx,
-        [(type(m).__name__, getattr(m, "name", None)) for m in after_human],
-    )
 
     # Already settled this turn - never duplicate a call the model
     # already made (correctly or otherwise).
@@ -1063,11 +1040,6 @@ def _deterministic_doctor_schedule_lookup(state: AgentState, agent_name: str) ->
     for msg in _tool_results_since_latest_human(messages, ("match_entity_for_booking",)):
         match_results_seen += 1
         payload = parse_tool_content(msg)
-        # TEMPORARY DIAGNOSTIC
-        logger.info(
-            "_deterministic_doctor_schedule_lookup: DIAG parsed match_entity_for_booking "
-            "payload=%r (session.doctor_id=%r)", payload, session.get("doctor_id"),
-        )
         if not isinstance(payload, dict):
             continue
         item = payload.get("item")
@@ -1220,12 +1192,34 @@ def _deterministic_day_and_slot_resolution(state: AgentState, agent_name: str) -
     if weekday_index is None:
         return []  # no day named - nothing for this hook to resolve
 
-    # Don't duplicate work already done this turn, by this hook or by
-    # the model calling the same tools itself.
-    if _tool_results_since_latest_human(messages, (
-        "resolve_available_day", "get_available_slots_for_booking",
-        "select_appointment_slot",
-    )):
+    # A slot already LOCKED is the one thing this hook must never touch
+    # again - checked directly against session state, not just this
+    # turn's tool calls, so an already-confirmed booking from earlier is
+    # never re-opened no matter what the current message mentions.
+    if session.get("selected_slot"):
+        return []
+
+    # DELIBERATELY DOES NOT STAND DOWN FOR resolve_available_day /
+    # get_available_slots_for_booking HAVING ALREADY RUN THIS TURN.
+    #
+    # CONFIRMED REAL PRODUCTION CASE: the model's OWN single completion
+    # requested `match_entity_for_booking` AND `resolve_available_day`
+    # together in one turn - so by the time this hook ran, "the day was
+    # already looked up this turn" was true, and (in an earlier version
+    # of this check) it stood down correctly BY ITS OWN RULE, only for
+    # the model's own follow-up `get_available_slots_for_booking` call
+    # to use the wrong date range (the schedule's OPENING date rather
+    # than the resolved day), return `not_found`, and fall through to
+    # showing a day-picker list instead of the exact day+time the
+    # patient had already named. The result was not wrong, only less
+    # direct than it should have been - this hook now redoes the WHOLE
+    # chain itself whenever the day+time are still resolvable from the
+    # patient's own message and nothing is LOCKED yet, on the
+    # (deterministic, therefore harmless) assumption that a repeat
+    # `resolve_available_day` call resolves to the same real day. Only
+    # `select_appointment_slot` genuinely marks this done - checked
+    # above via session state and not repeated here.
+    if _tool_results_since_latest_human(messages, ("select_appointment_slot",)):
         return []
 
     pairs: list = []
