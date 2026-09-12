@@ -6829,6 +6829,103 @@ _STALE_DOCTOR_CONTEXT_CORRECTION_DIRECTIVE = (
 )
 
 
+def _reply_proceeds_with_unverified_doctor_for_chosen_service(reply_text: str, state: AgentState) -> bool:
+    """True when the reply shows booking progress (a day, a slot, or a
+    doctor's name) using the doctor already sitting in the booking
+    session, but the most recently established fact is a SERVICE picked
+    through a SEPARATE, non-booking flow (`list_branch_services` - an
+    FAQ/browse tool, not a booking one) - and nothing has ever confirmed
+    that THIS doctor provides that service.
+
+    WHY session.doctor_id ALONE IS NOT ENOUGH EVIDENCE. Every other
+    check in this family (`_reply_shows_doctor_for_service_with_no_
+    lookup_this_turn`, the invented-doctor checks) assumes a stale
+    doctor comes from the MODEL's own text recalling an earlier mention.
+    This one is different in kind: the doctor really is sitting in
+    `session["doctor_id"]`, genuinely resolved - just for a DIFFERENT,
+    abandoned booking attempt, and every booking tool
+    (`list_available_days_for_booking`, `get_doctor_schedule_for_
+    booking`, ...) reads that field automatically with no idea it was
+    never connected to the service now on the table. `reset_booking_
+    session` exists precisely for this - its own docstring says so -
+    but nothing forces it to be called before proceeding.
+
+    CONFIRMED REAL PRODUCTION FAILURE (tenant): the conversation opened
+    with "عاوزه احجز مع دكتور تسبيح يوم السبت" - Dr. تسبيح العسكر, an
+    ORTHOPAEDIC SURGEON, resolved by name and left sitting in the
+    session. The patient then asked what services فرع Al Nozha offers
+    (a plain FAQ browse, unrelated to that attempt), picked "برنامج
+    علاج نفسي نهاري" (a day PSYCHIATRIC programme) from the list, and
+    said "اه احجز". The very next reply called `list_available_days_
+    for_booking` and showed **the same orthopaedic surgeon's** days for
+    what should have been a psychiatric-programme doctor - a real risk
+    of confirming an appointment with someone who does not even provide
+    the service being booked.
+
+    SCOPED TO THE EXACT SIGNAL THAT FAILED HERE - a SERVICE (not a
+    doctor or specialty) was the last thing established, through
+    `list_branch_services` specifically. Only `find_available_doctors`
+    clears the flag - `match_entity_for_booking` deliberately does NOT,
+    even though it resolves doctors too, because matching one BY NAME
+    is exactly the unverified-for-this-service path this check exists
+    to catch; letting it also count as verification would make the
+    check a no-op for the one case it was written for."""
+
+    if not reply_text:
+        return False
+
+    session = tools._get_booking_session(state.get("session_id"))
+    doctor_id = session.get("doctor_id")
+    if not doctor_id:
+        return False
+
+    last_list = session.get("last_list") or {}
+    if last_list.get("entity_type") != "service":
+        return False
+
+    folded = _norm_ar(reply_text)
+    if not (_DOCTOR_LIST_CUE_RE.search(reply_text)
+            or re.search(r"يوم|موعد|مواعيد|slot", folded)):
+        return False  # not a reply progressing the booking at all
+
+    # Was THIS doctor ever independently confirmed FOR A SERVICE via
+    # `find_available_doctors`? `match_entity_for_booking` deliberately
+    # does NOT count here, even though it is also a "doctor-lookup
+    # tool" elsewhere in this file - matching a doctor BY NAME is
+    # exactly the unverified-for-this-service resolution path this
+    # check exists to catch, so letting it also clear the flag would
+    # make the check a no-op for the one case it was written for.
+    for msg in (state.get("messages") or []):
+        if getattr(msg, "name", None) != "find_available_doctors":
+            continue
+        payload = parse_tool_content(msg)
+        if not isinstance(payload, dict):
+            continue
+        for doctor in (payload.get("doctors") or []):
+            if isinstance(doctor, dict) and doctor.get("id") == doctor_id:
+                return False
+
+    return True
+
+
+_UNVERIFIED_DOCTOR_FOR_SERVICE_CORRECTION_DIRECTIVE = (
+    "============================================================\n"
+    "THIS DOCTOR WAS NEVER CONFIRMED FOR THE SERVICE JUST CHOSEN\n"
+    "============================================================\n"
+    "A service was just picked from a branch's service list (a plain "
+    "information lookup, not a booking action), but the doctor your "
+    "draft is about to book with was resolved earlier for something "
+    "else entirely and has never been confirmed to provide THIS "
+    "service.\n\n"
+    "Call `find_available_doctors` with this service and show only the "
+    "doctor(s) it actually returns. If the earlier doctor is not among "
+    "them, do not use them - a doctor who does not provide this service "
+    "cannot be booked for it, no matter how the conversation got here. "
+    "If you need to discard the earlier doctor/branch entirely first, "
+    "`reset_booking_session` exists for exactly that.\n\n"
+)
+
+
 _BRANCH_ADJUDICATOR_QUESTION = (
     "You are checking one Arabic sentence written by a clinic booking "
     "assistant.\n\n"
@@ -12993,6 +13090,13 @@ _REPLY_VERIFIERS = (
         lambda reply, state: _STALE_DOCTOR_CONTEXT_CORRECTION_DIRECTIVE,
         "reply named a doctor for a specific service/specialty with no doctor-lookup "
         "tool call this turn - the name is real but not verified for THIS context",
+    ),
+    (
+        lambda reply, state, agent_name: _reply_proceeds_with_unverified_doctor_for_chosen_service(reply, state),
+        lambda reply, state: _UNVERIFIED_DOCTOR_FOR_SERVICE_CORRECTION_DIRECTIVE,
+        "reply progressed a booking (day/slot/doctor) using the session's existing "
+        "doctor_id, but the most recently established fact is a SERVICE picked via a "
+        "separate FAQ/browse flow, and this doctor was never confirmed to provide it",
     ),
     (
         lambda reply, state, agent_name: _reply_lists_times_with_no_lookup_this_turn(
