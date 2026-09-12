@@ -519,6 +519,16 @@ DETERMINISTIC_SLOT_LOCK: bool = _flag("DETERMINISTIC_SLOT_LOCK", False)
 # assumed safe by default.
 BRANCH_TRANSLITERATION_FALLBACK: bool = _flag("BRANCH_TRANSLITERATION_FALLBACK", False)
 
+# SAME PROTOTYPE-HOOK PATTERN AS DETERMINISTIC_SLOT_LOCK ABOVE, ONE STEP
+# EARLIER IN THE FLOW: once a doctor is confirmed by name via
+# `match_entity_for_booking` THIS TURN, fetch their schedule in code via
+# `get_doctor_schedule_for_booking` rather than leaving that follow-up
+# call to the model's own judgement. See
+# `_deterministic_doctor_schedule_lookup`'s own docstring for the
+# confirmed production failure this closes. Off by default until
+# watched on real traffic, same discipline as its siblings.
+DETERMINISTIC_DOCTOR_SCHEDULE_LOOKUP: bool = _flag("DETERMINISTIC_DOCTOR_SCHEDULE_LOOKUP", False)
+
 # WHICH TURNS THIS GRAPH ANSWERS WITHOUT CALLING THE MODEL.
 #
 # Nine directives in graph.py already pre-build the EXACT text of a
