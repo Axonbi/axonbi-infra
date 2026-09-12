@@ -529,6 +529,17 @@ BRANCH_TRANSLITERATION_FALLBACK: bool = _flag("BRANCH_TRANSLITERATION_FALLBACK",
 # watched on real traffic, same discipline as its siblings.
 DETERMINISTIC_DOCTOR_SCHEDULE_LOOKUP: bool = _flag("DETERMINISTIC_DOCTOR_SCHEDULE_LOOKUP", False)
 
+# SAME PROTOTYPE-HOOK PATTERN, THE STEP BETWEEN THE TWO ABOVE: once a
+# doctor is confirmed and the patient's own message named a weekday
+# ("يوم السبت"), resolve that day - and, if a clock time was ALSO named
+# ("الساعة 6 مساء"), chain straight through to fetching that day's real
+# slots and locking the named time - in code, rather than leaving any
+# of that chain to the model's own judgement. See
+# `_deterministic_day_and_slot_resolution`'s own docstring for the
+# confirmed production failure this closes. Off by default until
+# watched on real traffic, same discipline as its siblings.
+DETERMINISTIC_DAY_RESOLUTION: bool = _flag("DETERMINISTIC_DAY_RESOLUTION", False)
+
 # WHICH TURNS THIS GRAPH ANSWERS WITHOUT CALLING THE MODEL.
 #
 # Nine directives in graph.py already pre-build the EXACT text of a
