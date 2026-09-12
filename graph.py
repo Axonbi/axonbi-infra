@@ -1014,6 +1014,17 @@ def _deterministic_doctor_schedule_lookup(state: AgentState, agent_name: str) ->
     already made correctly, and it never reaches back into an earlier
     turn's doctor confirmation to re-run something settled long ago."""
 
+    # TEMPORARY DIAGNOSTIC - UNCONDITIONAL, before any gate. Confirms
+    # whether this hook is even being invoked each hop, independent of
+    # whatever it decides to do. Safe to remove once the deployment
+    # question is settled.
+    logger.info(
+        "_deterministic_doctor_schedule_lookup: ENTRY agent_name=%r session_id=%r "
+        "flag=%r doctor_id=%r",
+        agent_name, state.get("session_id"), config.DETERMINISTIC_DOCTOR_SCHEDULE_LOOKUP,
+        tools._get_booking_session(state.get("session_id")).get("doctor_id"),
+    )
+
     if not config.DETERMINISTIC_DOCTOR_SCHEDULE_LOOKUP:
         return []
 
