@@ -963,6 +963,107 @@ def _deterministic_slot_lock(state: AgentState, agent_name: str):
     return _forge_tool_pair("select_appointment_slot", {"user_input": text}, payload)
 
 
+def _deterministic_doctor_schedule_lookup(state: AgentState, agent_name: str):
+    """Once a doctor is confirmed BY NAME via `match_entity_for_booking`
+    THIS TURN, fetch their schedule in code via
+    `get_doctor_schedule_for_booking` - which reads `doctor_id` off the
+    booking session automatically - rather than leaving that follow-up
+    call to the model's own judgement. Returns the forged (AIMessage,
+    ToolMessage) pair to splice into this turn's history, or None to
+    let the model's own path handle it exactly as before.
+
+    WHY THIS ONE STEP SPECIFICALLY. Confirming a doctor by name settles
+    WHO; it says nothing about WHEN or WHERE they can actually be seen,
+    and the model still has to ask for that separately. Left to its own
+    judgement, it can compose an answer about the doctor's schedule from
+    context alone - most dangerously, a branch or day discussed
+    EARLIER in the conversation, for an unrelated reason - instead of
+    calling the one tool that actually knows.
+
+    CONFIRMED REAL PRODUCTION FAILURE (tenant): the patient had asked
+    about "فرع النزهه"'s services several turns earlier (a plain FAQ
+    lookup, unrelated to any booking). Later, "عاوزه احجز مع دكتور
+    تسبيح يوم السبت الساعه 6 مساء" matched the doctor by name -
+    `get_doctor_schedule_for_booking` never ran - and the reply said
+    "لكن ما قدرت أحدد يوم السبت لأنه ما عندي معلومات كافية عن مواعيد
+    الدكتور في فرع النزهه": a specific branch, asserted with no tool
+    call behind it, for a doctor nothing in this turn had connected to
+    that branch at all. The claim-gate caught it and fell back to a
+    generic message, so no wrong appointment was confirmed - but the
+    patient still had to start over. Fetching the real schedule the
+    moment the doctor is confirmed removes the chance of this
+    particular guess entirely: the model's next turn works from the
+    doctor's actual branches and hours, not from whatever branch was
+    last mentioned for an unrelated reason.
+
+    NARROWLY SCOPED. Only fires once, right after a genuine
+    `match_entity_for_booking(entity_type="doctor")` match THIS turn,
+    and stands down the moment any schedule/availability tool has
+    already run this turn - so it never duplicates a call the model
+    already made correctly, and it never reaches back into an earlier
+    turn's doctor confirmation to re-run something settled long ago."""
+
+    if not config.DETERMINISTIC_DOCTOR_SCHEDULE_LOOKUP:
+        return None
+
+    if agent_name not in ("booking", "medical"):
+        return None
+
+    session_id = state.get("session_id")
+    session = tools._get_booking_session(session_id)
+    if not session.get("doctor_id"):
+        return None
+
+    messages = state.get("messages") or []
+
+    # Already settled this turn - never duplicate a call the model
+    # already made (correctly or otherwise).
+    if _tool_results_since_latest_human(messages, (
+        "get_doctor_schedule_for_booking", "resolve_available_day",
+        "get_available_slots_for_booking",
+    )):
+        return None
+
+    doctor_confirmed_this_turn = False
+    for msg in _tool_results_since_latest_human(messages, ("match_entity_for_booking",)):
+        if _entity_type_argument(messages, msg) != "doctor":
+            continue
+        payload = parse_tool_content(msg)
+        if isinstance(payload, dict) and payload.get("matched") and isinstance(payload.get("item"), dict):
+            doctor_confirmed_this_turn = True
+
+    if not doctor_confirmed_this_turn:
+        return None
+
+    try:
+        payload = tools.get_doctor_schedule_for_booking.func(state)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "_deterministic_doctor_schedule_lookup: get_doctor_schedule_for_booking "
+            "raised for session_id=%s - handing the turn to the model", session_id,
+            exc_info=True,
+        )
+        return None
+
+    if not isinstance(payload, dict) or payload.get("status") != "found":
+        # not_found / missing_doctor / not_configured / error - the
+        # model's own path sees the same result if it calls the tool
+        # itself, and each of those genuinely needs judgement this hook
+        # is not written to supply.
+        logger.info(
+            "_deterministic_doctor_schedule_lookup: declined (status=%r) - the "
+            "model takes this turn",
+            (payload or {}).get("status") if isinstance(payload, dict) else None,
+        )
+        return None
+
+    logger.info(
+        "_deterministic_doctor_schedule_lookup: fetched schedule in code for "
+        "session_id=%s", session_id,
+    )
+    return _forge_tool_pair("get_doctor_schedule_for_booking", {}, payload)
+
+
 # ==========================================================
 # Nodes
 # ==========================================================
@@ -17328,17 +17429,24 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     # results are left completely intact - see _compact_history_for_llm.
     history = _compact_history_for_llm(history, state["messages"])
 
-    # DETERMINISTIC SLOT LOCK - see `_deterministic_slot_lock`. Placed
-    # here, before the model ever sees this turn, so a bare-number
-    # answer to a just-shown slot list is resolved in code and the
-    # model's own call (below) already has the real tool result in its
-    # history - it cannot skip `select_appointment_slot` for a case
-    # that never reaches it as a choice. `slot_lock_pair` is spliced
-    # into `updates["messages"]` at this function's normal return point
-    # so it is persisted, not just used for this one call.
+    # DETERMINISTIC HOOKS - see `_deterministic_slot_lock` and
+    # `_deterministic_doctor_schedule_lookup`. Placed here, before the
+    # model ever sees this turn, so a bare-number answer to a just-shown
+    # slot list, or a doctor just confirmed by name, is resolved in code
+    # and the model's own call (below) already has the real tool
+    # result(s) in its history - it cannot skip either step for a case
+    # that never reaches it as a choice. `deterministic_pairs` is
+    # spliced into `updates["messages"]` at this function's normal
+    # return point so it is persisted, not just used for this one call.
+    deterministic_pairs: list = []
     slot_lock_pair = _deterministic_slot_lock(state, agent_name)
     if slot_lock_pair is not None:
+        deterministic_pairs.extend(slot_lock_pair)
         history = history + list(slot_lock_pair)
+    schedule_pair = _deterministic_doctor_schedule_lookup(state, agent_name)
+    if schedule_pair is not None:
+        deterministic_pairs.extend(schedule_pair)
+        history = history + list(schedule_pair)
 
     # THE BOOKING FLOW'S OPENING QUESTION IS WRITTEN IN CODE, NOT ASKED
     # FOR IN A DIRECTIVE.
@@ -18139,10 +18247,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
 
         updates["greeted"] = True
 
-    updates["messages"] = (
-        (list(slot_lock_pair) if slot_lock_pair is not None else [])
-        + [_tag_author(response, agent_name)]
-    )
+    updates["messages"] = deterministic_pairs + [_tag_author(response, agent_name)]
 
     return updates
 
