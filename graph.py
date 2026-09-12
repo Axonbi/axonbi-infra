@@ -1038,6 +1038,18 @@ def _deterministic_doctor_schedule_lookup(state: AgentState, agent_name: str) ->
 
     messages = state.get("messages") or []
 
+    # TEMPORARY DIAGNOSTIC - shows exactly what this hop's message list
+    # looks like, so a silent empty result can be told apart from a
+    # genuine "nothing to do" case.
+    latest_human_idx = _latest_human_index(messages)
+    after_human = messages[latest_human_idx + 1:] if latest_human_idx >= 0 else []
+    logger.info(
+        "_deterministic_doctor_schedule_lookup: DIAG total_messages=%d "
+        "latest_human_idx=%d messages_after_human=%s",
+        len(messages), latest_human_idx,
+        [(type(m).__name__, getattr(m, "name", None)) for m in after_human],
+    )
+
     # Already settled this turn - never duplicate a call the model
     # already made (correctly or otherwise).
     if _tool_results_since_latest_human(messages, (
@@ -1051,6 +1063,11 @@ def _deterministic_doctor_schedule_lookup(state: AgentState, agent_name: str) ->
     for msg in _tool_results_since_latest_human(messages, ("match_entity_for_booking",)):
         match_results_seen += 1
         payload = parse_tool_content(msg)
+        # TEMPORARY DIAGNOSTIC
+        logger.info(
+            "_deterministic_doctor_schedule_lookup: DIAG parsed match_entity_for_booking "
+            "payload=%r (session.doctor_id=%r)", payload, session.get("doctor_id"),
+        )
         if not isinstance(payload, dict):
             continue
         item = payload.get("item")
@@ -1064,12 +1081,11 @@ def _deterministic_doctor_schedule_lookup(state: AgentState, agent_name: str) ->
             doctor_confirmed_this_turn = True
 
     if not doctor_confirmed_this_turn:
-        if match_results_seen:
-            logger.info(
-                "_deterministic_doctor_schedule_lookup: saw %d match_entity_for_booking "
-                "result(s) this turn but none matched session.doctor_id=%s - handing "
-                "the turn to the model", match_results_seen, session.get("doctor_id"),
-            )
+        logger.info(
+            "_deterministic_doctor_schedule_lookup: saw %d match_entity_for_booking "
+            "result(s) this turn but none matched session.doctor_id=%s - handing "
+            "the turn to the model", match_results_seen, session.get("doctor_id"),
+        )
         return []
 
     try:
