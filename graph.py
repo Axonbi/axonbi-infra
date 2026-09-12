@@ -1025,14 +1025,29 @@ def _deterministic_doctor_schedule_lookup(state: AgentState, agent_name: str):
         return None
 
     doctor_confirmed_this_turn = False
+    match_results_seen = 0
     for msg in _tool_results_since_latest_human(messages, ("match_entity_for_booking",)):
-        if _entity_type_argument(messages, msg) != "doctor":
-            continue
+        match_results_seen += 1
         payload = parse_tool_content(msg)
-        if isinstance(payload, dict) and payload.get("matched") and isinstance(payload.get("item"), dict):
+        if not isinstance(payload, dict):
+            continue
+        item = payload.get("item")
+        # Checked against session.doctor_id DIRECTLY, not via the
+        # call's own `entity_type` argument - a branch match's "item"
+        # would need to coincidentally share a doctor's id to false-
+        # positive here, which the two API's separate id namespaces
+        # make practically impossible, and this does not depend on
+        # correctly re-finding the original tool_call's args.
+        if payload.get("matched") and isinstance(item, dict) and item.get("id") == session.get("doctor_id"):
             doctor_confirmed_this_turn = True
 
     if not doctor_confirmed_this_turn:
+        if match_results_seen:
+            logger.info(
+                "_deterministic_doctor_schedule_lookup: saw %d match_entity_for_booking "
+                "result(s) this turn but none matched session.doctor_id=%s - handing "
+                "the turn to the model", match_results_seen, session.get("doctor_id"),
+            )
         return None
 
     try:
@@ -6883,10 +6898,24 @@ def _reply_proceeds_with_unverified_doctor_for_chosen_service(reply_text: str, s
     if last_list.get("entity_type") != "service":
         return False
 
-    folded = _norm_ar(reply_text)
-    if not (_DOCTOR_LIST_CUE_RE.search(reply_text)
-            or re.search(r"يوم|موعد|مواعيد|slot", folded)):
-        return False  # not a reply progressing the booking at all
+    # THE REAL SIGNAL IS WHICH TOOL RAN, NOT WORDS IN THE REPLY.
+    #
+    # CONFIRMED REAL FALSE POSITIVE: a plain `list_branch_services`
+    # reply - "خدمات فرع Al Nozha هي: 1- برنامج علاج نفسي نهاري 2-
+    # إستشارة الطبيب العام 3- ..." - was flagged here, because
+    # `_DOCTOR_LIST_CUE_RE` matches "الطبيب" and "أخصائي" anywhere, and
+    # those words appear inside these SERVICE NAMES ("إستشارة الطبيب
+    # العام" = "general physician CONSULTATION", a service, not a
+    # doctor), not because any doctor was actually being booked. Text
+    # patterns cannot reliably tell "a service name that happens to
+    # contain a doctor-shaped word" from "a doctor actually being
+    # booked" - but the TOOL that ran can: only the schedule/availability
+    # tools below ever progress a booking with `session["doctor_id"]`.
+    if not _tool_results_since_latest_human(state.get("messages") or [], (
+        "list_available_days_for_booking", "get_doctor_schedule_for_booking",
+        "get_available_slots_for_booking", "resolve_available_day",
+    )):
+        return False
 
     # Was THIS doctor ever independently confirmed FOR A SERVICE via
     # `find_available_doctors`? `match_entity_for_booking` deliberately
