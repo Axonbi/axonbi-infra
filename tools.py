@@ -275,6 +275,35 @@ _LOCAL_MOBILE_DIGIT_COUNTS = {
     "966": 9,   # Saudi: 05XXXXXXXX -> 9 digits after the leading 0
 }
 
+# THE REVERSE OF THE MAP ABOVE: given how many local digits a bare
+# number has (no "+", no "00", and with any leading "0" already
+# stripped), which of the two countries this deployment actually
+# serves does that shape belong to.
+#
+# This works ONLY because Egypt's count (10) and Saudi's count (9)
+# never collide - a bare local number is one or the other, never both,
+# so the digit count alone is enough to tell them apart with no
+# ambiguity. This lets a patient be recognised correctly WITHOUT typing
+# a country code at all, instead of the previous behaviour of rejecting
+# every bare number that did not match the client's own configured
+# default country and asking them to re-type it with "+20"/"+966" in
+# front - CONFIRMED REAL PRODUCTION CASE (session 201003365691+medtown2,
+# 2026-09-13 10:45): an Egyptian-clinic patient typed "549779908" (9
+# Saudi digits, no country code) while messaging from an Egyptian
+# channel number; it was rejected as "رقم الجوال اللي أرسلته غير
+# صحيح" purely because the clinic's default is Egypt, even though 9
+# digits is unambiguously a Saudi mobile shape.
+#
+# A digit count that is neither 9 nor 10 (7-8 or 11+) still falls
+# through to the old behaviour below - the client's configured default
+# country, or rejection if that default expects a different count -
+# because this deployment has no third country to guess from digits
+# alone; that is exactly when the patient genuinely needs to type the
+# country code themselves.
+_COUNTRY_CODE_BY_LOCAL_DIGIT_COUNT = {
+    count: code for code, count in _LOCAL_MOBILE_DIGIT_COUNTS.items()
+}
+
 
 def normalize_phone_number(phone: Optional[str], state=None) -> Optional[str]:
     """Normalize a phone number to E.164 (e.g. "+201001255864").
@@ -307,12 +336,21 @@ def normalize_phone_number(phone: Optional[str], state=None) -> Optional[str]:
     default_code = _client_default_country_code(state)
 
     # Leading zero = local format for whichever country this client is
-    # in ("01158877175" -> Egypt, "0568000000" -> Saudi). When we know
-    # that country's expected local digit count, reject a number that
-    # clearly isn't that shape instead of silently constructing an
-    # international number nobody owns.
+    # in ("01158877175" -> Egypt, "0568000000" -> Saudi). The digit
+    # count on its own already says which one - 10 digits after the "0"
+    # is only ever Egypt, 9 is only ever Saudi - so that decides it
+    # BEFORE falling back to the client's configured default, which is
+    # what makes a Saudi patient typing a local "0" number recognised
+    # correctly even on an Egyptian clinic's line, and vice versa.
     if cleaned.startswith("0"):
         local_part = cleaned[1:]
+        by_digit_count = _COUNTRY_CODE_BY_LOCAL_DIGIT_COUNT.get(len(local_part))
+        if by_digit_count:
+            return "+" + by_digit_count + local_part
+        # Neither 9 nor 10 digits - not a recognisable Egypt/Saudi
+        # mobile shape. Fall back to the client's own default country,
+        # rejecting only if that default itself expects a different
+        # count (an ambiguous/garbage number nobody's guessing helps).
         expected = _LOCAL_MOBILE_DIGIT_COUNTS.get(default_code)
         if expected is not None and len(local_part) != expected:
             return None
@@ -330,12 +368,21 @@ def normalize_phone_number(phone: Optional[str], state=None) -> Optional[str]:
         if cleaned.startswith(code) and len(cleaned) >= len(code) + 8:
             return "+" + cleaned
 
-    # Nothing above recognized this as carrying its own country code, so
-    # it would fall back to the client's default country. Only do that
-    # if it's actually the right shape for that country's local mobile
-    # numbers - otherwise this is an ambiguous/garbage string (e.g. a
-    # 9-digit fragment) and guessing produces a number that belongs to
-    # nobody (see _LOCAL_MOBILE_DIGIT_COUNTS docstring above).
+    # Nothing above recognized this as carrying its own country code.
+    # Before falling back to the client's default country, check
+    # whether the digit count alone already identifies it as an Egypt
+    # or Saudi mobile written with neither a leading 0 nor a country
+    # code ("1001255864" -> Egypt, "501234567" -> Saudi) - see
+    # `_COUNTRY_CODE_BY_LOCAL_DIGIT_COUNT` above for why this is safe.
+    by_digit_count = _COUNTRY_CODE_BY_LOCAL_DIGIT_COUNT.get(len(cleaned))
+    if by_digit_count:
+        return "+" + by_digit_count + cleaned
+
+    # Otherwise fall back to the client's default country, and only
+    # then if it's actually the right shape for that country's local
+    # mobile numbers - otherwise this is an ambiguous/garbage string
+    # and guessing produces a number that belongs to nobody (see
+    # _LOCAL_MOBILE_DIGIT_COUNTS docstring above).
     expected = _LOCAL_MOBILE_DIGIT_COUNTS.get(default_code)
     if expected is not None and len(cleaned) != expected:
         return None
@@ -2325,8 +2372,10 @@ def _parse_clock_time(text: Optional[str]) -> Optional[dict]:
     all, which is the common case ("الساعة 5") and genuinely ambiguous -
     callers must resolve it against the real slots rather than guessing,
     because 5:00 and 17:00 are both ordinary clinic times. `minute` is
-    None when they named only the hour, which means "any slot in that
-    hour" and not "exactly o'clock".
+    None when they named only the hour ("الساعة 6", not "6 ونص"/"6:30") -
+    see `_slots_at_clock_time` for how that is resolved against the
+    real slots (it prefers the exact on-the-hour slot rather than
+    treating a bare hour as "anywhere in that hour").
     """
 
     if not text:
@@ -2374,6 +2423,22 @@ def _parse_clock_time(text: Optional[str]) -> Optional[dict]:
     return {"hour": hour, "minute": minute, "period": period}
 
 
+def _slot_local_datetime(slot: dict):
+    """The parsed local start time of one remembered slot, or None.
+
+    Factored out of `_slot_matches_clock_time` so `_slots_at_clock_time`
+    can also ask "is this slot exactly on the hour?" without
+    re-implementing the same parsing."""
+
+    local_start = slot.get("_localStart") or slot.get("slotStart")
+    if not local_start:
+        return None
+    try:
+        return datetime.fromisoformat(str(local_start).replace("Z", "").split("+")[0])
+    except ValueError:
+        return None
+
+
 def _slot_matches_clock_time(slot: dict, wanted: dict) -> bool:
     """Whether one remembered slot is at the time the patient named.
 
@@ -2382,13 +2447,8 @@ def _slot_matches_clock_time(slot: dict, wanted: dict) -> bool:
     which is a UTC instant three hours away from it. See
     `to_clinic_local`."""
 
-    local_start = slot.get("_localStart") or slot.get("slotStart")
-    if not local_start:
-        return False
-
-    try:
-        when = datetime.fromisoformat(str(local_start).replace("Z", "").split("+")[0])
-    except ValueError:
+    when = _slot_local_datetime(slot)
+    if when is None:
         return False
 
     if wanted.get("minute") is not None and when.minute != wanted["minute"]:
@@ -2414,7 +2474,40 @@ def _slot_matches_clock_time(slot: dict, wanted: dict) -> bool:
 
 
 def _slots_at_clock_time(slots: list, wanted: dict) -> list:
-    return [slot for slot in (slots or []) if _slot_matches_clock_time(slot, wanted)]
+    matches = [slot for slot in (slots or []) if _slot_matches_clock_time(slot, wanted)]
+
+    # NO MINUTE WAS NAMED ("الساعة 6") AND MORE THAN ONE SLOT QUALIFIES.
+    #
+    # `_slot_matches_clock_time` treats a bare hour as "any minute within
+    # that hour" - correct so it can find "6:15" when that's genuinely
+    # the only slot that hour, but wrong the moment the hour also has a
+    # half-past slot: "6:00" and "6:30" both qualify, and the caller
+    # then has to ask which one, even though "الساعة 6" in ordinary
+    # speech means six o'clock SHARP, not "sometime after six".
+    #
+    # CONFIRMED REAL PRODUCTION CASE (session 201158877175+medtown2,
+    # 2026-09-13 11:33): "احجز مع دكتور تسبيح يوم السبت ساعه 6" against
+    # a day with both 6:00 مساءً and 6:30 مساءً open. Both matched, so
+    # the patient - who had already named the doctor, the day AND the
+    # hour - was handed the FULL six-slot list back with no
+    # acknowledgement any of that had registered, instead of simply
+    # being booked at 6:00 or asked the one real remaining question
+    # ("6:00 ولا 6:30؟").
+    #
+    # So: when a bare hour matches more than one slot, prefer the one
+    # exactly on the hour if there is one - that is what "ساعة 6" plainly
+    # means - and only fall back to the full set (letting the caller
+    # ask) when there is no on-the-hour slot to prefer, e.g. a day that
+    # only has "6:15" and "6:45" open.
+    if wanted.get("minute") is None and len(matches) > 1:
+        on_the_hour = [
+            slot for slot in matches
+            if (lambda when: when is not None and when.minute == 0)(_slot_local_datetime(slot))
+        ]
+        if len(on_the_hour) == 1:
+            return on_the_hour
+
+    return matches
 
 
 def _extract_selection_number(user_input: str) -> Optional[int]:
