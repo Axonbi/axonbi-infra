@@ -22,7 +22,7 @@ langchain.tanasuq.med.sa {
 	# graphs, reads state, nor starts a run.
 	@probe path /info /ok
 	handle @probe {
-		reverse_proxy host.docker.internal:2025
+		reverse_proxy 172.18.0.1:2025
 	}
 
 	# Everything that exposes or runs a graph stays behind the password.
@@ -31,7 +31,7 @@ langchain.tanasuq.med.sa {
 			# caddy hash-password --plaintext '<password>'
 			axon REPLACE_WITH_BCRYPT_HASH
 		}
-		reverse_proxy host.docker.internal:2025 {
+		reverse_proxy 172.18.0.1:2025 {
 			# Studio streams run events over SSE; buffering would freeze the
 			# graph view until a run finished.
 			flush_interval -1

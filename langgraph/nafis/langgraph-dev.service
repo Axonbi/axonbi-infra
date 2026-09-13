@@ -1,6 +1,6 @@
 [Unit]
 Description=LangGraph dev server (Studio backend)
-After=network-online.target
+After=network-online.target docker.service
 Wants=network-online.target
 # Stays inactive until a project has actually been deployed, instead of
 # restart-looping on an empty directory.
@@ -9,10 +9,19 @@ ConditionPathExists=/opt/langgraph/langgraph.json
 [Service]
 Type=simple
 WorkingDirectory=/opt/langgraph
+EnvironmentFile=-/etc/langgraph/deploy.env
 EnvironmentFile=-/opt/langgraph/.env
-# Loopback only: this server runs auth "noop" and must never be exposed
-# directly. Caddy terminates TLS and applies basic auth in front of it.
-ExecStart=/opt/langgraph/.venv/bin/langgraph dev --host 127.0.0.1 --port 2025 --no-browser --no-reload
+# Bound to the docker bridge gateway (n8n_web), NOT loopback and NOT 0.0.0.0.
+#
+# Caddy runs in a container and cannot reach a host service on 127.0.0.1, so
+# the Studio backend has to listen on the bridge address for the proxy to
+# reach it. That address is private and not routable from the internet;
+# 0.0.0.0 would be, because ufw is inactive on this box.
+#
+# This server runs auth "noop" and has no access control of its own. Caddy
+# terminates TLS and applies basic auth in front of it -- it must never be
+# published directly.
+ExecStart=/opt/langgraph/.venv/bin/langgraph dev --host ${BIND_ADDR} --port 2025 --no-browser --no-reload
 Restart=always
 RestartSec=10
 StandardOutput=append:/var/log/langgraph-dev.log
