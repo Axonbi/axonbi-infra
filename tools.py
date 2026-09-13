@@ -6243,6 +6243,12 @@ def match_entity_info(
             "degreeName": i.get("degreeName"),
             "specialtyName": i.get("specialtyName"),
             "serviceName": i.get("defaultServiceName") or i.get("serviceName"),
+            # Per-doctor, independent of the has_service_schedule=False
+            # request filter above - so the model can tell "this real
+            # doctor currently has no bookable slots" apart from
+            # everyone else, instead of offering to book unconditionally
+            # and only finding out empty-handed a turn later.
+            "hasSlots": i.get("hasSlots"),
             # No fee here on purpose: a doctor-info lookup is a routine
             # listing, and a price visible in the tool result reliably
             # ends up printed in the reply unprompted. Fees go through
