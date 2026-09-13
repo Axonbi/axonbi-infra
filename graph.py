@@ -44,6 +44,7 @@ import re
 import uuid
 import ast
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 from functools import lru_cache
 from typing import Dict, Optional
 
@@ -7352,6 +7353,16 @@ _DATE_IN_REPLY_RE = re.compile(r"(?<![\w-])\d{1,2}[-/]\d{1,2}[-/]\d{2,4}(?![\w-]
 # Same class of problem: a reference or an id can carry "...151:30...".
 _TIME_IN_REPLY_RE = re.compile(r"(?<![\w:])\d{1,2}:\d{2}(?![\w:])")
 
+# An ISO timestamp as tool payloads actually emit it - naive
+# ("2026-09-10T11:30:00") or UTC-offset ("2026-09-10T12:00:00+00:00"/
+# "...Z"). Captures the FULL match (group 1, for datetime.fromisoformat)
+# alongside the individual date/time fields `_availability_values_from_
+# tools` already used before timezone conversion was added.
+_ISO_TIMESTAMP_RE = re.compile(
+    r"((\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::\d{2})?(?:\.\d+)?"
+    r"(?:Z|[+-]\d{2}:?\d{2})?)"
+)
+
 # Weekday words that, appearing in a REPLY, must be backed by a real
 # availability tool result (see `_reply_invents_availability`).
 #
@@ -8444,6 +8455,35 @@ def _medical_reply_missing_not_a_diagnosis(reply_text: str, state: AgentState) -
             # symptom-to-specialty suggestion.
             return False
 
+    # THEY NAMED THE DOCTOR OR SPECIALTY THEMSELVES - THERE IS NO SYMPTOM
+    # BEING MAPPED TO ANYTHING, SO THERE IS NOTHING TO DISCLAIM.
+    #
+    # Same reasoning, same cue patterns, as `_medical_reply_offers_
+    # unrelated_specialty`'s own identical exemption just above it in
+    # this file - this check was missing it entirely.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (tenant): "ايه فروع دكتور تسبيح"
+    # named the doctor directly - a plain directory question ("which
+    # branch is he in"), not a symptom. The reply correctly answered it
+    # with real data (see `_doctor_active_branch_names`) and was
+    # rejected twice for missing a "this isn't a diagnosis" clause that
+    # makes no sense on an answer that never diagnosed anything -
+    # ending in "ما لقيتش دكتور متاح حاليًا للحالة دي", which is false:
+    # a real, available doctor's real branch WAS found and named.
+    human_messages = [
+        _norm_ar(str(getattr(m, "content", "")))
+        for m in (state.get("messages") or [])
+        if getattr(m, "type", None) == "human"
+    ]
+    for text in reversed(human_messages):
+        if not text.strip():
+            continue
+        if _DOCTOR_CUE_RE.search(text) or _SPECIALTY_CUE_RE.search(text) \
+                or _BARE_SPECIALTY_RE.search(text):
+            return False
+        if _SYMPTOM_ANSWER_RE.search(text):
+            break  # a genuine symptom - the disclaimer is still required
+
     return not _NOT_A_DIAGNOSIS_RE.search(folded)
 
 
@@ -9229,7 +9269,7 @@ def _normalize_time_token(value: str) -> str:
     return f"{hour.lstrip('0') or '0'}:{minute.zfill(2)}"
 
 
-def _availability_values_from_tools(tool_texts: list) -> tuple:
+def _availability_values_from_tools(tool_texts: list, timezone_name: str = None) -> tuple:
     """Every date and every time that literally appears in the given
     availability tool payloads.
 
@@ -9237,20 +9277,44 @@ def _availability_values_from_tools(tool_texts: list) -> tuple:
     price can never be read as a clock time, and pulls the tokens out of
     the STRING VALUES only - `date_display`, `time_display`, `slotStart`
     and friends. Falls back to scanning the raw text when a payload will
-    not parse, which is strictly better than treating it as empty."""
+    not parse, which is strictly better than treating it as empty.
+
+    `timezone_name` matters for tools that only ever emit raw UTC ISO
+    timestamps with no pre-formatted `time_display` at all -
+    `get_doctor_schedule_for_booking` is the confirmed case: its rows
+    carry only `fromDateTime`/`toDateTime` in UTC, and the model
+    correctly converts them to local time for the reply, exactly as
+    every other tool's own `time_display` field already does for it
+    elsewhere. Without converting here too, a raw "12:00:00+00:00" is
+    only ever recognised as "12:00" - never as the "3:00 مساءً" a
+    correct Riyadh-local reply must say instead - and a fully accurate
+    reply is rejected as a fabricated appointment.
+
+    CONFIRMED REAL PRODUCTION FAILURE (tenant): a doctor's real,
+    tool-returned schedule ("fromDateTime": "...T12:00:00+00:00") was
+    correctly displayed as "من 3:00 مساءً" (Riyadh is UTC+3) and flagged
+    twice as inventing a time no tool returned - the UTC hour and the
+    correct local hour are the same instant, three hours apart in
+    representation, the same class of bug already fixed once for slot
+    verification elsewhere in this file."""
 
     dates: set = set()
     times: set = set()
+
+    try:
+        target_tz = ZoneInfo(timezone_name) if timezone_name else None
+    except Exception:
+        target_tz = None
 
     def _harvest(text: str) -> None:
         for token in _DATE_IN_REPLY_RE.findall(text):
             dates.add(_normalize_date_token(token))
         for token in _TIME_IN_REPLY_RE.findall(text):
             times.add(_normalize_time_token(token))
-        # ISO timestamps ("2026-09-10T11:30:00") carry the same facts in
+        # ISO timestamps ("2026-09-10T11:30:00" or, from a UTC-only
+        # payload, "2026-09-10T12:00:00+00:00") carry the same facts in
         # a shape neither regex above matches.
-        for iso in re.findall(r"(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})", text):
-            year, month, day, hour, minute = iso
+        for whole, year, month, day, hour, minute in _ISO_TIMESTAMP_RE.findall(text):
             dates.add(f"{day.lstrip('0') or '0'}/{month.lstrip('0') or '0'}/{year}")
             times.add(f"{hour.lstrip('0') or '0'}:{minute}")
             # The same instant in 12-hour form, which is how the tools'
@@ -9258,6 +9322,20 @@ def _availability_values_from_tools(tool_texts: list) -> tuple:
             # correct reply quotes it back.
             hour_12 = int(hour) % 12 or 12
             times.add(f"{hour_12}:{minute}")
+
+            # THE SAME INSTANT, CONVERTED TO LOCAL TIME - see this
+            # function's own docstring for why this is not optional.
+            if target_tz is not None:
+                try:
+                    parsed = datetime.fromisoformat(whole.replace("Z", "+00:00"))
+                    if parsed.tzinfo is not None:
+                        local = parsed.astimezone(target_tz)
+                        local_hour_12 = local.hour % 12 or 12
+                        times.add(f"{local.hour}:{local.minute:02d}")
+                        times.add(f"{local_hour_12}:{local.minute:02d}")
+                        dates.add(f"{local.day}/{local.month}/{local.year}")
+                except Exception:
+                    pass
 
     for raw in tool_texts:
         _harvest(str(raw))
@@ -9392,7 +9470,9 @@ def _reply_invents_availability(reply_text, state) -> bool:
     # appear in the tool payloads - the tools already emit `date_display`
     # and `time_display` precisely so a reply never has to reformat
     # anything.
-    known_dates, known_times = _availability_values_from_tools(tool_text)
+    known_dates, known_times = _availability_values_from_tools(
+        tool_text, (state.get("templates") or {}).get("_timezone") or tools.DEFAULT_TIMEZONE,
+    )
 
     for value in dates:
         if _normalize_date_token(value) not in known_dates:
