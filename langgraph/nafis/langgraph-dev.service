@@ -1,0 +1,22 @@
+[Unit]
+Description=LangGraph dev server (Studio backend)
+After=network-online.target
+Wants=network-online.target
+# Stays inactive until a project has actually been deployed, instead of
+# restart-looping on an empty directory.
+ConditionPathExists=/opt/langgraph/langgraph.json
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/langgraph
+EnvironmentFile=-/opt/langgraph/.env
+# Loopback only: this server runs auth "noop" and must never be exposed
+# directly. Caddy terminates TLS and applies basic auth in front of it.
+ExecStart=/opt/langgraph/.venv/bin/langgraph dev --host 127.0.0.1 --port 2025 --no-browser --no-reload
+Restart=always
+RestartSec=10
+StandardOutput=append:/var/log/langgraph-dev.log
+StandardError=append:/var/log/langgraph-dev.log
+
+[Install]
+WantedBy=multi-user.target

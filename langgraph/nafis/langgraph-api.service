@@ -1,0 +1,21 @@
+[Unit]
+Description=Agent FastAPI wrapper (/chat, called by n8n)
+After=network-online.target docker.service
+Wants=network-online.target
+ConditionPathExists=/opt/langgraph/app.py
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/langgraph
+EnvironmentFile=-/etc/langgraph/deploy.env
+EnvironmentFile=-/opt/langgraph/.env
+# Bound to the docker bridge gateway, not 0.0.0.0: ufw is inactive here, so
+# 0.0.0.0 would expose the agent publicly on this port.
+ExecStart=/opt/langgraph/.venv/bin/uvicorn app:app --host ${BIND_ADDR} --port ${API_PORT}
+Restart=always
+RestartSec=10
+StandardOutput=append:/var/log/langgraph-api.log
+StandardError=append:/var/log/langgraph-api.log
+
+[Install]
+WantedBy=multi-user.target

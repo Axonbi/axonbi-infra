@@ -1,0 +1,52 @@
+# Studio endpoint for the LangGraph server on the Nafis box.
+#
+# NOT applied yet -- append this to /opt/n8n/Caddyfile and reload Caddy once a
+# DNS A record exists for the hostname. Caddy already owns 80/443 here, so it
+# issues and renews the certificate itself over HTTP-01; there is none of the
+# manual DNS-01 renewal the axonbi.com studio box needs.
+#
+#   1. create   A  langchain.tanasuq.med.sa -> 8.213.40.74
+#   2. append this block to /opt/n8n/Caddyfile
+#   3. docker exec n8n-caddy-1 caddy validate --config /etc/caddy/Caddyfile
+#   4. docker exec n8n-caddy-1 caddy reload  --config /etc/caddy/Caddyfile
+#
+# Step 3 matters: a reload with a broken file would take production n8n down
+# with it, so validate before reloading.
+
+langchain.tanasuq.med.sa {
+	encode zstd gzip
+
+	# Studio runs its reachability check BEFORE applying custom headers, so
+	# these two must answer unauthenticated or its Connect button never
+	# enables. Both are non-sensitive: version and health only. Neither lists
+	# graphs, reads state, nor starts a run.
+	@probe path /info /ok
+	handle @probe {
+		reverse_proxy host.docker.internal:2025
+	}
+
+	# Everything that exposes or runs a graph stays behind the password.
+	handle {
+		basic_auth {
+			# caddy hash-password --plaintext '<password>'
+			axon REPLACE_WITH_BCRYPT_HASH
+		}
+		reverse_proxy host.docker.internal:2025 {
+			# Studio streams run events over SSE; buffering would freeze the
+			# graph view until a run finished.
+			flush_interval -1
+		}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+	}
+
+	log {
+		output file /var/log/caddy/langgraph.log {
+			roll_size 10mb
+			roll_keep 5
+		}
+	}
+}
