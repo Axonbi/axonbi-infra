@@ -9085,6 +9085,7 @@ def create_new_booking(
     {"status": "success", "booking_ref": "GBN-..."}
     {"status": "success_ref_pending", "booking_id": "..."}
     {"status": "slot_unavailable"}
+    {"status": "slot_not_locked"}
     {"status": "missing_doctor"} / {"status": "missing_branch"}
     {"status": "invalid_details", "rejected": [{"field": ..., "message": ...}]}
     {"status": "phone_not_verified"}
@@ -9127,6 +9128,36 @@ def create_new_booking(
     # patient was told 10:24 was no longer available, picked it again,
     # and was told the same thing. The booking never completed.
     locked_slot = _selected_slot(state)
+
+    # NO LOCKED SLOT AT ALL - REFUSE, DON'T TRUST THE MODEL'S OWN GUESS.
+    #
+    # The override just below only fires when `locked_slot` exists; it
+    # was silently assumed this tool would never be called any other
+    # way. Nothing enforced that assumption, so a model that skipped
+    # `select_appointment_slot` entirely could pass ANY `slot_start` it
+    # computed itself - typically a bare date with no real time
+    # attached to it.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (session 201158877175+medtown2,
+    # 2026-09-13 12:44:48): `create_new_booking` was called with
+    # requested_slot_start="2026-09-17T00:00:00+03:00" - midnight, the
+    # shape a date gets when a time is appended to it rather than read
+    # from a real slot. No `select_appointment_slot` call preceded it
+    # anywhere in the conversation. The re-verification query correctly
+    # covered the whole day and correctly found nothing at midnight
+    # (api_returned=0, no doctor has appointments then), so the patient
+    # was told their chosen appointment was "no longer available" - it
+    # never existed as a real slot to begin with, even though a real,
+    # bookable slot on that same day was what they actually wanted.
+    if not locked_slot or not locked_slot.get("slotStart"):
+        logger.warning(
+            "create_new_booking: no slot was ever locked via "
+            "select_appointment_slot (session_id=%s) - refusing to book "
+            "the model-supplied slot_start=%r rather than trusting it",
+            session_id, slot_start,
+        )
+        return {"status": "slot_not_locked"}
+
     if locked_slot and locked_slot.get("slotStart"):
         if not _same_instant(slot_start, locked_slot.get("slotStart")):
             logger.warning(
