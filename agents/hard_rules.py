@@ -86,6 +86,8 @@ _RULE_SCOPE: Tuple[Tuple[str, FrozenSet[str]], ...] = (
 
     # --- cancellation ------------------------------------------------
     ("NEVER cancel a booking without an explicit", frozenset({"cancel"})),
+    ("ALWAYS close a cancellation-success or reschedule-success",
+     frozenset({"cancel", "reschedule"})),
     ("NEVER call `cancel_appointment` without calling `check_booking_status`",
      frozenset({"cancel"})),
 
@@ -93,6 +95,10 @@ _RULE_SCOPE: Tuple[Tuple[str, FrozenSet[str]], ...] = (
     ("NEVER reschedule without calling `reschedule_appointment`",
      frozenset({"reschedule"})),
     ("NEVER modify, recompute, or reformat a slotStart/slotEnd",
+     frozenset({"reschedule"})),
+    ("NEVER call `reschedule_appointment` in the same reply where the",
+     frozenset({"reschedule"})),
+    ("In the RESCHEDULE flow, when the patient names only a WEEKDAY",
      frozenset({"reschedule"})),
 
     # --- identity / OTP ----------------------------------------------
