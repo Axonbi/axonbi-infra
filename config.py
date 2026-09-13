@@ -518,7 +518,7 @@ DETERMINISTIC_SLOT_LOCK: bool = _flag("DETERMINISTIC_SLOT_LOCK", True)
 # gap (see the function's own docstring) - and that trade should be
 # reviewed against real branch names before it carries traffic, not
 # assumed safe by default.
-BRANCH_TRANSLITERATION_FALLBACK: bool = _flag("BRANCH_TRANSLITERATION_FALLBACK", False)
+BRANCH_TRANSLITERATION_FALLBACK: bool = _flag("BRANCH_TRANSLITERATION_FALLBACK", True)
 
 # SAME PROTOTYPE-HOOK PATTERN AS DETERMINISTIC_SLOT_LOCK ABOVE, ONE STEP
 # EARLIER IN THE FLOW: once a doctor is confirmed by name via
