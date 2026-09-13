@@ -10624,6 +10624,21 @@ def _safe_fallback_reply(
             "Sorry, I mixed up the branch information 🌷\n"
             "Could you confirm the branch name again?",
         ),
+        (
+            # NOT "ممكن توضحلي طلبك تاني؟" - a generic "please clarify"
+            # after the assistant has ALREADY twice answered with the
+            # generic capabilities menu instead of engaging with what
+            # the patient actually said reads, to the patient, as the
+            # assistant repeating itself rather than listening. What
+            # they need is a clear next step, not a third attempt at
+            # the same question.
+            ("generic out-of-scope service menu",),
+            "معلش، حابة أفهم طلبك صح بس مش قادرة دلوقتي 🌷\n"
+            "حابب أحولك لفريقنا يساعدك مباشرة؟",
+            "Sorry, I want to make sure I understand your request "
+            "correctly but I'm not able to right now 🌷\nWould you like "
+            "me to connect you with our team directly?",
+        ),
     )
 
     for keys, ar_msg, en_msg in _CATEGORY_MESSAGES:
@@ -11915,7 +11930,6 @@ _FLOW_VERIFIER_MARKERS = (
     "already contained",
     "already on the table",
     "already supplied",
-    "generic out-of-scope service menu",
     "reference-or-phone question ever being asked",
     "already specifically chose to identify by",
     "should have been treated as another OTP retry",
