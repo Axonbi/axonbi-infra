@@ -3452,11 +3452,11 @@ _FRAGMENT_STOP_WORDS = (
     "وعايز", "وعاوز", "on", "at", "in", "branch", "day", "please",
     "لو", "ممكن", "بس", "او", "أو", "ولا",
     # RELATIVE PRONOUNS - "دكتور اللي عندكم وصفلي دواء غلط" names no
-    # doctor at all; "اللي" ("who"/"that") introduces a DESCRIPTION of
-    # one, and everything after it is the complaint, not a name.
-    # Without these, the fragment grabbed "اللي عندكم وصفلي دواء" as if
-    # it were the doctor's own name and told the model to resolve it as
-    # one.
+    # doctor at all; "اللي"/"الي" ("who"/"that") introduces a
+    # DESCRIPTION of one, and everything after it is the complaint, not
+    # a name. Without these, the fragment grabbed "اللي عندكم وصفلي
+    # دواء" as if it were the doctor's own name and told the model to
+    # resolve it as one.
     #
     # CONFIRMED REAL PRODUCTION FAILURE (session 201003365691+medtown2,
     # 2026-09-13 12:53:25): the patient's message produced
@@ -3467,7 +3467,19 @@ _FRAGMENT_STOP_WORDS = (
     # doctor by the name you mentioned" - when they had never mentioned
     # a name to begin with. They were describing being given the wrong
     # medication, not naming a doctor.
-    "اللي", "التي", "الذي", "اللى", "يلي",
+    #
+    # STILL CONFIRMED failing on the SINGLE-LAM spelling: adding only
+    # "اللي" left "الي" - the ordinary Egyptian colloquial spelling of
+    # the exact same word, one "ل" instead of two - uncaught.
+    # (session 201158877175+medtown2, 2026-09-13 13:09:06): "الدكتور
+    # الي عندكم وصفي دواء غلط" produced
+    # `match_entity_info(user_input="الي عندكم وصفي دواء")`, same
+    # not_matched, same false "couldn't find a doctor by that name"
+    # reply, on the retry of the very failure this was meant to fix.
+    # `_NOT_A_BRANCH_NAME` two sections below already lists "الي"
+    # alongside "اللي" for exactly this reason - this list should never
+    # have listed one spelling without the other.
+    "اللي", "الي", "التي", "الذي", "اللى", "يلي",
 )
 
 
