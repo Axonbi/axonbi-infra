@@ -15665,6 +15665,26 @@ _REFERENCE_OR_PHONE_QUESTION_RE = re.compile(
     r".{0,40}(?:رقم\s*(?:ال)?حجز|(?:ال)?رقم\s*(?:ال)?مرجعي|reference\s*(?:number)?)"
 )
 
+# MENTIONING the phone/reference word is NOT the same as ASKING for it.
+#
+# CONFIRMED FALSE POSITIVE (tenant 201158877175, 2026-09-13 09:38): after
+# identity was already verified and lookup_appointment found two real
+# bookings, the (entirely correct) reply "عندي عندك موعدين مسجلين على رقم
+# الجوال هذا: 1) ... 2) ... أي رقم منهم تحب تعدل موعده؟" was flagged as
+# "re-asking for the phone number" purely because it contains the phrase
+# "رقم الجوال" - even though that phrase is there to describe which
+# bookings were found, not to request the number again. Because this
+# check is SAFETY severity, failing it twice replaced a correct,
+# fully-populated appointment picker with the generic fallback message.
+#
+# Require an actual request/imperative marker alongside the phone/
+# reference phrase before treating it as a re-ask.
+_ACTUAL_IDENTITY_REQUEST_RE = re.compile(
+    r"أرسل|ارسل|ابعت|إبعت|أعطني|اعطني|زودني|زوّدني|ممكن\s*(?:تبعت|ترسل)|"
+    r"تقدر\s*(?:تبعت|ترسل)|من\s*فضلك.{0,25}(?:أرسل|ارسل|ابعت|إبعت)|"
+    r"share|send|provide|give\s*me"
+)
+
 # A booking reference ("GBN-2026-06-20-151") or anything that looks
 # like a real phone number (8+ digits) in the patient's OWN message -
 # STEP 1's "smart detection" legitimately skips the question when
@@ -16252,10 +16272,17 @@ def _reply_reasks_identity_after_verification(reply_text: str, state: AgentState
         return False
 
     folded = _norm_ar(reply_text)
-    asks = bool(_ASKS_FOR_PHONE_DIRECTLY_RE.search(folded)) or bool(
+    mentions_phone_or_reference = bool(_ASKS_FOR_PHONE_DIRECTLY_RE.search(folded)) or bool(
         _REFERENCE_OR_PHONE_QUESTION_RE.search(folded)
     )
-    if not asks:
+    if not mentions_phone_or_reference:
+        return False
+
+    # MENTIONING the phone/reference isn't a re-ask on its own - see the
+    # comment on `_ACTUAL_IDENTITY_REQUEST_RE` above. Only treat this as
+    # asking again when the reply actually contains a request/imperative
+    # for the patient to supply it.
+    if not _ACTUAL_IDENTITY_REQUEST_RE.search(folded):
         return False
 
     session_id = state.get("session_id")
