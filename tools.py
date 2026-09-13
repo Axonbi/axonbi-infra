@@ -8675,7 +8675,7 @@ def _open_slots_on_day(state, base_url: str, doctor_id: str, branch_id: str,
 @tool
 def list_available_days_for_booking(
     state: Annotated[AgentState, InjectedState],
-    limit: int = 3,
+    limit: int = 1,
     offset: int = 0,
 ) -> dict:
     """For a NEW BOOKING: list the doctor's REAL upcoming days that
@@ -8692,10 +8692,24 @@ def list_available_days_for_booking(
     anything is free. Every day here has at least one genuinely open
     slot, so you can show its date without further checking.
 
-    SHOW THE NEAREST FEW: `limit` defaults to 3. With more than one day
-    open, show a numbered list so the patient picks a day that suits
-    them in ONE message instead of rejecting single dates one at a time.
-    With one day open, show that date alone and ask if it suits.
+    OFFER THE SOONEST DAY ONLY BY DEFAULT: `limit` defaults to 1 - show
+    that single date and ask whether it suits them, exactly as the
+    prompt's STEP NB3 says. Only call again with `limit=3` (and `offset`
+    set to the result's own `next_offset`) once the patient has actually
+    asked for other options ("مش مناسب", "معاد أبعد", "في مواعيد
+    تانية؟") - THEN, and only then, show the extra days as a numbered
+    list so they can pick one in a single message instead of rejecting
+    dates one at a time.
+
+    CONFIRMED REAL PRODUCTION FAILURE: this used to default to `limit=3`,
+    so a doctor working Sun/Mon/Tue with today being Sunday returned
+    [Monday 14/09, Tuesday 15/09, Sunday 20/09] - correctly sorted by
+    date, soonest first - and the reply then re-ordered them into
+    weekday-name sequence ("1) Sunday 20/09, 2) Monday 14/09, 3) Tuesday
+    15/09"), presenting the FARTHEST date as option 1 and the two
+    genuinely nearest dates as 2 and 3. The prompt already said to offer
+    only the soonest date; the tool's own default of 3 contradicted it
+    and is what let a list - and the reordering - happen at all.
 
     ONE DATE PER WEEKDAY. Days returned are always different weekdays -
     the doctor's real working days, each at its soonest date. A weekly
