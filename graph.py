@@ -10582,6 +10582,7 @@ def _honest_unstaffed_reply(draft: str, messages: list,
 
 def _safe_fallback_reply(
     state: AgentState, target_language: Optional[str], failure_description: Optional[str] = None,
+    agent_name: Optional[str] = None,
 ) -> str:
     """The message sent instead of a reply that a verifier flagged TWICE
     in the same turn (original draft, then its corrective retry) - see
@@ -10621,6 +10622,33 @@ def _safe_fallback_reply(
 
     is_english = (target_language or "").strip().lower().startswith("en")
     desc = (failure_description or "").lower()
+
+    # ADDED: "fabricated availability claim" fires from two genuinely
+    # different situations that used to share one message:
+    #
+    #   1. `medical`/`concierge` gave real symptom advice but could not
+    #      confirm a doctor for it - "no doctor available for this at
+    #      the hospital" is the true and useful thing to say.
+    #   2. `booking`/`reschedule` simply couldn't match a NAME the
+    #      patient typed (e.g. "دكتور محمد") against the roster. Nothing
+    #      is wrong with the patient's condition here - there was never
+    #      a condition mentioned - so the medical-flavoured message
+    #      above is actively misleading. CONFIRMED REAL PRODUCTION
+    #      CONFUSION (tenant 201003365691, 2026-09-13 08:41): a plain
+    #      "اسم دكتور مش موجود" case sent "ما لقيتش دكتور متاح حاليًا
+    #      للحالة دي", which reads as "we have no one for your medical
+    #      issue" rather than "that name didn't match - want the list?".
+    if "fabricated availability claim" in desc and agent_name not in (
+        "medical", "concierge",
+    ):
+        return (
+            "معلش، ما لقيتش دكتور بالاسم ده متاح للحجز حاليًا 🌷\n"
+            "تحب تشوف قائمة التخصصات أو الدكاترة المتاحين عندنا؟"
+            if not is_english else
+            "Sorry - I couldn't match that name to an available doctor "
+            "right now 🌷\nWould you like to see our list of specialties "
+            "or doctors instead?"
+        )
 
     # Ordered so a more specific match wins over a more general one when
     # a description could plausibly match more than one category.
@@ -12050,6 +12078,18 @@ _FLOW_VERIFIER_MARKERS = (
     "re-send a full name that already had at least two parts",
     "offered the doctor roster again",
     "instead of continuing",
+    # ADDED: this check's own reply is 100% true - it only re-asks a
+    # question whose answer the session already has. That is a clumsy
+    # turn, not a fabricated fact, so it belongs in FLOW like every
+    # other "re-asked something already given" check above. Left as the
+    # SAFETY default it fell through to the zero-tolerance fallback and
+    # replaced a perfectly fine (if redundant) question with the fully
+    # generic "ممكن توضحلي طلبك تاني؟" - CONFIRMED REAL PRODUCTION
+    # FAILURE (tenant 201158877175, 2026-09-13 08:41): patient said
+    # "عاوزه احجز معاد جديد" with a specialty already established from
+    # earlier in the same conversation, and got the clarify-again
+    # message instead of simply being walked forward.
+    "already has one on file from earlier in the conversation",
 )
 
 
@@ -12987,6 +13027,23 @@ _REPLY_VERIFIERS = (
         lambda reply, state: _DAY_ALREADY_NAMED_CORRECTION_DIRECTIVE,
         "reply re-asked which day, but the patient's own last message already named "
         "a day matching one in the just-shown day list",
+    ),
+    (
+        # SAFETY, not FLOW, and deliberately not added to
+        # `_FLOW_VERIFIER_MARKERS`: this is not a wrong-question-order
+        # problem where every word is still true. A bare "which branch"
+        # offer with no `get_doctor_schedule_for_booking` result behind
+        # it is asserting that this doctor works at the named branch
+        # (or branches) with nothing to back that up - exactly the kind
+        # of ungrounded claim the patient could act on. See the
+        # function's own docstring for the confirmed production case:
+        # the invented "Al Nozha" branch offer, unresolved by the
+        # patient's "1", cascaded into a real branch ("Al Manar") being
+        # wrongly matched two turns later.
+        lambda reply, state, agent_name: _reply_asks_which_branch_with_no_schedule_shown(reply, state),
+        lambda reply, state: _ASKS_BRANCH_WITHOUT_SCHEDULE_CORRECTION_DIRECTIVE,
+        "reply asked which branch for a confirmed doctor with no branch yet, but "
+        "showed no real schedule from get_doctor_schedule_for_booking to ground it",
     ),
     (
         lambda reply, state, agent_name: (
@@ -16933,6 +16990,86 @@ _DAY_ALREADY_NAMED_CORRECTION_DIRECTIVE = (
 )
 
 
+_ASKS_WHICH_BRANCH_RE = re.compile(
+    r"أي\s*فرع|انهي\s*فرع|أنهي\s*فرع|اي\s*فرع|تختار\s*فرع|"
+    r"which\s*branch"
+)
+
+
+def _reply_asks_which_branch_with_no_schedule_shown(reply_text: str, state: AgentState) -> bool:
+    """True when the reply asks the patient which branch they want for a
+    doctor who is ALREADY confirmed, no branch is confirmed yet, and the
+    reply shows no actual schedule (no weekday/time detail) to ground
+    the question in - i.e. a bare, invented-looking branch offer instead
+    of STEP NB2's required `get_doctor_schedule_for_booking` call.
+
+    prompts.py's STEP NB2 is explicit about this exact case: "Once a
+    DOCTOR is confirmed but NO branch is: do NOT ask a branch question
+    ... Instead call `get_doctor_schedule_for_booking` and SHOW its
+    result... If the result has only ONE branch, there is nothing to ASK
+    about". A branch question is only legitimate when it is attached to
+    that real schedule in the same reply (STEP NB2's own example ends
+    "... حابب تحجز في أنهي فرع وأنهي يوم؟" only AFTER printing the actual
+    weekday/hours rows) - so the discriminator here is the same one
+    `_reply_reasks_day_patient_already_named` already uses for an
+    analogous problem: does the reply actually contain schedule detail,
+    or is it just a question.
+
+    CONFIRMED REAL PRODUCTION FAILURE (tenant, 2026-09-13): doctor فارس
+    الشارخ was confirmed, no branch was, and with NO tool called that
+    turn the reply asked "الفرع: أي فرع تفضل تحجز فيه عند دكتور فارس
+    الشارخ؟ 🏥 1️⃣ Al Nozha" - a single-item numbered "choice" with no
+    schedule behind it at all. Because no `_remember_list(..., "branch",
+    ...)` had ever run for it, the patient's "1" had nothing to resolve
+    against, and the very next reply asked the identical question again,
+    twice, before they gave up and typed the branch name - which then
+    mismatched a completely different, real branch ("Al Manar") since
+    nothing had ever confirmed "Al Nozha" as this doctor's actual branch
+    in the first place.
+    """
+
+    if not reply_text or not _ASKS_WHICH_BRANCH_RE.search(_norm_ar(reply_text)):
+        return False
+
+    # A reply that actually shows weekday/time detail is a legitimate
+    # STEP NB2 schedule-plus-question message, not a bare guess - see
+    # the day-check above for the identical reasoning.
+    if re.search(r"صباح|مساء|am\b|pm\b|:\d{2}", reply_text, re.IGNORECASE):
+        return False
+
+    session_id = state.get("session_id")
+    if not session_id:
+        return False
+
+    session = tools._BOOKING_SESSIONS.get(session_id) or {}
+    if not session.get("doctor_id") or session.get("branch_id"):
+        return False
+
+    return not _tool_results_since_latest_human(
+        state.get("messages") or [], ("get_doctor_schedule_for_booking",),
+    )
+
+
+_ASKS_BRANCH_WITHOUT_SCHEDULE_CORRECTION_DIRECTIVE = (
+    "============================================================\n"
+    "DO NOT ASK WHICH BRANCH - SHOW THE REAL SCHEDULE FIRST\n"
+    "============================================================\n"
+    "Your previous draft asked the patient which branch they want for "
+    "this doctor, with no schedule behind the question - nothing has "
+    "confirmed which branch(es) this doctor actually works at yet.\n\n"
+    "Call `get_doctor_schedule_for_booking` right now and show its "
+    "result grouped by branch, with the real weekday(s) and hours at "
+    "each - in this SAME reply. If it returns only ONE branch, that "
+    "branch is already auto-confirmed for you: show the schedule and do "
+    "NOT ask which branch, since there is nothing to choose between. If "
+    "it returns more than one, show all of them (weekday + hours for "
+    "each) and THEN ask which branch and day suit them - never ask "
+    "before showing the real schedule.\n\n"
+    "Never invent or guess a branch name yourself; only the branches "
+    "this tool actually returns exist for this doctor.\n\n"
+)
+
+
 def _reply_asks_for_a_slot_already_locked_in(reply_text: str, state: AgentState) -> bool:
     """True when the reply asks the patient for the appointment time,
     while a slot has already been resolved via `select_appointment_slot`
@@ -18338,7 +18475,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                         state.get("templates") or {}, target_language,
                     )
                     normalized = rebuilt or _safe_fallback_reply(
-                        state, target_language, description,
+                        state, target_language, description, agent_name,
                     )
                     used_safe_fallback = True
                     continue
@@ -18434,7 +18571,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                             state.get("templates") or {}, target_language,
                         )
                         normalized = rebuilt or _safe_fallback_reply(
-                            state, target_language, description,
+                            state, target_language, description, agent_name,
                         )
                         used_safe_fallback = True
                         break
@@ -18506,7 +18643,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                         state.get("templates") or {}, target_language,
                     )
                     normalized = rebuilt or _safe_fallback_reply(
-                        state, target_language, description,
+                        state, target_language, description, agent_name,
                     )
                     used_safe_fallback = True
                     continue
