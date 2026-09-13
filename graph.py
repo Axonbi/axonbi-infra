@@ -12694,6 +12694,32 @@ _CLAIM_HANDOFF_RE = re.compile(
     r"transferring\s+you\s+now|connecting\s+you\s+(?:now|with))"
 )
 
+# "بعتلك رمز تحقق" / "أرسلنا لك رمز التحقق" / "تم إرسال الكود" -
+# the verification code reported as ALREADY ON ITS WAY. This is exactly
+# as irreversible-sounding to the patient as the other five claims: they
+# will now go check their phone and type back whatever arrives, so if
+# nothing was actually sent, `verify_otp` can never succeed no matter
+# what they type - see the CONFIRMED REAL PRODUCTION FAILURE below.
+#
+# CONFIRMED REAL PRODUCTION FAILURE (session 201003365691+medtown2,
+# 2026-09-13 12:29-12:30): the reply said "أبشر، بعتلك رمز تحقق على
+# الرقم ..." twice, for two different numbers, and `send_otp` never
+# actually ran either time (no "OTP sent for %s" log line either turn).
+# `_otp_storage` was never written to, so `verify_otp` rejected the
+# patient's next message both times - including the correct
+# `TEST_OTP`, "123456" - and there was no way for the patient to ever
+# get past this by typing anything, because there was nothing stored
+# to match against.
+_CLAIM_OTP_SENT_RE = re.compile(
+    r"(?:تم|تمّ)\s*(?:بنجاح\s*)?(?:ارسال|إرسال|بعث)\s*(?:ال)?(?:رمز|كود)|"
+    r"(?:بعتلك|بعثتلك|ارسلتلك|أرسلتلك|ابعتلك|هبعتلك)\s*(?:ال)?(?:رمز|كود)|"
+    r"(?:ال)?(?:رمز|كود)\w*\s*(?:ال)?(?:تحقق|تاكيد|تأكيد)?\w*\s*(?:اترسل|إترسل|وصلك|راح\s*يوصلك)|"
+    r"\b(?:a\s+)?(?:verification\s+)?(?:code|otp)\s+(?:has\s+been\s+|was\s+|is\s+being\s+)?sent\b|"
+    r"\bwe(?:'ve|\s+have)?\s+sent\s+(?:you\s+)?(?:a\s+)?(?:verification\s+)?(?:code|otp)\b|"
+    r"\bi(?:'ve|\s+have)?\s+sent\s+(?:you\s+)?(?:a\s+)?(?:verification\s+)?(?:code|otp)\b",
+    re.IGNORECASE,
+)
+
 
 class _ClaimGate:
     """One irreversible claim, and the tool result that makes it true."""
@@ -12781,6 +12807,18 @@ _CLAIM_GATES = (
         "handoff this turn, so nobody has been alerted and they are "
         "waiting for a person who is not coming. Call "
         "`request_human_handoff` with `patient_agreed=True`.",
+    ),
+    _ClaimGate(
+        _CLAIM_OTP_SENT_RE, "send_otp", ("otp_sent", "otp_not_needed_matches_channel"),
+        "told the patient a verification code was sent",
+        "You have just told this patient a verification code was SENT to "
+        "their number. `send_otp` did not run this turn (or did not "
+        "return \"otp_sent\"), so nothing was actually sent - there is no "
+        "code stored anywhere for `verify_otp` to check against, which "
+        "means whatever the patient types back next, correct or not, "
+        "will be rejected and they can never get past this step. Call "
+        "`send_otp` now with the exact number the patient gave, and say "
+        "nothing about a code being sent until it returns.",
     ),
 )
 
