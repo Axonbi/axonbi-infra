@@ -8178,6 +8178,69 @@ def _build_unstaffed_specialty_directive(messages: list, agent_name: str) -> str
         if bookable else "      (none - nobody at all is bookable right now)"
     )
 
+    # DID THE PATIENT DESCRIBE A SYMPTOM, OR NAME A DEPARTMENT THEMSELVES?
+    #
+    # The rules below used to be one-size-fits-all: never show the
+    # bookable list, because the confirmed failures were all a symptom
+    # ("رجلي وقعت عليها") getting redirected to whatever WAS bookable
+    # instead of an honest "not here". That is still right when the
+    # patient described a symptom - picking the department is the
+    # model's job, not theirs.
+    #
+    # But when the patient instead asked for a SPECIALTY BY NAME
+    # ("علاج نفسي", "تخصص") - no body part, no symptom word, just a
+    # department that turned out to be unstaffed - "not here, want a
+    # staff member?" is a dead end. They were choosing for themselves
+    # already; the useful next step is to show them what they CAN
+    # choose from right now, not to route them to a human for a choice
+    # they could make in one more message. CONFIRMED REAL PRODUCTION
+    # CASE (tenant medtown, 2026-09-13 10:59): the patient explicitly
+    # asked to book "علاج نفسي", it was unstaffed, and the reply ended
+    # the conversation with only a staff-handoff offer - the seven
+    # other bookable specialties were never mentioned.
+    patient_text = _latest_human_text(messages)
+    described_symptom = bool(
+        patient_text
+        and (_SYMPTOM_ANSWER_RE.search(patient_text)
+             or agents.router.INJURY_RE.search(patient_text))
+    )
+
+    if described_symptom:
+        list_rule = (
+            "  - NEVER print the bookable list as a menu for them to choose "
+            "from. They described a symptom; picking the department is your "
+            "job, not theirs, and a catalogue of unrelated specialties is "
+            "not an answer to \"my leg hurts\".\n\n"
+        )
+        closing_case = (
+            "  2. It is in the UNBOOKABLE list -> say so, in one sentence, "
+            "and offer a staff member:\n"
+            "       \"عندنا قسم [التخصص] بس للأسف ما فيه دكتور متاح حاليًا "
+            "- تحب أوصلك بموظف يساعدك؟\"\n"
+            "     That is a COMPLETE and CORRECT answer. It tells them the "
+            "clinic does treat this and that today is not the day.\n"
+            "  3. It is in neither list -> \"للأسف ما عندنا التخصص ده في "
+            "المستشفى\", then offer a staff member.\n\n"
+        )
+    else:
+        list_rule = (
+            "  - The patient named a DEPARTMENT, not a symptom - so here, "
+            "unlike the symptom case, show them the bookable list. Do not "
+            "stop at a staff-member offer when there is a shorter path: "
+            "letting them pick another department themselves.\n\n"
+        )
+        closing_case = (
+            "  2. It is in the UNBOOKABLE list, or in neither list -> say so "
+            "plainly, then show the bookable list so they can pick one:\n"
+            "       \"للأسف [التخصص] مش متاح للحجز حاليًا 🌷\\nبس عندنا "
+            "التخصصات دي متاحة للحجز:\\n[البوكابل ليست، كل واحد في سطر]\\n"
+            "تحب تحجز في أي واحد منها؟\"\n"
+            "     That is a COMPLETE and CORRECT answer: honest about the "
+            "one they asked for, and useful about what actually works "
+            "today. Only offer a staff member if the bookable list is "
+            "empty.\n\n"
+        )
+
     return (
         "============================================================\n"
         "SOME DEPARTMENTS EXIST BUT CANNOT BE BOOKED TODAY\n"
@@ -8192,25 +8255,15 @@ def _build_unstaffed_specialty_directive(messages: list, agent_name: str) -> str
         "which of these three is true - and nothing else:\n\n"
         "  1. It is in the BOOKABLE list -> name that specialty and "
         "offer its doctors, exactly as usual.\n"
-        "  2. It is in the UNBOOKABLE list -> say so, in one sentence, "
-        "and offer a staff member:\n"
-        "       \"عندنا قسم [التخصص] بس للأسف ما فيه دكتور متاح حاليًا "
-        "- تحب أوصلك بموظف يساعدك؟\"\n"
-        "     That is a COMPLETE and CORRECT answer. It tells them the "
-        "clinic does treat this and that today is not the day.\n"
-        "  3. It is in neither list -> \"للأسف ما عندنا التخصص ده في "
-        "المستشفى\", then offer a staff member.\n\n"
-        "TWO THINGS THAT ARE NEVER THE ANSWER HERE:\n"
+        + closing_case
+        + "TWO THINGS THAT ARE NEVER THE ANSWER HERE:\n"
         "  - NEVER offer a specialty from the bookable list because the "
         "right one is unavailable. A leg somebody fell on does not "
         "become an internal-medicine problem just because orthopaedics "
         "has no slots. The patient pays for that trip and still needs "
         "the right doctor.\n"
-        "  - NEVER print the bookable list as a menu for them to choose "
-        "from. They described a symptom; picking the department is your "
-        "job, not theirs, and a catalogue of unrelated specialties is "
-        "not an answer to \"my leg hurts\".\n\n"
-        "Keep the warm opening line, the comfort measures, the red "
+        + list_rule
+        + "Keep the warm opening line, the comfort measures, the red "
         "flags and the ⚕️ not-a-diagnosis line exactly as the medical "
         "flow requires - including naming the RIGHT kind of doctor, "
         "which is true advice wherever they end up going. Only the "
@@ -10776,11 +10829,21 @@ def _safe_fallback_reply(
         (
             ("fabricated appointment", "invents availability", "invented availability",
              "no availability tool"),
-            "معلش، مش قادرة أتأكد من موعد فعلي متاح دلوقتي 🌷\n"
-            "ممكن نرجع نشوف الأيام والمواعيد المتاحة تاني من الأول؟",
-            "Sorry, I can't confirm a real available slot right now 🌷\n"
-            "Shall we look at the available days and times again from the "
-            "start?",
+            # NOT "ممكن نرجع نشوف الأيام والمواعيد تاني من الأول؟" - that
+            # sends the patient all the way back to square one over a
+            # mistake that was entirely the assistant's, on a flow they
+            # may have already stepped through more than once. It reads
+            # as the assistant giving up on the conversation rather than
+            # correcting itself. This says the same true thing - the
+            # times about to be shown could not be confirmed - without
+            # discarding whatever the patient already told us (the
+            # doctor, the day) and asks for one concrete thing instead
+            # of a full restart.
+            "معلش، مش قادرة أتأكد من المواعيد اللي هعرضهملك دلوقتي 🌷\n"
+            "قولي اليوم أو الوقت اللي يناسبك وهدورلك على أقرب موعد فعلي متاح.",
+            "Sorry, I couldn't confirm the times I was about to show you "
+            "🌷\nTell me the day or time that works for you and I'll look "
+            "up the nearest real available slot.",
         ),
         (
             ("cancellation without", "confirm cancelling", "offers cancellation without lookup"),
