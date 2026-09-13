@@ -6333,8 +6333,49 @@ def _looks_like_a_person_name(candidate: str) -> bool:
     return True
 
 
+# Tools whose returned JSON can legitimately contain a real doctor's
+# identity - used to scope `_doctor_names_from_tools` below so it never
+# mistakes a specialty/branch/service "name" field for a doctor's name.
+# `list_specialties`, `list_branch_services`, `list_hospital_services`,
+# `answer_hospital_faq` and similar are deliberately NOT here: they use
+# the exact same generic "name"/"id" shape for non-doctor entities.
+_DOCTOR_BEARING_TOOLS = frozenset({
+    "find_available_doctors",
+    "match_entity_for_booking",
+    "get_doctor_schedule",
+    "get_doctor_schedule_for_booking",
+    "get_available_slots_for_booking",
+    "get_available_reschedule_slots",
+    "select_appointment_slot",
+    "lookup_appointment",
+    "check_booking_status",
+    "list_branches_for_specialty",
+    "create_new_booking",
+    "reschedule_appointment",
+})
+
+
 def _doctor_names_from_tools(state: AgentState) -> set:
     """Every doctor name any tool result in this conversation returned.
+
+    SCOPED TO DOCTOR-BEARING TOOLS ONLY. `_collect` below matches the
+    generic `"name"` key (among others) wherever it finds one in a
+    tool's returned JSON - and `"name"` is not unique to doctor
+    objects. `list_specialties` returns `{"id", "name", ...}` for
+    SPECIALTIES using that exact same key.
+
+    CONFIRMED REAL PRODUCTION FALSE POSITIVE (tenant medtown, session
+    201003365691+medtown2, 2026-09-13 10:30): `list_specialties` had
+    just returned "طب الباطنة" as a specialty name. The medical-guidance
+    reply then said "عندنا ... دكاترة في تخصص طب الباطنة" - no doctor
+    named at all - but "طب الباطنة" had been swept into `known` as if it
+    were a doctor's name, so it read back as a real, named doctor
+    appearing with no doctor-lookup tool call this turn and the whole
+    (correct, useful) reply was discarded twice and replaced with the
+    generic fallback. Scanning every tool message unconditionally for
+    "name" cannot distinguish a specialty/branch/service list from an
+    actual doctor roster, so this now only walks tool messages produced
+    by tools that actually return doctor identities.
 
     ROBUST TO SERIALIZATION FORMAT: a tool's dict return value normally
     reaches here as valid double-quoted JSON (LangGraph's ToolNode tries
@@ -6355,6 +6396,9 @@ def _doctor_names_from_tools(state: AgentState) -> set:
 
     for msg in state.get("messages", []) or []:
         if getattr(msg, "type", None) != "tool":
+            continue
+
+        if getattr(msg, "name", None) not in _DOCTOR_BEARING_TOOLS:
             continue
 
         raw = getattr(msg, "content", None)
