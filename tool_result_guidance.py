@@ -88,9 +88,14 @@ RESULT_GUIDANCE: dict = {
             "plainly: this doctor exists but has no available "
             "appointments right now (never phrase it as \"I couldn't "
             "find a doctor named X\" - that implies they are not a "
-            "real doctor here, which is false). Offer to look at other "
-            "doctors in the same specialty, or a human handoff, "
-            "instead.",
+            "real doctor here, which is false).\n"
+            "Do NOT offer \"other doctors in the same specialty\" as a "
+            "option unless you have ALREADY confirmed some exist - call "
+            "`find_available_doctors` for this doctor's specialty "
+            "FIRST and only mention that option if it actually returns "
+            "someone. Dangling an offer you have not checked just moves "
+            "the same dead end one step later. If it returns nobody "
+            "either, go straight to offering a human handoff instead.",
     },
 
     # ------------------------------------------------------------------
@@ -156,6 +161,16 @@ RESULT_GUIDANCE: dict = {
 
     # ------------------------------------------------------------------
     "match_entity_info": {
+        "matched":
+            "If this is a doctor and `hasSlots` is explicitly False, do "
+            "NOT end with \"تحب أحجز لك موعد عنده؟\" or similar - you "
+            "already know there is nothing to book. Say what they do "
+            "and where, then mention plainly that they have no "
+            "available appointments right now, and ask if the patient "
+            "wants another doctor in the same specialty (only after "
+            "confirming one exists) or a human handoff instead. If "
+            "`hasSlots` is True or absent, the normal booking offer is "
+            "fine.",
         "possible_match":
             "A low-confidence guess (score < 0.95) - likely a typo, OR "
             "possibly not a branch/doctor in the system at all. Do NOT "
