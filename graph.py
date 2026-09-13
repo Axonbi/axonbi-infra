@@ -9474,19 +9474,6 @@ def _reply_invents_availability(reply_text, state) -> bool:
         tool_text, (state.get("templates") or {}).get("_timezone") or tools.DEFAULT_TIMEZONE,
     )
 
-    # TEMPORARY DIAGNOSTIC - local reproduction of a confirmed false
-    # positive does not match the live failure, so log the real runtime
-    # values instead of guessing further. Safe to remove once resolved.
-    logger.info(
-        "_reply_invents_availability: DIAG timezone=%r dates_in_reply=%r "
-        "times_in_reply=%r weekdays_in_reply=%r known_dates=%r known_times=%r "
-        "tool_names_seen=%r",
-        (state.get("templates") or {}).get("_timezone") or tools.DEFAULT_TIMEZONE,
-        dates, times, weekdays, known_dates, known_times,
-        [getattr(m, "name", None) for m in state.get("messages", [])
-         if getattr(m, "name", None) in _AVAILABILITY_TOOLS],
-    )
-
     for value in dates:
         if _normalize_date_token(value) not in known_dates:
             return True
@@ -17930,6 +17917,29 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     if day_and_slot_pairs:
         deterministic_pairs.extend(day_and_slot_pairs)
         history = history + list(day_and_slot_pairs)
+
+    # THE REPLY-VERIFIER LOOP BELOW CHECKS `state.get("messages")`
+    # DIRECTLY - NOT `history` - SO IT MUST SEE THESE TOO.
+    #
+    # `history` (extended above) is what the MODEL sees for ITS OWN
+    # call this hop; `state` is the separate object the verifier table
+    # further down this function reads to decide whether a reply is
+    # grounded in a real tool result. Without this, a reply composed in
+    # the SAME HOP the hook forged its tool call in - which happens
+    # whenever the model can answer straight from what the hook just
+    # handed it, with no further tool call of its own - left the
+    # verifier looking at the OLD, pre-hook message list, unable to see
+    # the very tool result the reply was correctly built from.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (tenant): `_deterministic_
+    # doctor_schedule_lookup` fetched a real schedule, the model
+    # composed a fully accurate reply from it in that same hop, and
+    # `_reply_invents_availability` rejected it twice as fabricated -
+    # not because the times were wrong, but because it never saw the
+    # tool result confirming them at all. `history` had it; `state`
+    # did not.
+    if deterministic_pairs:
+        state = {**state, "messages": list(state.get("messages") or []) + deterministic_pairs}
 
     # THE BOOKING FLOW'S OPENING QUESTION IS WRITTEN IN CODE, NOT ASKED
     # FOR IN A DIRECTIVE.
