@@ -252,6 +252,30 @@ def _client_default_country_code(state=None) -> str:
     return DEFAULT_COUNTRY_CODE
 
 
+# Expected LOCAL mobile digit count for a client's default country, i.e.
+# the number of digits that remain once the country code (or the
+# leading "0" that stands in for it) has been removed - "1001255864"
+# for Egypt (10 digits), "501234567" for Saudi (9 digits). Only used to
+# sanity-check a BARE number that carries no explicit country code of
+# its own (no "+", no "00", no leading 0) before `_client_default_country_code`
+# is blindly prepended to it.
+#
+# CONFIRMED REAL PRODUCTION BUG (session 201003365691+medtown2,
+# 2026-09-13 10:13:11): the patient typed "573690030" (9 digits, no
+# leading 0). It did not match any recognized country code at a
+# plausible length, so it fell through to the final fallback and became
+# "+20573690030" - an 11-digit number that is NOT a valid Egyptian
+# mobile number (Egypt needs 10 local digits after "20", i.e. 12 digits
+# total) but LOOKS well-formed enough to pass `_is_valid_phone_format`'s
+# generic 7-15-digit check. An OTP then went out for a number that
+# cannot belong to anyone. Numbers this ambiguous must be rejected
+# (return None) instead of guessed at.
+_LOCAL_MOBILE_DIGIT_COUNTS = {
+    "20": 10,   # Egypt: 01XXXXXXXXX -> 10 digits after the leading 0
+    "966": 9,   # Saudi: 05XXXXXXXX -> 9 digits after the leading 0
+}
+
+
 def normalize_phone_number(phone: Optional[str], state=None) -> Optional[str]:
     """Normalize a phone number to E.164 (e.g. "+201001255864").
 
@@ -283,9 +307,16 @@ def normalize_phone_number(phone: Optional[str], state=None) -> Optional[str]:
     default_code = _client_default_country_code(state)
 
     # Leading zero = local format for whichever country this client is
-    # in ("01158877175" -> Egypt, "0568000000" -> Saudi).
+    # in ("01158877175" -> Egypt, "0568000000" -> Saudi). When we know
+    # that country's expected local digit count, reject a number that
+    # clearly isn't that shape instead of silently constructing an
+    # international number nobody owns.
     if cleaned.startswith("0"):
-        return "+" + default_code + cleaned[1:]
+        local_part = cleaned[1:]
+        expected = _LOCAL_MOBILE_DIGIT_COUNTS.get(default_code)
+        if expected is not None and len(local_part) != expected:
+            return None
+        return "+" + default_code + local_part
 
     # No leading zero: this may already be a full international number
     # written without its "+". Accept it as such when it starts with a
@@ -298,6 +329,16 @@ def normalize_phone_number(phone: Optional[str], state=None) -> Optional[str]:
     for code in _KNOWN_COUNTRY_CODES:
         if cleaned.startswith(code) and len(cleaned) >= len(code) + 8:
             return "+" + cleaned
+
+    # Nothing above recognized this as carrying its own country code, so
+    # it would fall back to the client's default country. Only do that
+    # if it's actually the right shape for that country's local mobile
+    # numbers - otherwise this is an ambiguous/garbage string (e.g. a
+    # 9-digit fragment) and guessing produces a number that belongs to
+    # nobody (see _LOCAL_MOBILE_DIGIT_COUNTS docstring above).
+    expected = _LOCAL_MOBILE_DIGIT_COUNTS.get(default_code)
+    if expected is not None and len(cleaned) != expected:
+        return None
 
     return "+" + default_code + cleaned
 
@@ -1252,6 +1293,12 @@ def send_otp(state: Annotated[AgentState, InjectedState], phone: str) -> dict:
     successful compare_phone match: skip OTP entirely and continue
     straight to looking up the appointment.
 
+    Also returns {"status": "invalid_phone_format"} if `phone` doesn't
+    normalize to a real, usable number (e.g. too short/ambiguous to be
+    anyone's local number) - in that case do NOT retry with the same
+    number; ask the patient to re-type their number with the country
+    code.
+
     SAFETY NET: this checks the phone number against the channel
     identity itself before sending anything, even though you should
     already have called `compare_phone` before ever calling this tool -
@@ -1259,6 +1306,14 @@ def send_otp(state: Annotated[AgentState, InjectedState], phone: str) -> dict:
     replacement for calling `compare_phone` first."""
 
     normalized = normalize_phone_number(phone, state)
+
+    if not _is_valid_phone_format(normalized):
+        logger.warning(
+            "send_otp: %r did not normalize to a usable phone number "
+            "(got %r) - refusing to send an OTP to it",
+            phone, normalized,
+        )
+        return {"status": "invalid_phone_format"}
 
     channel_phone = state.get("channel_phone")
     normalized_channel = normalize_phone_number(channel_phone, state) if channel_phone else None
