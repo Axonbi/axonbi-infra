@@ -2153,10 +2153,53 @@ def _remember_list(state: AgentState, entity_type: str, items: list) -> None:
                 if value:
                     bucket.add(str(value))
 
+    # SPECIALTY IDS, TRACKED SEPARATELY BY ID RATHER THAN NAME.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (tenant 201003365691,
+    # 2026-09-13 09:50): a patient with an already-established doctor
+    # and specialty (جراحة العظام, resolved earlier this same
+    # conversation to '49ef2120-...') asked "اقرب معاد", and
+    # `find_best_doctor_in_specialty` was called with
+    # specialty_ids=['3f2a1b6e-1a2b-4c3d-9e4f-5a6b7c8d9e0f'] - a
+    # syntactically plausible but entirely fabricated id, matching no
+    # specialty this clinic has. `_looks_like_a_specialty_id` only ever
+    # checked the SHAPE of the string (ASCII, no spaces, not a bare
+    # 1-3 digit number) - never whether the id had actually been seen
+    # in this conversation - so it went straight to the doctors API,
+    # which silently returned zero doctors. The patient was told the
+    # doctor "ما عنده مواعيد متاحة قريبًا" - a confident, false claim
+    # about a doctor who (as the very next turn proved by finding him
+    # a slot the ordinary way) had open appointments the whole time.
+    # Recording every real specialty id this session has ever been
+    # given, here, lets `_sanitize_specialty_ids` catch an id-shaped
+    # string that doesn't match anything real instead of trusting it.
+    if entity_type == "specialty":
+        known_ids = session.setdefault("known_specialty_ids", set())
+        for item in items:
+            if isinstance(item, dict) and item.get("id"):
+                known_ids.add(str(item["id"]))
+
     logger.info(
         "_remember_list: session_id=%s entity_type=%s count=%d",
         session_id, entity_type, len(items),
     )
+
+
+def get_known_specialty_ids(session_id: Optional[str]) -> set:
+    """Every specialty id `list_specialties` (or any other tool that
+    remembers specialties) has actually returned in this session so
+    far. See the comment in `_remember_list` on the confirmed failure
+    this exists to catch: an id-SHAPED string is not the same thing as
+    an id this clinic actually has."""
+
+    if not session_id:
+        return set()
+
+    session = _BOOKING_SESSIONS.get(session_id)
+    if not session:
+        return set()
+
+    return set(session.get("known_specialty_ids") or set())
 
 
 def get_known_entity_names(session_id: Optional[str], entity_type: str) -> set:
@@ -3691,12 +3734,33 @@ def _sanitize_specialty_ids(state, base_url: str, specialty_ids: list) -> tuple:
     clean = []
     unresolved = []
 
+    # See `_remember_list`'s comment on `known_specialty_ids` for the
+    # confirmed failure this guards against. Only enforced when the
+    # session actually HAS a remembered specialty list to check
+    # against - an empty set here means nothing has been remembered
+    # yet (e.g. the very first specialty-scoped call of the
+    # conversation), and staying permissive in that case matches how
+    # `_known_branch_text` treats "nothing to compare against" for
+    # branches.
+    known_ids = get_known_specialty_ids(state.get("session_id"))
+
     for raw in specialty_ids:
         value = str(raw or "").strip()
         if not value:
             continue
 
         if _looks_like_a_specialty_id(value):
+            if known_ids and value not in known_ids:
+                unresolved.append(value)
+                logger.error(
+                    "_sanitize_specialty_ids: specialty_ids contained %r, which is "
+                    "shaped like an id but matches NO specialty this conversation has "
+                    "ever actually been given (known ids this session: %s) - dropped "
+                    "rather than sent to the doctors API, where a made-up id silently "
+                    "returns zero doctors and reads to the patient as \"no appointments\"",
+                    value, sorted(known_ids),
+                )
+                continue
             if value not in clean:
                 clean.append(value)
             continue
@@ -9333,6 +9397,37 @@ def get_doctor_schedule_for_booking(
                     session.get("branch_display_name"), only_branch_id,
                 )
             logger.info("get_doctor_schedule_for_booking: auto-confirmed single branch_id=%s (%s) for doctor_id=%s", only_branch_id, session.get("branch_display_name"), doctor_id)
+
+            # REGISTER THE NAME IN PERMANENT KNOWN-BRANCH MEMORY.
+            #
+            # CONFIRMED REAL PRODUCTION FAILURE (tenant 201158877175,
+            # 2026-09-13 09:35): this is the ONLY path that sets
+            # session["branch_display_name"] for a single-branch doctor
+            # and it never called `_remember_list`/registered the name
+            # anywhere graph.py's `_find_invented_branches` can see it.
+            # That guard's transliteration fallback (Arabic "المنار" vs
+            # the schedule row's English "Al Manar") only ever consults
+            # `get_known_entity_names(session_id, "branch")` - which
+            # stayed empty for this doctor because this branch was never
+            # "shown" as a choice (there was only one, so it was silently
+            # auto-confirmed instead of listed). The model's own correct
+            # Arabic reply ("...في فرع المنار...") was flagged as an
+            # invented branch, failed the same check twice, and was
+            # replaced with the generic fallback message - even though
+            # the branch is completely real and this very session
+            # unlocked it moments earlier.
+            #
+            # Added directly to the known-names set (not via
+            # `_remember_list`) because that helper also overwrites
+            # `session["last_list"]` - appropriate when a list of
+            # choices was actually shown to the patient, but wrong here:
+            # this branch was never offered as a numbered choice, so it
+            # must not become what a later bare "1"/"2" reply resolves
+            # against.
+            known_branches = session.setdefault("known_branch_names", set())
+            for candidate_name in (session.get("branch_display_name"), only_branch_name):
+                if candidate_name:
+                    known_branches.add(str(candidate_name))
 
     doctor_display_name = session.get("doctor_display_name")
     branch_display_name = session.get("branch_display_name")
