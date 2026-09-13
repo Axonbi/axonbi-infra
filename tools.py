@@ -111,40 +111,15 @@ def _latest_human_text_for_handoff_guard(state: AgentState) -> str:
 
 
 def _latest_ai_text_before_handoff_guard(state: AgentState) -> str:
-    """The assistant's most recent user-facing reply (the assistant's
-    own last SPOKEN turn) - used only to check whether a staff/
-    customer-service handoff was actually OFFERED before this turn,
-    never to allow a handoff on its own.
-
-    Skips tool-call-only AIMessages, which carry no text for the
-    patient - most importantly THIS turn's own AIMessage, the one that
-    is calling `request_human_handoff` right now. That message is
-    still being assembled and has empty content until the tool results
-    come back, so reading it as "the assistant's last turn" always
-    finds "" - not the actual previous reply, which is what this gate
-    exists to check.
-
-    CONFIRMED REAL PRODUCTION FAILURE (session 201158877175+medtown2,
-    2026-09-13 12:54:22): the assistant's previous reply was "عذرًا، ما
-    قدرنا نسجل الشكوى الحين بسبب مشكلة تقنية. تبغى أحولك لأحد ممثلي
-    خدمة العملاء عشان يساعدك؟" - a genuine handoff offer, containing
-    "ممثلي خدمة العملاء". The patient answered "حوال تاني", the model
-    correctly called `request_human_handoff(patient_agreed=True)`, and
-    this gate logged `latest_ai_text=''` - the empty in-progress
-    tool-call message, not the offer that was actually on screen - and
-    blocked a handoff the patient had genuinely just agreed to. They
-    were asked the same offer again instead of being connected.
-    """
+    """The most recent AIMessage's raw text (the assistant's own last
+    turn) - used only to check whether a staff/customer-service handoff
+    was actually OFFERED before this turn, never to allow a handoff on
+    its own."""
 
     for msg in reversed(state.get("messages") or []):
-        if getattr(msg, "type", None) != "ai":
-            continue
-        if getattr(msg, "tool_calls", None):
-            continue
-        content = getattr(msg, "content", "")
-        text = content if isinstance(content, str) else str(content or "")
-        if text.strip():
-            return text
+        if getattr(msg, "type", None) == "ai":
+            content = getattr(msg, "content", "")
+            return content if isinstance(content, str) else str(content or "")
     return ""
 
 
@@ -277,59 +252,6 @@ def _client_default_country_code(state=None) -> str:
     return DEFAULT_COUNTRY_CODE
 
 
-# Expected LOCAL mobile digit count for a client's default country, i.e.
-# the number of digits that remain once the country code (or the
-# leading "0" that stands in for it) has been removed - "1001255864"
-# for Egypt (10 digits), "501234567" for Saudi (9 digits). Only used to
-# sanity-check a BARE number that carries no explicit country code of
-# its own (no "+", no "00", no leading 0) before `_client_default_country_code`
-# is blindly prepended to it.
-#
-# CONFIRMED REAL PRODUCTION BUG (session 201003365691+medtown2,
-# 2026-09-13 10:13:11): the patient typed "573690030" (9 digits, no
-# leading 0). It did not match any recognized country code at a
-# plausible length, so it fell through to the final fallback and became
-# "+20573690030" - an 11-digit number that is NOT a valid Egyptian
-# mobile number (Egypt needs 10 local digits after "20", i.e. 12 digits
-# total) but LOOKS well-formed enough to pass `_is_valid_phone_format`'s
-# generic 7-15-digit check. An OTP then went out for a number that
-# cannot belong to anyone. Numbers this ambiguous must be rejected
-# (return None) instead of guessed at.
-_LOCAL_MOBILE_DIGIT_COUNTS = {
-    "20": 10,   # Egypt: 01XXXXXXXXX -> 10 digits after the leading 0
-    "966": 9,   # Saudi: 05XXXXXXXX -> 9 digits after the leading 0
-}
-
-# THE REVERSE OF THE MAP ABOVE: given how many local digits a bare
-# number has (no "+", no "00", and with any leading "0" already
-# stripped), which of the two countries this deployment actually
-# serves does that shape belong to.
-#
-# This works ONLY because Egypt's count (10) and Saudi's count (9)
-# never collide - a bare local number is one or the other, never both,
-# so the digit count alone is enough to tell them apart with no
-# ambiguity. This lets a patient be recognised correctly WITHOUT typing
-# a country code at all, instead of the previous behaviour of rejecting
-# every bare number that did not match the client's own configured
-# default country and asking them to re-type it with "+20"/"+966" in
-# front - CONFIRMED REAL PRODUCTION CASE (session 201003365691+medtown2,
-# 2026-09-13 10:45): an Egyptian-clinic patient typed "549779908" (9
-# Saudi digits, no country code) while messaging from an Egyptian
-# channel number; it was rejected as "رقم الجوال اللي أرسلته غير
-# صحيح" purely because the clinic's default is Egypt, even though 9
-# digits is unambiguously a Saudi mobile shape.
-#
-# A digit count that is neither 9 nor 10 (7-8 or 11+) still falls
-# through to the old behaviour below - the client's configured default
-# country, or rejection if that default expects a different count -
-# because this deployment has no third country to guess from digits
-# alone; that is exactly when the patient genuinely needs to type the
-# country code themselves.
-_COUNTRY_CODE_BY_LOCAL_DIGIT_COUNT = {
-    count: code for code, count in _LOCAL_MOBILE_DIGIT_COUNTS.items()
-}
-
-
 def normalize_phone_number(phone: Optional[str], state=None) -> Optional[str]:
     """Normalize a phone number to E.164 (e.g. "+201001255864").
 
@@ -361,25 +283,9 @@ def normalize_phone_number(phone: Optional[str], state=None) -> Optional[str]:
     default_code = _client_default_country_code(state)
 
     # Leading zero = local format for whichever country this client is
-    # in ("01158877175" -> Egypt, "0568000000" -> Saudi). The digit
-    # count on its own already says which one - 10 digits after the "0"
-    # is only ever Egypt, 9 is only ever Saudi - so that decides it
-    # BEFORE falling back to the client's configured default, which is
-    # what makes a Saudi patient typing a local "0" number recognised
-    # correctly even on an Egyptian clinic's line, and vice versa.
+    # in ("01158877175" -> Egypt, "0568000000" -> Saudi).
     if cleaned.startswith("0"):
-        local_part = cleaned[1:]
-        by_digit_count = _COUNTRY_CODE_BY_LOCAL_DIGIT_COUNT.get(len(local_part))
-        if by_digit_count:
-            return "+" + by_digit_count + local_part
-        # Neither 9 nor 10 digits - not a recognisable Egypt/Saudi
-        # mobile shape. Fall back to the client's own default country,
-        # rejecting only if that default itself expects a different
-        # count (an ambiguous/garbage number nobody's guessing helps).
-        expected = _LOCAL_MOBILE_DIGIT_COUNTS.get(default_code)
-        if expected is not None and len(local_part) != expected:
-            return None
-        return "+" + default_code + local_part
+        return "+" + default_code + cleaned[1:]
 
     # No leading zero: this may already be a full international number
     # written without its "+". Accept it as such when it starts with a
@@ -392,25 +298,6 @@ def normalize_phone_number(phone: Optional[str], state=None) -> Optional[str]:
     for code in _KNOWN_COUNTRY_CODES:
         if cleaned.startswith(code) and len(cleaned) >= len(code) + 8:
             return "+" + cleaned
-
-    # Nothing above recognized this as carrying its own country code.
-    # Before falling back to the client's default country, check
-    # whether the digit count alone already identifies it as an Egypt
-    # or Saudi mobile written with neither a leading 0 nor a country
-    # code ("1001255864" -> Egypt, "501234567" -> Saudi) - see
-    # `_COUNTRY_CODE_BY_LOCAL_DIGIT_COUNT` above for why this is safe.
-    by_digit_count = _COUNTRY_CODE_BY_LOCAL_DIGIT_COUNT.get(len(cleaned))
-    if by_digit_count:
-        return "+" + by_digit_count + cleaned
-
-    # Otherwise fall back to the client's default country, and only
-    # then if it's actually the right shape for that country's local
-    # mobile numbers - otherwise this is an ambiguous/garbage string
-    # and guessing produces a number that belongs to nobody (see
-    # _LOCAL_MOBILE_DIGIT_COUNTS docstring above).
-    expected = _LOCAL_MOBILE_DIGIT_COUNTS.get(default_code)
-    if expected is not None and len(cleaned) != expected:
-        return None
 
     return "+" + default_code + cleaned
 
@@ -1365,12 +1252,6 @@ def send_otp(state: Annotated[AgentState, InjectedState], phone: str) -> dict:
     successful compare_phone match: skip OTP entirely and continue
     straight to looking up the appointment.
 
-    Also returns {"status": "invalid_phone_format"} if `phone` doesn't
-    normalize to a real, usable number (e.g. too short/ambiguous to be
-    anyone's local number) - in that case do NOT retry with the same
-    number; ask the patient to re-type their number with the country
-    code.
-
     SAFETY NET: this checks the phone number against the channel
     identity itself before sending anything, even though you should
     already have called `compare_phone` before ever calling this tool -
@@ -1378,14 +1259,6 @@ def send_otp(state: Annotated[AgentState, InjectedState], phone: str) -> dict:
     replacement for calling `compare_phone` first."""
 
     normalized = normalize_phone_number(phone, state)
-
-    if not _is_valid_phone_format(normalized):
-        logger.warning(
-            "send_otp: %r did not normalize to a usable phone number "
-            "(got %r) - refusing to send an OTP to it",
-            phone, normalized,
-        )
-        return {"status": "invalid_phone_format"}
 
     channel_phone = state.get("channel_phone")
     normalized_channel = normalize_phone_number(channel_phone, state) if channel_phone else None
@@ -2280,53 +2153,10 @@ def _remember_list(state: AgentState, entity_type: str, items: list) -> None:
                 if value:
                     bucket.add(str(value))
 
-    # SPECIALTY IDS, TRACKED SEPARATELY BY ID RATHER THAN NAME.
-    #
-    # CONFIRMED REAL PRODUCTION FAILURE (tenant 201003365691,
-    # 2026-09-13 09:50): a patient with an already-established doctor
-    # and specialty (جراحة العظام, resolved earlier this same
-    # conversation to '49ef2120-...') asked "اقرب معاد", and
-    # `find_best_doctor_in_specialty` was called with
-    # specialty_ids=['3f2a1b6e-1a2b-4c3d-9e4f-5a6b7c8d9e0f'] - a
-    # syntactically plausible but entirely fabricated id, matching no
-    # specialty this clinic has. `_looks_like_a_specialty_id` only ever
-    # checked the SHAPE of the string (ASCII, no spaces, not a bare
-    # 1-3 digit number) - never whether the id had actually been seen
-    # in this conversation - so it went straight to the doctors API,
-    # which silently returned zero doctors. The patient was told the
-    # doctor "ما عنده مواعيد متاحة قريبًا" - a confident, false claim
-    # about a doctor who (as the very next turn proved by finding him
-    # a slot the ordinary way) had open appointments the whole time.
-    # Recording every real specialty id this session has ever been
-    # given, here, lets `_sanitize_specialty_ids` catch an id-shaped
-    # string that doesn't match anything real instead of trusting it.
-    if entity_type == "specialty":
-        known_ids = session.setdefault("known_specialty_ids", set())
-        for item in items:
-            if isinstance(item, dict) and item.get("id"):
-                known_ids.add(str(item["id"]))
-
     logger.info(
         "_remember_list: session_id=%s entity_type=%s count=%d",
         session_id, entity_type, len(items),
     )
-
-
-def get_known_specialty_ids(session_id: Optional[str]) -> set:
-    """Every specialty id `list_specialties` (or any other tool that
-    remembers specialties) has actually returned in this session so
-    far. See the comment in `_remember_list` on the confirmed failure
-    this exists to catch: an id-SHAPED string is not the same thing as
-    an id this clinic actually has."""
-
-    if not session_id:
-        return set()
-
-    session = _BOOKING_SESSIONS.get(session_id)
-    if not session:
-        return set()
-
-    return set(session.get("known_specialty_ids") or set())
 
 
 def get_known_entity_names(session_id: Optional[str], entity_type: str) -> set:
@@ -2397,10 +2227,8 @@ def _parse_clock_time(text: Optional[str]) -> Optional[dict]:
     all, which is the common case ("الساعة 5") and genuinely ambiguous -
     callers must resolve it against the real slots rather than guessing,
     because 5:00 and 17:00 are both ordinary clinic times. `minute` is
-    None when they named only the hour ("الساعة 6", not "6 ونص"/"6:30") -
-    see `_slots_at_clock_time` for how that is resolved against the
-    real slots (it prefers the exact on-the-hour slot rather than
-    treating a bare hour as "anywhere in that hour").
+    None when they named only the hour, which means "any slot in that
+    hour" and not "exactly o'clock".
     """
 
     if not text:
@@ -2448,22 +2276,6 @@ def _parse_clock_time(text: Optional[str]) -> Optional[dict]:
     return {"hour": hour, "minute": minute, "period": period}
 
 
-def _slot_local_datetime(slot: dict):
-    """The parsed local start time of one remembered slot, or None.
-
-    Factored out of `_slot_matches_clock_time` so `_slots_at_clock_time`
-    can also ask "is this slot exactly on the hour?" without
-    re-implementing the same parsing."""
-
-    local_start = slot.get("_localStart") or slot.get("slotStart")
-    if not local_start:
-        return None
-    try:
-        return datetime.fromisoformat(str(local_start).replace("Z", "").split("+")[0])
-    except ValueError:
-        return None
-
-
 def _slot_matches_clock_time(slot: dict, wanted: dict) -> bool:
     """Whether one remembered slot is at the time the patient named.
 
@@ -2472,8 +2284,13 @@ def _slot_matches_clock_time(slot: dict, wanted: dict) -> bool:
     which is a UTC instant three hours away from it. See
     `to_clinic_local`."""
 
-    when = _slot_local_datetime(slot)
-    if when is None:
+    local_start = slot.get("_localStart") or slot.get("slotStart")
+    if not local_start:
+        return False
+
+    try:
+        when = datetime.fromisoformat(str(local_start).replace("Z", "").split("+")[0])
+    except ValueError:
         return False
 
     if wanted.get("minute") is not None and when.minute != wanted["minute"]:
@@ -2499,40 +2316,7 @@ def _slot_matches_clock_time(slot: dict, wanted: dict) -> bool:
 
 
 def _slots_at_clock_time(slots: list, wanted: dict) -> list:
-    matches = [slot for slot in (slots or []) if _slot_matches_clock_time(slot, wanted)]
-
-    # NO MINUTE WAS NAMED ("الساعة 6") AND MORE THAN ONE SLOT QUALIFIES.
-    #
-    # `_slot_matches_clock_time` treats a bare hour as "any minute within
-    # that hour" - correct so it can find "6:15" when that's genuinely
-    # the only slot that hour, but wrong the moment the hour also has a
-    # half-past slot: "6:00" and "6:30" both qualify, and the caller
-    # then has to ask which one, even though "الساعة 6" in ordinary
-    # speech means six o'clock SHARP, not "sometime after six".
-    #
-    # CONFIRMED REAL PRODUCTION CASE (session 201158877175+medtown2,
-    # 2026-09-13 11:33): "احجز مع دكتور تسبيح يوم السبت ساعه 6" against
-    # a day with both 6:00 مساءً and 6:30 مساءً open. Both matched, so
-    # the patient - who had already named the doctor, the day AND the
-    # hour - was handed the FULL six-slot list back with no
-    # acknowledgement any of that had registered, instead of simply
-    # being booked at 6:00 or asked the one real remaining question
-    # ("6:00 ولا 6:30؟").
-    #
-    # So: when a bare hour matches more than one slot, prefer the one
-    # exactly on the hour if there is one - that is what "ساعة 6" plainly
-    # means - and only fall back to the full set (letting the caller
-    # ask) when there is no on-the-hour slot to prefer, e.g. a day that
-    # only has "6:15" and "6:45" open.
-    if wanted.get("minute") is None and len(matches) > 1:
-        on_the_hour = [
-            slot for slot in matches
-            if (lambda when: when is not None and when.minute == 0)(_slot_local_datetime(slot))
-        ]
-        if len(on_the_hour) == 1:
-            return on_the_hour
-
-    return matches
+    return [slot for slot in (slots or []) if _slot_matches_clock_time(slot, wanted)]
 
 
 def _extract_selection_number(user_input: str) -> Optional[int]:
@@ -3907,33 +3691,12 @@ def _sanitize_specialty_ids(state, base_url: str, specialty_ids: list) -> tuple:
     clean = []
     unresolved = []
 
-    # See `_remember_list`'s comment on `known_specialty_ids` for the
-    # confirmed failure this guards against. Only enforced when the
-    # session actually HAS a remembered specialty list to check
-    # against - an empty set here means nothing has been remembered
-    # yet (e.g. the very first specialty-scoped call of the
-    # conversation), and staying permissive in that case matches how
-    # `_known_branch_text` treats "nothing to compare against" for
-    # branches.
-    known_ids = get_known_specialty_ids(state.get("session_id"))
-
     for raw in specialty_ids:
         value = str(raw or "").strip()
         if not value:
             continue
 
         if _looks_like_a_specialty_id(value):
-            if known_ids and value not in known_ids:
-                unresolved.append(value)
-                logger.error(
-                    "_sanitize_specialty_ids: specialty_ids contained %r, which is "
-                    "shaped like an id but matches NO specialty this conversation has "
-                    "ever actually been given (known ids this session: %s) - dropped "
-                    "rather than sent to the doctors API, where a made-up id silently "
-                    "returns zero doctors and reads to the patient as \"no appointments\"",
-                    value, sorted(known_ids),
-                )
-                continue
             if value not in clean:
                 clean.append(value)
             continue
@@ -6203,7 +5966,22 @@ def match_entity_info(
         return {"status": "not_configured"}
 
     if entity_type == "doctor":
-        result = api.get_doctors(base_url, page_size=200, language=conversation_language(state))
+        # `has_service_schedule` DEFAULTS TO TRUE ON THE API WRAPPER
+        # ITSELF (see api.get_doctors) - so this call, despite passing
+        # no filters of its own, was silently asking the API to exclude
+        # any doctor with no schedule on file at all, even though this
+        # function's entire purpose is a plain "does this doctor
+        # exist?" information lookup, not a bookability check.
+        #
+        # CONFIRMED REAL PRODUCTION FAILURE (tenant): a doctor the
+        # clinic confirmed is real, active, and simply has no schedule
+        # added yet ("عمر المديفر") could not be found here at all -
+        # not a fuzzy-matching problem, since the API never returned
+        # him in the first place for this call to match against.
+        result = api.get_doctors(
+            base_url, page_size=200, has_service_schedule=False,
+            language=conversation_language(state),
+        )
         name_keys = ["formatedName", "altName", "name"]
     else:
         result = api.get_branches(base_url, page_size=200, language=conversation_language(state))
@@ -7194,8 +6972,18 @@ def match_entity_for_booking(
                     "was empty" if not narrowed else "has no match", user_input,
                 )
                 widen_started = time.monotonic()
+                # `has_service_schedule` DEFAULTS TO TRUE on the API
+                # wrapper itself - left alone here, this widen step
+                # would still exclude a real, active doctor who simply
+                # has no schedule on file, exactly defeating its own
+                # purpose ("they may be real but fully booked... widen
+                # once before concluding 'no such doctor'"). A doctor
+                # found this way and then confirmed will correctly get
+                # "not_found" from the schedule lookup right after -
+                # see that tool's own guidance for how that is phrased.
                 result = api.get_doctors(
                     base_url, branch_ids=branch_filter, page_size=50,
+                    has_service_schedule=False,
                     language=conversation_language(state),
                 )
                 logger.info(
@@ -8675,7 +8463,7 @@ def _open_slots_on_day(state, base_url: str, doctor_id: str, branch_id: str,
 @tool
 def list_available_days_for_booking(
     state: Annotated[AgentState, InjectedState],
-    limit: int = 1,
+    limit: int = 3,
     offset: int = 0,
 ) -> dict:
     """For a NEW BOOKING: list the doctor's REAL upcoming days that
@@ -8692,24 +8480,10 @@ def list_available_days_for_booking(
     anything is free. Every day here has at least one genuinely open
     slot, so you can show its date without further checking.
 
-    OFFER THE SOONEST DAY ONLY BY DEFAULT: `limit` defaults to 1 - show
-    that single date and ask whether it suits them, exactly as the
-    prompt's STEP NB3 says. Only call again with `limit=3` (and `offset`
-    set to the result's own `next_offset`) once the patient has actually
-    asked for other options ("مش مناسب", "معاد أبعد", "في مواعيد
-    تانية؟") - THEN, and only then, show the extra days as a numbered
-    list so they can pick one in a single message instead of rejecting
-    dates one at a time.
-
-    CONFIRMED REAL PRODUCTION FAILURE: this used to default to `limit=3`,
-    so a doctor working Sun/Mon/Tue with today being Sunday returned
-    [Monday 14/09, Tuesday 15/09, Sunday 20/09] - correctly sorted by
-    date, soonest first - and the reply then re-ordered them into
-    weekday-name sequence ("1) Sunday 20/09, 2) Monday 14/09, 3) Tuesday
-    15/09"), presenting the FARTHEST date as option 1 and the two
-    genuinely nearest dates as 2 and 3. The prompt already said to offer
-    only the soonest date; the tool's own default of 3 contradicted it
-    and is what let a list - and the reordering - happen at all.
+    SHOW THE NEAREST FEW: `limit` defaults to 3. With more than one day
+    open, show a numbered list so the patient picks a day that suits
+    them in ONE message instead of rejecting single dates one at a time.
+    With one day open, show that date alone and ask if it suits.
 
     ONE DATE PER WEEKDAY. Days returned are always different weekdays -
     the doctor's real working days, each at its soonest date. A weekly
@@ -9124,7 +8898,6 @@ def create_new_booking(
     {"status": "success", "booking_ref": "GBN-..."}
     {"status": "success_ref_pending", "booking_id": "..."}
     {"status": "slot_unavailable"}
-    {"status": "slot_not_locked"}
     {"status": "missing_doctor"} / {"status": "missing_branch"}
     {"status": "invalid_details", "rejected": [{"field": ..., "message": ...}]}
     {"status": "phone_not_verified"}
@@ -9167,36 +8940,6 @@ def create_new_booking(
     # patient was told 10:24 was no longer available, picked it again,
     # and was told the same thing. The booking never completed.
     locked_slot = _selected_slot(state)
-
-    # NO LOCKED SLOT AT ALL - REFUSE, DON'T TRUST THE MODEL'S OWN GUESS.
-    #
-    # The override just below only fires when `locked_slot` exists; it
-    # was silently assumed this tool would never be called any other
-    # way. Nothing enforced that assumption, so a model that skipped
-    # `select_appointment_slot` entirely could pass ANY `slot_start` it
-    # computed itself - typically a bare date with no real time
-    # attached to it.
-    #
-    # CONFIRMED REAL PRODUCTION FAILURE (session 201158877175+medtown2,
-    # 2026-09-13 12:44:48): `create_new_booking` was called with
-    # requested_slot_start="2026-09-17T00:00:00+03:00" - midnight, the
-    # shape a date gets when a time is appended to it rather than read
-    # from a real slot. No `select_appointment_slot` call preceded it
-    # anywhere in the conversation. The re-verification query correctly
-    # covered the whole day and correctly found nothing at midnight
-    # (api_returned=0, no doctor has appointments then), so the patient
-    # was told their chosen appointment was "no longer available" - it
-    # never existed as a real slot to begin with, even though a real,
-    # bookable slot on that same day was what they actually wanted.
-    if not locked_slot or not locked_slot.get("slotStart"):
-        logger.warning(
-            "create_new_booking: no slot was ever locked via "
-            "select_appointment_slot (session_id=%s) - refusing to book "
-            "the model-supplied slot_start=%r rather than trusting it",
-            session_id, slot_start,
-        )
-        return {"status": "slot_not_locked"}
-
     if locked_slot and locked_slot.get("slotStart"):
         if not _same_instant(slot_start, locked_slot.get("slotStart")):
             logger.warning(
@@ -9615,37 +9358,6 @@ def get_doctor_schedule_for_booking(
                     session.get("branch_display_name"), only_branch_id,
                 )
             logger.info("get_doctor_schedule_for_booking: auto-confirmed single branch_id=%s (%s) for doctor_id=%s", only_branch_id, session.get("branch_display_name"), doctor_id)
-
-            # REGISTER THE NAME IN PERMANENT KNOWN-BRANCH MEMORY.
-            #
-            # CONFIRMED REAL PRODUCTION FAILURE (tenant 201158877175,
-            # 2026-09-13 09:35): this is the ONLY path that sets
-            # session["branch_display_name"] for a single-branch doctor
-            # and it never called `_remember_list`/registered the name
-            # anywhere graph.py's `_find_invented_branches` can see it.
-            # That guard's transliteration fallback (Arabic "المنار" vs
-            # the schedule row's English "Al Manar") only ever consults
-            # `get_known_entity_names(session_id, "branch")` - which
-            # stayed empty for this doctor because this branch was never
-            # "shown" as a choice (there was only one, so it was silently
-            # auto-confirmed instead of listed). The model's own correct
-            # Arabic reply ("...في فرع المنار...") was flagged as an
-            # invented branch, failed the same check twice, and was
-            # replaced with the generic fallback message - even though
-            # the branch is completely real and this very session
-            # unlocked it moments earlier.
-            #
-            # Added directly to the known-names set (not via
-            # `_remember_list`) because that helper also overwrites
-            # `session["last_list"]` - appropriate when a list of
-            # choices was actually shown to the patient, but wrong here:
-            # this branch was never offered as a numbered choice, so it
-            # must not become what a later bare "1"/"2" reply resolves
-            # against.
-            known_branches = session.setdefault("known_branch_names", set())
-            for candidate_name in (session.get("branch_display_name"), only_branch_name):
-                if candidate_name:
-                    known_branches.add(str(candidate_name))
 
     doctor_display_name = session.get("doctor_display_name")
     branch_display_name = session.get("branch_display_name")
