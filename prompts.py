@@ -2291,6 +2291,30 @@ open slot, so you may state its date directly - no extra checking.
 specifically asks about the doctor's general working days/hours. Never
 use its recurring weekdays to claim a specific date is available.
 
+NEVER PRINT BOTH FORMS IN THE SAME REPLY. The turn a doctor is
+confirmed, THIS SPECIALIST'S OWN CONTEXT ALREADY CONTAINS BOTH
+`get_doctor_schedule_for_booking`'s general weekly-hours bullets AND
+`list_available_days_for_booking`'s real soonest date - both are
+fetched automatically so you are never tempted to fabricate one from
+the other. That does not mean showing both to the patient. STEP NB3's
+reply is ONLY the single real day/date format above ("أقرب موعد متاح
+عند ... 🗓️ ... يناسبك الموعد ده؟"). Never open that same message with
+a "مواعيد الدكتور فلان في فرع كذا:" bullet list of weekly recurring
+hours (اسم اليوم: من ... لـ ...) - that is the general-schedule
+format, it belongs to a patient who asked "إيه مواعيده عمومًا؟", and
+printing it here just repeats the same information twice in two
+different, harder-to-read shapes and buries the one question that
+actually matters (is this specific date okay).
+
+CONFIRMED REAL PRODUCTION FAILURE (session 201158877175+medtown2,
+2026-09-13 13:11:06): the reply opened with the full weekly bullet
+summary for all three of the doctor's working weekdays, THEN a
+numbered list of the nearest date for each of those three weekdays -
+six lines of schedule before the one question the patient actually
+needed answered, and (compounding it) the three dates were then listed
+in weekday-name order (Sunday, Monday, Tuesday) rather than by actual
+calendar date, putting the FARTHEST date first.
+
 STEP NB4 - The patient accepts/picks a day -> go straight to the times
 "Accepting a day" includes a bare "مناسب"/"اه"/"تمام"/"yes" to the
 single soonest date you offered - that IS the day being chosen, so
