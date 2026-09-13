@@ -111,15 +111,40 @@ def _latest_human_text_for_handoff_guard(state: AgentState) -> str:
 
 
 def _latest_ai_text_before_handoff_guard(state: AgentState) -> str:
-    """The most recent AIMessage's raw text (the assistant's own last
-    turn) - used only to check whether a staff/customer-service handoff
-    was actually OFFERED before this turn, never to allow a handoff on
-    its own."""
+    """The assistant's most recent user-facing reply (the assistant's
+    own last SPOKEN turn) - used only to check whether a staff/
+    customer-service handoff was actually OFFERED before this turn,
+    never to allow a handoff on its own.
+
+    Skips tool-call-only AIMessages, which carry no text for the
+    patient - most importantly THIS turn's own AIMessage, the one that
+    is calling `request_human_handoff` right now. That message is
+    still being assembled and has empty content until the tool results
+    come back, so reading it as "the assistant's last turn" always
+    finds "" - not the actual previous reply, which is what this gate
+    exists to check.
+
+    CONFIRMED REAL PRODUCTION FAILURE (session 201158877175+medtown2,
+    2026-09-13 12:54:22): the assistant's previous reply was "عذرًا، ما
+    قدرنا نسجل الشكوى الحين بسبب مشكلة تقنية. تبغى أحولك لأحد ممثلي
+    خدمة العملاء عشان يساعدك؟" - a genuine handoff offer, containing
+    "ممثلي خدمة العملاء". The patient answered "حوال تاني", the model
+    correctly called `request_human_handoff(patient_agreed=True)`, and
+    this gate logged `latest_ai_text=''` - the empty in-progress
+    tool-call message, not the offer that was actually on screen - and
+    blocked a handoff the patient had genuinely just agreed to. They
+    were asked the same offer again instead of being connected.
+    """
 
     for msg in reversed(state.get("messages") or []):
-        if getattr(msg, "type", None) == "ai":
-            content = getattr(msg, "content", "")
-            return content if isinstance(content, str) else str(content or "")
+        if getattr(msg, "type", None) != "ai":
+            continue
+        if getattr(msg, "tool_calls", None):
+            continue
+        content = getattr(msg, "content", "")
+        text = content if isinstance(content, str) else str(content or "")
+        if text.strip():
+            return text
     return ""
 
 
