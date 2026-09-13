@@ -660,6 +660,91 @@ _DOCTOR_LIST_QUESTION = {
           "number or their name.",
 }
 
+# EN translations of the fixed Arabic headings in `_ENTITY_LIST_TOOLS`
+# and its two special-cased headings below (match_entity_for_booking's
+# doctor/branch list, and the single-branch "doctors at this branch"
+# case). Deterministic, same reasoning as `_detect_target_language`'s
+# own docstring: "not left to the LLM to infer".
+#
+# CONFIRMED REAL PRODUCTION FAILURE (session +966556351764, 2026-09-13
+# ~16:25): a fully English conversation ("yes", "help me i am not
+# feeling well", "fatma") got "الأطباء المتاحين:" as the doctor-list
+# heading - the ONE Arabic line in an otherwise all-English reply. The
+# directive at `_build_entity_list_directive` already TELLS the model
+# to translate the heading itself ("...only if the conversation is in
+# another language"), and the code-built path at
+# `_deterministic_specialty_and_doctor_list` skipped that instruction
+# entirely and always used the Arabic literal - so leaving it to the
+# model's judgement was never actually the only path producing this,
+# and a static English lookup removes the judgement call altogether
+# rather than hoping the model remembers the instruction every time.
+_ENTITY_LIST_HEADING_EN = {
+    "الأطباء المتاحين": "Available doctors",
+    "التخصصات المتاحة": "Available specialties",
+    "الفروع المتاحة": "Available branches",
+    "الفروع اللي الدكتور متاح فيها": "Branches this doctor is available at",
+    "الدكاترة المتاحين": "Available doctors",
+}
+
+
+def _localize_entity_heading(heading: str, target_language: Optional[str]) -> str:
+    """The fixed Arabic heading, translated to English when the
+    conversation is in English - covers both the static table above
+    and the one DYNAMIC heading (`_build_entity_list_directive`'s
+    "الدكاترة المتاحين في فرع {branch_name}"), which is rebuilt in
+    English with the same branch_name rather than looked up whole."""
+
+    if not (target_language or "").strip().lower().startswith("en"):
+        return heading
+
+    direct = _ENTITY_LIST_HEADING_EN.get(heading)
+    if direct:
+        return direct
+
+    prefix = "الدكاترة المتاحين في فرع "
+    if heading.startswith(prefix):
+        branch_name = heading[len(prefix):].strip()
+        return f"Doctors available at {branch_name} branch" if branch_name else "Available doctors"
+
+    return heading
+
+
+def _localized_authored_template(templates: dict, key: str, target_language: Optional[str]) -> Optional[str]:
+    """The clinic's own authored template for `key`, in the right
+    language for this conversation - the SAME `_en`-suffix convention
+    `_build_greeting` already established for `msg_unknown_fallback` /
+    `msg_unknown_fallback_en`, generalized to every other `msg_*`
+    template a directive copies verbatim into a reply.
+
+    If the conversation is in English and the clinic has separately
+    authored `{key}_en`, that wins outright - never guessed, never left
+    to the model to translate the single-language version on the fly.
+    Otherwise returns whatever `templates.get(key)` would have, exactly
+    as before.
+
+    CONFIRMED REAL PRODUCTION FAILURE, the same shape in several
+    places at once: `_build_booking_success_display_directive` and
+    `_build_terminal_success_directive` both told the model to
+    "translate only if the conversation is in a different language"
+    for the clinic's own authored booking/cancellation/reschedule
+    confirmation text - the same instruction-instead-of-code pattern
+    already fixed once for the entity-list headings, still present
+    everywhere else a clinic-authored template gets copied verbatim.
+    `_build_out_of_scope_block`'s own docstring even already claims
+    "ENGLISH CONVERSATIONS GET AN ENGLISH BLOCK" while its code only
+    ever exercises that branch when NOTHING is configured at all - an
+    English conversation with a clinic that HAS configured
+    `msg_out_of_scope` (in Arabic, as most do) still got that Arabic
+    text verbatim, unconditionally.
+    """
+
+    templates = templates or {}
+    if (target_language or "").strip().lower().startswith("en"):
+        english = templates.get(f"{key}_en")
+        if english and str(english).strip():
+            return english
+    return templates.get(key)
+
 
 def _doctor_list_question(templates: dict, target_language: Optional[str]) -> str:
     """The one question that closes a code-built doctor list.
@@ -669,7 +754,7 @@ def _doctor_list_question(templates: dict, target_language: Optional[str]) -> st
     that is phrasing rather than data, so it is the only part a clinic
     could reasonably want to own."""
 
-    authored = (templates or {}).get("msg_doctor_list_question")
+    authored = _localized_authored_template(templates, "msg_doctor_list_question", target_language)
     if authored and str(authored).strip():
         return str(authored).replace("\r\n", "\n").replace("\r", "\n").strip()
 
@@ -833,7 +918,7 @@ def _deterministic_doctor_list(state: AgentState, agent_name: str,
     if len(lines) < 2:
         return None
 
-    heading = _ENTITY_LIST_TOOLS["find_available_doctors"][1]
+    heading = _localize_entity_heading(_ENTITY_LIST_TOOLS["find_available_doctors"][1], target_language)
     question = _doctor_list_question(state.get("templates") or {}, target_language)
     reply = f"{heading}:\n" + "\n".join(lines) + f"\n\n{question}"
 
@@ -1004,9 +1089,29 @@ def _deterministic_doctor_schedule_lookup(state: AgentState, agent_name: str) ->
     patient then said "شوف" and the model called `list_available_days_
     for_booking` itself - the tool whose own docstring says "CALL THIS
     IMMEDIATELY AFTER A DOCTOR IS CONFIRMED" - and it worked cleanly
-    with real dates. This hook now makes that second call itself too,
-    so the model is handed real bookable days from the start instead of
-    only the general schedule that tempted the fabrication.
+    with real dates. This hook USED TO make that second call itself
+    too, so the model was handed real bookable days from the start
+    instead of only the general schedule that tempted the fabrication.
+
+    THAT SECOND CALL WAS REMOVED once STEP NB3 itself changed. The
+    prompt no longer asks for a specific date in this first message at
+    all - just the general schedule bullets and one plain "which day?"
+    question - so there is nothing left to fabricate a date FOR, and
+    forging `list_available_days_for_booking`'s real (single) day into
+    context turned out to invite the opposite failure: the model glued
+    that real date onto the schedule bullets anyway, in the same
+    reply, sometimes even re-ordering it out of true calendar order.
+
+    CONFIRMED REAL PRODUCTION FAILURE, PART THREE (session
+    201158877175+medtown2, 2026-09-13 13:11:06 and 13:26:01): with
+    both tool results forged in, the reply printed the full weekly
+    bullet summary AND either a numbered multi-date list (dates out of
+    order) or a stray "تحب أشوف لك المواعيد المتاحة ليوم الاثنين؟" that
+    named a day the patient never chose. The general schedule alone is
+    now enough for this step, because this step no longer states a
+    date - `list_available_days_for_booking`/`resolve_available_day`
+    are called later, once the patient actually names a day or says
+    they have none.
 
     NARROWLY SCOPED. Only fires once, right after a genuine
     `match_entity_for_booking(entity_type="doctor")` match THIS turn,
@@ -1089,46 +1194,12 @@ def _deterministic_doctor_schedule_lookup(state: AgentState, agent_name: str) ->
     )
     pairs = list(_forge_tool_pair("get_doctor_schedule_for_booking", {}, payload))
 
-    # ALSO FETCH REAL BOOKABLE DAYS - NOT JUST THE GENERAL SCHEDULE.
-    #
-    # `get_doctor_schedule_for_booking`'s own docstring is explicit that
-    # it returns "only GENERAL recurring weekdays with no dates and no
-    # guarantee anything is free" - `list_available_days_for_booking`
-    # is the one whose own docstring says "CALL THIS IMMEDIATELY AFTER
-    # A DOCTOR IS CONFIRMED, instead of asking which day they want."
-    # Stopping at the general schedule left the model with only that to
-    # work from, and presenting recurring hours as if they were
-    # confirmed availability is exactly a fabricated-appointment claim.
-    #
-    # CONFIRMED REAL PRODUCTION FAILURE (tenant): this hook fired
-    # correctly (see the log line above - it now does, after the id-
-    # matching fix), handed the model the general schedule alone, and
-    # the reply that resulted - "مواعيد الدكتور أحمد عبدالرحمن في فرع
-    # Al Nozha: الثلاثاء: من 3:00 مساءً لـ 6:00 مساءً..." - was rejected
-    # twice as a fabricated appointment claim, falling back to the
-    # generic message. The patient then said "شوف" and the model called
-    # `list_available_days_for_booking` itself, which succeeded cleanly
-    # with real dates - proving this second call is exactly what closes
-    # the gap.
-    try:
-        days_payload = tools.list_available_days_for_booking.func(state)
-    except Exception:  # noqa: BLE001
-        logger.warning(
-            "_deterministic_doctor_schedule_lookup: list_available_days_for_booking "
-            "raised for session_id=%s - proceeding with the general schedule only",
-            session_id, exc_info=True,
-        )
-        return pairs
-
-    if isinstance(days_payload, dict) and days_payload.get("status") == "found":
-        pairs.extend(_forge_tool_pair("list_available_days_for_booking", {}, days_payload))
-    else:
-        logger.info(
-            "_deterministic_doctor_schedule_lookup: list_available_days_for_booking "
-            "declined (status=%r) - proceeding with the general schedule only",
-            (days_payload or {}).get("status") if isinstance(days_payload, dict) else None,
-        )
-
+    # `list_available_days_for_booking` is deliberately NOT also forged
+    # in here any more - see the docstring's PART THREE note. STEP NB3
+    # now asks only the general "which day?" question off the schedule
+    # bullets above; the model calls `list_available_days_for_booking`/
+    # `resolve_available_day` itself, later, once the patient actually
+    # names a day or says they have no preference.
     return pairs
 
 
@@ -1831,7 +1902,7 @@ def _build_branches_only_no_doctors_directive(messages: list) -> str:
     )
 
 
-def _build_entity_list_directive(messages: list) -> str:
+def _build_entity_list_directive(messages: list, target_language: Optional[str] = None) -> str:
     """
     If the LAST message is a ToolMessage from one of the list-returning
     tools with status "found", pre-build the exact numbered list in code -
@@ -1915,6 +1986,8 @@ def _build_entity_list_directive(messages: list) -> str:
         items_key = "doctors"
         heading = f"الدكاترة المتاحين في فرع {branch_name}" if branch_name else "الدكاترة المتاحين"
 
+    heading = _localize_entity_heading(heading, target_language)
+
     # `find_best_doctor_in_specialty` returns ONE doctor under "doctor",
     # not a list - it is a recommendation, not a roster, so it is left
     # to the flow's own wording rather than forced into a list of one.
@@ -1943,14 +2016,13 @@ def _build_entity_list_directive(messages: list) -> str:
     return (
         "[INTERNAL INSTRUCTION - NOT FOR THE USER - READ CAREFULLY]\n"
         "A list was just looked up. Your ENTIRE reply must be the exact "
-        "text between the START/END markers below, copied verbatim "
-        "(translate the HEADING and the connecting words only if the "
-        "conversation is in another language - keep the numbering, the "
-        "names and the order exactly as they are), followed by exactly "
-        "ONE question asking which one they'd like. The START/END "
-        "marker lines themselves are NOT part of the text to copy - "
-        "never include them, or any line of dashes/equals-signs, in "
-        "your actual reply.\n\n"
+        "text between the START/END markers below, copied verbatim - "
+        "including the heading, which is already in the right language "
+        "for this conversation - followed by exactly ONE question "
+        "asking which one they'd like. The START/END marker lines "
+        "themselves are NOT part of the text to copy - never include "
+        "them, or any line of dashes/equals-signs, in your actual "
+        "reply.\n\n"
         "Do NOT add, remove, reorder, merge, or re-describe any item, "
         "and do NOT also list them in your own words anywhere else in "
         "the same reply. Do NOT mention any price unless the patient "
@@ -2255,7 +2327,7 @@ _TERMINAL_SUCCESS_TOOLS = {
 }
 
 
-def _build_terminal_success_directive(messages: list, templates: dict) -> str:
+def _build_terminal_success_directive(messages: list, templates: dict, target_language: Optional[str] = None) -> str:
     """
     If the LAST message is a successful `cancel_appointment` or
     `reschedule_appointment`, pre-build the clinic's OWN authored
@@ -2294,7 +2366,7 @@ def _build_terminal_success_directive(messages: list, templates: dict) -> str:
     if data.get("status") != "success":
         return ""
 
-    template_text = (templates or {}).get(template_key)
+    template_text = _localized_authored_template(templates, template_key, target_language)
     if not template_text or not template_text.strip():
         return ""
 
@@ -2360,7 +2432,7 @@ def _build_terminal_success_directive(messages: list, templates: dict) -> str:
     )
 
 
-def _build_booking_success_display_directive(messages: list, templates: dict) -> str:
+def _build_booking_success_display_directive(messages: list, templates: dict, target_language: Optional[str] = None) -> str:
     """
     If the LAST message is a ToolMessage from `create_new_booking` with
     status "success", pre-build the EXACT confirmation block in code -
@@ -2403,10 +2475,16 @@ def _build_booking_success_display_directive(messages: list, templates: dict) ->
         if patient_name:
             break
 
+    is_english = (target_language or "").strip().lower().startswith("en")
+
     clinic_name = (templates or {}).get("_clinic_name_ar") or (templates or {}).get("_clinic_name") or ""
     clinic_name = clinic_name.strip()
+    clinic_name_en = (templates or {}).get("_clinic_name") or (templates or {}).get("_clinic_name_ar") or ""
+    clinic_name_en = clinic_name_en.strip()
 
-    if not clinic_name:
+    if is_english:
+        clinic_line = f"Thank you for trusting {clinic_name_en} 🌷" if clinic_name_en else "Thank you for trusting us 🌷"
+    elif not clinic_name:
         clinic_line = "نشكر ثقتك بنا 🌷"
     elif clinic_name.startswith("مستشفى") or clinic_name.startswith("مركز") or clinic_name.startswith("عيادات"):
         # The Arabic clinic name usually already carries its own
@@ -2416,7 +2494,10 @@ def _build_booking_success_display_directive(messages: list, templates: dict) ->
     else:
         clinic_line = f"نشكر ثقتك بمستشفى {clinic_name} 🌷"
 
-    greeting_line = f"✅ عزيزي/عزيزتي {patient_name}" if patient_name else "✅"
+    if is_english:
+        greeting_line = f"✅ Dear {patient_name}" if patient_name else "✅"
+    else:
+        greeting_line = f"✅ عزيزي/عزيزتي {patient_name}" if patient_name else "✅"
 
     # The MIDDLE of this block is the clinic's own authored
     # msg_booking_success template, read fresh from config every turn
@@ -2425,7 +2506,7 @@ def _build_booking_success_display_directive(messages: list, templates: dict) ->
     # would silently stop matching the moment the clinic edited the CSV.
     # The name line above it and the thank-you line below it are the
     # approved wrapper this clinic asked for around that template.
-    success_template = (templates or {}).get("msg_booking_success") or ""
+    success_template = _localized_authored_template(templates, "msg_booking_success", target_language) or ""
     success_template = success_template.replace("\r\n", "\n").replace("\r", "\n").strip()
     success_body = "\n".join(line.strip() for line in success_template.split("\n") if line.strip())
 
@@ -2436,6 +2517,13 @@ def _build_booking_success_display_directive(messages: list, templates: dict) ->
         if success_body.startswith("✅"):
             success_body = success_body[1:].lstrip()
         success_body = _fill_booking_ref(success_body, booking_ref)
+    elif is_english:
+        success_body = (
+            "Your appointment has been booked successfully\n"
+            f"🎉 Booking ref: {booking_ref}\n"
+            "📌 Keep this booking ref - you can use it to cancel or "
+            "reschedule the appointment."
+        )
     else:
         success_body = (
             "تم تأكيد حجز موعدك بنجاح\n"
@@ -2449,12 +2537,13 @@ def _build_booking_success_display_directive(messages: list, templates: dict) ->
         "[INTERNAL INSTRUCTION - NOT FOR THE USER - READ CAREFULLY]\n"
         "The booking was just created successfully. Your ENTIRE reply "
         "must be EXACTLY the text between the START/END markers below, "
-        "copied verbatim - translate only if the conversation is in a "
-        "different language (keep the emoji and the actual booking_ref "
-        "value unchanged either way). The START/END marker lines "
-        "themselves are NOT part of the text to copy - never include "
-        "them, or any other line of dashes/equals-signs, in your actual "
-        "reply. Do NOT add anything else, anywhere in the reply.\n\n"
+        "copied verbatim - it is already in the right language for "
+        "this conversation, so do not translate, reword, or otherwise "
+        "change it (keep the emoji and the actual booking_ref value "
+        "unchanged too). The START/END marker lines themselves are NOT "
+        "part of the text to copy - never include them, or any other "
+        "line of dashes/equals-signs, in your actual reply. Do NOT add "
+        "anything else, anywhere in the reply.\n\n"
         "[BEGIN-EXACT-TEXT]\n"
         f"{block}\n"
         "[END-EXACT-TEXT]\n\n"
@@ -3986,7 +4075,7 @@ def _booking_entry_message(templates: dict, target_language: Optional[str]) -> s
     different thing from an authored message that opens by confirming
     it can help - and this wording is the clinic's own choice."""
 
-    authored = (templates or {}).get("msg_booking_entry")
+    authored = _localized_authored_template(templates, "msg_booking_entry", target_language)
     if authored and str(authored).strip():
         return str(authored).replace("\r\n", "\n").replace("\r", "\n").strip()
 
@@ -15227,7 +15316,7 @@ def _build_out_of_scope_block(templates: dict, language: str = "ar") -> str:
     patient's own language; this was quietly exempt from all of it.
     """
 
-    authored = (templates or {}).get("msg_out_of_scope")
+    authored = _localized_authored_template(templates, "msg_out_of_scope", language)
     if authored and authored.strip():
         return authored.replace("\r\n", "\n").replace("\r", "\n").strip()
 
@@ -18075,7 +18164,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         state["messages"], agent_name,
     )
     booking_confirmation_directive = _build_booking_confirmation_requires_tool_directive(state["messages"], state.get("session_id"))
-    booking_success_directive = _build_booking_success_display_directive(state["messages"], state.get("templates"))
+    booking_success_directive = _build_booking_success_display_directive(state["messages"], state.get("templates"), target_language)
 
     # The three display blocks added to close the remaining gaps: a
     # resolved date, an entity list (doctors/specialties/branches), and
@@ -18084,8 +18173,8 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     # by the model, which is exactly where its output shape varied from
     # one patient to the next.
     resolved_day_directive = _build_resolved_day_directive(state["messages"], state.get("session_id"))
-    entity_list_directive = _build_entity_list_directive(state["messages"])
-    terminal_success_directive = _build_terminal_success_directive(state["messages"], state.get("templates"))
+    entity_list_directive = _build_entity_list_directive(state["messages"], target_language)
+    terminal_success_directive = _build_terminal_success_directive(state["messages"], state.get("templates"), target_language)
 
     # Only the booking specialist is told to clear a half-finished
     # booking, and only when it has just TAKEN OVER the conversation -
