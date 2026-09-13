@@ -9474,6 +9474,19 @@ def _reply_invents_availability(reply_text, state) -> bool:
         tool_text, (state.get("templates") or {}).get("_timezone") or tools.DEFAULT_TIMEZONE,
     )
 
+    # TEMPORARY DIAGNOSTIC - local reproduction of a confirmed false
+    # positive does not match the live failure, so log the real runtime
+    # values instead of guessing further. Safe to remove once resolved.
+    logger.info(
+        "_reply_invents_availability: DIAG timezone=%r dates_in_reply=%r "
+        "times_in_reply=%r weekdays_in_reply=%r known_dates=%r known_times=%r "
+        "tool_names_seen=%r",
+        (state.get("templates") or {}).get("_timezone") or tools.DEFAULT_TIMEZONE,
+        dates, times, weekdays, known_dates, known_times,
+        [getattr(m, "name", None) for m in state.get("messages", [])
+         if getattr(m, "name", None) in _AVAILABILITY_TOOLS],
+    )
+
     for value in dates:
         if _normalize_date_token(value) not in known_dates:
             return True
