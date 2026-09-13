@@ -12,14 +12,22 @@ CONF=/etc/langgraph/deploy.env
 [ -r "$CONF" ] && . "$CONF"
 
 REPO="${REPO:-}"
-BRANCH="${BRANCH:-main}"
+# No default: ":-" substitutes on empty as well as unset, so defaulting here
+# would turn a deliberately blank BRANCH (project not chosen yet) into "main"
+# and deploy the wrong thing.
+BRANCH="${BRANCH:-}"
 SRC="${SRC:-/opt/agent-src}"
 RUNTIME="${RUNTIME:-/opt/langgraph}"
 VENV="${VENV:-$RUNTIME/.venv}"
 UV=/root/.local/bin/uv
+if [ -z "$REPO" ] || [ -z "$BRANCH" ]; then
+    exit 0   # not configured yet: waiting for the project repo and branch
+fi
 
-if [ -z "$REPO" ]; then
-    exit 0   # nothing configured yet
+# The branch may legitimately not exist yet - the platform is installed before
+# the project is written. Wait quietly instead of failing once a minute.
+if ! git ls-remote --exit-code --heads "$REPO" "$BRANCH" >/dev/null 2>&1; then
+    exit 0
 fi
 
 if [ ! -d "$SRC/.git" ]; then
