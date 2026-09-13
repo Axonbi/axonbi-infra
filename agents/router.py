@@ -479,6 +479,29 @@ _CUES: Dict[str, List[Tuple[int, str]]] = {
              r"\b(?:branch|hospital|clinic)\b"),
         (10, r"(?:ايه|إيه|ما\s*هي|شنو|وش)\s*(?:هي\s*)?(?:ال)?(?:خدمات|تخصصات)(?:كم|\s+\S+)?"),
         (10, r"\bwhat\s+(?:services|specialt(?:y|ies)|departments)\b"),
+        # THE BARE WORD, WITH NO QUESTION PREFIX.
+        #
+        # The cue above needs a lead-in ("ايه"/"وش"/"ما هي") before
+        # "الخدمات"/"التخصصات", so a patient who just types "تخصصات" or
+        # "خدمات" alone scores nothing on it and falls through to the
+        # LLM classifier - which then answers this exact word
+        # inconsistently between turns (this cue is genuinely
+        # unambiguous either way: nobody types the bare word "تخصصات"
+        # to mean anything other than "what specialties do you have").
+        #
+        # CONFIRMED REAL PRODUCTION FAILURE (tenant): "ايه التخصصات
+        # الموجوده" (matches the cue above, correctly went to faq) got
+        # a wrong "لا يوجد دكتور متاح" reply from a stray tool call;
+        # the patient then typed the bare word "تخصصات" as a retry, and
+        # THAT went to the LLM classifier - unscored - which sent it to
+        # `medical`, producing the exact same wrong "no doctor
+        # available for this case" reply, mistaking the specialty
+        # LISTING request for a symptom needing a specialty match.
+        # Weighted the same as the bare-word "تعديل" fix for the
+        # identical reason: a word this specific needs no lead-in to
+        # be unambiguous, and should be able to interrupt an active
+        # flow, not just start a fresh one.
+        (9, r"(?:^|\s)(?:تخصصات|خدمات|الخدمات|التخصصات)(?:\s|$|\?|؟)"),
         # Unambiguous enough to interrupt another flow: nobody asks
         # about opening hours as part of confirming a cancellation.
         (10, r"(?:مواعيد\s*العمل|ساعات\s*العمل|متى\s*تفتحون|امتى\s*بتفتحوا)"),
