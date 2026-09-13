@@ -260,6 +260,17 @@ RESULT_GUIDANCE: dict = {
         "slot_unavailable":
             "The requested slot is no longer free - say so and offer to "
             "pick again.",
+        "slot_not_locked":
+            "No slot was ever LOCKED for this booking via "
+            "`select_appointment_slot` - this is not the same thing as "
+            "the slot being taken, and must never be told to the patient "
+            "as \"that time is no longer available\". Call "
+            "`get_available_slots_for_booking` for the day they want (if "
+            "not already shown) and then `select_appointment_slot` with "
+            "their exact choice, so the real slot's own wire time is "
+            "what gets booked - never build or guess a slot_start "
+            "yourself, and never pass a bare date with an invented time "
+            "of day.",
         "invalid_details":
             "The booking system REFUSED one of the patient's own details "
             "(e.g. field \"MobileNumber\" -> \"Mobile Number Not "
