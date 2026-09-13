@@ -6885,12 +6885,41 @@ def _reply_shows_doctor_for_service_with_no_lookup_this_turn(reply_text: str, st
     Scoped to a NAMED service/specialty context specifically (not every
     doctor mention) so a doctor already confirmed for the CURRENT
     booking in progress - discussed again without a fresh lookup, which
-    is normal and correct - is never flagged."""
+    is normal and correct - is never flagged.
+
+    NAMED DOCTOR REQUIRED, NOT JUST DOCTOR VOCABULARY. The cue-word gate
+    above (`_DOCTOR_LIST_CUE_RE`) matches generic profession words -
+    "دكتور", "أخصائي" - with no person attached, and those show up
+    constantly in ordinary, harmless sentences like "لازم تراجع دكتور
+    جراحة العظام" (go see an orthopaedic doctor) or "عندنا دكاترة في
+    تخصص جراحة العظام" (we have doctors in that specialty). Nothing
+    about that is stale - there is no specific identity being carried
+    over from an earlier, different context, because no specific doctor
+    was named at all. This function's whole premise is a REAL name
+    reused in the WRONG context, so it must first confirm a real name -
+    one this conversation's tools actually returned - is present in the
+    reply, not just profession vocabulary.
+
+    CONFIRMED REAL PRODUCTION FALSE POSITIVE: a patient reported leg
+    pain; the medical reply gave general first-aid advice, told them to
+    see "دكتور جراحة العظام" (an orthopaedic doctor, generically) if
+    symptoms worsened, and asked whether they wanted a booking - naming
+    no doctor at all. It was flagged here purely on "دكتور" + "في
+    تخصص" and replaced with the generic fallback, discarding the entire
+    (correct, useful) safety guidance."""
 
     if not reply_text or not _DOCTOR_LIST_CUE_RE.search(reply_text):
         return False
 
     if not _NAMES_SERVICE_OR_SPECIALTY_CONTEXT_RE.search(_norm_ar(reply_text)):
+        return False
+
+    known = _doctor_names_from_tools(state)
+    normalized_reply = _norm_ar(reply_text)
+    named_doctor_present = any(
+        name and name in normalized_reply for name in known
+    )
+    if not named_doctor_present:
         return False
 
     ran_this_turn = _tool_results_since_latest_human(
