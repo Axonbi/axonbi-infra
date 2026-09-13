@@ -3494,6 +3494,47 @@ def _specialty_named_by(state, base_url: str, text: str) -> Optional[dict]:
     if match["result"] == "matched" and match["item"].get("id"):
         return {"id": match["item"]["id"], "name": match["item"].get("name")}
 
+    # SUBSTRING FALLBACK - THE PATIENT'S WORDING IS OFTEN A SENTENCE,
+    # NOT JUST THE SPECIALTY NAME.
+    #
+    # `_fuzzy_match` scores the WHOLE input string against the WHOLE
+    # specialty name, so "فيه استشاره تغذيه" ("there's a nutrition
+    # consultation") scores poorly against "تغذية" even though it
+    # plainly names it - the extra words ("فيه", "استشاره") dilute a
+    # whole-string similarity ratio the same way they would not dilute
+    # a human reading the sentence.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (tenant): "فيه استشاره تغذيه"
+    # failed to resolve to any specialty - both the remembered-list
+    # check and this whole-string fuzzy match missed it - and the
+    # patient was told "التخصص اللي طلبته... ما هو متوفر عندنا" (the
+    # specialty you asked for isn't available), which was false: the
+    # clinic has doctors under هذا التخصص, the wording just didn't
+    # match cleanly.
+    #
+    # Scoped to avoid over-matching: only a specialty name of at least
+    # 3 letters (after normalizing) is tried as a substring, and the
+    # LONGEST matching name wins, so a short, generic specialty stem
+    # cannot swallow an unrelated sentence that merely happens to
+    # contain it.
+    folded_text = _normalize_arabic(text)
+    best = None
+    for item in items:
+        name = (item.get("name") or "").strip()
+        folded_name = _normalize_arabic(name)
+        if len(folded_name) < 3:
+            continue
+        if folded_name in folded_text and (best is None or len(folded_name) > len(_normalize_arabic(best.get("name") or ""))):
+            best = item
+
+    if best and best.get("id"):
+        logger.info(
+            "_specialty_named_by: %r matched specialty %r as a substring, after the "
+            "whole-string fuzzy match found nothing",
+            text, best.get("name"),
+        )
+        return {"id": best["id"], "name": best.get("name")}
+
     return None
 
 
@@ -5786,6 +5827,64 @@ def _note_info_branch_availability(state, branch_row: dict) -> None:
         session.pop("info_branch_no_doctors", None)
 
 
+def _doctor_active_branch_names(state: AgentState, base_url: str, doctor_id: str) -> list:
+    """The branch DISPLAY NAMES a doctor currently has an ACTIVE
+    schedule at, derived from `api.get_doctor_schedule` with the same
+    `effective_date`/`include_future` filtering `get_doctor_schedule_
+    for_booking` and `match_entity_for_booking`'s branch-filtered-by-
+    doctor path already use - so a branch whose assignment has LAPSED
+    is excluded here too, not just in the booking flow.
+
+    WHY THIS EXISTS: `match_entity_info`'s doctor shape carried no
+    branch information at all, so the FAQ agent - asked "which
+    branches does Dr. X work at?" - had no real tool answer for it.
+
+    CONFIRMED REAL PRODUCTION FAILURE (tenant): asked "ايه فروع دكتور
+    تسبيح", the reply named all THREE of the clinic's branches
+    (Emergency, Al Manar, Al Nozha) as his - reusing the separate
+    "list every branch this clinic has" result instead of anything
+    about this specific doctor, since nothing else was available. His
+    real, active schedule is Al Nozha only (confirmed repeatedly
+    elsewhere in this same session's logs). The patient picked
+    "Emergency" from that invented list and the booking flow correctly
+    found zero orthopaedic doctors there - a real dead end caused by a
+    false claim, not a booking-step mistake.
+
+    Returns [] on any failure - the caller must treat that as
+    "unknown", never as "no branches", so a genuine lookup failure
+    cannot be misreported as the doctor having nowhere to be seen."""
+
+    try:
+        timezone_name = (state.get("templates") or {}).get("_timezone", DEFAULT_TIMEZONE)
+        today_iso = datetime.now(ZoneInfo(timezone_name)).date().isoformat()
+    except Exception:
+        logger.exception("_doctor_active_branch_names: failed to compute today's date")
+        return []
+
+    result = api.get_doctor_schedule(
+        base_url, doctor_ids=[doctor_id],
+        effective_date=today_iso, include_future=True,
+        language=conversation_language(state),
+    )
+    if not result.get("success"):
+        logger.warning(
+            "_doctor_active_branch_names: get_doctor_schedule failed for doctor_id=%s "
+            "(status_code=%s) - returning [] (unknown, not \"no branches\")",
+            doctor_id, result.get("status_code"),
+        )
+        return []
+
+    items = (result.get("data") or {}).get("items", [])
+    seen = set()
+    names = []
+    for row in items:
+        name = (row.get("branchName") or "").strip()
+        if name and name not in seen:
+            seen.add(name)
+            names.append(name)
+    return names
+
+
 @tool
 def match_entity_info(
     state: Annotated[AgentState, InjectedState],
@@ -6180,6 +6279,15 @@ def match_entity_info(
         if entity_type == "branch":
             # Same reason as the positional-pick path above.
             _note_info_branch_availability(state, matched_item)
+        elif entity_type == "doctor" and matched_item.get("id"):
+            # See `_doctor_active_branch_names`'s own docstring for the
+            # confirmed production failure this closes - only fetched
+            # for a SINGLE matched doctor (never in list mode), so an
+            # ordinary "list all doctors" call does not pay for one
+            # schedule lookup per doctor.
+            matched_item["branches"] = _doctor_active_branch_names(
+                state, base_url, matched_item["id"],
+            )
         return {"status": "matched", "item": matched_item}
 
     ambiguous_candidates = [shape_fn(i) for i in match_result["items"]]
