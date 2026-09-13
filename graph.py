@@ -17631,6 +17631,50 @@ def _repeated_call_directive(repeats: list, messages: list) -> str:
     )
 
 
+def _llm_forcing_no_tool_calls(agent_name: str):
+    """A binding that CANNOT call a tool - the provider must answer in
+    prose, using nothing but what is already in the conversation.
+
+    The mirror image of `_llm_forcing_tool` below: that one forces a
+    SPECIFIC call when the model claimed an action it never took; this
+    one forces NO call at all, for `_break_repeated_tool_loop`'s last
+    resort - the model has already asked for the exact same tool call
+    twice in this turn, so a fourth attempt would only spin the same
+    loop again, and the fact it needs is normally already sitting in
+    the history (a real earlier result, or one
+    `_deterministic_doctor_schedule_lookup`-style hook pre-fetched).
+    Removing the option to call a tool is what makes a THIRD identical
+    request impossible rather than merely discouraged.
+
+    Uses this agent's OWN model (not `OPENAI_MODEL_TOOL_FORCING`, the
+    small model `_llm_forcing_tool` uses to pin one exact call) -
+    reading the history and writing a real reply from it is reasoning
+    work, not a fixed pick.
+
+    Returns None under the same conditions `_llm_forcing_tool` does:
+    a caller has swapped `_llm_with_tools` (would desynchronise a
+    scripted test), or this specialist has no tools bound at all."""
+
+    if _llm_with_tools is not _DEFAULT_LLM_WITH_TOOLS:
+        return None
+
+    tool_list = agents.tools_for(agent_name)
+    if not tool_list:
+        return None
+
+    try:
+        return _llm_for_model(
+            config.OPENAI_MODEL_BY_AGENT.get(agent_name, config.OPENAI_MODEL)
+        ).bind_tools(tool_list, tool_choice="none")
+    except Exception:
+        logger.warning(
+            "repeated-tool-loop breaker: could not pin tool_choice=none for %s - "
+            "falling back to the safe message instead of forcing a text reply",
+            agent_name, exc_info=True,
+        )
+        return None
+
+
 def _break_repeated_tool_loop(response, state: AgentState, agent_name: str,
                               system_message, history: list,
                               target_language) -> object:
@@ -17649,11 +17693,28 @@ def _break_repeated_tool_loop(response, state: AgentState, agent_name: str,
     if worst >= _TOOL_CALL_REPEAT_CEILING:
         logger.error(
             "agent[%s]: %s has now been requested with identical arguments %d "
-            "times in one turn (session_id=%s) - answering in code rather than "
-            "letting the graph spin to its recursion limit",
+            "times in one turn (session_id=%s) - forcing a text-only reply from "
+            "what is already in the history rather than letting the graph spin "
+            "to its recursion limit",
             agent_name, repeats[0].get("name"), worst + 1,
             state.get("session_id"),
         )
+        forced_text_llm = _llm_forcing_no_tool_calls(agent_name)
+        if forced_text_llm is not None:
+            try:
+                ceiling_reply = _invoke_llm_resilient(
+                    forced_text_llm, [system_message] + history,
+                    agent_name=agent_name, target_language=target_language,
+                    context="repeated tool call - ceiling forced text reply",
+                )
+                if str(getattr(ceiling_reply, "content", "") or "").strip():
+                    return ceiling_reply
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "agent[%s]: forced text-only reply at the repeat ceiling "
+                    "raised (session_id=%s) - falling back to the soft-recovery "
+                    "message", agent_name, state.get("session_id"), exc_info=True,
+                )
         return AIMessage(content=_soft_recovery_reply(target_language, messages))
 
     logger.warning(
@@ -17675,15 +17736,64 @@ def _break_repeated_tool_loop(response, state: AgentState, agent_name: str,
         context="repeated tool call",
     )
 
-    if _repeated_tool_calls(retry, messages):
-        logger.error(
-            "agent[%s]: still asking for the same %s call after being told it "
-            "had already run (session_id=%s) - answering in code",
-            agent_name, repeats[0].get("name"), state.get("session_id"),
-        )
-        return AIMessage(content=_soft_recovery_reply(target_language, messages))
+    if not _repeated_tool_calls(retry, messages):
+        return retry
 
-    return retry
+    # STILL ASKING FOR THE SAME CALL AFTER BEING TOLD, IN SO MANY
+    # WORDS, THAT IT ALREADY RAN AND WHAT IT ANSWERED.
+    #
+    # Giving up here with the content-free soft-recovery line used to
+    # throw away an answer that was SITTING IN THE HISTORY the whole
+    # time - the call had already run for real, or been pre-fetched by
+    # a deterministic hook (`_deterministic_doctor_schedule_lookup` and
+    # friends forge exactly this kind of result into history before the
+    # model's own turn even starts) - and the model simply would not
+    # read it.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (session 201003365691+medtown2,
+    # 2026-09-13 11:46): the patient had already named the doctor and
+    # the specialty; `get_doctor_schedule_for_booking`'s real result was
+    # already in this turn's history. The model asked for it again, was
+    # told so and shown the answer, and asked a THIRD time anyway. The
+    # patient - who had done everything right - received "ممكن توضحلي
+    # طلبك تاني؟ عشان أقدر أساعدك صح" and the booking simply stalled.
+    #
+    # So: one last attempt, with tool-calling switched OFF entirely.
+    # There is no fourth identical call to make - the only possible
+    # output is prose, built from whatever is already in the history -
+    # so this cannot spin the loop again. Only if THIS also comes back
+    # empty (or the binding is unavailable) does the soft-recovery line
+    # still apply, as the genuine last resort it was always meant to
+    # be.
+    logger.error(
+        "agent[%s]: still asking for the same %s call after being told it "
+        "had already run (session_id=%s) - forcing a text-only reply from what "
+        "is already in the history instead of giving up with no answer",
+        agent_name, repeats[0].get("name"), state.get("session_id"),
+    )
+
+    forced_text_llm = _llm_forcing_no_tool_calls(agent_name)
+    final_text = ""
+    final_reply = None
+    if forced_text_llm is not None:
+        try:
+            final_reply = _invoke_llm_resilient(
+                forced_text_llm, [corrected] + history,
+                agent_name=agent_name, target_language=target_language,
+                context="repeated tool call - forced text reply",
+            )
+            final_text = str(getattr(final_reply, "content", "") or "").strip()
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "agent[%s]: forced text-only reply raised (session_id=%s) - "
+                "falling back to the soft-recovery message",
+                agent_name, state.get("session_id"), exc_info=True,
+            )
+
+    if final_text:
+        return final_reply
+
+    return AIMessage(content=_soft_recovery_reply(target_language, messages))
 
 
 def _run_agent(state: AgentState, agent_name: str) -> dict:
