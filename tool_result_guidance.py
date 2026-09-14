@@ -160,6 +160,17 @@ RESULT_GUIDANCE: dict = {
     },
 
     # ------------------------------------------------------------------
+    "get_patient_info": {
+        "found_multiple":
+            "Once the patient picks WHICH of these people this booking "
+            "is for, use THAT SAME PERSON's own `email` from this list "
+            "if it is present - exactly the same rule `found` already "
+            "states for the single-match case, which does not stop "
+            "applying just because there were several people to choose "
+            "from first. Never ask for an email that is already sitting "
+            "in the very payload you already have.",
+    },
+
     "match_entity_info": {
         "matched":
             "If this is a doctor and `hasSlots` is explicitly False, do "
@@ -277,6 +288,26 @@ RESULT_GUIDANCE: dict = {
 
     # ------------------------------------------------------------------
     "create_new_booking": {
+        "needs_review":
+            "You have not shown the patient a CONSOLIDATED review of "
+            "every detail together yet - each field being confirmed "
+            "separately earlier in the conversation does not satisfy "
+            "this. Show exactly this, filling in the real values "
+            "(translate the labels if the conversation is in English; "
+            "omit the email line entirely if none was given):\n\n"
+            "يرجى مراجعة بيانات الحجز:\n"
+            "🏥 الفرع: {branch}\n"
+            "👨‍⚕️ الطبيب: {doctor}\n"
+            "📅 التاريخ: {weekday} {date}\n"
+            "🕐 الوقت: {time}\n"
+            "👤 الاسم: {patient_full_name}\n"
+            "📱 الجوال: {mobile_number}\n"
+            "📧 البريد الإلكتروني: {email}\n\n"
+            "✅ هل جميع البيانات صحيحة وتود تأكيد الحجز؟\n\n"
+            "End your turn there. Only once the patient's NEXT message "
+            "actually agrees, call `confirm_booking_review`, then call "
+            "this tool again with the same values. If they point out "
+            "something wrong, fix it and show the review again instead.",
         "success_ref_pending":
             "THE BOOKING WAS CREATED and is real and confirmed, but the "
             "follow-up call fetching its human-readable reference "
