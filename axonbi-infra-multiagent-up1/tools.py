@@ -10542,6 +10542,7 @@ ALL_TOOLS = [
     resolve_available_day,
     list_available_days_for_booking,
     create_new_booking,
+    confirm_booking_review,
     get_doctor_schedule_for_booking,
     get_available_slots_for_booking,
     select_appointment_slot,
