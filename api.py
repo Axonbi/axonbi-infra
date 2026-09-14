@@ -314,9 +314,13 @@ def authentica_send_otp(phone: str) -> dict:
         "fallback_email": AUTHENTICA_FALLBACK_EMAIL,
         "phone": phone,
     }
-    headers = {"Accept": "application/json", "X-Authorization": AUTHENTICA_API_KEY}
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "X-Authorization": AUTHENTICA_API_KEY,
+    }
 
-    response, last_timeout, last_exc = _request_with_retry("post", url, headers=headers, data=payload)
+    response, last_timeout, last_exc = _request_with_retry("post", url, headers=headers, json=payload)
 
     if response is None:
         if last_timeout:
@@ -325,6 +329,10 @@ def authentica_send_otp(phone: str) -> dict:
         return _result(False, error=str(last_exc) if last_exc else "request_failed")
 
     if response.status_code >= 400:
+        logger.error(
+            "Authentica send_otp rejected phone=%s status=%s body=%s",
+            phone, response.status_code, response.text[:500],
+        )
         return _result(False, response.status_code, error="send_otp_failed")
 
     try:
@@ -338,10 +346,18 @@ def authentica_send_otp(phone: str) -> dict:
 def authentica_verify_otp(phone: str, otp: str, email: str = "") -> dict:
     url = f"{AUTHENTICA_BASE_URL}/verify-otp"
 
+    # `email` mirrors the fallback_email sent with send-otp above - the
+    # confirmed-working curl example verifies with the SAME email used
+    # to send, so callers should pass AUTHENTICA_FALLBACK_EMAIL through
+    # (see tools.py verify_otp) rather than leaving this blank.
     payload = {"otp": otp, "email": email, "phone": phone}
-    headers = {"Accept": "application/json", "X-Authorization": AUTHENTICA_API_KEY}
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "X-Authorization": AUTHENTICA_API_KEY,
+    }
 
-    response, last_timeout, last_exc = _request_with_retry("post", url, headers=headers, data=payload)
+    response, last_timeout, last_exc = _request_with_retry("post", url, headers=headers, json=payload)
 
     if response is None:
         if last_timeout:
@@ -350,6 +366,10 @@ def authentica_verify_otp(phone: str, otp: str, email: str = "") -> dict:
         return _result(False, error=str(last_exc) if last_exc else "request_failed")
 
     if response.status_code >= 400:
+        logger.error(
+            "Authentica verify_otp rejected phone=%s status=%s body=%s",
+            phone, response.status_code, response.text[:500],
+        )
         return _result(False, response.status_code, error="verify_otp_failed")
 
     try:
