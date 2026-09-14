@@ -6768,6 +6768,10 @@ def _retire_previous_doctors_branch(session: dict, entity_type: str,
     session["service_id"] = None
     session["selected_slot"] = None
     session["slots_shown"] = False
+    # A review shown for the PREVIOUS doctor/branch/slot no longer
+    # describes what would actually be booked now - it must be shown
+    # again (and re-confirmed) before `create_new_booking` can proceed.
+    session["review_shown"] = False
 
 
 @tool
@@ -8877,6 +8881,55 @@ def list_available_days_for_booking(
 
 
 @tool
+def confirm_booking_review(
+    state: Annotated[AgentState, InjectedState],
+    patient_full_name: str,
+    email: str = "",
+) -> dict:
+    """Call this AFTER showing the patient ONE consolidated review of
+    every booking detail together - branch, doctor, date, time, their
+    name, their phone, and their email if they gave one - and getting
+    an explicit yes. This is what actually unlocks `create_new_booking`
+    - it refuses with `needs_review` until this has been called for
+    the current booking, no matter how many times each detail was
+    separately confirmed earlier in the conversation.
+
+    Show the review in exactly this shape (translate the labels if the
+    conversation is in English, keep the structure):
+
+    يرجى مراجعة بيانات الحجز:
+    🏥 الفرع: {branch}
+    👨‍⚕️ الطبيب: {doctor}
+    📅 التاريخ: {weekday} {date}
+    🕐 الوقت: {time}
+    👤 الاسم: {patient_full_name}
+    📱 الجوال: {mobile_number}
+    📧 البريد الإلكتروني: {email, or omit this line entirely if none}
+
+    ✅ هل جميع البيانات صحيحة وتود تأكيد الحجز؟
+
+    Do NOT call this in the same turn as the review message - show the
+    review, end your turn, and only call this once the patient's NEXT
+    message actually agrees. If they point out something wrong instead,
+    fix it and show the review again; do not call this until they
+    confirm.
+
+    Returns {"status": "confirmed"} - proceed straight to
+    `create_new_booking` with the same values. There is no other
+    status; a missing session simply means nothing has been confirmed
+    yet."""
+
+    session_id = state.get("session_id")
+    session = _get_booking_session(session_id)
+    session["review_shown"] = True
+    logger.info(
+        "confirm_booking_review: patient confirmed the reviewed summary for "
+        "session_id=%s (patient_full_name=%r)", session_id, patient_full_name,
+    )
+    return {"status": "confirmed"}
+
+
+@tool
 def create_new_booking(
     state: Annotated[AgentState, InjectedState],
     slot_start: str,
@@ -8903,6 +8956,12 @@ def create_new_booking(
     Returns one of:
     {"status": "success", "booking_ref": "GBN-..."}
     {"status": "success_ref_pending", "booking_id": "..."}
+    {"status": "needs_review", "doctor_display_name": ..., "branch_display_name": ...,
+     "slot": {...}}
+        # You have not shown the patient a consolidated review of every
+        # detail yet - see `confirm_booking_review`, which you must
+        # call (after showing that review and getting a yes) before
+        # trying this again.
     {"status": "slot_unavailable"}
     {"status": "missing_doctor"} / {"status": "missing_branch"}
     {"status": "invalid_details", "rejected": [{"field": ..., "message": ...}]}
@@ -9023,6 +9082,30 @@ def create_new_booking(
         )
         return {"status": "phone_not_verified"}
 
+    # SERVER-SIDE ENFORCEMENT OF A REVIEW STEP, NOT JUST A PROMPT RULE -
+    # same reasoning as every other gate in this function. Per explicit
+    # instruction: the patient must see EVERY detail of the booking
+    # (branch, doctor, date, time, name, phone, email) together in one
+    # message and say yes to it before this tool is allowed to create a
+    # real, irreversible appointment - not spread across several earlier
+    # confirmations of one field each, which is what the flow was doing
+    # before this existed. `confirm_booking_review` is the only thing
+    # that sets this; nothing here can be talked past by a draft that
+    # merely mentions the details without the patient actually having
+    # agreed to a single consolidated summary.
+    if not session.get("review_shown"):
+        logger.warning(
+            "create_new_booking: refusing to book for session_id=%s - no "
+            "reviewed-and-confirmed summary is on file yet; call "
+            "confirm_booking_review after showing one and getting a yes",
+            session_id,
+        )
+        return {
+            "status": "needs_review",
+            "doctor_display_name": session.get("doctor_display_name"),
+            "branch_display_name": session.get("branch_display_name"),
+            "slot": session.get("selected_slot"),
+        }
 
     base_url = _doctors_base_url(state)
     if not base_url:
@@ -9717,6 +9800,10 @@ def select_appointment_slot(state: Annotated[AgentState, InjectedState], user_in
     # reinforces these exact values in the prompt for as long as this
     # booking is in progress.
     session["selected_slot"] = dict(chosen)
+    # Same reasoning as `_retire_previous_doctors_branch` - a review
+    # already confirmed for a DIFFERENT slot must not authorize booking
+    # this one.
+    session["review_shown"] = False
 
     logger.info(
         "select_appointment_slot: session_id=%s locked in slotStart=%s (%s %s)",
