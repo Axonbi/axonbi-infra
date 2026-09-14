@@ -46,7 +46,7 @@ from datetime import datetime
 from typing import Dict, Optional
 
 from langchain_core.messages import AIMessage, SystemMessage, trim_messages
-from langchain_openai import ChatOpenAI
+from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
@@ -68,11 +68,35 @@ logger = logging.getLogger(__name__)
 # UNCHANGED from the old project
 # ==========================================================
 
-_llm = ChatOpenAI(
-    model=config.OPENAI_MODEL,
-    api_key=config.OPENAI_API_KEY or "sk-not-configured",
-    timeout=config.OPENAI_TIMEOUT_SECONDS,
-)
+def _build_llm():
+    """Chat model for every agent, from config's provider setting.
+
+    Azure needs its own client class rather than a base_url tweak: it
+    authenticates with an "api-key" header instead of a bearer token and
+    addresses a DEPLOYMENT rather than a model. Passing an Azure key to
+    ChatOpenAI reaches api.openai.com and fails 401 on every turn, with
+    nothing in the error naming the real cause - which is exactly the
+    trap this branch's .env was set up to fall into.
+    """
+
+    if config.USE_AZURE_OPENAI:
+        return AzureChatOpenAI(
+            # On Azure this is the deployment name, not the model name.
+            azure_deployment=config.OPENAI_MODEL,
+            azure_endpoint=config.AZURE_OPENAI_ENDPOINT,
+            api_version=config.AZURE_OPENAI_API_VERSION,
+            api_key=config.OPENAI_API_KEY or "not-configured",
+            timeout=config.OPENAI_TIMEOUT_SECONDS,
+        )
+
+    return ChatOpenAI(
+        model=config.OPENAI_MODEL,
+        api_key=config.OPENAI_API_KEY or "sk-not-configured",
+        timeout=config.OPENAI_TIMEOUT_SECONDS,
+    )
+
+
+_llm = _build_llm()
 
 _llm_with_tools = _llm.bind_tools(tools.ALL_TOOLS)
 

@@ -344,6 +344,40 @@ OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4.1")  # upgraded from gpt-4.1-mini for better dialect/persona instruction-following
 OPENAI_TIMEOUT_SECONDS: float = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "10"))
 
+# ==========================================================
+# Provider: OpenAI directly, or the same models through Azure OpenAI
+# ==========================================================
+#
+# Azure is not just a different base URL. It authenticates with an
+# "api-key" header rather than a bearer token, and addresses a
+# DEPLOYMENT rather than a model, so it needs its own client class.
+# Setting the AZURE_* variables alone does nothing - LLM_PROVIDER is
+# what selects it.
+#
+# On Azure, OPENAI_MODEL is the DEPLOYMENT name. That usually matches
+# the model name but does not have to: whatever the deployment was
+# called in the Azure portal is what belongs here.
+LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "openai").strip().lower()
+
+AZURE_OPENAI_ENDPOINT: str = os.getenv("AZURE_OPENAI_ENDPOINT", "").strip().rstrip("/")
+AZURE_OPENAI_API_VERSION: str = os.getenv(
+    "AZURE_OPENAI_API_VERSION", "2024-08-01-preview"
+).strip()
+
+# Embeddings (rag.py) are a separate deployment from the chat model.
+AZURE_OPENAI_EMBEDDING_DEPLOYMENT: str = os.getenv(
+    "AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-3-small"
+).strip()
+
+USE_AZURE_OPENAI: bool = LLM_PROVIDER == "azure"
+
+if USE_AZURE_OPENAI and not AZURE_OPENAI_ENDPOINT:
+    raise RuntimeError(
+        "LLM_PROVIDER=azure but AZURE_OPENAI_ENDPOINT is unset. Failing at "
+        "import rather than silently sending an Azure key to api.openai.com, "
+        "which returns 401 on every turn with no obvious cause."
+    )
+
 # NOTE: there is deliberately no "run without an LLM" flag any more.
 # The old hybrid design could fall back to deterministic heuristics when
 # no API key was present; this architecture cannot - the LLM decides

@@ -30,12 +30,14 @@ import os
 import re
 from typing import Optional
 
-from langchain_openai import OpenAIEmbeddings
+from langchain_openai import AzureOpenAIEmbeddings, OpenAIEmbeddings
+
+import config
 
 logger = logging.getLogger("rag")
 
 _EMBEDDING_MODEL_NAME = "text-embedding-3-small"
-_embeddings_model: Optional[OpenAIEmbeddings] = None
+_embeddings_model = None
 
 CHUNK_SIZE_CHARS = 800
 CHUNK_OVERLAP_CHARS = 150
@@ -45,13 +47,25 @@ DEFAULT_TOP_K = 4
 _CACHE: dict = {}
 
 
-def _get_embeddings_model() -> OpenAIEmbeddings:
+def _get_embeddings_model():
     """Lazily construct the embeddings client - avoids requiring
-    OPENAI_API_KEY at import time (e.g. for tests that never touch RAG)."""
+    OPENAI_API_KEY at import time (e.g. for tests that never touch RAG).
+
+    Embeddings follow the same provider as the chat model. On Azure they
+    are a SEPARATE deployment from the chat one, so the deployment name
+    comes from its own setting rather than OPENAI_MODEL."""
 
     global _embeddings_model
     if _embeddings_model is None:
-        _embeddings_model = OpenAIEmbeddings(model=_EMBEDDING_MODEL_NAME)
+        if config.USE_AZURE_OPENAI:
+            _embeddings_model = AzureOpenAIEmbeddings(
+                azure_deployment=config.AZURE_OPENAI_EMBEDDING_DEPLOYMENT,
+                azure_endpoint=config.AZURE_OPENAI_ENDPOINT,
+                api_version=config.AZURE_OPENAI_API_VERSION,
+                api_key=config.OPENAI_API_KEY or "not-configured",
+            )
+        else:
+            _embeddings_model = OpenAIEmbeddings(model=_EMBEDDING_MODEL_NAME)
     return _embeddings_model
 
 
