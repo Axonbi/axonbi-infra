@@ -10499,7 +10499,27 @@ def share_branch_location(
             latest_text = content if isinstance(content, str) else str(content or "")
             break
 
-    if not _LOCATION_REQUEST_CUE_RE.search(latest_text):
+    location_asked = bool(_LOCATION_REQUEST_CUE_RE.search(latest_text))
+
+    # A bare disambiguation reply ("2", "منار") answering the
+    # assistant's OWN immediately preceding question doesn't repeat the
+    # location wording itself - but the question it's answering does.
+    # CONFIRMED REAL PRODUCTION FAILURE: patient asked "ابعت لوكيشن فرع
+    # المنار", got a disambiguation list ("تحب أرسل لك لوكيشن أي فرع
+    # منهم؟"), replied "2" - and no map pin was ever sent, because this
+    # check only ever looked at "2" itself.
+    if not location_asked:
+        for msg in reversed((state.get("messages") or [])[:-1]):
+            if getattr(msg, "type", None) == "human":
+                break
+            if getattr(msg, "type", None) == "ai":
+                ai_content = getattr(msg, "content", "")
+                ai_text = ai_content if isinstance(ai_content, str) else str(ai_content or "")
+                if ai_text.strip():
+                    location_asked = bool(_LOCATION_REQUEST_CUE_RE.search(ai_text))
+                break
+
+    if not location_asked:
         logger.warning(
             "share_branch_location: REFUSED for client_id=%s session_id=%s branch_name=%r - "
             "the patient's latest message %r does not actually ask for a location/address, "
