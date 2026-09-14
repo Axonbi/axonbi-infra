@@ -49,6 +49,7 @@ from config import (
     DEFAULT_COUNTRY_CODE,
     DOCTOR_AVAILABILITY_WINDOW_DAYS,
     DOCTOR_LIST_CACHE_SECONDS,
+    AUTHENTICA_FALLBACK_EMAIL,
     OTP_PROVIDER,
     OTP_TTL_SECONDS,
     TEST_OTP,
@@ -1313,7 +1314,10 @@ def verify_otp(state: Annotated[AgentState, InjectedState], phone: str, otp: str
     normalized = normalize_phone_number(phone, state)
 
     if OTP_PROVIDER == "authentica":
-        result = api.authentica_verify_otp(normalized, otp)
+        # Same fallback_email used at send_otp time - the confirmed-working
+        # Authentica curl example verifies with that same email, not a
+        # blank one.
+        result = api.authentica_verify_otp(normalized, otp, email=AUTHENTICA_FALLBACK_EMAIL)
         if result["success"]:
             _mark_phone_verified(state, phone)
             _set_booking_phone(state, phone)
