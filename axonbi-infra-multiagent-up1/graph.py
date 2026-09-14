@@ -2537,8 +2537,11 @@ def _build_booking_confirmation_requires_tool_directive(messages: list, session_
                 "using its real returned booking_ref. Confirmed real "
                 "failure: claiming success with zero tool calls left no "
                 "real booking in the system at all, while the patient was "
-                "told otherwise. If the user just confirmed \"yes\" to the "
-                "review card, call `create_new_booking` now.\n\n"
+                "told otherwise. If the user just confirmed \"yes\" (in "
+                "whatever words they used) to the review card, call "
+                "`confirm_booking_review` first (if you have not already, "
+                "this turn), then `create_new_booking` with the same "
+                "values, right after.\n\n"
             )
 
     return ""
@@ -19018,7 +19021,29 @@ def _blocked_create_new_booking_tool_calls(state: AgentState) -> list:
     that must NOT be executed because no review card was shown to the
     patient first. Returns [] when the last message has no tool calls,
     or none of them are `create_new_booking`, or the review card check
-    passes."""
+    passes.
+
+    A call passes if EITHER of two independent signals says the review
+    was confirmed:
+      - the session's own `review_shown` flag, set by
+        `confirm_booking_review` - the authoritative signal, since that
+        tool exists exactly to record this happening (and does so
+        regardless of the exact wording - "اه", "تمام", "yes", "ok" -
+        the patient used, because it's the model's own judgment that
+        the patient agreed, not a keyword match); or
+      - the immediately-preceding assistant text still being the review
+        card (the original text-based check), kept as a fallback for a
+        model that (incorrectly) calls `create_new_booking` directly
+        without going through `confirm_booking_review` first.
+
+    FIX for a CONFIRMED PRODUCTION FAILURE: the text-based check alone
+    stops looking the moment it crosses a ToolMessage boundary - and
+    `confirm_booking_review`'s OWN result is exactly such a boundary.
+    Following the intended flow (show review -> confirm_booking_review
+    -> create_new_booking) therefore always failed this check on its
+    own, blocking every correctly-confirmed booking with
+    `missing_review_confirmation`, looping, and ending in the generic
+    soft-recovery fallback instead of ever creating the booking."""
 
     messages = state.get("messages") or []
     if not messages:
@@ -19028,6 +19053,11 @@ def _blocked_create_new_booking_tool_calls(state: AgentState) -> list:
     tool_calls = list(getattr(last, "tool_calls", None) or [])
     booking_calls = [tc for tc in tool_calls if tc.get("name") == "create_new_booking"]
     if not booking_calls:
+        return []
+
+    session_id = state.get("session_id")
+    session = tools._BOOKING_SESSIONS.get(session_id) if session_id else None
+    if session and session.get("review_shown"):
         return []
 
     templates = state.get("templates") or {}
