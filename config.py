@@ -412,6 +412,33 @@ def _agent_models(raw: str) -> dict:
 
 
 OPENAI_MODEL_BY_AGENT: dict = _agent_models(os.getenv("OPENAI_MODEL_BY_AGENT", ""))
+
+# ==========================================================
+# LLM provider switch: plain OpenAI (default) vs Azure OpenAI
+# ==========================================================
+#
+# Azure OpenAI is NOT just a different base_url for the same client -
+# LangChain uses a separate class (AzureChatOpenAI) and Azure has no
+# concept of calling a model by name at request time: every model you
+# want to use has to be "deployed" first inside your Azure resource
+# under a deployment name YOU chose, and that deployment name (not
+# "gpt-4.1") is what every request actually references.
+#
+# LLM_PROVIDER=openai (default) -> behaviour unchanged, OPENAI_MODEL /
+#                                    OPENAI_MODEL_CHEAP / etc. above are
+#                                    sent to api.openai.com as before.
+# LLM_PROVIDER=azure             -> every OPENAI_MODEL* value above is
+#                                    reinterpreted as an AZURE DEPLOYMENT
+#                                    NAME instead of an OpenAI model
+#                                    name - so OPENAI_MODEL_BY_AGENT=
+#                                    faq:my-mini-deployment works exactly
+#                                    like today, just naming a deployment
+#                                    instead of a model.
+LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "openai").strip().lower()
+
+AZURE_OPENAI_ENDPOINT: str = os.getenv("AZURE_OPENAI_ENDPOINT", "")
+AZURE_OPENAI_API_VERSION: str = os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview")
+
 # RAISED FROM 10s. The system prompt alone is ~130 KB before the ~40
 # directive blocks and the trimmed history are added, so a 10-second
 # ceiling was being hit in normal operation - and a second hit turns
