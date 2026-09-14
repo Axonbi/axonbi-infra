@@ -10439,6 +10439,20 @@ _LOCATION_REQUEST_CUE_RE = re.compile(
 )
 
 
+_LOCATION_INTENT_LOOKBACK = 6  # messages; bounds how far back we'll search
+
+_BARE_PICK_RE = re.compile(r"^[\s\d\u0660-\u0669#\u061F]{1,4}$")
+
+
+def _bare_disambiguation_reply(text: str) -> bool:
+    """True for a short positional pick ("2", "٢", "رقم 2") - as
+    opposed to a real, substantial message that starts a new topic."""
+    stripped = (text or "").strip()
+    if not stripped:
+        return False
+    return len(stripped) <= 2 or bool(_BARE_PICK_RE.match(stripped))
+
+
 @tool
 def share_branch_location(
     state: Annotated[AgentState, InjectedState],
@@ -10451,10 +10465,21 @@ def share_branch_location(
     1. The patient explicitly asked for the branch's location, address,
        or how to get there (not just named the branch, and not just
        had it confirmed/selected as part of booking or anything else).
-    2. `match_entity_info` (entity_type="branch") has ACTUALLY matched a
-       real branch and you are telling the patient its address this
-       turn - never call this with a branch name you have not just
-       confirmed exists via that tool, and never guess or invent one.
+    2. The branch is a REAL, CONFIRMED one - either `match_entity_info`
+       (entity_type="branch") actually matched it THIS turn, or it was
+       already confirmed by that same tool earlier in this
+       conversation (e.g. it's the branch you already gave the address
+       for a moment ago) - never call this with a branch name that was
+       never confirmed by `match_entity_info` at some point in this
+       conversation, and never guess or invent one.
+
+    IMPORTANT: an ALREADY-KNOWN branch is not a reason to skip this
+    tool. "What's Al Manar's location?" asked a second time, about a
+    branch you already resolved earlier, is STILL an explicit location
+    request THIS turn and still requires calling this tool with that
+    same confirmed branch_name - answering from memory without calling
+    it means no map pin is ever sent, even though you correctly know
+    the address.
 
     Simply mentioning, confirming, or picking a branch (e.g. during the
     booking flow, or the patient just typing a branch's name with no
@@ -10501,23 +10526,43 @@ def share_branch_location(
 
     location_asked = bool(_LOCATION_REQUEST_CUE_RE.search(latest_text))
 
-    # A bare disambiguation reply ("2", "منار") answering the
-    # assistant's OWN immediately preceding question doesn't repeat the
-    # location wording itself - but the question it's answering does.
-    # CONFIRMED REAL PRODUCTION FAILURE: patient asked "ابعت لوكيشن فرع
-    # المنار", got a disambiguation list ("تحب أرسل لك لوكيشن أي فرع
-    # منهم؟"), replied "2" - and no map pin was ever sent, because this
-    # check only ever looked at "2" itself.
+    # A bare disambiguation reply ("2", "منار") answering some
+    # in-between question doesn't repeat the location wording itself -
+    # and the assistant's OWN disambiguation question doesn't always
+    # either (it may reword it around "services" or the branch name
+    # instead of "location"). Walk back through the exchange, skipping
+    # over short/bare human picks and the assistant's own in-between
+    # questions, until reaching the message that actually carries the
+    # topic - bounded, so this can never reach into an unrelated older
+    # part of the conversation.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURES, same session: (1) patient
+    # asked "ابعت لوكيشن فرع المنار", got "تحب أرسل لك لوكيشن أي فرع
+    # منهم؟", replied "2" - no map pin sent, this check only looked at
+    # "2". (2) same request, but the disambiguation question that turn
+    # was reworded to "تحب أعرفك على خدمات أحد الفروع؟" with no location
+    # wording at all - looking back only ONE message still missed the
+    # original location ask two exchanges earlier.
     if not location_asked:
-        for msg in reversed((state.get("messages") or [])[:-1]):
-            if getattr(msg, "type", None) == "human":
-                break
-            if getattr(msg, "type", None) == "ai":
-                ai_content = getattr(msg, "content", "")
-                ai_text = ai_content if isinstance(ai_content, str) else str(ai_content or "")
-                if ai_text.strip():
-                    location_asked = bool(_LOCATION_REQUEST_CUE_RE.search(ai_text))
-                break
+        history = (state.get("messages") or [])[:-1]
+        for msg in reversed(history[-_LOCATION_INTENT_LOOKBACK:]):
+            msg_type = getattr(msg, "type", None)
+            content = getattr(msg, "content", "")
+            text = content if isinstance(content, str) else str(content or "")
+
+            if msg_type == "human":
+                if _LOCATION_REQUEST_CUE_RE.search(text):
+                    location_asked = True
+                    break
+                if _bare_disambiguation_reply(text):
+                    continue  # a short pick ("2") - keep looking further back
+                break  # a real, different, substantial message - not this topic
+            elif msg_type == "ai" and text.strip():
+                if _LOCATION_REQUEST_CUE_RE.search(text):
+                    location_asked = True
+                    break
+                continue  # the assistant's own in-between question - keep looking
+            # tool messages etc. - skip past, don't count as a boundary
 
     if not location_asked:
         logger.warning(
