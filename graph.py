@@ -49,7 +49,7 @@ from functools import lru_cache
 from typing import Dict, Optional
 
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage, trim_messages
-from langchain_openai import ChatOpenAI
+from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 from langchain_core.runnables import RunnableConfig
@@ -73,6 +73,37 @@ logger = logging.getLogger(__name__)
 # UNCHANGED from the old project
 # ==========================================================
 
+def _make_llm(model: str, **kwargs):
+    """The chat client for `model`/`deployment`, picking the class
+    config.LLM_PROVIDER calls for.
+
+    LLM_PROVIDER=openai (default): a plain ChatOpenAI against
+    api.openai.com, `model` is an OpenAI model name - EXACTLY today's
+    behaviour, untouched.
+
+    LLM_PROVIDER=azure: an AzureChatOpenAI against the tenant's own
+    Azure resource. Azure has no "model name" at request time - it
+    only understands DEPLOYMENT names the tenant created themselves in
+    the Azure portal - so here `model` (whatever OPENAI_MODEL/
+    OPENAI_MODEL_CHEAP/OPENAI_MODEL_BY_AGENT/OPENAI_MODEL_ROUTER holds)
+    is passed as `azure_deployment` instead of `model`. This is why
+    those settings are documented as "deployment name, not model name"
+    once LLM_PROVIDER=azure - the env var names didn't change, only
+    what a tenant is expected to put in them.
+    """
+
+    if config.LLM_PROVIDER == "azure":
+        return AzureChatOpenAI(
+            azure_deployment=model,
+            azure_endpoint=config.AZURE_OPENAI_ENDPOINT,
+            api_version=config.AZURE_OPENAI_API_VERSION,
+            api_key=config.OPENAI_API_KEY or "sk-not-configured",
+            **kwargs,
+        )
+
+    return ChatOpenAI(model=model, api_key=config.OPENAI_API_KEY or "sk-not-configured", **kwargs)
+
+
 # TEMPERATURE IS PINNED, NOT LEFT TO THE API DEFAULT (1.0).
 #
 # Nothing here ever set it, so every call - the main turn, every
@@ -83,9 +114,8 @@ logger = logging.getLogger(__name__)
 # directly against agents/response_contract.py's stated goal, that two
 # patients in the same situation get the same shape of reply - the
 # normalizer was left mopping up variance the sampler was creating.
-_llm = ChatOpenAI(
-    model=config.OPENAI_MODEL,
-    api_key=config.OPENAI_API_KEY or "sk-not-configured",
+_llm = _make_llm(
+    config.OPENAI_MODEL,
     timeout=config.OPENAI_TIMEOUT_SECONDS,
     temperature=config.OPENAI_TEMPERATURE,
 )
@@ -105,9 +135,8 @@ _llm_with_tools = _llm.bind_tools(tools.ALL_TOOLS)
 # back to the deterministic result. A router that is occasionally
 # unavailable costs nothing; a router that blocks the turn costs the
 # conversation.
-_router_llm = ChatOpenAI(
-    model=config.OPENAI_MODEL_ROUTER,
-    api_key=config.OPENAI_API_KEY or "sk-not-configured",
+_router_llm = _make_llm(
+    config.OPENAI_MODEL_ROUTER,
     timeout=config.ROUTER_LLM_TIMEOUT_SECONDS,
     temperature=0,
     max_retries=0,
@@ -130,7 +159,9 @@ _LLM_BY_MODEL = {config.OPENAI_MODEL: _llm}
 
 
 def _llm_for_model(model: str):
-    """The ChatOpenAI client for `model`, created on first use.
+    """The chat client for `model` (an OpenAI model name, or an Azure
+    deployment name when LLM_PROVIDER=azure - see `_make_llm`), created
+    on first use.
 
     Falls back to the primary client if a model name cannot be
     instantiated - a bad value in OPENAI_MODEL_BY_AGENT should cost the
@@ -144,9 +175,8 @@ def _llm_for_model(model: str):
         return existing
 
     try:
-        client = ChatOpenAI(
-            model=model,
-            api_key=config.OPENAI_API_KEY or "sk-not-configured",
+        client = _make_llm(
+            model,
             timeout=config.OPENAI_TIMEOUT_SECONDS,
             temperature=config.OPENAI_TEMPERATURE,
         )
