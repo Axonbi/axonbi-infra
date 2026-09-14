@@ -18911,6 +18911,102 @@ def _node_name(agent_name: str) -> str:
     return f"agent_{agent_name}"
 
 
+_REVIEW_CARD_TEMPLATE_KEY = "msg_booking_confirmation"
+
+# Used only when a clinic never overrode msg_booking_confirmation - see
+# the same default wording in prompts.py's AGENT_SYSTEM_PROMPT_TEMPLATE.
+_REVIEW_CARD_CONFIRMATION_FALLBACK_SENTENCES = (
+    "Is everything correct - shall I confirm the booking?",
+    "هل جميع البيانات صحيحة وتود تأكيد الحجز؟",
+)
+
+
+def _review_confirmation_sentences(templates: dict) -> set:
+    """The question sentence(s) inside THIS clinic's own
+    msg_booking_confirmation template, normalized for comparison.
+
+    Scoped to just this one template (not every msg_ key, unlike
+    `_template_question_sentences`) so a confirmation shown for a
+    DIFFERENT flow (cancellation, reschedule) can never satisfy this
+    check."""
+
+    value = (templates or {}).get(_REVIEW_CARD_TEMPLATE_KEY)
+    sentences = set()
+
+    if value and isinstance(value, str):
+        for sentence in _split_sentences(value.replace("\r", "\n")):
+            if any(mark in sentence for mark in _QUESTION_MARKS):
+                normalized = _normalize_for_compare(sentence)
+                if normalized:
+                    sentences.add(normalized)
+
+    if not sentences:
+        for fallback in _REVIEW_CARD_CONFIRMATION_FALLBACK_SENTENCES:
+            sentences.add(_normalize_for_compare(fallback))
+
+    return sentences
+
+
+def _review_card_shown_immediately_before(messages: list, templates: dict) -> bool:
+    """True only if the assistant's OWN immediately preceding text reply
+    (the one the current turn's tool call is presumably acting on)
+    contains this clinic's approved review-card confirmation question.
+
+    CONFIRMED REAL PRODUCTION FAILURE this guards against: the model
+    went straight from a patient-name-selection question to calling
+    `create_new_booking` on the very next turn, with the mandatory
+    STEP NB7 review card (doctor/branch/date/time/name, "is everything
+    correct?") never shown at all - the patient never got a chance to
+    check or correct anything before a real appointment was created
+    upstream.
+
+    Deliberately stops looking the moment it crosses a ToolMessage
+    boundary: that marks the start of a fresh reasoning turn with
+    nothing shown to the patient in between, so nothing further back
+    can count as "immediately before" this tool call."""
+
+    from langchain_core.messages import HumanMessage as _HumanMessage
+
+    confirmation_sentences = _review_confirmation_sentences(templates)
+
+    for message in reversed(messages[:-1]):
+        if isinstance(message, ToolMessage):
+            return False
+        if isinstance(message, _HumanMessage):
+            continue
+        if isinstance(message, AIMessage):
+            if not (message.content or "").strip():
+                continue
+            normalized = _normalize_for_compare(str(message.content))
+            return any(s in normalized for s in confirmation_sentences)
+
+    return False
+
+
+def _blocked_create_new_booking_tool_calls(state: AgentState) -> list:
+    """`create_new_booking` tool_call dicts (from the last AIMessage)
+    that must NOT be executed because no review card was shown to the
+    patient first. Returns [] when the last message has no tool calls,
+    or none of them are `create_new_booking`, or the review card check
+    passes."""
+
+    messages = state.get("messages") or []
+    if not messages:
+        return []
+
+    last = messages[-1]
+    tool_calls = list(getattr(last, "tool_calls", None) or [])
+    booking_calls = [tc for tc in tool_calls if tc.get("name") == "create_new_booking"]
+    if not booking_calls:
+        return []
+
+    templates = state.get("templates") or {}
+    if _review_card_shown_immediately_before(messages, templates):
+        return []
+
+    return booking_calls
+
+
 # ToolNode automatically injects graph state into any tool parameter
 # annotated with InjectedState (see tools.py's `state` params) without
 # exposing it to the LLM's function-calling schema.
@@ -18947,7 +19043,60 @@ def _tool_node(state: AgentState, config: RunnableConfig) -> dict:
     A payload that isn't a dict, or a tool with nothing to say about
     this status, is passed through completely untouched."""
 
-    result = _base_tool_node.invoke(state, config)
+    blocked_calls = _blocked_create_new_booking_tool_calls(state)
+
+    if blocked_calls:
+        blocked_ids = {tc.get("id") for tc in blocked_calls}
+        last = state["messages"][-1]
+        remaining_calls = [
+            tc for tc in (getattr(last, "tool_calls", None) or [])
+            if tc.get("id") not in blocked_ids
+        ]
+
+        if remaining_calls:
+            # Any OTHER tool call requested in the same turn still runs
+            # normally - only the unconfirmed booking itself is stopped.
+            patched_last = last.model_copy(update={"tool_calls": remaining_calls})
+            patched_state = {**state, "messages": state["messages"][:-1] + [patched_last]}
+            result = _base_tool_node.invoke(patched_state, config)
+        else:
+            result = {"messages": []}
+
+        synthetic_messages = []
+        for tc in blocked_calls:
+            logger.warning(
+                "_tool_node: BLOCKED create_new_booking (tool_call_id=%s, "
+                "session_id=%s) - no review card confirmation found in the "
+                "assistant's immediately preceding reply. No real booking "
+                "request was sent.",
+                tc.get("id"), state.get("session_id"),
+            )
+            payload = {
+                "status": "missing_review_confirmation",
+                "message": (
+                    "create_new_booking was blocked - no booking was created "
+                    "and NOTHING was sent to the clinic's system. You must "
+                    "show the clinic's approved review card first (STEP NB7: "
+                    "doctor, branch, date, time, patient name/mobile/email, "
+                    "ending with its confirmation question, reproduced word "
+                    "for word from the msg_booking_confirmation template) and "
+                    "wait for the patient's explicit yes. Only call "
+                    "create_new_booking again after that."
+                ),
+            }
+            guidance = tool_result_guidance.guidance_for("create_new_booking", payload)
+            if guidance:
+                payload = {**payload, tool_result_guidance.GUIDANCE_KEY: guidance}
+            synthetic_messages.append(ToolMessage(
+                content=json.dumps(payload, ensure_ascii=False, default=str),
+                name="create_new_booking",
+                tool_call_id=tc.get("id"),
+            ))
+
+        result = {**result, "messages": (result.get("messages") or []) + synthetic_messages}
+    else:
+        result = _base_tool_node.invoke(state, config)
+
     messages = result.get("messages") if isinstance(result, dict) else None
 
     for message in messages or []:
