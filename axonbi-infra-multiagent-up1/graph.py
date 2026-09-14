@@ -12141,6 +12141,28 @@ _LEDGER_ENTITY_TOOLS = {
     "services": ("list_hospital_services", "list_branch_services"),
 }
 
+# `list_branch_services` is registered under BOTH "branches" and
+# "services" above (its own payload names a branch AND lists that
+# branch's services). `_collect_strings` walks a payload at ANY depth
+# for any "name"-keyed value with no notion of which part belongs to
+# which bucket - so without scoping, EVERY service name gets swept
+# into the "branches" ledger too (and vice versa).
+#
+# CONFIRMED IN PRODUCTION: `established_facts.branches` ended up
+# containing full service-name strings ("برنامج علاج نفسي نهاري...")
+# alongside real branch names, right before a location request that
+# should have succeeded instead got rejected by a verifier reading
+# that corrupted ledger and fell back to the generic hand-off message.
+#
+# Maps (tool_name, bucket) -> the sub-key of its payload that actually
+# belongs to that bucket, so extraction only looks there. A tool with
+# no entry here (the common case) is untouched - `scoped_data` falls
+# back to the whole payload, exactly as before.
+_LEDGER_SCOPED_SUBKEY = {
+    ("list_branch_services", "branches"): "branch",
+    ("list_branch_services", "services"): "services",
+}
+
 # These two serve several entity types from one tool, so which bucket a
 # result belongs in is read from the ORIGINAL call's `entity_type`
 # argument rather than guessed from the payload.
@@ -12302,9 +12324,11 @@ def build_evidence_ledger(messages: list) -> dict:
                     # tool is telling us these people do NOT match the
                     # specialty that was asked for.
                     target = "doctors_other_specialty"
-                _collect_strings(data, _LEDGER_NAME_KEYS, raw[target])
+                scope_key = _LEDGER_SCOPED_SUBKEY.get((name, bucket))
+                scoped_data = data.get(scope_key) if scope_key else data
+                _collect_strings(scoped_data, _LEDGER_NAME_KEYS, raw[target])
                 if _is_current_turn:
-                    _collect_strings(data, _LEDGER_NAME_KEYS, current[target])
+                    _collect_strings(scoped_data, _LEDGER_NAME_KEYS, current[target])
 
         if name in _LEDGER_ENTITY_DISPATCH_TOOLS:
             entity_type = _entity_type_argument(messages, msg)
