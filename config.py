@@ -733,7 +733,7 @@ CONCIERGE_FULL_PROMPT: bool = _flag("CONCIERGE_FULL_PROMPT", False)
 # "llm" -> ambiguous messages (and only those) additionally get a small
 #     classification call. More flexible, but adds a call per ambiguous
 #     turn and makes routing non-deterministic.
-ROUTER_MODE: str = os.getenv("ROUTER_MODE", "deterministic").strip().lower()
+ROUTER_MODE: str = os.getenv("ROUTER_MODE", "llm").strip().lower()
 
 # How long the LLM router (ROUTER_MODE=llm) may take to classify one
 # message. Deliberately much shorter than OPENAI_TIMEOUT_SECONDS: this
