@@ -5821,6 +5821,27 @@ def _note_info_branch_availability(state, branch_row: dict) -> None:
     session["info_branch_id"] = branch_row.get("id")
     session["info_branch_name"] = name
 
+    # FOLD INTO THE PERMANENT KNOWN-NAME MEMORY, SEPARATE FROM
+    # `last_list` (see `_remember_list`'s own docstring for why that
+    # store must never be overwritten by anything but an actual list
+    # shown to the patient). A SINGLE matched branch (this path) never
+    # called `_remember_list` at all, so graph.py's invented-branch
+    # guard (`get_known_entity_names`) never learned this name existed.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE: `match_entity_info` matched
+    # "Al Manar" (score 1.0) this very turn, the reply correctly named
+    # it in Arabic ("فرع المنار") per the dialect instructions, and the
+    # guard rejected it as an invented branch anyway - because its
+    # transliteration fallback checks `get_known_entity_names`, which
+    # had never been told about this branch since only LIST-mode
+    # results reached `_remember_list`. Two turns in a row where the
+    # patient explicitly asked for this branch's location both ended in
+    # the generic hand-off fallback instead of a real answer.
+    known_bucket = session.setdefault("known_branch_names", set())
+    for value in (branch_row.get("name"), branch_row.get("altName"), name):
+        if value:
+            known_bucket.add(str(value))
+
     if branch_row.get("hasAvailableDoctors") is False:
         session["info_branch_no_doctors"] = name
         logger.info(
