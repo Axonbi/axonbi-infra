@@ -296,6 +296,7 @@ and never alter a slot value returned by
             "get_available_slots_for_booking",
             "select_appointment_slot",
             "create_new_booking",
+            "confirm_booking_review",
             "get_doctor_fees",
             "resolve_available_day",
             "get_next_weekday_date",
