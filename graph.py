@@ -660,91 +660,6 @@ _DOCTOR_LIST_QUESTION = {
           "number or their name.",
 }
 
-# EN translations of the fixed Arabic headings in `_ENTITY_LIST_TOOLS`
-# and its two special-cased headings below (match_entity_for_booking's
-# doctor/branch list, and the single-branch "doctors at this branch"
-# case). Deterministic, same reasoning as `_detect_target_language`'s
-# own docstring: "not left to the LLM to infer".
-#
-# CONFIRMED REAL PRODUCTION FAILURE (session +966556351764, 2026-09-13
-# ~16:25): a fully English conversation ("yes", "help me i am not
-# feeling well", "fatma") got "الأطباء المتاحين:" as the doctor-list
-# heading - the ONE Arabic line in an otherwise all-English reply. The
-# directive at `_build_entity_list_directive` already TELLS the model
-# to translate the heading itself ("...only if the conversation is in
-# another language"), and the code-built path at
-# `_deterministic_specialty_and_doctor_list` skipped that instruction
-# entirely and always used the Arabic literal - so leaving it to the
-# model's judgement was never actually the only path producing this,
-# and a static English lookup removes the judgement call altogether
-# rather than hoping the model remembers the instruction every time.
-_ENTITY_LIST_HEADING_EN = {
-    "الأطباء المتاحين": "Available doctors",
-    "التخصصات المتاحة": "Available specialties",
-    "الفروع المتاحة": "Available branches",
-    "الفروع اللي الدكتور متاح فيها": "Branches this doctor is available at",
-    "الدكاترة المتاحين": "Available doctors",
-}
-
-
-def _localize_entity_heading(heading: str, target_language: Optional[str]) -> str:
-    """The fixed Arabic heading, translated to English when the
-    conversation is in English - covers both the static table above
-    and the one DYNAMIC heading (`_build_entity_list_directive`'s
-    "الدكاترة المتاحين في فرع {branch_name}"), which is rebuilt in
-    English with the same branch_name rather than looked up whole."""
-
-    if not (target_language or "").strip().lower().startswith("en"):
-        return heading
-
-    direct = _ENTITY_LIST_HEADING_EN.get(heading)
-    if direct:
-        return direct
-
-    prefix = "الدكاترة المتاحين في فرع "
-    if heading.startswith(prefix):
-        branch_name = heading[len(prefix):].strip()
-        return f"Doctors available at {branch_name} branch" if branch_name else "Available doctors"
-
-    return heading
-
-
-def _localized_authored_template(templates: dict, key: str, target_language: Optional[str]) -> Optional[str]:
-    """The clinic's own authored template for `key`, in the right
-    language for this conversation - the SAME `_en`-suffix convention
-    `_build_greeting` already established for `msg_unknown_fallback` /
-    `msg_unknown_fallback_en`, generalized to every other `msg_*`
-    template a directive copies verbatim into a reply.
-
-    If the conversation is in English and the clinic has separately
-    authored `{key}_en`, that wins outright - never guessed, never left
-    to the model to translate the single-language version on the fly.
-    Otherwise returns whatever `templates.get(key)` would have, exactly
-    as before.
-
-    CONFIRMED REAL PRODUCTION FAILURE, the same shape in several
-    places at once: `_build_booking_success_display_directive` and
-    `_build_terminal_success_directive` both told the model to
-    "translate only if the conversation is in a different language"
-    for the clinic's own authored booking/cancellation/reschedule
-    confirmation text - the same instruction-instead-of-code pattern
-    already fixed once for the entity-list headings, still present
-    everywhere else a clinic-authored template gets copied verbatim.
-    `_build_out_of_scope_block`'s own docstring even already claims
-    "ENGLISH CONVERSATIONS GET AN ENGLISH BLOCK" while its code only
-    ever exercises that branch when NOTHING is configured at all - an
-    English conversation with a clinic that HAS configured
-    `msg_out_of_scope` (in Arabic, as most do) still got that Arabic
-    text verbatim, unconditionally.
-    """
-
-    templates = templates or {}
-    if (target_language or "").strip().lower().startswith("en"):
-        english = templates.get(f"{key}_en")
-        if english and str(english).strip():
-            return english
-    return templates.get(key)
-
 
 def _doctor_list_question(templates: dict, target_language: Optional[str]) -> str:
     """The one question that closes a code-built doctor list.
@@ -754,7 +669,7 @@ def _doctor_list_question(templates: dict, target_language: Optional[str]) -> st
     that is phrasing rather than data, so it is the only part a clinic
     could reasonably want to own."""
 
-    authored = _localized_authored_template(templates, "msg_doctor_list_question", target_language)
+    authored = (templates or {}).get("msg_doctor_list_question")
     if authored and str(authored).strip():
         return str(authored).replace("\r\n", "\n").replace("\r", "\n").strip()
 
@@ -918,7 +833,7 @@ def _deterministic_doctor_list(state: AgentState, agent_name: str,
     if len(lines) < 2:
         return None
 
-    heading = _localize_entity_heading(_ENTITY_LIST_TOOLS["find_available_doctors"][1], target_language)
+    heading = _ENTITY_LIST_TOOLS["find_available_doctors"][1]
     question = _doctor_list_question(state.get("templates") or {}, target_language)
     reply = f"{heading}:\n" + "\n".join(lines) + f"\n\n{question}"
 
@@ -1089,29 +1004,9 @@ def _deterministic_doctor_schedule_lookup(state: AgentState, agent_name: str) ->
     patient then said "شوف" and the model called `list_available_days_
     for_booking` itself - the tool whose own docstring says "CALL THIS
     IMMEDIATELY AFTER A DOCTOR IS CONFIRMED" - and it worked cleanly
-    with real dates. This hook USED TO make that second call itself
-    too, so the model was handed real bookable days from the start
-    instead of only the general schedule that tempted the fabrication.
-
-    THAT SECOND CALL WAS REMOVED once STEP NB3 itself changed. The
-    prompt no longer asks for a specific date in this first message at
-    all - just the general schedule bullets and one plain "which day?"
-    question - so there is nothing left to fabricate a date FOR, and
-    forging `list_available_days_for_booking`'s real (single) day into
-    context turned out to invite the opposite failure: the model glued
-    that real date onto the schedule bullets anyway, in the same
-    reply, sometimes even re-ordering it out of true calendar order.
-
-    CONFIRMED REAL PRODUCTION FAILURE, PART THREE (session
-    201158877175+medtown2, 2026-09-13 13:11:06 and 13:26:01): with
-    both tool results forged in, the reply printed the full weekly
-    bullet summary AND either a numbered multi-date list (dates out of
-    order) or a stray "تحب أشوف لك المواعيد المتاحة ليوم الاثنين؟" that
-    named a day the patient never chose. The general schedule alone is
-    now enough for this step, because this step no longer states a
-    date - `list_available_days_for_booking`/`resolve_available_day`
-    are called later, once the patient actually names a day or says
-    they have none.
+    with real dates. This hook now makes that second call itself too,
+    so the model is handed real bookable days from the start instead of
+    only the general schedule that tempted the fabrication.
 
     NARROWLY SCOPED. Only fires once, right after a genuine
     `match_entity_for_booking(entity_type="doctor")` match THIS turn,
@@ -1194,12 +1089,46 @@ def _deterministic_doctor_schedule_lookup(state: AgentState, agent_name: str) ->
     )
     pairs = list(_forge_tool_pair("get_doctor_schedule_for_booking", {}, payload))
 
-    # `list_available_days_for_booking` is deliberately NOT also forged
-    # in here any more - see the docstring's PART THREE note. STEP NB3
-    # now asks only the general "which day?" question off the schedule
-    # bullets above; the model calls `list_available_days_for_booking`/
-    # `resolve_available_day` itself, later, once the patient actually
-    # names a day or says they have no preference.
+    # ALSO FETCH REAL BOOKABLE DAYS - NOT JUST THE GENERAL SCHEDULE.
+    #
+    # `get_doctor_schedule_for_booking`'s own docstring is explicit that
+    # it returns "only GENERAL recurring weekdays with no dates and no
+    # guarantee anything is free" - `list_available_days_for_booking`
+    # is the one whose own docstring says "CALL THIS IMMEDIATELY AFTER
+    # A DOCTOR IS CONFIRMED, instead of asking which day they want."
+    # Stopping at the general schedule left the model with only that to
+    # work from, and presenting recurring hours as if they were
+    # confirmed availability is exactly a fabricated-appointment claim.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (tenant): this hook fired
+    # correctly (see the log line above - it now does, after the id-
+    # matching fix), handed the model the general schedule alone, and
+    # the reply that resulted - "مواعيد الدكتور أحمد عبدالرحمن في فرع
+    # Al Nozha: الثلاثاء: من 3:00 مساءً لـ 6:00 مساءً..." - was rejected
+    # twice as a fabricated appointment claim, falling back to the
+    # generic message. The patient then said "شوف" and the model called
+    # `list_available_days_for_booking` itself, which succeeded cleanly
+    # with real dates - proving this second call is exactly what closes
+    # the gap.
+    try:
+        days_payload = tools.list_available_days_for_booking.func(state)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "_deterministic_doctor_schedule_lookup: list_available_days_for_booking "
+            "raised for session_id=%s - proceeding with the general schedule only",
+            session_id, exc_info=True,
+        )
+        return pairs
+
+    if isinstance(days_payload, dict) and days_payload.get("status") == "found":
+        pairs.extend(_forge_tool_pair("list_available_days_for_booking", {}, days_payload))
+    else:
+        logger.info(
+            "_deterministic_doctor_schedule_lookup: list_available_days_for_booking "
+            "declined (status=%r) - proceeding with the general schedule only",
+            (days_payload or {}).get("status") if isinstance(days_payload, dict) else None,
+        )
+
     return pairs
 
 
@@ -1902,7 +1831,7 @@ def _build_branches_only_no_doctors_directive(messages: list) -> str:
     )
 
 
-def _build_entity_list_directive(messages: list, target_language: Optional[str] = None) -> str:
+def _build_entity_list_directive(messages: list) -> str:
     """
     If the LAST message is a ToolMessage from one of the list-returning
     tools with status "found", pre-build the exact numbered list in code -
@@ -1986,8 +1915,6 @@ def _build_entity_list_directive(messages: list, target_language: Optional[str] 
         items_key = "doctors"
         heading = f"الدكاترة المتاحين في فرع {branch_name}" if branch_name else "الدكاترة المتاحين"
 
-    heading = _localize_entity_heading(heading, target_language)
-
     # `find_best_doctor_in_specialty` returns ONE doctor under "doctor",
     # not a list - it is a recommendation, not a roster, so it is left
     # to the flow's own wording rather than forced into a list of one.
@@ -2016,13 +1943,14 @@ def _build_entity_list_directive(messages: list, target_language: Optional[str] 
     return (
         "[INTERNAL INSTRUCTION - NOT FOR THE USER - READ CAREFULLY]\n"
         "A list was just looked up. Your ENTIRE reply must be the exact "
-        "text between the START/END markers below, copied verbatim - "
-        "including the heading, which is already in the right language "
-        "for this conversation - followed by exactly ONE question "
-        "asking which one they'd like. The START/END marker lines "
-        "themselves are NOT part of the text to copy - never include "
-        "them, or any line of dashes/equals-signs, in your actual "
-        "reply.\n\n"
+        "text between the START/END markers below, copied verbatim "
+        "(translate the HEADING and the connecting words only if the "
+        "conversation is in another language - keep the numbering, the "
+        "names and the order exactly as they are), followed by exactly "
+        "ONE question asking which one they'd like. The START/END "
+        "marker lines themselves are NOT part of the text to copy - "
+        "never include them, or any line of dashes/equals-signs, in "
+        "your actual reply.\n\n"
         "Do NOT add, remove, reorder, merge, or re-describe any item, "
         "and do NOT also list them in your own words anywhere else in "
         "the same reply. Do NOT mention any price unless the patient "
@@ -2327,7 +2255,7 @@ _TERMINAL_SUCCESS_TOOLS = {
 }
 
 
-def _build_terminal_success_directive(messages: list, templates: dict, target_language: Optional[str] = None) -> str:
+def _build_terminal_success_directive(messages: list, templates: dict) -> str:
     """
     If the LAST message is a successful `cancel_appointment` or
     `reschedule_appointment`, pre-build the clinic's OWN authored
@@ -2366,7 +2294,7 @@ def _build_terminal_success_directive(messages: list, templates: dict, target_la
     if data.get("status") != "success":
         return ""
 
-    template_text = _localized_authored_template(templates, template_key, target_language)
+    template_text = (templates or {}).get(template_key)
     if not template_text or not template_text.strip():
         return ""
 
@@ -2432,7 +2360,7 @@ def _build_terminal_success_directive(messages: list, templates: dict, target_la
     )
 
 
-def _build_booking_success_display_directive(messages: list, templates: dict, target_language: Optional[str] = None) -> str:
+def _build_booking_success_display_directive(messages: list, templates: dict) -> str:
     """
     If the LAST message is a ToolMessage from `create_new_booking` with
     status "success", pre-build the EXACT confirmation block in code -
@@ -2475,16 +2403,10 @@ def _build_booking_success_display_directive(messages: list, templates: dict, ta
         if patient_name:
             break
 
-    is_english = (target_language or "").strip().lower().startswith("en")
-
     clinic_name = (templates or {}).get("_clinic_name_ar") or (templates or {}).get("_clinic_name") or ""
     clinic_name = clinic_name.strip()
-    clinic_name_en = (templates or {}).get("_clinic_name") or (templates or {}).get("_clinic_name_ar") or ""
-    clinic_name_en = clinic_name_en.strip()
 
-    if is_english:
-        clinic_line = f"Thank you for trusting {clinic_name_en} 🌷" if clinic_name_en else "Thank you for trusting us 🌷"
-    elif not clinic_name:
+    if not clinic_name:
         clinic_line = "نشكر ثقتك بنا 🌷"
     elif clinic_name.startswith("مستشفى") or clinic_name.startswith("مركز") or clinic_name.startswith("عيادات"):
         # The Arabic clinic name usually already carries its own
@@ -2494,10 +2416,7 @@ def _build_booking_success_display_directive(messages: list, templates: dict, ta
     else:
         clinic_line = f"نشكر ثقتك بمستشفى {clinic_name} 🌷"
 
-    if is_english:
-        greeting_line = f"✅ Dear {patient_name}" if patient_name else "✅"
-    else:
-        greeting_line = f"✅ عزيزي/عزيزتي {patient_name}" if patient_name else "✅"
+    greeting_line = f"✅ عزيزي/عزيزتي {patient_name}" if patient_name else "✅"
 
     # The MIDDLE of this block is the clinic's own authored
     # msg_booking_success template, read fresh from config every turn
@@ -2506,7 +2425,7 @@ def _build_booking_success_display_directive(messages: list, templates: dict, ta
     # would silently stop matching the moment the clinic edited the CSV.
     # The name line above it and the thank-you line below it are the
     # approved wrapper this clinic asked for around that template.
-    success_template = _localized_authored_template(templates, "msg_booking_success", target_language) or ""
+    success_template = (templates or {}).get("msg_booking_success") or ""
     success_template = success_template.replace("\r\n", "\n").replace("\r", "\n").strip()
     success_body = "\n".join(line.strip() for line in success_template.split("\n") if line.strip())
 
@@ -2517,13 +2436,6 @@ def _build_booking_success_display_directive(messages: list, templates: dict, ta
         if success_body.startswith("✅"):
             success_body = success_body[1:].lstrip()
         success_body = _fill_booking_ref(success_body, booking_ref)
-    elif is_english:
-        success_body = (
-            "Your appointment has been booked successfully\n"
-            f"🎉 Booking ref: {booking_ref}\n"
-            "📌 Keep this booking ref - you can use it to cancel or "
-            "reschedule the appointment."
-        )
     else:
         success_body = (
             "تم تأكيد حجز موعدك بنجاح\n"
@@ -2537,13 +2449,12 @@ def _build_booking_success_display_directive(messages: list, templates: dict, ta
         "[INTERNAL INSTRUCTION - NOT FOR THE USER - READ CAREFULLY]\n"
         "The booking was just created successfully. Your ENTIRE reply "
         "must be EXACTLY the text between the START/END markers below, "
-        "copied verbatim - it is already in the right language for "
-        "this conversation, so do not translate, reword, or otherwise "
-        "change it (keep the emoji and the actual booking_ref value "
-        "unchanged too). The START/END marker lines themselves are NOT "
-        "part of the text to copy - never include them, or any other "
-        "line of dashes/equals-signs, in your actual reply. Do NOT add "
-        "anything else, anywhere in the reply.\n\n"
+        "copied verbatim - translate only if the conversation is in a "
+        "different language (keep the emoji and the actual booking_ref "
+        "value unchanged either way). The START/END marker lines "
+        "themselves are NOT part of the text to copy - never include "
+        "them, or any other line of dashes/equals-signs, in your actual "
+        "reply. Do NOT add anything else, anywhere in the reply.\n\n"
         "[BEGIN-EXACT-TEXT]\n"
         f"{block}\n"
         "[END-EXACT-TEXT]\n\n"
@@ -3540,35 +3451,6 @@ _FRAGMENT_STOP_WORDS = (
     "عشان", "علشان", "لان", "لأن", "ومحتاج", "ومحتاجه", "واحجز",
     "وعايز", "وعاوز", "on", "at", "in", "branch", "day", "please",
     "لو", "ممكن", "بس", "او", "أو", "ولا",
-    # RELATIVE PRONOUNS - "دكتور اللي عندكم وصفلي دواء غلط" names no
-    # doctor at all; "اللي"/"الي" ("who"/"that") introduces a
-    # DESCRIPTION of one, and everything after it is the complaint, not
-    # a name. Without these, the fragment grabbed "اللي عندكم وصفلي
-    # دواء" as if it were the doctor's own name and told the model to
-    # resolve it as one.
-    #
-    # CONFIRMED REAL PRODUCTION FAILURE (session 201003365691+medtown2,
-    # 2026-09-13 12:53:25): the patient's message produced
-    # `match_entity_info(entity_type="doctor",
-    # user_input="اللي عندكم وصفلي دواء فل")` against 12 real doctors,
-    # not_matched (of course - it isn't a name), and the patient was
-    # told "ما قدرت ألاقي دكتور بالاسم اللي ذكرته" - "I couldn't find a
-    # doctor by the name you mentioned" - when they had never mentioned
-    # a name to begin with. They were describing being given the wrong
-    # medication, not naming a doctor.
-    #
-    # STILL CONFIRMED failing on the SINGLE-LAM spelling: adding only
-    # "اللي" left "الي" - the ordinary Egyptian colloquial spelling of
-    # the exact same word, one "ل" instead of two - uncaught.
-    # (session 201158877175+medtown2, 2026-09-13 13:09:06): "الدكتور
-    # الي عندكم وصفي دواء غلط" produced
-    # `match_entity_info(user_input="الي عندكم وصفي دواء")`, same
-    # not_matched, same false "couldn't find a doctor by that name"
-    # reply, on the retry of the very failure this was meant to fix.
-    # `_NOT_A_BRANCH_NAME` two sections below already lists "الي"
-    # alongside "اللي" for exactly this reason - this list should never
-    # have listed one spelling without the other.
-    "اللي", "الي", "التي", "الذي", "اللى", "يلي",
 )
 
 
@@ -4075,7 +3957,7 @@ def _booking_entry_message(templates: dict, target_language: Optional[str]) -> s
     different thing from an authored message that opens by confirming
     it can help - and this wording is the clinic's own choice."""
 
-    authored = _localized_authored_template(templates, "msg_booking_entry", target_language)
+    authored = (templates or {}).get("msg_booking_entry")
     if authored and str(authored).strip():
         return str(authored).replace("\r\n", "\n").replace("\r", "\n").strip()
 
@@ -6451,49 +6333,8 @@ def _looks_like_a_person_name(candidate: str) -> bool:
     return True
 
 
-# Tools whose returned JSON can legitimately contain a real doctor's
-# identity - used to scope `_doctor_names_from_tools` below so it never
-# mistakes a specialty/branch/service "name" field for a doctor's name.
-# `list_specialties`, `list_branch_services`, `list_hospital_services`,
-# `answer_hospital_faq` and similar are deliberately NOT here: they use
-# the exact same generic "name"/"id" shape for non-doctor entities.
-_DOCTOR_BEARING_TOOLS = frozenset({
-    "find_available_doctors",
-    "match_entity_for_booking",
-    "get_doctor_schedule",
-    "get_doctor_schedule_for_booking",
-    "get_available_slots_for_booking",
-    "get_available_reschedule_slots",
-    "select_appointment_slot",
-    "lookup_appointment",
-    "check_booking_status",
-    "list_branches_for_specialty",
-    "create_new_booking",
-    "reschedule_appointment",
-})
-
-
 def _doctor_names_from_tools(state: AgentState) -> set:
     """Every doctor name any tool result in this conversation returned.
-
-    SCOPED TO DOCTOR-BEARING TOOLS ONLY. `_collect` below matches the
-    generic `"name"` key (among others) wherever it finds one in a
-    tool's returned JSON - and `"name"` is not unique to doctor
-    objects. `list_specialties` returns `{"id", "name", ...}` for
-    SPECIALTIES using that exact same key.
-
-    CONFIRMED REAL PRODUCTION FALSE POSITIVE (tenant medtown, session
-    201003365691+medtown2, 2026-09-13 10:30): `list_specialties` had
-    just returned "طب الباطنة" as a specialty name. The medical-guidance
-    reply then said "عندنا ... دكاترة في تخصص طب الباطنة" - no doctor
-    named at all - but "طب الباطنة" had been swept into `known` as if it
-    were a doctor's name, so it read back as a real, named doctor
-    appearing with no doctor-lookup tool call this turn and the whole
-    (correct, useful) reply was discarded twice and replaced with the
-    generic fallback. Scanning every tool message unconditionally for
-    "name" cannot distinguish a specialty/branch/service list from an
-    actual doctor roster, so this now only walks tool messages produced
-    by tools that actually return doctor identities.
 
     ROBUST TO SERIALIZATION FORMAT: a tool's dict return value normally
     reaches here as valid double-quoted JSON (LangGraph's ToolNode tries
@@ -6514,9 +6355,6 @@ def _doctor_names_from_tools(state: AgentState) -> set:
 
     for msg in state.get("messages", []) or []:
         if getattr(msg, "type", None) != "tool":
-            continue
-
-        if getattr(msg, "name", None) not in _DOCTOR_BEARING_TOOLS:
             continue
 
         raw = getattr(msg, "content", None)
@@ -7047,41 +6885,12 @@ def _reply_shows_doctor_for_service_with_no_lookup_this_turn(reply_text: str, st
     Scoped to a NAMED service/specialty context specifically (not every
     doctor mention) so a doctor already confirmed for the CURRENT
     booking in progress - discussed again without a fresh lookup, which
-    is normal and correct - is never flagged.
-
-    NAMED DOCTOR REQUIRED, NOT JUST DOCTOR VOCABULARY. The cue-word gate
-    above (`_DOCTOR_LIST_CUE_RE`) matches generic profession words -
-    "دكتور", "أخصائي" - with no person attached, and those show up
-    constantly in ordinary, harmless sentences like "لازم تراجع دكتور
-    جراحة العظام" (go see an orthopaedic doctor) or "عندنا دكاترة في
-    تخصص جراحة العظام" (we have doctors in that specialty). Nothing
-    about that is stale - there is no specific identity being carried
-    over from an earlier, different context, because no specific doctor
-    was named at all. This function's whole premise is a REAL name
-    reused in the WRONG context, so it must first confirm a real name -
-    one this conversation's tools actually returned - is present in the
-    reply, not just profession vocabulary.
-
-    CONFIRMED REAL PRODUCTION FALSE POSITIVE: a patient reported leg
-    pain; the medical reply gave general first-aid advice, told them to
-    see "دكتور جراحة العظام" (an orthopaedic doctor, generically) if
-    symptoms worsened, and asked whether they wanted a booking - naming
-    no doctor at all. It was flagged here purely on "دكتور" + "في
-    تخصص" and replaced with the generic fallback, discarding the entire
-    (correct, useful) safety guidance."""
+    is normal and correct - is never flagged."""
 
     if not reply_text or not _DOCTOR_LIST_CUE_RE.search(reply_text):
         return False
 
     if not _NAMES_SERVICE_OR_SPECIALTY_CONTEXT_RE.search(_norm_ar(reply_text)):
-        return False
-
-    known = _doctor_names_from_tools(state)
-    normalized_reply = _norm_ar(reply_text)
-    named_doctor_present = any(
-        name and name in normalized_reply for name in known
-    )
-    if not named_doctor_present:
         return False
 
     ran_this_turn = _tool_results_since_latest_human(
@@ -8296,69 +8105,6 @@ def _build_unstaffed_specialty_directive(messages: list, agent_name: str) -> str
         if bookable else "      (none - nobody at all is bookable right now)"
     )
 
-    # DID THE PATIENT DESCRIBE A SYMPTOM, OR NAME A DEPARTMENT THEMSELVES?
-    #
-    # The rules below used to be one-size-fits-all: never show the
-    # bookable list, because the confirmed failures were all a symptom
-    # ("رجلي وقعت عليها") getting redirected to whatever WAS bookable
-    # instead of an honest "not here". That is still right when the
-    # patient described a symptom - picking the department is the
-    # model's job, not theirs.
-    #
-    # But when the patient instead asked for a SPECIALTY BY NAME
-    # ("علاج نفسي", "تخصص") - no body part, no symptom word, just a
-    # department that turned out to be unstaffed - "not here, want a
-    # staff member?" is a dead end. They were choosing for themselves
-    # already; the useful next step is to show them what they CAN
-    # choose from right now, not to route them to a human for a choice
-    # they could make in one more message. CONFIRMED REAL PRODUCTION
-    # CASE (tenant medtown, 2026-09-13 10:59): the patient explicitly
-    # asked to book "علاج نفسي", it was unstaffed, and the reply ended
-    # the conversation with only a staff-handoff offer - the seven
-    # other bookable specialties were never mentioned.
-    patient_text = _latest_human_text(messages)
-    described_symptom = bool(
-        patient_text
-        and (_SYMPTOM_ANSWER_RE.search(patient_text)
-             or agents.router.INJURY_RE.search(patient_text))
-    )
-
-    if described_symptom:
-        list_rule = (
-            "  - NEVER print the bookable list as a menu for them to choose "
-            "from. They described a symptom; picking the department is your "
-            "job, not theirs, and a catalogue of unrelated specialties is "
-            "not an answer to \"my leg hurts\".\n\n"
-        )
-        closing_case = (
-            "  2. It is in the UNBOOKABLE list -> say so, in one sentence, "
-            "and offer a staff member:\n"
-            "       \"عندنا قسم [التخصص] بس للأسف ما فيه دكتور متاح حاليًا "
-            "- تحب أوصلك بموظف يساعدك؟\"\n"
-            "     That is a COMPLETE and CORRECT answer. It tells them the "
-            "clinic does treat this and that today is not the day.\n"
-            "  3. It is in neither list -> \"للأسف ما عندنا التخصص ده في "
-            "المستشفى\", then offer a staff member.\n\n"
-        )
-    else:
-        list_rule = (
-            "  - The patient named a DEPARTMENT, not a symptom - so here, "
-            "unlike the symptom case, show them the bookable list. Do not "
-            "stop at a staff-member offer when there is a shorter path: "
-            "letting them pick another department themselves.\n\n"
-        )
-        closing_case = (
-            "  2. It is in the UNBOOKABLE list, or in neither list -> say so "
-            "plainly, then show the bookable list so they can pick one:\n"
-            "       \"للأسف [التخصص] مش متاح للحجز حاليًا 🌷\\nبس عندنا "
-            "التخصصات دي متاحة للحجز:\\n[البوكابل ليست، كل واحد في سطر]\\n"
-            "تحب تحجز في أي واحد منها؟\"\n"
-            "     That is a COMPLETE and CORRECT answer: honest about the "
-            "one they asked for, and useful about what actually works "
-            "today. Only offer a staff member if the bookable list is "
-            "empty.\n\n"
-        )
-
     return (
         "============================================================\n"
         "SOME DEPARTMENTS EXIST BUT CANNOT BE BOOKED TODAY\n"
@@ -8373,15 +8119,25 @@ def _build_unstaffed_specialty_directive(messages: list, agent_name: str) -> str
         "which of these three is true - and nothing else:\n\n"
         "  1. It is in the BOOKABLE list -> name that specialty and "
         "offer its doctors, exactly as usual.\n"
-        + closing_case
-        + "TWO THINGS THAT ARE NEVER THE ANSWER HERE:\n"
+        "  2. It is in the UNBOOKABLE list -> say so, in one sentence, "
+        "and offer a staff member:\n"
+        "       \"عندنا قسم [التخصص] بس للأسف ما فيه دكتور متاح حاليًا "
+        "- تحب أوصلك بموظف يساعدك؟\"\n"
+        "     That is a COMPLETE and CORRECT answer. It tells them the "
+        "clinic does treat this and that today is not the day.\n"
+        "  3. It is in neither list -> \"للأسف ما عندنا التخصص ده في "
+        "المستشفى\", then offer a staff member.\n\n"
+        "TWO THINGS THAT ARE NEVER THE ANSWER HERE:\n"
         "  - NEVER offer a specialty from the bookable list because the "
         "right one is unavailable. A leg somebody fell on does not "
         "become an internal-medicine problem just because orthopaedics "
         "has no slots. The patient pays for that trip and still needs "
         "the right doctor.\n"
-        + list_rule
-        + "Keep the warm opening line, the comfort measures, the red "
+        "  - NEVER print the bookable list as a menu for them to choose "
+        "from. They described a symptom; picking the department is your "
+        "job, not theirs, and a catalogue of unrelated specialties is "
+        "not an answer to \"my leg hurts\".\n\n"
+        "Keep the warm opening line, the comfort measures, the red "
         "flags and the ⚕️ not-a-diagnosis line exactly as the medical "
         "flow requires - including naming the RIGHT kind of doctor, "
         "which is true advice wherever they end up going. Only the "
@@ -8644,10 +8400,24 @@ _SPECIALTY_CHOICE_CORRECTION_DIRECTIVE = (
     "doctor. The specialty may appear as a label beside each name "
     "(\"رانيا عبد الرحمن — استشاري · باطنه عام\"), which is useful; it "
     "is never a choice they must make first.\n\n"
-    "CONFIRMED REAL PRODUCTION FAILURE: the patient said \"اه\" to being "
-    "booked in and got \"وش التخصص اللي تفضله من تخصصات الطب الباطنة "
-    "المتوفرة؟ 1️⃣ طب الباطنة 2️⃣ باطنه عام\" - a second triage question "
-    "where the doctor list should have been.\n\n"
+    "DIFFERENT CASE - CHECK THIS FIRST: if the patient did not describe "
+    "a symptom this turn but simply agreed (\"اه\"/\"شوفلي\") to YOUR "
+    "OWN earlier offer, and that offer already named ONE SPECIFIC "
+    "specialty (\"تحب أشوف لك دكاترة ثانيين في تخصص طب نفسي؟\"), there "
+    "is no ambiguity to resolve at all - re-asking or broadening to the "
+    "full catalogue breaks the promise you just made and forces them to "
+    "repeat themselves. Call `find_available_doctors` for THAT NAMED "
+    "specialty specifically and answer about it directly - including "
+    "saying plainly that it has no available doctors right now, if "
+    "that is what comes back, rather than pretending you have not "
+    "already found that out.\n\n"
+    "CONFIRMED REAL PRODUCTION FAILURE: the assistant offered \"تحب "
+    "أشوف لك دكاترة ثانيين في تخصص طب نفسي\", the patient said \"اه "
+    "شوفلي دكاتره\", and the reply printed all seven OTHER specialties "
+    "and asked which one - forcing the patient to type \"طب نفسي\" "
+    "again before finally being told (correctly) that it has no "
+    "available doctors, something the system already knew one turn "
+    "earlier.\n\n"
 )
 
 
@@ -9340,6 +9110,16 @@ _SPECIALTY_CATALOGUE_CORRECTION_DIRECTIVE = (
     "answered with the correct specialty in prose and then all seven "
     "registered specialties printed underneath, asking the patient to "
     "pick - including طب الأطفال and جراحة العظام.\n\n"
+    "DIFFERENT CASE - CHECK THIS FIRST: if there is no symptom this turn "
+    "at all and the patient simply agreed to YOUR OWN earlier offer that "
+    "already named ONE SPECIFIC specialty, printing the full catalogue "
+    "is not a partial improvement over asking which one - it is the "
+    "exact same mistake. Answer about the NAMED specialty directly (call "
+    "`find_available_doctors` for it and say what comes back, including "
+    "\"no doctors available\" if that is the honest answer) instead of "
+    "handing them a list of everything else. See `_SPECIALTY_CHOICE_"
+    "CORRECTION_DIRECTIVE`'s own confirmed failure for the exact "
+    "production case this covers.\n\n"
 )
 
 
@@ -10643,19 +10423,25 @@ _SOFT_RECOVERY_ESCALATION_TEXT = {
 
 def _soft_recovery_reply(target_language: Optional[str],
                          messages: Optional[list] = None) -> str:
+    """The universal last-resort reply - used whenever a verifier
+    rejects a draft twice, or the model gets stuck repeating an
+    identical tool call, anywhere in the project.
+
+    ALWAYS RETURNS THE ACTIONABLE HANDOFF OFFER, NOT THE BARE
+    "ممكن توضحلي طلبك تاني؟" LINE. The two-tier design this replaced -
+    a content-free "please clarify" on the first occurrence, escalating
+    to a human-handoff offer only once the SAME text repeated - existed
+    to avoid over-reacting to a possible one-off hiccup. Per explicit
+    instruction, that trade-off is no longer wanted: NO safety-triggered
+    fallback anywhere in the project should ever hand the patient a
+    dead end, even the first time it happens, since every call site
+    here already means the assistant could not make progress on its
+    own. `messages` is accepted for backward compatibility with
+    existing call sites but no longer changes the result."""
+
     is_english = (target_language or "").strip().lower().startswith("en")
     lang_key = "en" if is_english else "ar"
-
-    # `messages` is optional (main.py/app.py call this from outside the
-    # graph, before any turn's messages exist in that shape) - only the
-    # in-graph callers, which already hit this condition once and know
-    # it, can supply it and get the escalation behaviour.
-    if messages is not None:
-        previous_reply = _last_ai_reply_text(messages)
-        if previous_reply in _SOFT_RECOVERY_TEXT.values():
-            return _SOFT_RECOVERY_ESCALATION_TEXT[lang_key]
-
-    return _SOFT_RECOVERY_TEXT[lang_key]
+    return _SOFT_RECOVERY_ESCALATION_TEXT[lang_key]
 
 
 # Public aliases: main.py and app.py both need to make the same
@@ -10797,7 +10583,6 @@ def _honest_unstaffed_reply(draft: str, messages: list,
 
 def _safe_fallback_reply(
     state: AgentState, target_language: Optional[str], failure_description: Optional[str] = None,
-    agent_name: Optional[str] = None,
 ) -> str:
     """The message sent instead of a reply that a verifier flagged TWICE
     in the same turn (original draft, then its corrective retry) - see
@@ -10837,33 +10622,6 @@ def _safe_fallback_reply(
 
     is_english = (target_language or "").strip().lower().startswith("en")
     desc = (failure_description or "").lower()
-
-    # ADDED: "fabricated availability claim" fires from two genuinely
-    # different situations that used to share one message:
-    #
-    #   1. `medical`/`concierge` gave real symptom advice but could not
-    #      confirm a doctor for it - "no doctor available for this at
-    #      the hospital" is the true and useful thing to say.
-    #   2. `booking`/`reschedule` simply couldn't match a NAME the
-    #      patient typed (e.g. "دكتور محمد") against the roster. Nothing
-    #      is wrong with the patient's condition here - there was never
-    #      a condition mentioned - so the medical-flavoured message
-    #      above is actively misleading. CONFIRMED REAL PRODUCTION
-    #      CONFUSION (tenant 201003365691, 2026-09-13 08:41): a plain
-    #      "اسم دكتور مش موجود" case sent "ما لقيتش دكتور متاح حاليًا
-    #      للحالة دي", which reads as "we have no one for your medical
-    #      issue" rather than "that name didn't match - want the list?".
-    if "fabricated availability claim" in desc and agent_name not in (
-        "medical", "concierge",
-    ):
-        return (
-            "معلش، ما لقيتش دكتور بالاسم ده متاح للحجز حاليًا 🌷\n"
-            "تحب تشوف قائمة التخصصات أو الدكاترة المتاحين عندنا؟"
-            if not is_english else
-            "Sorry - I couldn't match that name to an available doctor "
-            "right now 🌷\nWould you like to see our list of specialties "
-            "or doctors instead?"
-        )
 
     # Ordered so a more specific match wins over a more general one when
     # a description could plausibly match more than one category.
@@ -10947,21 +10705,11 @@ def _safe_fallback_reply(
         (
             ("fabricated appointment", "invents availability", "invented availability",
              "no availability tool"),
-            # NOT "ممكن نرجع نشوف الأيام والمواعيد تاني من الأول؟" - that
-            # sends the patient all the way back to square one over a
-            # mistake that was entirely the assistant's, on a flow they
-            # may have already stepped through more than once. It reads
-            # as the assistant giving up on the conversation rather than
-            # correcting itself. This says the same true thing - the
-            # times about to be shown could not be confirmed - without
-            # discarding whatever the patient already told us (the
-            # doctor, the day) and asks for one concrete thing instead
-            # of a full restart.
-            "معلش، مش قادرة أتأكد من المواعيد اللي هعرضهملك دلوقتي 🌷\n"
-            "قولي اليوم أو الوقت اللي يناسبك وهدورلك على أقرب موعد فعلي متاح.",
-            "Sorry, I couldn't confirm the times I was about to show you "
-            "🌷\nTell me the day or time that works for you and I'll look "
-            "up the nearest real available slot.",
+            "معلش، مش قادرة أتأكد من موعد فعلي متاح دلوقتي 🌷\n"
+            "ممكن نرجع نشوف الأيام والمواعيد المتاحة تاني من الأول؟",
+            "Sorry, I can't confirm a real available slot right now 🌷\n"
+            "Shall we look at the available days and times again from the "
+            "start?",
         ),
         (
             ("cancellation without", "confirm cancelling", "offers cancellation without lookup"),
@@ -12297,24 +12045,10 @@ _FLOW_VERIFIER_MARKERS = (
     "should have been treated as another OTP retry",
     "right after the patient agreed to proceed on the channel number",
     "whether to send the verification code instead of",
-    "instead of showing the doctors",
     "instead of showing that doctor's own schedule",
-    "printed the specialty catalogue",
     "re-send a full name that already had at least two parts",
     "offered the doctor roster again",
     "instead of continuing",
-    # ADDED: this check's own reply is 100% true - it only re-asks a
-    # question whose answer the session already has. That is a clumsy
-    # turn, not a fabricated fact, so it belongs in FLOW like every
-    # other "re-asked something already given" check above. Left as the
-    # SAFETY default it fell through to the zero-tolerance fallback and
-    # replaced a perfectly fine (if redundant) question with the fully
-    # generic "ممكن توضحلي طلبك تاني؟" - CONFIRMED REAL PRODUCTION
-    # FAILURE (tenant 201158877175, 2026-09-13 08:41): patient said
-    # "عاوزه احجز معاد جديد" with a specialty already established from
-    # earlier in the same conversation, and got the clarify-again
-    # message instead of simply being walked forward.
-    "already has one on file from earlier in the conversation",
 )
 
 
@@ -12812,32 +12546,6 @@ _CLAIM_HANDOFF_RE = re.compile(
     r"transferring\s+you\s+now|connecting\s+you\s+(?:now|with))"
 )
 
-# "بعتلك رمز تحقق" / "أرسلنا لك رمز التحقق" / "تم إرسال الكود" -
-# the verification code reported as ALREADY ON ITS WAY. This is exactly
-# as irreversible-sounding to the patient as the other five claims: they
-# will now go check their phone and type back whatever arrives, so if
-# nothing was actually sent, `verify_otp` can never succeed no matter
-# what they type - see the CONFIRMED REAL PRODUCTION FAILURE below.
-#
-# CONFIRMED REAL PRODUCTION FAILURE (session 201003365691+medtown2,
-# 2026-09-13 12:29-12:30): the reply said "أبشر، بعتلك رمز تحقق على
-# الرقم ..." twice, for two different numbers, and `send_otp` never
-# actually ran either time (no "OTP sent for %s" log line either turn).
-# `_otp_storage` was never written to, so `verify_otp` rejected the
-# patient's next message both times - including the correct
-# `TEST_OTP`, "123456" - and there was no way for the patient to ever
-# get past this by typing anything, because there was nothing stored
-# to match against.
-_CLAIM_OTP_SENT_RE = re.compile(
-    r"(?:تم|تمّ)\s*(?:بنجاح\s*)?(?:ارسال|إرسال|بعث)\s*(?:ال)?(?:رمز|كود)|"
-    r"(?:بعتلك|بعثتلك|ارسلتلك|أرسلتلك|ابعتلك|هبعتلك)\s*(?:ال)?(?:رمز|كود)|"
-    r"(?:ال)?(?:رمز|كود)\w*\s*(?:ال)?(?:تحقق|تاكيد|تأكيد)?\w*\s*(?:اترسل|إترسل|وصلك|راح\s*يوصلك)|"
-    r"\b(?:a\s+)?(?:verification\s+)?(?:code|otp)\s+(?:has\s+been\s+|was\s+|is\s+being\s+)?sent\b|"
-    r"\bwe(?:'ve|\s+have)?\s+sent\s+(?:you\s+)?(?:a\s+)?(?:verification\s+)?(?:code|otp)\b|"
-    r"\bi(?:'ve|\s+have)?\s+sent\s+(?:you\s+)?(?:a\s+)?(?:verification\s+)?(?:code|otp)\b",
-    re.IGNORECASE,
-)
-
 
 class _ClaimGate:
     """One irreversible claim, and the tool result that makes it true."""
@@ -12925,18 +12633,6 @@ _CLAIM_GATES = (
         "handoff this turn, so nobody has been alerted and they are "
         "waiting for a person who is not coming. Call "
         "`request_human_handoff` with `patient_agreed=True`.",
-    ),
-    _ClaimGate(
-        _CLAIM_OTP_SENT_RE, "send_otp", ("otp_sent", "otp_not_needed_matches_channel"),
-        "told the patient a verification code was sent",
-        "You have just told this patient a verification code was SENT to "
-        "their number. `send_otp` did not run this turn (or did not "
-        "return \"otp_sent\"), so nothing was actually sent - there is no "
-        "code stored anywhere for `verify_otp` to check against, which "
-        "means whatever the patient types back next, correct or not, "
-        "will be rejected and they can never get past this step. Call "
-        "`send_otp` now with the exact number the patient gave, and say "
-        "nothing about a code being sent until it returns.",
     ),
 )
 
@@ -13290,23 +12986,6 @@ _REPLY_VERIFIERS = (
         lambda reply, state: _DAY_ALREADY_NAMED_CORRECTION_DIRECTIVE,
         "reply re-asked which day, but the patient's own last message already named "
         "a day matching one in the just-shown day list",
-    ),
-    (
-        # SAFETY, not FLOW, and deliberately not added to
-        # `_FLOW_VERIFIER_MARKERS`: this is not a wrong-question-order
-        # problem where every word is still true. A bare "which branch"
-        # offer with no `get_doctor_schedule_for_booking` result behind
-        # it is asserting that this doctor works at the named branch
-        # (or branches) with nothing to back that up - exactly the kind
-        # of ungrounded claim the patient could act on. See the
-        # function's own docstring for the confirmed production case:
-        # the invented "Al Nozha" branch offer, unresolved by the
-        # patient's "1", cascaded into a real branch ("Al Manar") being
-        # wrongly matched two turns later.
-        lambda reply, state, agent_name: _reply_asks_which_branch_with_no_schedule_shown(reply, state),
-        lambda reply, state: _ASKS_BRANCH_WITHOUT_SCHEDULE_CORRECTION_DIRECTIVE,
-        "reply asked which branch for a confirmed doctor with no branch yet, but "
-        "showed no real schedule from get_doctor_schedule_for_booking to ground it",
     ),
     (
         lambda reply, state, agent_name: (
@@ -15316,7 +14995,7 @@ def _build_out_of_scope_block(templates: dict, language: str = "ar") -> str:
     patient's own language; this was quietly exempt from all of it.
     """
 
-    authored = _localized_authored_template(templates, "msg_out_of_scope", language)
+    authored = (templates or {}).get("msg_out_of_scope")
     if authored and authored.strip():
         return authored.replace("\r\n", "\n").replace("\r", "\n").strip()
 
@@ -15437,21 +15116,6 @@ def _build_scope_directive(templates: dict, language: str = "ar") -> str:
 _NAME_REJECTION_RE = re.compile(
     r"اسمين\s*علي\s*الاقل|اسمين\s*على\s*الأقل|"
     r"(?:ال)?اسم\s*(?:ال)?اول\s*و\s*(?:اسم\s*)?(?:ال)?عائله|"
-    # SAME REJECTION, WITHOUT THE WORD "اول" (first). The clinic's own
-    # phrasing drops it entirely - "على الأقل اسم واسم عائلة" ("at least
-    # a name and a family name") - and the pattern above requires "اسم
-    # الاول" literally, so it never fired.
-    #
-    # CONFIRMED REAL PRODUCTION FAILURE (WhatsApp screenshot, medtown,
-    # 2026-09-13 15:51): the patient answered "حسين الاحمد" - a real
-    # first name and family name, exactly two parts - to "من فضلك أعطيني
-    # اسمك الكامل لإتمام الحجز.", and was sent straight back "من فضلك
-    # أعطيني اسمك الكامل لإتمام الحجز. هل ممكن تكتب الاسم الكامل، يعني
-    # على الأقل اسم واسم عائلة؟" - the exact already-valid answer, asked
-    # for again. They typed "حسين الاحمد" a second time, because there
-    # was nothing else it could have been.
-    r"(?:ال)?اسم\s*و\s*(?:ال)?اسم\s*(?:ال)?عائله|"
-    r"(?:ال)?اسم\s*و\s*(?:ال)?عائله|"
     r"at\s+least\s+two\s+names|first\s+(?:name\s+)?and\s+(?:the\s+)?(?:family|last)\s+name"
 )
 
@@ -15941,26 +15605,6 @@ _REFERENCE_OR_PHONE_QUESTION_RE = re.compile(
     + _PHONE_WORD_FRAGMENT + r"|"
     + _PHONE_WORD_FRAGMENT +
     r".{0,40}(?:رقم\s*(?:ال)?حجز|(?:ال)?رقم\s*(?:ال)?مرجعي|reference\s*(?:number)?)"
-)
-
-# MENTIONING the phone/reference word is NOT the same as ASKING for it.
-#
-# CONFIRMED FALSE POSITIVE (tenant 201158877175, 2026-09-13 09:38): after
-# identity was already verified and lookup_appointment found two real
-# bookings, the (entirely correct) reply "عندي عندك موعدين مسجلين على رقم
-# الجوال هذا: 1) ... 2) ... أي رقم منهم تحب تعدل موعده؟" was flagged as
-# "re-asking for the phone number" purely because it contains the phrase
-# "رقم الجوال" - even though that phrase is there to describe which
-# bookings were found, not to request the number again. Because this
-# check is SAFETY severity, failing it twice replaced a correct,
-# fully-populated appointment picker with the generic fallback message.
-#
-# Require an actual request/imperative marker alongside the phone/
-# reference phrase before treating it as a re-ask.
-_ACTUAL_IDENTITY_REQUEST_RE = re.compile(
-    r"أرسل|ارسل|ابعت|إبعت|أعطني|اعطني|زودني|زوّدني|ممكن\s*(?:تبعت|ترسل)|"
-    r"تقدر\s*(?:تبعت|ترسل)|من\s*فضلك.{0,25}(?:أرسل|ارسل|ابعت|إبعت)|"
-    r"share|send|provide|give\s*me"
 )
 
 # A booking reference ("GBN-2026-06-20-151") or anything that looks
@@ -16550,17 +16194,10 @@ def _reply_reasks_identity_after_verification(reply_text: str, state: AgentState
         return False
 
     folded = _norm_ar(reply_text)
-    mentions_phone_or_reference = bool(_ASKS_FOR_PHONE_DIRECTLY_RE.search(folded)) or bool(
+    asks = bool(_ASKS_FOR_PHONE_DIRECTLY_RE.search(folded)) or bool(
         _REFERENCE_OR_PHONE_QUESTION_RE.search(folded)
     )
-    if not mentions_phone_or_reference:
-        return False
-
-    # MENTIONING the phone/reference isn't a re-ask on its own - see the
-    # comment on `_ACTUAL_IDENTITY_REQUEST_RE` above. Only treat this as
-    # asking again when the reply actually contains a request/imperative
-    # for the patient to supply it.
-    if not _ACTUAL_IDENTITY_REQUEST_RE.search(folded):
+    if not asks:
         return False
 
     session_id = state.get("session_id")
@@ -17295,86 +16932,6 @@ _DAY_ALREADY_NAMED_CORRECTION_DIRECTIVE = (
 )
 
 
-_ASKS_WHICH_BRANCH_RE = re.compile(
-    r"أي\s*فرع|انهي\s*فرع|أنهي\s*فرع|اي\s*فرع|تختار\s*فرع|"
-    r"which\s*branch"
-)
-
-
-def _reply_asks_which_branch_with_no_schedule_shown(reply_text: str, state: AgentState) -> bool:
-    """True when the reply asks the patient which branch they want for a
-    doctor who is ALREADY confirmed, no branch is confirmed yet, and the
-    reply shows no actual schedule (no weekday/time detail) to ground
-    the question in - i.e. a bare, invented-looking branch offer instead
-    of STEP NB2's required `get_doctor_schedule_for_booking` call.
-
-    prompts.py's STEP NB2 is explicit about this exact case: "Once a
-    DOCTOR is confirmed but NO branch is: do NOT ask a branch question
-    ... Instead call `get_doctor_schedule_for_booking` and SHOW its
-    result... If the result has only ONE branch, there is nothing to ASK
-    about". A branch question is only legitimate when it is attached to
-    that real schedule in the same reply (STEP NB2's own example ends
-    "... حابب تحجز في أنهي فرع وأنهي يوم؟" only AFTER printing the actual
-    weekday/hours rows) - so the discriminator here is the same one
-    `_reply_reasks_day_patient_already_named` already uses for an
-    analogous problem: does the reply actually contain schedule detail,
-    or is it just a question.
-
-    CONFIRMED REAL PRODUCTION FAILURE (tenant, 2026-09-13): doctor فارس
-    الشارخ was confirmed, no branch was, and with NO tool called that
-    turn the reply asked "الفرع: أي فرع تفضل تحجز فيه عند دكتور فارس
-    الشارخ؟ 🏥 1️⃣ Al Nozha" - a single-item numbered "choice" with no
-    schedule behind it at all. Because no `_remember_list(..., "branch",
-    ...)` had ever run for it, the patient's "1" had nothing to resolve
-    against, and the very next reply asked the identical question again,
-    twice, before they gave up and typed the branch name - which then
-    mismatched a completely different, real branch ("Al Manar") since
-    nothing had ever confirmed "Al Nozha" as this doctor's actual branch
-    in the first place.
-    """
-
-    if not reply_text or not _ASKS_WHICH_BRANCH_RE.search(_norm_ar(reply_text)):
-        return False
-
-    # A reply that actually shows weekday/time detail is a legitimate
-    # STEP NB2 schedule-plus-question message, not a bare guess - see
-    # the day-check above for the identical reasoning.
-    if re.search(r"صباح|مساء|am\b|pm\b|:\d{2}", reply_text, re.IGNORECASE):
-        return False
-
-    session_id = state.get("session_id")
-    if not session_id:
-        return False
-
-    session = tools._BOOKING_SESSIONS.get(session_id) or {}
-    if not session.get("doctor_id") or session.get("branch_id"):
-        return False
-
-    return not _tool_results_since_latest_human(
-        state.get("messages") or [], ("get_doctor_schedule_for_booking",),
-    )
-
-
-_ASKS_BRANCH_WITHOUT_SCHEDULE_CORRECTION_DIRECTIVE = (
-    "============================================================\n"
-    "DO NOT ASK WHICH BRANCH - SHOW THE REAL SCHEDULE FIRST\n"
-    "============================================================\n"
-    "Your previous draft asked the patient which branch they want for "
-    "this doctor, with no schedule behind the question - nothing has "
-    "confirmed which branch(es) this doctor actually works at yet.\n\n"
-    "Call `get_doctor_schedule_for_booking` right now and show its "
-    "result grouped by branch, with the real weekday(s) and hours at "
-    "each - in this SAME reply. If it returns only ONE branch, that "
-    "branch is already auto-confirmed for you: show the schedule and do "
-    "NOT ask which branch, since there is nothing to choose between. If "
-    "it returns more than one, show all of them (weekday + hours for "
-    "each) and THEN ask which branch and day suit them - never ask "
-    "before showing the real schedule.\n\n"
-    "Never invent or guess a branch name yourself; only the branches "
-    "this tool actually returns exist for this doctor.\n\n"
-)
-
-
 def _reply_asks_for_a_slot_already_locked_in(reply_text: str, state: AgentState) -> bool:
     """True when the reply asks the patient for the appointment time,
     while a slot has already been resolved via `select_appointment_slot`
@@ -17802,50 +17359,6 @@ def _repeated_call_directive(repeats: list, messages: list) -> str:
     )
 
 
-def _llm_forcing_no_tool_calls(agent_name: str):
-    """A binding that CANNOT call a tool - the provider must answer in
-    prose, using nothing but what is already in the conversation.
-
-    The mirror image of `_llm_forcing_tool` below: that one forces a
-    SPECIFIC call when the model claimed an action it never took; this
-    one forces NO call at all, for `_break_repeated_tool_loop`'s last
-    resort - the model has already asked for the exact same tool call
-    twice in this turn, so a fourth attempt would only spin the same
-    loop again, and the fact it needs is normally already sitting in
-    the history (a real earlier result, or one
-    `_deterministic_doctor_schedule_lookup`-style hook pre-fetched).
-    Removing the option to call a tool is what makes a THIRD identical
-    request impossible rather than merely discouraged.
-
-    Uses this agent's OWN model (not `OPENAI_MODEL_TOOL_FORCING`, the
-    small model `_llm_forcing_tool` uses to pin one exact call) -
-    reading the history and writing a real reply from it is reasoning
-    work, not a fixed pick.
-
-    Returns None under the same conditions `_llm_forcing_tool` does:
-    a caller has swapped `_llm_with_tools` (would desynchronise a
-    scripted test), or this specialist has no tools bound at all."""
-
-    if _llm_with_tools is not _DEFAULT_LLM_WITH_TOOLS:
-        return None
-
-    tool_list = agents.tools_for(agent_name)
-    if not tool_list:
-        return None
-
-    try:
-        return _llm_for_model(
-            config.OPENAI_MODEL_BY_AGENT.get(agent_name, config.OPENAI_MODEL)
-        ).bind_tools(tool_list, tool_choice="none")
-    except Exception:
-        logger.warning(
-            "repeated-tool-loop breaker: could not pin tool_choice=none for %s - "
-            "falling back to the safe message instead of forcing a text reply",
-            agent_name, exc_info=True,
-        )
-        return None
-
-
 def _break_repeated_tool_loop(response, state: AgentState, agent_name: str,
                               system_message, history: list,
                               target_language) -> object:
@@ -17864,28 +17377,11 @@ def _break_repeated_tool_loop(response, state: AgentState, agent_name: str,
     if worst >= _TOOL_CALL_REPEAT_CEILING:
         logger.error(
             "agent[%s]: %s has now been requested with identical arguments %d "
-            "times in one turn (session_id=%s) - forcing a text-only reply from "
-            "what is already in the history rather than letting the graph spin "
-            "to its recursion limit",
+            "times in one turn (session_id=%s) - answering in code rather than "
+            "letting the graph spin to its recursion limit",
             agent_name, repeats[0].get("name"), worst + 1,
             state.get("session_id"),
         )
-        forced_text_llm = _llm_forcing_no_tool_calls(agent_name)
-        if forced_text_llm is not None:
-            try:
-                ceiling_reply = _invoke_llm_resilient(
-                    forced_text_llm, [system_message] + history,
-                    agent_name=agent_name, target_language=target_language,
-                    context="repeated tool call - ceiling forced text reply",
-                )
-                if str(getattr(ceiling_reply, "content", "") or "").strip():
-                    return ceiling_reply
-            except Exception:  # noqa: BLE001
-                logger.warning(
-                    "agent[%s]: forced text-only reply at the repeat ceiling "
-                    "raised (session_id=%s) - falling back to the soft-recovery "
-                    "message", agent_name, state.get("session_id"), exc_info=True,
-                )
         return AIMessage(content=_soft_recovery_reply(target_language, messages))
 
     logger.warning(
@@ -17907,64 +17403,15 @@ def _break_repeated_tool_loop(response, state: AgentState, agent_name: str,
         context="repeated tool call",
     )
 
-    if not _repeated_tool_calls(retry, messages):
-        return retry
+    if _repeated_tool_calls(retry, messages):
+        logger.error(
+            "agent[%s]: still asking for the same %s call after being told it "
+            "had already run (session_id=%s) - answering in code",
+            agent_name, repeats[0].get("name"), state.get("session_id"),
+        )
+        return AIMessage(content=_soft_recovery_reply(target_language, messages))
 
-    # STILL ASKING FOR THE SAME CALL AFTER BEING TOLD, IN SO MANY
-    # WORDS, THAT IT ALREADY RAN AND WHAT IT ANSWERED.
-    #
-    # Giving up here with the content-free soft-recovery line used to
-    # throw away an answer that was SITTING IN THE HISTORY the whole
-    # time - the call had already run for real, or been pre-fetched by
-    # a deterministic hook (`_deterministic_doctor_schedule_lookup` and
-    # friends forge exactly this kind of result into history before the
-    # model's own turn even starts) - and the model simply would not
-    # read it.
-    #
-    # CONFIRMED REAL PRODUCTION FAILURE (session 201003365691+medtown2,
-    # 2026-09-13 11:46): the patient had already named the doctor and
-    # the specialty; `get_doctor_schedule_for_booking`'s real result was
-    # already in this turn's history. The model asked for it again, was
-    # told so and shown the answer, and asked a THIRD time anyway. The
-    # patient - who had done everything right - received "ممكن توضحلي
-    # طلبك تاني؟ عشان أقدر أساعدك صح" and the booking simply stalled.
-    #
-    # So: one last attempt, with tool-calling switched OFF entirely.
-    # There is no fourth identical call to make - the only possible
-    # output is prose, built from whatever is already in the history -
-    # so this cannot spin the loop again. Only if THIS also comes back
-    # empty (or the binding is unavailable) does the soft-recovery line
-    # still apply, as the genuine last resort it was always meant to
-    # be.
-    logger.error(
-        "agent[%s]: still asking for the same %s call after being told it "
-        "had already run (session_id=%s) - forcing a text-only reply from what "
-        "is already in the history instead of giving up with no answer",
-        agent_name, repeats[0].get("name"), state.get("session_id"),
-    )
-
-    forced_text_llm = _llm_forcing_no_tool_calls(agent_name)
-    final_text = ""
-    final_reply = None
-    if forced_text_llm is not None:
-        try:
-            final_reply = _invoke_llm_resilient(
-                forced_text_llm, [corrected] + history,
-                agent_name=agent_name, target_language=target_language,
-                context="repeated tool call - forced text reply",
-            )
-            final_text = str(getattr(final_reply, "content", "") or "").strip()
-        except Exception:  # noqa: BLE001
-            logger.warning(
-                "agent[%s]: forced text-only reply raised (session_id=%s) - "
-                "falling back to the soft-recovery message",
-                agent_name, state.get("session_id"), exc_info=True,
-            )
-
-    if final_text:
-        return final_reply
-
-    return AIMessage(content=_soft_recovery_reply(target_language, messages))
+    return retry
 
 
 def _run_agent(state: AgentState, agent_name: str) -> dict:
@@ -18164,7 +17611,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         state["messages"], agent_name,
     )
     booking_confirmation_directive = _build_booking_confirmation_requires_tool_directive(state["messages"], state.get("session_id"))
-    booking_success_directive = _build_booking_success_display_directive(state["messages"], state.get("templates"), target_language)
+    booking_success_directive = _build_booking_success_display_directive(state["messages"], state.get("templates"))
 
     # The three display blocks added to close the remaining gaps: a
     # resolved date, an entity list (doctors/specialties/branches), and
@@ -18173,8 +17620,8 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     # by the model, which is exactly where its output shape varied from
     # one patient to the next.
     resolved_day_directive = _build_resolved_day_directive(state["messages"], state.get("session_id"))
-    entity_list_directive = _build_entity_list_directive(state["messages"], target_language)
-    terminal_success_directive = _build_terminal_success_directive(state["messages"], state.get("templates"), target_language)
+    entity_list_directive = _build_entity_list_directive(state["messages"])
+    terminal_success_directive = _build_terminal_success_directive(state["messages"], state.get("templates"))
 
     # Only the booking specialist is told to clear a half-finished
     # booking, and only when it has just TAKEN OVER the conversation -
@@ -18890,7 +18337,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                         state.get("templates") or {}, target_language,
                     )
                     normalized = rebuilt or _safe_fallback_reply(
-                        state, target_language, description, agent_name,
+                        state, target_language, description,
                     )
                     used_safe_fallback = True
                     continue
@@ -18986,7 +18433,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                             state.get("templates") or {}, target_language,
                         )
                         normalized = rebuilt or _safe_fallback_reply(
-                            state, target_language, description, agent_name,
+                            state, target_language, description,
                         )
                         used_safe_fallback = True
                         break
@@ -19058,7 +18505,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                         state.get("templates") or {}, target_language,
                     )
                     normalized = rebuilt or _safe_fallback_reply(
-                        state, target_language, description, agent_name,
+                        state, target_language, description,
                     )
                     used_safe_fallback = True
                     continue
