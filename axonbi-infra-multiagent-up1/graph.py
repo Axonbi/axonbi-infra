@@ -7331,7 +7331,29 @@ def _find_invented_branches(reply_text: str, state: AgentState) -> list:
         if config.BRANCH_TRANSLITERATION_FALLBACK:
             candidate_skeleton = _transliteration_skeleton(name)
             if candidate_skeleton and len(candidate_skeleton) >= 2:
-                known_names = tools.get_known_entity_names(state.get("session_id"), "branch")
+                # `tools.get_known_entity_names` lives in `_BOOKING_SESSIONS`,
+                # an IN-MEMORY, per-process store that a service restart (or
+                # a different worker) wipes clean - while the conversation's
+                # `messages` persist across exactly those events. A patient
+                # picking back up a conversation after a restart has the
+                # branch legitimately established in history, but this
+                # ephemeral store no longer knows it.
+                #
+                # CONFIRMED REAL PRODUCTION FAILURE: after a service
+                # restart, the model correctly recalled "Al Manar" was
+                # already confirmed earlier in this same conversation and
+                # called `share_branch_location` directly (as intended) -
+                # but nothing that turn called `match_entity_info` again,
+                # so this ephemeral store was never repopulated, and the
+                # correct Arabic reply ("فرع المنار") was rejected as
+                # invented anyway.
+                #
+                # `established_facts["branches"]` is rebuilt EVERY turn
+                # straight from `messages` (see the ledger above) and is
+                # therefore immune to this - union it in as a second,
+                # durable source.
+                known_names = set(tools.get_known_entity_names(state.get("session_id"), "branch"))
+                known_names.update((state.get("established_facts") or {}).get("branches") or [])
                 if any(_transliteration_skeleton(kn) == candidate_skeleton for kn in known_names):
                     continue
         if name not in invented:
