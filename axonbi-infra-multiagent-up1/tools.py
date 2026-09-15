@@ -9352,8 +9352,22 @@ def create_new_booking(
                 slot_start, locked_slot.get("slotStart"), session_id,
             )
             slot_start = locked_slot["slotStart"]
-            if locked_slot.get("slotEnd"):
-                slot_end = locked_slot["slotEnd"]
+        # The locked slot's own slotEnd always wins, independent of
+        # whether slot_start needed correcting above - slot_end is
+        # never something the model derives correctly on its own (see
+        # this tool's docstring: these values must be EXACT, never
+        # recomputed), and a slot_start that already matches by instant
+        # (just reformatted, e.g. with a +03:00 offset instead of the
+        # naive wire value) is no guarantee slot_end does too.
+        #
+        # CONFIRMED REAL PRODUCTION FAILURE: slot_start matched the
+        # locked slot by instant (so the branch above never fired), but
+        # the model's own slot_end argument was wrong, producing
+        # bookingTimeTo <= bookingTimeFrom - the real API rejected it
+        # with "Booking Time To Must Be Greater Than Time From" after
+        # the patient had already confirmed the review twice.
+        if locked_slot.get("slotEnd"):
+            slot_end = locked_slot["slotEnd"]
 
     # SERVER-SIDE ENFORCEMENT, NOT JUST A PROMPT RULE. STEP NB6 already
     # instructs asking for the patient's full name (at least two parts)
@@ -9785,6 +9799,20 @@ def get_doctor_schedule_for_booking(
                     session.get("branch_display_name"), only_branch_id,
                 )
             logger.info("get_doctor_schedule_for_booking: auto-confirmed single branch_id=%s (%s) for doctor_id=%s", only_branch_id, session.get("branch_display_name"), doctor_id)
+            # Without this, graph.py's invented-branch guard
+            # (`_find_invented_branches`) has no record that this name
+            # is real: `_remember_list` is never called here (this path
+            # confirms a single branch, it doesn't show a roster), so
+            # `get_known_entity_names(session_id, "branch")` stays
+            # empty. CONFIRMED REAL PRODUCTION FAILURE: the reply
+            # correctly translated a doctor's real, auto-confirmed
+            # English-only branch name ("Al Nozha") to Arabic ("فرع
+            # النزهة"), and the guard rejected it as invented - twice,
+            # replacing the correct reply with the generic fallback and
+            # a needless human handoff. Same fix as
+            # `share_branch_location`/`list_branch_services` already
+            # apply for the same reason - see `_remember_branch_name`.
+            _remember_branch_name(state, session.get("branch_display_name"))
 
     doctor_display_name = session.get("doctor_display_name")
     branch_display_name = session.get("branch_display_name")
