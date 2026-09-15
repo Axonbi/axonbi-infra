@@ -4072,6 +4072,11 @@ def find_available_doctors(
         branch_ids = [matched_branch["id"]]
         session["branch_id"] = matched_branch["id"]
         session["branch_display_name"] = _arabic_preferred_name(matched_branch)
+        # Same class of gap as get_doctor_schedule_for_booking /
+        # match_entity_info: without this, a reply that correctly
+        # names this branch has no known-branch record to be checked
+        # against, and graph.py's invented-branch guard rejects it.
+        _remember_branch_name(state, session["branch_display_name"])
         logger.info("find_available_doctors: confirmed branch_id=%s (%s) from branch_name=%r", matched_branch["id"], session["branch_display_name"], branch_name)
 
     elif all_branches:
@@ -6644,6 +6649,18 @@ def match_entity_info(
             matched_item["branches"] = _doctor_active_branch_names(
                 state, base_url, matched_item["id"],
             )
+            # WITHOUT THIS, THE NAMES JUST ATTACHED ABOVE ARE INVISIBLE
+            # TO graph.py's invented-branch guard (`_find_invented_branches`):
+            # `_remember_list`/`_remember_branch_name` are the only writers
+            # of the known-branch store it checks, and neither was ever
+            # called on this path. CONFIRMED REAL PRODUCTION FAILURE: the
+            # medical agent correctly named a doctor's real, active branch
+            # ("فرع النزهة", sourced from this very field) and the reply
+            # was rejected as inventing a branch - twice, replacing a
+            # correct answer with the generic fallback and an unwanted
+            # human handoff.
+            for _branch_name in matched_item["branches"]:
+                _remember_branch_name(state, _branch_name)
         return {"status": "matched", "item": matched_item}
 
     ambiguous_candidates = [shape_fn(i) for i in match_result["items"]]
@@ -7753,6 +7770,15 @@ def match_entity_for_booking(
         if entity_type == "branch":
             # Named by the patient - their choice, not an inference.
             session["branch_auto_resolved"] = False
+            # Same class of gap as get_doctor_schedule_for_booking /
+            # match_entity_info / find_available_doctors /
+            # resolve_available_day / list_available_days_for_booking:
+            # a fuzzy name-match here never went through _remember_list
+            # (that only runs for the list/ambiguous branches above), so
+            # without this the branch is invisible to graph.py's
+            # invented-branch guard even though the patient just named
+            # it themselves.
+            _remember_branch_name(state, session[f"{entity_type}_display_name"])
 
     response = {"matched": True, "needsConfirmation": needs_confirmation, "item": shaped}
 
@@ -8227,6 +8253,11 @@ def resolve_available_day(
                         match = next((b for b in (branches_result["data"] or {}).get("items", []) if b.get("id") == branch_id), None)
                         if match:
                             session["branch_display_name"] = _arabic_preferred_name(match)
+                            # Same class of gap as get_doctor_schedule_for_booking /
+                            # match_entity_info / find_available_doctors: an
+                            # auto-resolved branch name must be remembered or
+                            # a correct reply naming it gets flagged as invented.
+                            _remember_branch_name(state, session["branch_display_name"])
                 except Exception:
                     logger.exception("resolve_available_day: failed to enrich auto-resolved branch name")
         else:
@@ -8930,6 +8961,11 @@ def list_available_days_for_booking(
                     except Exception:
                         logger.exception("list_available_days_for_booking: failed to enrich auto-confirmed branch name")
                     session["branch_display_name"] = display_name
+                # Same class of gap as get_doctor_schedule_for_booking /
+                # match_entity_info / find_available_doctors /
+                # resolve_available_day: register the name so a reply
+                # naming this branch isn't rejected as invented.
+                _remember_branch_name(state, session.get("branch_display_name"))
                 logger.info(
                     "list_available_days_for_booking: auto-confirmed single branch_id=%s (%s) for doctor_id=%s",
                     branch_id, session.get("branch_display_name"), doctor_id,
