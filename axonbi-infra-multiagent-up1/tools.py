@@ -6295,8 +6295,23 @@ def match_entity_info(
         # added yet ("عمر المديفر") could not be found here at all -
         # not a fuzzy-matching problem, since the API never returned
         # him in the first place for this call to match against.
+        #
+        # `has_published_service` DEFAULTS TO TRUE THE SAME WAY, AND WAS
+        # MISSED WHEN THE FIX ABOVE WAS MADE. Same reasoning applies
+        # identically: a doctor whose service happens not to be marked
+        # "published" is still a real doctor this lookup should be able
+        # to find and confirm - filing a COMPLAINT about someone is the
+        # clearest possible case where "can this patient book them right
+        # now" is entirely beside the point. CONFIRMED REAL PRODUCTION
+        # FAILURE: a real, previously-confirmed doctor ("د. ليلى الحربي")
+        # came back `not_matched` against her own first name here, in
+        # the COMPLAINT flow, stopping the complaint entirely - not a
+        # fuzzy-matching problem either, for the identical reason: the
+        # API silently excluded her from the 7 doctors this call had to
+        # match against.
         result = api.get_doctors(
-            base_url, page_size=200, has_service_schedule=False,
+            base_url, page_size=200,
+            has_service_schedule=False, has_published_service=False,
             language=conversation_language(state),
         )
         name_keys = ["formatedName", "altName", "name"]
