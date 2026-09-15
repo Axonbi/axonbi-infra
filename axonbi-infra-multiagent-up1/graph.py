@@ -7414,6 +7414,14 @@ _BRANCH_CORRECTION_DIRECTIVE = (
     "branches are returned to you as `branchesForDoctor` the moment the "
     "doctor is confirmed, and `list_branches_for_specialty` returns them "
     "too.\n\n"
+    "IF THIS NAME LOOKS LIKE A TRANSLATION OF A REAL BRANCH RATHER THAN "
+    "A MADE-UP ONE: a tool likely returned that branch's name in "
+    "English only, with no Arabic version on file, and you rendered "
+    "your own Arabic translation of it instead of using it as given. "
+    "Use the tool's own name exactly - English mixed into an Arabic "
+    "reply is correct here; a translation you composed yourself is not, "
+    "however natural it reads, because it is not the name any tool "
+    "actually returned.\n\n"
     "Rewrite the reply now using ONLY real branches, or call the tool "
     "first if you don't have them.\n\n"
 )
@@ -9106,6 +9114,36 @@ def _reply_asks_to_identify_a_booking_that_was_never_mentioned(
     return True
 
 
+def _no_such_booking_correction_directive(reply_text: str, state: AgentState) -> str:
+    """Same guard, phrased for whichever flow actually produced the bad
+    question. The COMPLAINT flow has its own authored phone-number
+    question (STEP C4) that never mentions a booking reference at all -
+    telling it "this is cancellation's STEP 1" is both wrong and gives
+    it nothing to replace the question with. CONFIRMED REAL PRODUCTION
+    FAILURE: mid-complaint, the model asked "رقم موبايلك مع رمز الدولة
+    أو رقم الحجز؟" - inventing the cancellation flow's phrasing for a
+    step that has its own fixed wording and no booking reference in it
+    at all."""
+
+    if state.get("active_agent") == "complaint":
+        return (
+            "============================================================\n"
+            "YOU INVENTED A BOOKING-REFERENCE QUESTION - THIS IS A COMPLAINT\n"
+            "============================================================\n"
+            "Your previous draft asked for a phone number OR a booking "
+            "reference. This complaint has no booking attached to it at "
+            "all - STEP C4 asks for a phone number ONLY, for the "
+            "complaint record itself, never a booking reference.\n\n"
+            "Ask exactly STEP C4's own question instead: \"هل تحب نسجل "
+            "الشكوى برقم الواتساب اللي تكلمني منه الآن؟\" (or the "
+            "equivalent in this clinic's own dialect/language) - a "
+            "same-number yes/no question, with no mention of a booking "
+            "reference anywhere.\n\n"
+        )
+
+    return _NO_SUCH_BOOKING_CORRECTION_DIRECTIVE
+
+
 _NO_SUCH_BOOKING_CORRECTION_DIRECTIVE = (
     "============================================================\n"
     "YOU ASKED FOR A BOOKING THIS PATIENT DOES NOT HAVE\n"
@@ -10575,7 +10613,7 @@ _SOFT_RECOVERY_TEXT = {
 # itself - handing off to a human is honest and moves the conversation
 # forward; a third identical message would not.
 _SOFT_RECOVERY_ESCALATION_TEXT = {
-    "ar": "معلش، شكلي مش قادرة أوصل لطلبك ده صح دلوقتي 🌷\n"
+    "ar": "عذرًا، شكلي مش قادرة أوصل لطلبك ده صح حاليًا 🌷\n"
           "حابب أحولك لأحد ممثلي خدمة العملاء يكمل معاك؟",
     "en": "Sorry - it looks like I'm not able to get to this properly right "
           "now 🌷\nWould you like me to connect you with one of our "
@@ -10797,7 +10835,7 @@ def _safe_fallback_reply(
         # which is the whole failure this gate exists to prevent.
         (
             ("claim gate: told the patient their appointment is booked",),
-            "معلش، ما قدرتش أأكد الحجز فعليًا دلوقتي - يعني الموعد لسه "
+            "عذرًا، ما قدرتش أأكد الحجز فعليًا حاليًا - يعني الموعد لسه "
             "مش محجوز 🌷\nتحب نرجع نختار الموعد من تاني؟",
             "Sorry - I wasn't able to actually confirm the booking just "
             "now, so the appointment is NOT reserved yet 🌷\nShall we "
@@ -10805,7 +10843,7 @@ def _safe_fallback_reply(
         ),
         (
             ("claim gate: told the patient their appointment is cancelled",),
-            "معلش، ما قدرتش أنفّذ الإلغاء فعليًا دلوقتي - يعني الموعد لسه "
+            "عذرًا، ما قدرتش أنفّذ الإلغاء فعليًا حاليًا - يعني الموعد لسه "
             "قائم 🌷\nتحب نحاول نلغيه من تاني؟",
             "Sorry - I wasn't able to actually cancel it just now, so the "
             "appointment is still active 🌷\nShall we try the "
@@ -10813,7 +10851,7 @@ def _safe_fallback_reply(
         ),
         (
             ("claim gate: told the patient their appointment has been moved",),
-            "معلش، ما قدرتش أنقل الموعد فعليًا دلوقتي - يعني الموعد القديم "
+            "عذرًا، ما قدرتش أنقل الموعد فعليًا حاليًا - يعني الموعد القديم "
             "لسه هو القائم 🌷\nتحب نختار الوقت الجديد من تاني؟",
             "Sorry - I wasn't able to actually move the appointment just "
             "now, so your original time still stands 🌷\nShall we pick "
@@ -10821,7 +10859,7 @@ def _safe_fallback_reply(
         ),
         (
             ("claim gate: told the patient their complaint was filed",),
-            "معلش، ما قدرتش أسجّل الشكوى فعليًا دلوقتي - يعني ما وصلتش "
+            "عذرًا، ما قدرتش أسجّل الشكوى فعليًا حاليًا - يعني ما وصلتش "
             "لفريق الجودة لسه 🌷\nحابب أحوّلك لخدمة العملاء يتابعوها معاك؟",
             "Sorry - your complaint wasn't actually filed just now, so it "
             "hasn't reached the quality team yet 🌷\nWould you like me to "
@@ -10829,7 +10867,7 @@ def _safe_fallback_reply(
         ),
         (
             ("claim gate: told the patient they are being handed to a human",),
-            "معلش، ما قدرتش أحوّلك لموظف فعليًا دلوقتي 🌷\nتحب أحاول "
+            "عذرًا، ما قدرتش أحوّلك لموظف فعليًا حاليًا 🌷\nتحب أحاول "
             "التحويل من تاني؟",
             "Sorry - I wasn't able to actually transfer you to a member "
             "of staff just now 🌷\nShall I try the transfer again?",
@@ -10857,7 +10895,7 @@ def _safe_fallback_reply(
             # none free. Saying it cannot understand the symptom is
             # both untrue and useless; saying no doctor is available is
             # true and tells them what to do next.
-            "معلش، ما لقيتش دكتور متاح حاليًا للحالة دي في المستشفى 🌷\n"
+            "عذرًا، ما لقيتش دكتور متاح حاليًا للحالة دي في المستشفى 🌷\n"
             "أفضل حاجة إنك تتواصل مع فريقنا الطبي مباشرة يوجهوك صح. تحب أحولك لهم؟",
             "Sorry - I couldn't find a doctor available for this at the "
             "hospital right now 🌷\nIt's best to speak directly with our "
@@ -10867,7 +10905,7 @@ def _safe_fallback_reply(
         (
             ("fabricated appointment", "invents availability", "invented availability",
              "no availability tool"),
-            "معلش، مش قادرة أتأكد من موعد فعلي متاح دلوقتي 🌷\n"
+            "عذرًا، مش قادرة أتأكد من موعد فعلي متاح حاليًا 🌷\n"
             "ممكن نرجع نشوف الأيام والمواعيد المتاحة تاني من الأول؟",
             "Sorry, I can't confirm a real available slot right now 🌷\n"
             "Shall we look at the available days and times again from the "
@@ -10875,7 +10913,7 @@ def _safe_fallback_reply(
         ),
         (
             ("cancellation without", "confirm cancelling", "offers cancellation without lookup"),
-            "معلش، مش لاقية حجز مؤكد بالمعلومات دي 🌷\n"
+            "عذرًا، مش لاقية حجز مؤكد بالمعلومات دي 🌷\n"
             "ممكن تبعتلي رقم الحجز أو رقم الجوال المسجل بيه الحجز؟",
             "Sorry, I can't find a confirmed booking with that information 🌷\n"
             "Could you send me the booking reference or the phone number "
@@ -10883,7 +10921,7 @@ def _safe_fallback_reply(
         ),
         (
             ("complaint was filed", "fabricates complaint submission"),
-            "معلش، مش قادرة أأكد تسجيل الشكوى فعلياً دلوقتي 🌷\n"
+            "عذرًا، مش قادرة أأكد تسجيل الشكوى فعلياً حاليًا 🌷\n"
             "حابب أحولك لفريق خدمة العملاء يتابعوها معاك مباشرة؟",
             "Sorry, I can't confirm your complaint was actually filed yet "
             "🌷\nWould you like me to connect you with our customer "
@@ -10891,7 +10929,7 @@ def _safe_fallback_reply(
         ),
         (
             ("branch had nothing available", "denies a branch", "branch denial"),
-            "معلش، حصل لبس عندي في معلومة الفرع 🌷\n"
+            "عذرًا، حصل لبس عندي في معلومة الفرع 🌷\n"
             "ممكن تأكدلي اسم الفرع تاني؟",
             "Sorry, I mixed up the branch information 🌷\n"
             "Could you confirm the branch name again?",
@@ -10905,7 +10943,7 @@ def _safe_fallback_reply(
             # they need is a clear next step, not a third attempt at
             # the same question.
             ("generic out-of-scope service menu",),
-            "معلش، حابة أفهم طلبك صح بس مش قادرة دلوقتي 🌷\n"
+            "عذرًا، حابة أفهم طلبك صح بس مش قادرة حاليًا 🌷\n"
             "حابب أحولك لفريقنا يساعدك مباشرة؟",
             "Sorry, I want to make sure I understand your request "
             "correctly but I'm not able to right now 🌷\nWould you like "
@@ -13490,7 +13528,7 @@ _REPLY_VERIFIERS = (
         lambda reply, state, agent_name: (
             _reply_asks_to_identify_a_booking_that_was_never_mentioned(reply, state)
         ),
-        lambda reply, state: _NO_SUCH_BOOKING_CORRECTION_DIRECTIVE,
+        lambda reply, state: _no_such_booking_correction_directive(reply, state),
         "reply asked for a phone number or booking reference to identify an existing "
         "booking, but this patient has never mentioned having one and no tool has "
         "looked one up",
