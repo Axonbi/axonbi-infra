@@ -11693,6 +11693,65 @@ _ANSWERED_OUR_QUESTION_CORRECTION_DIRECTIVE = (
 )
 
 
+def _extract_pending_question(last_ai: str) -> str:
+    """The question the assistant's own previous message was actually
+    asking, if it ends on one - shared by the correction directive
+    (which restates it for the model) and the deterministic rebuild
+    below (which restates it without a model call at all).
+
+    NOT ANCHORED WITH \\s*$ - a trailing emoji or decoration after the
+    question mark ("...اليوم؟ 😊") made an earlier, anchored version of
+    this match nothing at all. Allowing anything after the "؟"/"?"
+    still finds the actual question and simply ignores what follows."""
+
+    match = re.search(r"([^.\n]*[؟?])[^\n]*$", (last_ai or "").strip())
+    return match.group(1).strip() if match else ""
+
+
+def _honest_answered_our_question_reply(
+    messages: list, templates: dict, target_language: Optional[str], description: str,
+) -> Optional[str]:
+    """Rebuild a rejected out-of-scope reply as the reply it should have
+    been - THIS CLINIC'S OWN STANDARD REFUSAL, unchanged, followed by
+    the pending question restated - without spending a second model
+    call on it.
+
+    THE REFUSAL ITSELF WAS NEVER THE PROBLEM. For a message with
+    genuinely nothing to do with the clinic, the standard "أنا لطيفة،
+    مختصة بـ..." refusal (`_build_out_of_scope_block`, the same fixed
+    text used everywhere else in this file) is exactly the right thing
+    to say - that is why `_is_scope_refusal` treats it as a legitimate
+    reply shape and this whole check only exists for the ONE thing it
+    was missing: ending on it and dropping the question that was still
+    open. Do not invent different wording here; use the clinic's own
+    fixed block, and only add the pending question after it.
+
+    WHY THIS IS BUILT IN CODE RATHER THAN ASKED FOR AGAIN. The
+    correction directive already tells the model to do exactly this and
+    gives it the question verbatim (see
+    `_answered_our_question_correction_directive`) - but a model that
+    produced the (otherwise correct) refusal once and got rejected for
+    dropping the question has already shown it doesn't know how to add
+    it back, and asking a second time risks the identical answer for
+    the identical reason. Everything needed is already known in code:
+    the refusal text is fixed, and the pending question is sitting in
+    the assistant's own last message.
+
+    Returns None when this isn't the check that failed (leaves the
+    caller's existing fallback behaviour untouched) or when there's no
+    pending question to return to."""
+
+    if "out-of-scope service menu" not in description:
+        return None
+
+    pending_question = _extract_pending_question(_last_ai_reply_text(messages) or "")
+    if not pending_question:
+        return None
+
+    refusal = _build_out_of_scope_block(templates, target_language or "ar")
+    return f"{refusal}\n{pending_question}"
+
+
 def _answered_our_question_correction_directive(reply_text: str, state: AgentState) -> str:
     """Same base directive, plus the actual pending question - verbatim,
     not left for the model to recall - so a genuinely off-topic message
@@ -11708,20 +11767,7 @@ def _answered_our_question_correction_directive(reply_text: str, state: AgentSta
     messages = state.get("messages") or []
     last_ai = _last_ai_reply_text(messages) or ""
 
-    pending_question = ""
-    # NOT ANCHORED WITH \s*$ ANY MORE - a trailing emoji or decoration
-    # after the question mark ("...اليوم؟ 😊") made the old anchored
-    # version match nothing at all, so this fell back to the base
-    # directive with no question to restate. CONFIRMED REAL PRODUCTION
-    # FAILURE: the opening greeting itself ends in exactly that shape,
-    # and an out-of-scope first message ("احجزيلي حفلة مع [مطرب]")
-    # right after it hit this exact gap - fell back to the canned menu
-    # twice with nothing telling it what to say instead, then the
-    # generic fallback. Allowing anything after the "؟"/"?" still finds
-    # the actual question and simply keeps the reply from ending there.
-    match = re.search(r"([^.\n]*[؟?])[^\n]*$", last_ai.strip())
-    if match:
-        pending_question = match.group(1).strip()
+    pending_question = _extract_pending_question(last_ai)
 
     if not pending_question:
         return _ANSWERED_OUR_QUESTION_CORRECTION_DIRECTIVE
@@ -18695,9 +18741,16 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                     # department as unstaffed this turn, the honest
                     # reply is fully determined - keep the advice,
                     # replace the claim. See `_honest_unstaffed_reply`.
+                    # `_honest_answered_our_question_reply` covers a
+                    # different, unrelated rejected-twice case the same
+                    # way: an out-of-scope message right after a
+                    # question of ours, where the pending question is
+                    # already sitting in our own last message.
                     rebuilt = _honest_unstaffed_reply(
                         normalized, state["messages"],
                         state.get("templates") or {}, target_language,
+                    ) or _honest_answered_our_question_reply(
+                        state["messages"], state.get("templates") or {}, target_language, description,
                     )
                     normalized = rebuilt or _safe_fallback_reply(
                         state, target_language, description,
@@ -18794,6 +18847,8 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                         rebuilt = _honest_unstaffed_reply(
                             normalized, state["messages"],
                             state.get("templates") or {}, target_language,
+                        ) or _honest_answered_our_question_reply(
+                            state["messages"], state.get("templates") or {}, target_language, description,
                         )
                         normalized = rebuilt or _safe_fallback_reply(
                             state, target_language, description,
@@ -18863,9 +18918,18 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                     # department as unstaffed this turn, the honest
                     # reply is fully determined - keep the advice,
                     # replace the claim. See `_honest_unstaffed_reply`.
+                    # `_honest_answered_our_question_reply` covers the
+                    # unrelated case where a message right after one of
+                    # our own questions is plainly out of scope: rather
+                    # than ask the model for a THIRD attempt at the same
+                    # thing it already got wrong twice, build the decline
+                    # + the pending question directly - it is already
+                    # sitting in our own last message either way.
                     rebuilt = _honest_unstaffed_reply(
                         normalized, state["messages"],
                         state.get("templates") or {}, target_language,
+                    ) or _honest_answered_our_question_reply(
+                        state["messages"], state.get("templates") or {}, target_language, description,
                     )
                     normalized = rebuilt or _safe_fallback_reply(
                         state, target_language, description,
