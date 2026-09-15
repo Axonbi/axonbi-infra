@@ -1851,6 +1851,18 @@ def _selected_slot(state: AgentState) -> Optional[dict]:
     return slot if isinstance(slot, dict) else None
 
 
+def _selected_reschedule_slot(state: AgentState) -> Optional[dict]:
+    """The slot `select_reschedule_slot` locked for this reschedule, or
+    None. The reschedule counterpart of `_selected_slot` - written only
+    by the tool that establishes it, read by `reschedule_appointment`."""
+
+    session_id = state.get("session_id")
+    if not session_id:
+        return None
+    slot = (_BOOKING_SESSIONS.get(session_id) or {}).get("selected_reschedule_slot")
+    return slot if isinstance(slot, dict) else None
+
+
 def _same_instant(left: Optional[str], right: Optional[str]) -> bool:
     """Do two slot timestamps name the same moment?
 
@@ -4992,6 +5004,133 @@ def get_available_reschedule_slots(
 
 
 @tool
+def select_reschedule_slot(state: Annotated[AgentState, InjectedState], user_input: str) -> dict:
+    """For an EXISTING BOOKING being moved: resolve the patient's reply
+    to ONE exact slot from the list `get_available_reschedule_slots` just
+    showed, and LOCK IT IN - call this instead of matching the slot
+    yourself from memory or retyping its ISO value.
+
+    `user_input`: their raw reply - a bare number ("2", "٢") or the time
+    in their own words ("11:00", "11 الصبح", "الساعة 5", "5 مساءً"). Pass
+    it unchanged.
+
+    Once this resolves a slot it is saved on the reschedule session and
+    `reschedule_appointment` reads the exact slotStart/slotEnd from here
+    - never from what you type. This mirrors `select_appointment_slot`,
+    which the new-booking flow already relies on for the identical
+    reason: a slot late enough to fall after midnight displays as a
+    "morning" time under the date header of the day it was searched for,
+    not its own real calendar date - retyping the ISO value from that
+    single shared header has written a real appointment a full day off.
+    See `_reschedule_slot_from_remembered`'s docstring for the confirmed
+    production trace this replaces.
+
+    Each status below carries its own handling instruction with the
+    result itself (the `_guidance` field) - read that when it arrives.
+
+    Returns one of:
+    {"status": "selected", "slot": {"slotStart", "slotEnd", "date_display",
+     "weekday_display", "time_display", "serviceName"}}
+    {"status": "no_list_shown"}
+    {"status": "out_of_range", "list_size": N}
+    {"status": "ambiguous_time", "candidates": [slot, ...]}
+    {"status": "not_matched"}"""
+
+    session_id = state.get("session_id")
+    session = _get_booking_session(session_id)
+    last_list = session.get("last_list")
+
+    if not last_list or last_list.get("entity_type") != "slot":
+        logger.warning(
+            "select_reschedule_slot: no slot list is remembered for session_id=%s",
+            session_id,
+        )
+        return {"status": "no_list_shown"}
+
+    slots = last_list.get("items") or []
+
+    wanted_time = _parse_clock_time(user_input)
+    position = _extract_selection_number(user_input)
+
+    if position is not None:
+        if not (1 <= position <= len(slots)):
+            # A NUMBER PAST THE END OF THE LIST MAY BE AN HOUR - same
+            # reasoning as `select_appointment_slot`.
+            by_time = _slots_at_clock_time(slots, wanted_time) if wanted_time else []
+            if len(by_time) == 1:
+                logger.info(
+                    "select_reschedule_slot: %r is past the end of the %d-slot "
+                    "list - reading it as a time instead, which matches exactly "
+                    "one slot (%s)",
+                    user_input, len(slots), by_time[0].get("time_display"),
+                )
+                chosen = by_time[0]
+            else:
+                logger.warning(
+                    "select_reschedule_slot: position %d out of range for %d "
+                    "remembered slot(s)",
+                    position, len(slots),
+                )
+                return {"status": "out_of_range", "list_size": len(slots)}
+        else:
+            chosen = slots[position - 1]
+    else:
+        # Not a number - match the TIME they typed against each
+        # remembered slot's real start time.
+        chosen = None
+
+        if wanted_time:
+            by_time = _slots_at_clock_time(slots, wanted_time)
+
+            if len(by_time) == 1:
+                chosen = by_time[0]
+            elif len(by_time) > 1:
+                logger.info(
+                    "select_reschedule_slot: %r matches %d slots (%s) - asking "
+                    "rather than guessing which half of the day they meant",
+                    user_input, len(by_time),
+                    [slot.get("time_display") for slot in by_time],
+                )
+                return {
+                    "status": "ambiguous_time",
+                    "candidates": [dict(slot) for slot in by_time],
+                }
+
+        if chosen is None:
+            # Last resort: the display string itself, for a reply that
+            # quotes it back verbatim in a form the clock parser did not
+            # recognise.
+            folded_input = _normalize_arabic((user_input or "").strip())
+            for slot in slots:
+                folded_time = _normalize_arabic(str(slot.get("time_display") or ""))
+                if folded_time and (folded_time in folded_input or folded_input in folded_time):
+                    chosen = slot
+                    break
+
+        if chosen is None:
+            logger.info(
+                "select_reschedule_slot: %r matched no remembered slot by "
+                "position or time (session_id=%s)",
+                user_input, session_id,
+            )
+            return {"status": "not_matched"}
+
+    # LOCKED IN. This is the one place `reschedule_appointment` reads the
+    # chosen time from - never the model's own recollection of the
+    # conversation. See graph._build_selected_reschedule_slot_directive,
+    # which reinforces these exact values in the prompt for as long as
+    # this reschedule is in progress.
+    session["selected_reschedule_slot"] = dict(chosen)
+
+    logger.info(
+        "select_reschedule_slot: session_id=%s locked in slotStart=%s (%s %s)",
+        session_id, chosen.get("slotStart"), chosen.get("date_display"), chosen.get("time_display"),
+    )
+
+    return {"status": "selected", "slot": chosen}
+
+
+@tool
 def reschedule_appointment(
     state: Annotated[AgentState, InjectedState],
     booking_id: str,
@@ -5002,14 +5141,19 @@ def reschedule_appointment(
     booking's own "id" field (a GUID) from a FRESH `lookup_appointment`
     or `check_booking_status` call in THIS conversation - never invent
     or reuse an old value from memory. `new_time_from`/`new_time_to` must
-    be the EXACT slotStart/slotEnd values from `get_available_reschedule_slots`
-    - never modify or recompute them yourself.
+    come from `select_reschedule_slot` - call that FIRST with the
+    patient's raw pick, right after `get_available_reschedule_slots`;
+    this tool uses that lock's own slotStart/slotEnd rather than trusting
+    whatever you pass, so pass its values here, never a recomputed one.
 
     Each status below carries its own handling instruction with the result
     itself (the `_guidance` field) - read that when it arrives.
 
-    Returns one of: {"status": "success"},
-    {"status": "not_looked_up"}, or {"status": "error"}."""
+    Returns one of: {"status": "success"}, {"status": "not_looked_up"},
+    {"status": "slot_not_locked"} (call `select_reschedule_slot` first),
+    {"status": "slot_unavailable"} (re-verified against live availability
+    and it's gone - show the patient a fresh slot list, don't retry the
+    same time), or {"status": "error"}."""
 
     # NOTE: confirmed directly from the user's own curl - GuestBookings/Update
     # lives on the SAME port as Doctors/Specialties (1302), NOT the regular
@@ -5042,36 +5186,151 @@ def reschedule_appointment(
 
     booking_id = resolved["booking_id"]
 
-    # THE SLOT THE PATIENT PICKED WINS OVER THE ONE THE MODEL TYPED.
+    # THE LOCKED SLOT WINS OVER ANYTHING THE MODEL TYPED.
     #
-    # The same rule `create_new_booking` applies to `slot_start`, for
-    # the same reason and with the same consequence when it is missing -
-    # except that here the wrong value is not refused by a
-    # re-verification, it is WRITTEN. See
-    # `_reschedule_slot_from_remembered` for the production trace.
-    remembered = _reschedule_slot_from_remembered(state, new_time_from)
-    if remembered and remembered.get("slotStart"):
-        if not _same_instant(new_time_from, remembered.get("slotStart")):
+    # Same pattern `create_new_booking` already trusts via `_selected_slot`
+    # / `select_appointment_slot`. `select_reschedule_slot` stores the
+    # tool's own slotStart/slotEnd verbatim, so nothing downstream depends
+    # on the model re-deriving either from a display string.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (session 201158877175+medtown2,
+    # 2026-09-14 13:57-13:58): a list headed "الأربعاء 16/09/2026" showed
+    # a 1:00 صباحًا slot that was really the NEXT calendar day. Before
+    # this lock existed, the model echoed the header's date back as
+    # new_time_from, which matched neither this slot's slotStart nor its
+    # _localStart, so the old fallback below wrote that value to the live
+    # booking API exactly as typed - moving the appointment to the wrong
+    # instant. Retrying ("حاول تاني") reran the identical wrong write
+    # every time, because nothing had ever locked the actual slot.
+    locked_slot = _selected_reschedule_slot(state)
+    if locked_slot and locked_slot.get("slotStart"):
+        if not _same_instant(new_time_from, locked_slot.get("slotStart")):
             logger.warning(
-                "reschedule_appointment: new_time_from=%r is that slot's DISPLAY "
-                "time, not the value the booking API takes (%s) - writing the "
-                "slot the patient actually picked (session_id=%s)",
-                new_time_from, remembered.get("slotStart"), state.get("session_id"),
+                "reschedule_appointment: new_time_from=%r is not the slot this "
+                "session locked in via select_reschedule_slot (%s) - "
+                "rescheduling to the patient's own choice instead "
+                "(session_id=%s)",
+                new_time_from, locked_slot.get("slotStart"), state.get("session_id"),
             )
-        new_time_from = remembered["slotStart"]
-        if remembered.get("slotEnd"):
-            new_time_to = remembered["slotEnd"]
-    elif new_time_from:
-        # Nothing to check against - either no list was shown this
-        # conversation or the model named a time that is in none of it.
-        # Say so; do NOT block, because a legitimate reschedule can
-        # reach here (a slot list from a tool this flow did not remember,
-        # a resumed thread) and refusing would be a new way to fail.
+        new_time_from = locked_slot["slotStart"]
+        if locked_slot.get("slotEnd"):
+            new_time_to = locked_slot["slotEnd"]
+    else:
+        # FALLBACK for a flow that never called `select_reschedule_slot`
+        # (e.g. an in-flight thread checkpointed before this tool
+        # existed). Try the previous best-effort match against the
+        # remembered list, and - unlike before - REFUSE rather than
+        # writing an unverified time to a live booking when neither
+        # source can vouch for it. See `_reschedule_slot_from_remembered`
+        # for why matching either the wire or display value is still
+        # deliberate here.
+        remembered = _reschedule_slot_from_remembered(state, new_time_from)
+        if remembered and remembered.get("slotStart"):
+            if not _same_instant(new_time_from, remembered.get("slotStart")):
+                logger.warning(
+                    "reschedule_appointment: new_time_from=%r is that slot's "
+                    "DISPLAY time, not the value the booking API takes (%s) - "
+                    "writing the slot the patient actually picked "
+                    "(session_id=%s)",
+                    new_time_from, remembered.get("slotStart"), state.get("session_id"),
+                )
+            new_time_from = remembered["slotStart"]
+            if remembered.get("slotEnd"):
+                new_time_to = remembered["slotEnd"]
+        elif new_time_from:
+            logger.error(
+                "reschedule_appointment: refusing to write new_time_from=%r - "
+                "it matches no locked or remembered slot for session_id=%s "
+                "(was select_reschedule_slot ever called?)",
+                new_time_from, state.get("session_id"),
+            )
+            return {"status": "slot_not_locked"}
+
+    # RE-VERIFY AGAINST LIVE AVAILABILITY, IMMEDIATELY BEFORE WRITING.
+    #
+    # `create_new_booking` has always done this - confirm the exact
+    # instant is still an open, unbooked slot for this doctor right now,
+    # not just "the one the patient picked earlier in this
+    # conversation" - because someone else may have taken it since, or
+    # (as happened here) an upstream bug may hand this tool a time that
+    # was never a real slot to begin with. This tool never had the same
+    # check: nothing between a locked-in time and the live booking API
+    # confirms the time is real, so a wrong instant reaches the API
+    # exactly as given and the API itself does not appear to reject it
+    # either. Both matter independently; this closes our side of it.
+    doctor_id = None
+    for record in _looked_up_bookings(state):
+        if str(record.get("id") or "").strip() == booking_id:
+            doctor_id = record.get("doctorId")
+            break
+
+    if not doctor_id:
         logger.warning(
-            "reschedule_appointment: new_time_from=%r matches no slot this "
-            "conversation showed - writing it as given (session_id=%s)",
-            new_time_from, state.get("session_id"),
+            "reschedule_appointment: no doctorId on file for booking_id=%s - "
+            "proceeding without re-verifying live availability (session_id=%s)",
+            booking_id, state.get("session_id"),
         )
+    elif new_time_from:
+        try:
+            requested_start_dt = datetime.fromisoformat(new_time_from)
+            day_start = requested_start_dt.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+            day_end = requested_start_dt.replace(hour=23, minute=59, second=59, microsecond=0).isoformat()
+        except ValueError:
+            logger.warning(
+                "reschedule_appointment: unparsable new_time_from=%r - skipping "
+                "re-verification (session_id=%s)",
+                new_time_from, state.get("session_id"),
+            )
+            requested_start_dt = None
+
+        if requested_start_dt is not None:
+            slots_result = api.get_doctor_schedule_slots(
+                base_url, doctor_ids=[doctor_id],
+                from_date=day_start, to_date=day_end, is_booked=False, page_size=200,
+             language=conversation_language(state),)
+
+            if not slots_result["success"]:
+                logger.error(
+                    "reschedule_appointment: re-verification API call failed: "
+                    "status_code=%s error=%s",
+                    slots_result.get("status_code"), slots_result.get("error"),
+                )
+                return _api_error(slots_result)
+
+            # Same explicit-instant comparison as `create_new_booking`'s
+            # re-verification, for the same reason: `new_time_from` is
+            # naive wire format, so a naive `.timestamp()` would assume
+            # the PROCESS's own timezone rather than UTC.
+            if requested_start_dt.tzinfo is None:
+                requested_start_dt = requested_start_dt.replace(tzinfo=timezone.utc)
+            requested_ms = requested_start_dt.timestamp()
+
+            raw_items = (slots_result["data"] or {}).get("items", [])
+            logger.info(
+                "reschedule_appointment: re-verification doctor_id=%s day_range=[%s, %s] "
+                "requested_new_time_from=%s api_returned=%d",
+                doctor_id, day_start, day_end, new_time_from, len(raw_items),
+            )
+
+            matched_slot = None
+            for item in raw_items:
+                if item.get("isBooked"):
+                    continue
+                try:
+                    item_ms = datetime.fromisoformat(item["slotStart"].replace("Z", "+00:00")).timestamp()
+                except (ValueError, KeyError, AttributeError):
+                    continue
+                if abs(item_ms - requested_ms) < 1:  # same instant
+                    matched_slot = item
+                    break
+
+            if not matched_slot:
+                logger.warning(
+                    "reschedule_appointment: requested new_time_from=%s not found or "
+                    "already booked (doctor_id=%s). Raw slotStarts returned: %s",
+                    new_time_from, doctor_id, [i.get("slotStart") for i in raw_items][:20],
+                )
+                return {"status": "slot_unavailable"}
 
     result = api.reschedule_booking(base_url, booking_id, new_time_from, new_time_to)
 
