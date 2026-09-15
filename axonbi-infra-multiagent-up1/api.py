@@ -543,8 +543,8 @@ def get_doctors(
     specialty_ids: Optional[list] = None,
     branch_ids: Optional[list] = None,
     service_ids: Optional[list] = None,
-    has_published_service: bool = True,
-    has_service_schedule: bool = True,
+    has_published_service: Optional[bool] = True,
+    has_service_schedule: Optional[bool] = True,
     intersection_start: Optional[str] = None,
     intersection_end: Optional[str] = None,
     page_size: int = 200,
@@ -560,6 +560,20 @@ def get_doctors(
     given time window. The response itself then includes `hasSlots` per
     doctor reflecting that same filter.
 
+    `has_published_service`/`has_service_schedule` ARE LITERAL EQUALITY
+    FILTERS, NOT AN ON/OFF SWITCH. Passing `False` does not mean "don't
+    filter by this" - it asks the API for doctors where that field is
+    exactly `False`, which is a real, usually much SMALLER subset (e.g.
+    doctors with no schedule at all), not the unfiltered roster.
+    CONFIRMED REAL PRODUCTION FAILURE: `match_entity_info` passed
+    `has_service_schedule=False` intending "don't require a schedule for
+    a pure identity lookup", which quietly narrowed the roster instead
+    of widening it; adding `has_published_service=False` the same way,
+    for the same stated reason, made it WORSE (7 doctors down to 3) -
+    intersecting two rare conditions instead of removing one filter.
+    Pass `None` (not `False`) to omit the field entirely, when the
+    caller wants no opinion on it either way.
+
     `branch_ids` filters to doctors who work at any of the given
     branches - confirmed as a real request field, used by the New
     Booking flow's branch-first selection path."""
@@ -569,9 +583,14 @@ def get_doctors(
         # Must be 1 or above, not 0 - see the note in get_specialties()
         "pageNumber": 1,
         "pageSize": page_size,
-        "hasPublishedService": has_published_service,
-        "hasServiceSchedule": has_service_schedule,
     }
+
+    # OMITTED ENTIRELY WHEN None - see the docstring above. Only ever
+    # included when the caller has an actual opinion on the field.
+    if has_published_service is not None:
+        payload["hasPublishedService"] = has_published_service
+    if has_service_schedule is not None:
+        payload["hasServiceSchedule"] = has_service_schedule
 
     if specialty_ids:
         payload["specialtyIds"] = specialty_ids
