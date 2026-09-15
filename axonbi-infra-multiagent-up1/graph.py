@@ -1515,11 +1515,30 @@ def _build_slots_numbered_list_directive(messages: list) -> str:
     if not slots:
         return ""
 
-    lines = [f"{_numbered_prefix(i + 1)} {slot.get('time_display', '')}" for i, slot in enumerate(slots)]
+    # A SHARED HEADER ASSUMES ALL SLOTS ARE THE SAME CALENDAR DAY - NOT
+    # ALWAYS TRUE. A slot late enough to fall after midnight carries the
+    # NEXT real calendar date, even though it was returned for "today's"
+    # search window. Building the header from `slots[0]` alone used to
+    # apply that one date to every line.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (session 201158877175+medtown2,
+    # 2026-09-14 13:46-13:57): a list headed "الأربعاء 16/09/2026"
+    # included a "1:00 صباحًا" slot whose real date was 17/09/2026. The
+    # patient picked it believing it was still Wednesday, and the wrong
+    # assumed date then fed into a reschedule attempt down the line.
+    distinct_dates = {slot.get("date_display") for slot in slots if slot.get("date_display")}
+    spans_multiple_dates = len(distinct_dates) > 1
+
+    if spans_multiple_dates:
+        lines = [
+            f"{_numbered_prefix(i + 1)} {slot.get('date_display', '')} — {slot.get('time_display', '')}"
+            for i, slot in enumerate(slots)
+        ]
+    else:
+        lines = [f"{_numbered_prefix(i + 1)} {slot.get('time_display', '')}" for i, slot in enumerate(slots)]
     numbered_list = "\n".join(lines)
 
     first_slot = slots[0]
-    date_display = first_slot.get("date_display") or ""
     weekday_display = first_slot.get("weekday_display") or ""
     service_name = first_slot.get("serviceName") or ""
 
@@ -1530,9 +1549,13 @@ def _build_slots_numbered_list_directive(messages: list) -> str:
     # prompts.py's FEES rule); the tools no longer return servicePrice
     # in slot data at all, so this is now enforced on both sides.
     header_parts = []
-    if date_display:
-        day_label = f"{weekday_display} {date_display}".strip()
-        header_parts.append(f"📅 المواعيد المتاحة ليوم {day_label}")
+    if not spans_multiple_dates:
+        date_display = first_slot.get("date_display") or ""
+        if date_display:
+            day_label = f"{weekday_display} {date_display}".strip()
+            header_parts.append(f"📅 المواعيد المتاحة ليوم {day_label}")
+    else:
+        header_parts.append("📅 المواعيد المتاحة")
     if service_name:
         header_parts.append(f"— {service_name}")
     header = (" ".join(header_parts) + ":") if header_parts else ""
@@ -16924,6 +16947,56 @@ def _build_selected_slot_directive(session_id: str) -> str:
     )
 
 
+_SELECTED_RESCHEDULE_SLOT_DIRECTIVE = (
+    "============================================================\n"
+    "THE NEW APPOINTMENT TIME IS ALREADY LOCKED IN - DO NOT RETYPE IT\n"
+    "============================================================\n"
+    "`select_reschedule_slot` has already resolved and saved the new "
+    "time for this reschedule. It is:\n"
+    "    {date_display} {weekday_display} — {time_display}"
+    "{service_suffix}\n\n"
+    "Use these exact values for `reschedule_appointment`'s "
+    "`new_time_from`/`new_time_to` - never recompute or retype them from "
+    "the date/time you showed the patient. A slot that falls after "
+    "midnight displays under the date it was searched for, not its own "
+    "real calendar date; only the locked values here are safe to send "
+    "to the booking API.\n\n"
+    "CONFIRMED REAL PRODUCTION FAILURE: a patient picked a late-night "
+    "slot, and the model retyped the displayed date/time as the new "
+    "appointment time - which was actually the NEXT calendar day. The "
+    "booking API was updated to the wrong instant, and retrying "
+    "(\"حاول تاني\") repeated the identical wrong write every time. This "
+    "reminder exists so the locked-in values are read from here, every "
+    "turn, for exactly as long as this reschedule is in progress.\n\n"
+)
+
+
+def _build_selected_reschedule_slot_directive(session_id: str) -> str:
+    """Fires whenever this reschedule has a locked-in new time
+    (`select_reschedule_slot` succeeded) and the reschedule has not yet
+    completed - keeps the exact chosen new time in front of the model on
+    every turn. The reschedule counterpart of `_build_selected_slot_directive`."""
+
+    if not session_id:
+        return ""
+
+    session = tools._BOOKING_SESSIONS.get(session_id) or {}
+    slot = session.get("selected_reschedule_slot")
+
+    if not slot:
+        return ""
+
+    service_name = (slot.get("serviceName") or "").strip()
+    service_suffix = f" — {service_name}" if service_name else ""
+
+    return _SELECTED_RESCHEDULE_SLOT_DIRECTIVE.format(
+        date_display=slot.get("date_display") or "",
+        weekday_display=slot.get("weekday_display") or "",
+        time_display=slot.get("time_display") or "",
+        service_suffix=service_suffix,
+    )
+
+
 _ASKS_FOR_SLOT_RE = re.compile(
     r"وقت\s*(?:بالضبط|محدد)|الوقت\s*الذي|أي\s*وقت\s*تفضل|"
     r"الرقم\s*من\s*(?:ال)?قائمه|من\s*(?:ال)?قائمه\s*(?:ال)?سابقه|"
@@ -17810,6 +17883,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         state["messages"], agent_name,
     )
     selected_slot_directive = _build_selected_slot_directive(state.get("session_id"))
+    selected_reschedule_slot_directive = _build_selected_reschedule_slot_directive(state.get("session_id"))
 
     # The scoped prompt for whoever owns this turn. Rebuilt per turn for
     # the same reason load_config rebuilds: a prompts.py/CSV edit must
@@ -17892,6 +17966,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         + show_all_doctors_directive
         + doctor_branches_directive + branch_question_directive
         + review_phone_directive + selected_slot_directive
+        + selected_reschedule_slot_directive
         + otp_required_directive
         + specialty_unresolved_directive + unstaffed_specialty_directive
         + new_booking_number_directive
