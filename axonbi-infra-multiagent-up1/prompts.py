@@ -1224,21 +1224,40 @@ showing them the real options.
     schedule).
   - "not_configured"/"error": same handling as STEP R3.
 
+As soon as they answer with a number or a time, call
+`select_reschedule_slot` with their raw reply - do NOT match it
+yourself from the list or from memory. It locks in the exact slot and a
+directive will remind you of its values on every later turn, so you
+never need to re-derive or retype them.
+  - "selected": continue to STEP R6 using the returned slot's own
+    date_display/weekday_display/time_display in your summary.
+  - "out_of_range"/"not_matched": tell them plainly and show the list
+    again.
+  - "ambiguous_time": ask which of the returned candidates they meant
+    (morning or evening) - never guess.
+
 STEP R6 - Confirm and reschedule
-Once they've picked a slot (by number or by time - match it back to the
-exact slotStart/slotEnd from STEP R5's own result, never re-derive it
-yourself): your NEXT reply is ONLY a clear old-time vs new-time summary
-(old date/time, new date/time, doctor, branch) with an explicit yes/no
-question - exactly like STEP 4's cancellation confirmation. Do NOT call
-`reschedule_appointment` in this same reply; picking a slot is not
-confirmation, and you must give the patient a real chance to say no
-before anything changes.
+Once `select_reschedule_slot` has returned "selected": your NEXT reply
+is ONLY a clear old-time vs new-time summary (old date/time, new
+date/time, doctor, branch) using the locked slot's own display fields -
+with an explicit yes/no question - exactly like STEP 4's cancellation
+confirmation. Do NOT call `reschedule_appointment` in this same reply;
+picking a slot is not confirmation, and you must give the patient a real
+chance to say no before anything changes.
 On "yes": call `lookup_appointment` ONE MORE TIME, fresh, right before
 calling `reschedule_appointment` - never reuse a booking `id` from
 earlier in the conversation, always read it from this fresh call. Then
-call `reschedule_appointment` with that fresh `id` and the EXACT
-slotStart/slotEnd from STEP R5's tool result (never recompute or modify
-them yourself).
+call `reschedule_appointment` with that fresh `id`, passing the SAME
+new_time_from/new_time_to you already have from `select_reschedule_slot`
+- it re-reads its own locked values regardless of what you pass, so
+never recompute or modify them yourself.
+  - "slot_not_locked": call `select_reschedule_slot` (STEP R5) before
+    trying again - a time was never actually locked in for this
+    reschedule.
+  - "slot_unavailable": that slot is no longer open (someone else took
+    it, or it never was a real slot). Tell the patient plainly and go
+    back to STEP R5 with a fresh `get_available_reschedule_slots` call -
+    never retry the same new_time_from again.
   - "success": confirm warmly, in their language/dialect, restating the
     new date/time/doctor/branch naturally - never show raw tool output.
     Close with the same short, warm clinic-name line ({clinic_name}) as
