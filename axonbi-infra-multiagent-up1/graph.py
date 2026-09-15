@@ -9711,6 +9711,28 @@ _GENERIC_DOCTOR_WORD_ONLY_RE = re.compile(
 )
 _GENERIC_BRANCH_WORD_ONLY_RE = re.compile(r"^\s*(?:ال)?فرع\s*$")
 
+# AN ADJECTIVE DESCRIBING THE COMPLAINT ISN'T A NAME EITHER. The generic-
+# word check above catches `user_input="دكتور"` - the bare noun with
+# nothing else. It does NOT catch the model extracting the wrong word
+# out of a sentence that DOES contain the noun: "الدكتور سيء" ("the
+# doctor is bad") mentions "الدكتور" as a common noun, same as "دكتور
+# كتبلي دواء غلط" above, but the model called
+# `match_entity_info(user_input="سيء", entity_type="doctor")` - not the
+# noun itself, the ADJECTIVE describing it. Because the message does
+# contain a doctor cue word, the legitimate-case check below (matching
+# the patient's own message) would otherwise wave this through. A
+# quality complaint is exactly the shape STEP C1's "don't invent a name"
+# rule exists for; it just was not the literal noun this regex already
+# blocked. CONFIRMED REAL PRODUCTION FAILURE: "الدكتور سيء" ->
+# `match_entity_info(user_input="سيء", ...)` -> not_matched -> the
+# complaint stopped over a doctor name the patient never gave, and
+# nothing caught it this time.
+_NOT_A_NAME_DESCRIPTOR_RE = re.compile(
+    r"^\s*(?:مش\s*)?(?:سيء|سيئ[ةه]?|وحش|وحش[ةه]|تعبان[ةه]?|مقصر[ةه]?|"
+    r"فظيع[ةه]?|زفت|غلط|وقح[ةه]?|قليل\s*الادب|مش\s*كويس|مش\s*محترم[ةه]?|"
+    r"bad|terrible|awful|rude|unprofessional)\s*$"
+)
+
 
 def _last_match_entity_info_user_input(state: AgentState, entity_type: str) -> Optional[str]:
     """The `user_input` most recently passed to `match_entity_info` for
@@ -9755,8 +9777,12 @@ def _reply_fabricates_doctor_not_found_stop(reply_text: str, state: AgentState) 
     # exactly why this stronger, argument-level check exists.
     generic_re = _GENERIC_BRANCH_WORD_ONLY_RE if is_branch else _GENERIC_DOCTOR_WORD_ONLY_RE
     last_call_input = _last_match_entity_info_user_input(state, entity_type)
-    if last_call_input is not None and generic_re.match(_norm_ar(last_call_input)):
-        return True
+    if last_call_input is not None:
+        folded_input = _norm_ar(last_call_input)
+        if generic_re.match(folded_input) or (
+            not is_branch and _NOT_A_NAME_DESCRIPTOR_RE.match(folded_input)
+        ):
+            return True
 
     cue_re = _BRANCH_CUE_WORD_RE if is_branch else _DOCTOR_CUE_WORD_RE
 
@@ -9889,6 +9915,56 @@ def _reply_derails_complaint_into_handoff_offer(reply_text: str, state: AgentSta
                 break
 
     return bool(_MORE_DETAILS_QUESTION_RE.search(_norm_ar(prior_ai_text)))
+
+
+# ==========================================================
+# THE COMPLAINT CATEGORY IS AN INTERNAL DECISION, NEVER A QUESTION
+# ==========================================================
+#
+# STEP C2 tells the model to DECIDE the complaint's subject from what
+# the patient already said - not to ask them to pick one from a list.
+# CONFIRMED REAL PRODUCTION FAILURE: the patient had already said
+# "دكتور ليلى" and, a couple of turns later, "الدكتور سيء" - a doctor
+# complaint, plainly - and once they had nothing more to add, the reply
+# was "طيب، تحت أي موضوع تبغى نقدم الشكوى؟ هل هي عن خدمة العملاء،
+# الطبيب، الفرع، الحجز، الفواتير، أو شيء ثاني؟" - the internal STEP C2
+# judgment call, surfaced as a menu, asking the patient to re-classify a
+# complaint whose subject they had already made obvious.
+_COMPLAINT_CATEGORY_QUESTION_RE = re.compile(
+    r"تحت\s*أي\s*موضوع|أي\s*قسم\s*(?:تبغى|تحب|عايز|عاوز)|"
+    r"عن\s*خدمة\s*العملاء\W{0,3}(?:ال)?طبيب\W{0,3}(?:ال)?فرع|"
+    r"which\s+(?:subject|category|department)\s+(?:would|do)\s+you"
+)
+
+
+def _reply_asks_generic_complaint_category(reply_text: str, state: AgentState) -> bool:
+    if not reply_text:
+        return False
+    return bool(_COMPLAINT_CATEGORY_QUESTION_RE.search(_norm_ar(reply_text)))
+
+
+_COMPLAINT_CATEGORY_QUESTION_CORRECTION_DIRECTIVE = (
+    "============================================================\n"
+    "NEVER ASK THE CATEGORY QUESTION OUT LOUD - DECIDE IT YOURSELF\n"
+    "============================================================\n"
+    "STEP C2's \"decide the complaint's subject\" is an internal "
+    "judgment call you make from what the patient has ALREADY said - "
+    "it is never a question to ask them. Your previous draft surfaced "
+    "it as a menu (\"تحت أي موضوع...؟ خدمة العملاء، الطبيب، الفرع...\"), "
+    "which is not part of this flow at all and makes the assistant look "
+    "like it ignored everything said so far.\n\n"
+    "Re-read the WHOLE complaint conversation so far, not just this "
+    "last message. If a doctor or branch was named or clearly referred "
+    "to ANYWHERE in it - even a message or two back - that is the "
+    "subject: go straight to STEP C2b's handling for it (verify the "
+    "name via `match_entity_info` now if that has not happened yet, or "
+    "ask its ONE targeted question - \"تحت أي دكتور بالظبط؟\"/\"في أنهي "
+    "فرع بالظبط؟\" - only if truly no name was ever given at all). If "
+    "nothing in the conversation points to a specific doctor or branch, "
+    "the subject is the clinic/service as a whole - record it as such "
+    "silently and move straight to STEP C3 (ask for their name), never "
+    "to this category question.\n\n"
+)
 
 
 _COMPLAINT_HANDOFF_DERAIL_CORRECTION_DIRECTIVE = (
@@ -11604,7 +11680,49 @@ _ANSWERED_OUR_QUESTION_CORRECTION_DIRECTIVE = (
     "clinic does not do, answer THAT in one warm sentence and then "
     "return to the question you had asked - do not reset them to the "
     "menu.\n\n"
+    "IF THEIR MESSAGE HAS NOTHING TO DO WITH HEALTHCARE AT ALL (a "
+    "celebrity, a concert, an unrelated purchase - zero plausible "
+    "connection to anything this clinic does): a brief, PLAIN sentence "
+    "saying you can only help with clinic-related things is completely "
+    "fine to say, and is not itself the problem. The problem is "
+    "STOPPING there. That one sentence is not allowed to be your ENTIRE "
+    "reply - it must be followed, in the SAME message, by the exact "
+    "pending question repeated below, so the flow you were already in "
+    "is not lost. Do not reprint the full canned service-menu paragraph "
+    "either way; a short, natural decline is enough.\n\n"
 )
+
+
+def _answered_our_question_correction_directive(reply_text: str, state: AgentState) -> str:
+    """Same base directive, plus the actual pending question - verbatim,
+    not left for the model to recall - so a genuinely off-topic message
+    still gets a short decline THAT ENDS BY RETURNING TO IT, rather than
+    the model falling back to the one thing it knows is safe: repeating
+    the canned menu that keeps getting rejected. CONFIRMED REAL FAILURE:
+    without the question restated here, a plainly out-of-scope message
+    ("احجزيلي حفلة مع [مطرب]") got the same rejected canned menu twice
+    in a row and fell through to the generic technical-error fallback -
+    there was nothing else in the directive telling the model what to
+    say once it stopped saying that."""
+
+    messages = state.get("messages") or []
+    last_ai = _last_ai_reply_text(messages) or ""
+
+    pending_question = ""
+    match = re.search(r"([^.\n]*[؟?])\s*$", last_ai.strip())
+    if match:
+        pending_question = match.group(1).strip()
+
+    if not pending_question:
+        return _ANSWERED_OUR_QUESTION_CORRECTION_DIRECTIVE
+
+    return (
+        _ANSWERED_OUR_QUESTION_CORRECTION_DIRECTIVE
+        + "THE QUESTION YOU HAD JUST ASKED, WORD FOR WORD - end your "
+        "rewritten reply with exactly this (translated/adapted only if "
+        "the patient is writing a different language), so the flow is "
+        f"not lost:\n\"{pending_question}\"\n\n"
+    )
 
 
 def _message_is_about_health(messages: list) -> bool:
@@ -13303,7 +13421,7 @@ _REPLY_VERIFIERS = (
         lambda reply, state, agent_name: (
             _reply_scope_refuses_an_answer_to_our_own_question(reply, state)
         ),
-        lambda reply, state: _ANSWERED_OUR_QUESTION_CORRECTION_DIRECTIVE,
+        lambda reply, state: _answered_our_question_correction_directive(reply, state),
         "reply answered the patient's response to our own question with the generic "
         "out-of-scope service menu",
     ),
@@ -13396,6 +13514,15 @@ _REPLY_VERIFIERS = (
         lambda reply, state: _DOCTOR_NOT_FOUND_STOP_CORRECTION_DIRECTIVE,
         "reply stopped the complaint over a doctor/branch name that the patient "
         "never actually gave",
+    ),
+    (
+        lambda reply, state, agent_name: (
+            agent_name == "complaint"
+            and _reply_asks_generic_complaint_category(reply, state)
+        ),
+        lambda reply, state: _COMPLAINT_CATEGORY_QUESTION_CORRECTION_DIRECTIVE,
+        "reply surfaced STEP C2's internal subject decision as a category "
+        "question to the patient instead of deciding it from what they already said",
     ),
     (
         lambda reply, state, agent_name: _reply_derails_complaint_into_handoff_offer(reply, state),
@@ -13520,6 +13647,56 @@ _ABANDONED_BOOKING_RESET_DIRECTIVE = (
     "including after the patient explicitly asked to look across the "
     "whole hospital.\n\n"
 )
+
+
+def _build_complaint_subject_directive(messages: list) -> str:
+    """Proactively tells the complaint agent what STEP C2's subject
+    already is, computed deterministically from the conversation so far
+    - rather than leaving the model to notice this itself, or relying
+    on a text-pattern check to catch it only after it gets this wrong.
+
+    This is the SAME pattern already used for locked slots and
+    abandoned bookings: compute the fact in code, hand it to the model
+    as a stated fact, before it drafts anything - prevention instead of
+    after-the-fact correction. `_reply_asks_generic_complaint_category`
+    (a check on the OUTPUT text) still exists as a safety net for
+    whatever this misses, but is no longer the primary defense."""
+
+    if not messages:
+        return ""
+
+    doctor_cue = False
+    branch_cue = False
+    for msg in messages:
+        if getattr(msg, "type", None) != "human":
+            continue
+        text = _norm_ar(str(getattr(msg, "content", "") or ""))
+        if _DOCTOR_CUE_WORD_RE.search(text):
+            doctor_cue = True
+        if _BRANCH_CUE_WORD_RE.search(text):
+            branch_cue = True
+
+    if not doctor_cue and not branch_cue:
+        return ""
+
+    if doctor_cue and not branch_cue:
+        subject = "a DOCTOR"
+    elif branch_cue and not doctor_cue:
+        subject = "a BRANCH"
+    else:
+        subject = "a doctor and/or a branch"
+
+    return (
+        "============================================================\n"
+        "THIS COMPLAINT'S SUBJECT IS ALREADY ESTABLISHED - DO NOT ASK\n"
+        "============================================================\n"
+        f"The patient has already mentioned {subject} somewhere in this "
+        "complaint. STEP C2's subject decision is already made for you "
+        "from that - never ask a general \"which category is this "
+        "complaint about?\" question (customer service / doctor / "
+        "branch / booking / billing / other). Go straight to STEP C2b's "
+        "handling for the subject already established above.\n\n"
+    )
 
 
 def _build_abandoned_booking_directive(messages: list, session_id: str) -> str:
@@ -17797,6 +17974,19 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                 state["messages"], state.get("session_id"),
             )
 
+    # PROACTIVE, NOT REACTIVE: tells the complaint agent what STEP C2's
+    # subject already is, computed in code from the conversation so far,
+    # BEFORE it drafts a reply - the same pattern as the locked-slot and
+    # abandoned-booking directives above, applied to the complaint flow.
+    # `_reply_asks_generic_complaint_category` (a text-pattern check on
+    # the OUTPUT) still exists as a safety net for whatever this misses,
+    # but the fact computed here is meant to make that check fire far
+    # less often: a model told the subject outright has nothing left to
+    # guess, and nothing to ask the patient to re-classify.
+    complaint_subject_directive = (
+        _build_complaint_subject_directive(state["messages"]) if agent_name == "complaint" else ""
+    )
+
     bare_entity_directive = _build_bare_entity_answer_directive(state["messages"])
     branches_info_directive = _build_branches_info_directive(state["messages"])
     bare_doctor_directive = _build_bare_doctor_answer_directive(state["messages"])
@@ -17968,7 +18158,8 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         + services_directive + how_to_book_directive
         + slots_directive + available_days_directive
         + resolved_day_directive + entity_list_directive
-        + abandoned_booking_directive + bare_entity_directive
+        + abandoned_booking_directive + complaint_subject_directive
+        + bare_entity_directive
         + branches_info_directive
         + bare_doctor_directive + single_doctor_directive
         + show_all_doctors_directive
