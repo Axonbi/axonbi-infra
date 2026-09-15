@@ -6283,35 +6283,36 @@ def match_entity_info(
         return {"status": "not_configured"}
 
     if entity_type == "doctor":
-        # `has_service_schedule` DEFAULTS TO TRUE ON THE API WRAPPER
-        # ITSELF (see api.get_doctors) - so this call, despite passing
-        # no filters of its own, was silently asking the API to exclude
-        # any doctor with no schedule on file at all, even though this
-        # function's entire purpose is a plain "does this doctor
-        # exist?" information lookup, not a bookability check.
+        # `has_published_service`/`has_service_schedule` DEFAULT TO TRUE
+        # ON THE API WRAPPER ITSELF (see api.get_doctors) - so this
+        # call, despite passing no filters of its own, was silently
+        # asking the API to exclude any doctor with no published
+        # service or no schedule on file, even though this function's
+        # entire purpose is a plain "does this doctor exist?"
+        # information lookup, not a bookability check.
         #
         # CONFIRMED REAL PRODUCTION FAILURE (tenant): a doctor the
         # clinic confirmed is real, active, and simply has no schedule
         # added yet ("عمر المديفر") could not be found here at all -
         # not a fuzzy-matching problem, since the API never returned
-        # him in the first place for this call to match against.
+        # him in the first place for this call to match against. A
+        # real doctor whose service wasn't marked "published"
+        # ("د. ليلى الحربي") failed the identical way for the sibling
+        # filter, in the COMPLAINT flow specifically - stopping the
+        # complaint entirely over a name that was never actually wrong.
         #
-        # `has_published_service` DEFAULTS TO TRUE THE SAME WAY, AND WAS
-        # MISSED WHEN THE FIX ABOVE WAS MADE. Same reasoning applies
-        # identically: a doctor whose service happens not to be marked
-        # "published" is still a real doctor this lookup should be able
-        # to find and confirm - filing a COMPLAINT about someone is the
-        # clearest possible case where "can this patient book them right
-        # now" is entirely beside the point. CONFIRMED REAL PRODUCTION
-        # FAILURE: a real, previously-confirmed doctor ("د. ليلى الحربي")
-        # came back `not_matched` against her own first name here, in
-        # the COMPLAINT flow, stopping the complaint entirely - not a
-        # fuzzy-matching problem either, for the identical reason: the
-        # API silently excluded her from the 7 doctors this call had to
-        # match against.
+        # PASS None, NOT False, FOR BOTH. These are literal equality
+        # filters on the API side, not an on/off switch - `False` asks
+        # for doctors where the field is exactly False (a real, usually
+        # much SMALLER subset), not the unfiltered roster. CONFIRMED
+        # REAL REGRESSION: passing `False` for both at once (an
+        # intersection of two rare conditions) cut a roster of 7 down
+        # to 3 - the opposite of the intended fix. `None` omits the
+        # field from the request entirely, which is what "no opinion
+        # on this filter" actually requires.
         result = api.get_doctors(
             base_url, page_size=200,
-            has_service_schedule=False, has_published_service=False,
+            has_service_schedule=None, has_published_service=None,
             language=conversation_language(state),
         )
         name_keys = ["formatedName", "altName", "name"]
@@ -7316,18 +7317,21 @@ def match_entity_for_booking(
                     "was empty" if not narrowed else "has no match", user_input,
                 )
                 widen_started = time.monotonic()
-                # `has_service_schedule` DEFAULTS TO TRUE on the API
-                # wrapper itself - left alone here, this widen step
-                # would still exclude a real, active doctor who simply
-                # has no schedule on file, exactly defeating its own
-                # purpose ("they may be real but fully booked... widen
-                # once before concluding 'no such doctor'"). A doctor
-                # found this way and then confirmed will correctly get
-                # "not_found" from the schedule lookup right after -
-                # see that tool's own guidance for how that is phrased.
+                # `has_service_schedule` IS A LITERAL EQUALITY FILTER ON
+                # THE API SIDE, NOT AN ON/OFF SWITCH - passing `False`
+                # asks for doctors where that field is exactly False (no
+                # schedule at all), which is a real, usually much
+                # SMALLER subset, not the unfiltered roster this widen
+                # step actually wants ("they may be real but simply not
+                # matched under the narrower search - widen once before
+                # concluding 'no such doctor'", not "only look at
+                # doctors who have no schedule"). `None` omits the field
+                # from the request entirely - see api.get_doctors's own
+                # docstring for the confirmed regression this exact
+                # mistake caused elsewhere (`match_entity_info`).
                 result = api.get_doctors(
                     base_url, branch_ids=branch_filter, page_size=50,
-                    has_service_schedule=False,
+                    has_service_schedule=None,
                     language=conversation_language(state),
                 )
                 logger.info(
