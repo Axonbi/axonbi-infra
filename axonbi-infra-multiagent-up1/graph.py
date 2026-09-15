@@ -15497,7 +15497,22 @@ def _build_scope_directive(templates: dict, language: str = "ar") -> str:
 _NAME_REJECTION_RE = re.compile(
     r"اسمين\s*علي\s*الاقل|اسمين\s*على\s*الأقل|"
     r"(?:ال)?اسم\s*(?:ال)?اول\s*و\s*(?:اسم\s*)?(?:ال)?عائله|"
-    r"at\s+least\s+two\s+names|first\s+(?:name\s+)?and\s+(?:the\s+)?(?:family|last)\s+name"
+    r"at\s+least\s+two\s+names|first\s+(?:name\s+)?and\s+(?:the\s+)?(?:family|last)\s+name|"
+    # A GENERIC RE-ASK, NOT JUST THE EXPLICIT TWO-PART WORDING.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE: the patient sent "نهي محمود" -
+    # a real two-part name - and the reply was simply "من فضلك أعطني
+    # اسمك الكامل لإتمام الحجز" (please give me your full name). That
+    # sentence never says "two parts" or "family name", so the patterns
+    # above never matched it, `_reply_wrongly_rejects_full_name` never
+    # fired, and the patient was asked the exact same question THREE
+    # times in a row with no way to ever satisfy it - a name was never
+    # going to look different the fourth time either. Any request for
+    # "the full name" / "اسمك الكامل" is covered here too; the
+    # surrounding function only calls this a violation when a valid
+    # 2+-part name was already the patient's last real answer, so this
+    # broader match cannot mis-fire on a genuine first-time ask.
+    r"اسم(?:ك|ها|ه)?\s*(?:ال)?كامل|(?:ال)?اسم\s*بالكامل|full\s+name"
 )
 
 # A name PART: two or more letters, Arabic or Latin. Deliberately not a
