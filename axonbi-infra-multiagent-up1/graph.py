@@ -18974,6 +18974,7 @@ def router(state: AgentState) -> dict:
     # Once per turn, from the node - never from the conditional edge,
     # which LangGraph may call more than once. See _clear_stale_branch_context.
     _clear_stale_branch_context(chosen, state.get("session_id"))
+    _clear_abandoned_booking_context(chosen, previous, state.get("session_id"))
 
     if chosen != previous:
         logger.info(
@@ -18991,6 +18992,59 @@ def router(state: AgentState) -> dict:
         "routing_reason": reason,
         "previous_agent": previous,
     }
+
+
+def _clear_abandoned_booking_context(chosen: Optional[str], previous: Optional[str], session_id: Optional[str]) -> None:
+    """Deterministically drops a stale doctor/specialty from a booking
+    attempt the patient has clearly walked away from, the moment the
+    router hands the turn to `booking` from a DIFFERENT specialist.
+
+    `_build_abandoned_booking_directive` already tells the model to
+    treat this state as abandoned - but only as a TEXT INSTRUCTION,
+    which depends on the model reading and obeying it every single
+    turn. It does not reliably: `_reply_reasks_specialty_already_established`
+    runs independently and defends ANY specialty_ids/known_doctor_names
+    it finds on file as still relevant, with no way to tell a stale one
+    from a fresh one. The two checks fighting each other - one saying
+    "forget it", the other saying "don't ask again" - is what let a
+    specialty from an abandoned appointment attempt (one that had
+    already failed on a double-booking) silently drive a booking for a
+    completely unrelated service the patient had only just been reading
+    about in FAQ: never asked which doctor for THIS service, the flow
+    jumped straight to confirming a WhatsApp number for an appointment
+    that did not exist yet.
+
+    Deleting the keys outright removes the disagreement at its root:
+    once this fires, there is nothing stale left on file for the other
+    check to defend, and the booking flow starts genuinely fresh from
+    whatever this turn's own conversation actually establishes.
+
+    Same narrow trigger as `_build_abandoned_booking_directive`: a
+    booking-relevant field is on file AND this turn switched agents
+    (not a continuation) - a detour that stays inside `booking` the
+    whole time (`previous == "booking"`) never reaches here, and
+    neither does the ordinary medical -> booking handoff, which never
+    populates these session fields until real booking tools run."""
+
+    if chosen != "booking" or not previous or previous == "booking" or not session_id:
+        return
+
+    session = tools._BOOKING_SESSIONS.get(session_id)
+    if not session:
+        return
+
+    stale_keys = ("doctor_id", "branch_id", "specialty_ids", "known_doctor_names", "selected_slot")
+    present = [key for key in stale_keys if session.get(key)]
+    if not present:
+        return
+
+    logger.info(
+        "router: clearing stale booking context on %s -> booking "
+        "(session_id=%s, keys=%s)",
+        previous, session_id, present,
+    )
+    for key in stale_keys:
+        session.pop(key, None)
 
 
 def route_to_specialist(state: AgentState) -> str:
