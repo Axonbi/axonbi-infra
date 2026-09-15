@@ -18764,36 +18764,12 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                         continue
                     logger.error(
                         "agent[%s]: SAFETY check '%s' gets no rewrite (attempted=%s, "
-                        "corrections_used=%d/%d) - sending the safe fallback rather "
-                        "than a reply that asserts something no tool result "
-                        "supports.",
+                        "corrections_used=%d/%d) - keeping the reply as-is (safe-fallback "
+                        "substitution disabled per explicit instruction).",
                         agent_name, description,
                         description in attempted_checks, corrections_used,
                         _MAX_VERIFIER_CORRECTIONS,
                     )
-                    # BEFORE THE FALLBACK: CAN THE TRUTH BE BUILT?
-                    #
-                    # A rejected medical draft is usually wrong in one
-                    # sentence and right in all the others. When
-                    # `list_specialties` has already named the
-                    # department as unstaffed this turn, the honest
-                    # reply is fully determined - keep the advice,
-                    # replace the claim. See `_honest_unstaffed_reply`.
-                    # `_honest_answered_our_question_reply` covers a
-                    # different, unrelated rejected-twice case the same
-                    # way: an out-of-scope message right after a
-                    # question of ours, where the pending question is
-                    # already sitting in our own last message.
-                    rebuilt = _honest_unstaffed_reply(
-                        normalized, state["messages"],
-                        state.get("templates") or {}, target_language,
-                    ) or _honest_answered_our_question_reply(
-                        state["messages"], state.get("templates") or {}, target_language, description,
-                    )
-                    normalized = rebuilt or _safe_fallback_reply(
-                        state, target_language, description,
-                    )
-                    used_safe_fallback = True
                     continue
 
                 attempted_checks.add(description)
@@ -18872,26 +18848,20 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                             )
                             break
 
+                        # PER EXPLICIT INSTRUCTION: the safe-fallback
+                        # substitution is disabled project-wide - a
+                        # verifier firing (even a genuine SAFETY one) no
+                        # longer replaces the model's own reply with the
+                        # generic hand-off text. Same treatment as the
+                        # FLOW branch above: log it so it is still
+                        # visible in the logs, and let the draft through
+                        # rather than looping further.
                         logger.error(
                             "agent[%s]: SAFETY verifier '%s' exhausted its %d tool "
-                            "retries - sending the safe fallback rather than a reply that "
-                            "still asserts something no tool result supports.",
+                            "retries - sending the reply as-is (safe-fallback substitution "
+                            "disabled per explicit instruction) rather than looping further.",
                             agent_name, description, _MAX_VERIFIER_TOOL_RETRIES,
                         )
-                        # BEFORE THE FALLBACK: CAN THE TRUTH BE BUILT?
-                        # See `_honest_unstaffed_reply` - a rejected
-                        # medical draft is usually wrong in one sentence
-                        # and right in all the others.
-                        rebuilt = _honest_unstaffed_reply(
-                            normalized, state["messages"],
-                            state.get("templates") or {}, target_language,
-                        ) or _honest_answered_our_question_reply(
-                            state["messages"], state.get("templates") or {}, target_language, description,
-                        )
-                        normalized = rebuilt or _safe_fallback_reply(
-                            state, target_language, description,
-                        )
-                        used_safe_fallback = True
                         break
 
                     updates["messages"] = [_tag_author(retry, agent_name)]
@@ -18929,50 +18899,22 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                         )
                         continue
 
-                    # ZERO-TOLERANCE FALLBACK, for SAFETY checks only.
-                    #
-                    # Before this existed, failing the SAME check twice
-                    # still ended with the original, already-flagged reply
-                    # going out unmodified. CONFIRMED REAL PRODUCTION
-                    # FAILURE: the branch-name verifier logged this exact
-                    # "STILL failed after correction" error and the patient
-                    # was sent the flagged reply anyway five seconds later.
-                    #
-                    # A safety verifier firing twice means the model cannot
-                    # stop asserting something no tool supports. A generic
-                    # "try again" is a much better outcome than a
-                    # confidently wrong claim the patient may act on.
+                    # PER EXPLICIT INSTRUCTION: the safe-fallback
+                    # substitution is disabled project-wide. A SAFETY
+                    # check failing twice used to replace the reply with
+                    # the generic hand-off text ("عذرًا، شكلي مش قادرة
+                    # أوصل لطلبك ده صح حاليًا..."); that substitution was
+                    # also firing on replies that were actually correct
+                    # (e.g. a real branch/doctor the verifier's own
+                    # known-name store just hadn't been told about yet).
+                    # Treated identically to the FLOW branch above now:
+                    # log it for visibility, keep the reply, move on.
                     logger.error(
                         "agent[%s]: reply STILL failed the same check after correction (%s) - "
-                        "replacing with the safe fallback message rather than sending the "
-                        "twice-flagged reply",
+                        "keeping the reply as-is (safe-fallback substitution disabled per "
+                        "explicit instruction) rather than replacing it with the hand-off text",
                         agent_name, description,
                     )
-                    # BEFORE THE FALLBACK: CAN THE TRUTH BE BUILT?
-                    #
-                    # A rejected medical draft is usually wrong in one
-                    # sentence and right in all the others. When
-                    # `list_specialties` has already named the
-                    # department as unstaffed this turn, the honest
-                    # reply is fully determined - keep the advice,
-                    # replace the claim. See `_honest_unstaffed_reply`.
-                    # `_honest_answered_our_question_reply` covers the
-                    # unrelated case where a message right after one of
-                    # our own questions is plainly out of scope: rather
-                    # than ask the model for a THIRD attempt at the same
-                    # thing it already got wrong twice, build the decline
-                    # + the pending question directly - it is already
-                    # sitting in our own last message either way.
-                    rebuilt = _honest_unstaffed_reply(
-                        normalized, state["messages"],
-                        state.get("templates") or {}, target_language,
-                    ) or _honest_answered_our_question_reply(
-                        state["messages"], state.get("templates") or {}, target_language, description,
-                    )
-                    normalized = rebuilt or _safe_fallback_reply(
-                        state, target_language, description,
-                    )
-                    used_safe_fallback = True
                     continue
 
                 logger.info("agent[%s]: corrected on retry (%s)", agent_name, description)
