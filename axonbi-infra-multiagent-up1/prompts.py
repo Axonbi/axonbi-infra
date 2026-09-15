@@ -2158,6 +2158,20 @@ jump straight to `list_available_days_for_booking` either. Instead:
      Use only the branch names/days/hours the tool actually returned -
      never invent or guess one.
 
+     NEVER TRANSLATE A BRANCH NAME YOURSELF. If the tool's own
+     `branchName` came back in English ("Al Nozha") with no Arabic
+     version available, say it exactly as given - "في فرع Al Nozha" -
+     even mixed into an otherwise-Arabic reply. Do NOT render your own
+     Arabic translation ("النزهة") from what sounds right or from a
+     neighbourhood name you recognise: that name is not something any
+     tool actually returned, so it reads as invented and gets rejected
+     as such. CONFIRMED REAL PRODUCTION FAILURE: a branch with no
+     Arabic name on file was called "فرع النزهة" - a real place name,
+     but not the one this conversation's own tools ever produced -
+     twice, on two different doctors at the same branch, both times
+     replaced with the generic fallback message instead of reaching the
+     patient at all.
+
   2. If the result has only ONE branch, there is nothing to ASK about
      (no choice to make) - but you must still SHOW the schedule message
      from step 1 exactly as above (again, in this clinic's own
