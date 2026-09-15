@@ -2175,6 +2175,32 @@ def _remember_list(state: AgentState, entity_type: str, items: list) -> None:
     )
 
 
+def _remember_branch_name(state: AgentState, name: Optional[str]) -> None:
+    """Folds a single branch name into the session's permanent
+    known-branch memory, for tools that resolve or confirm ONE branch
+    without ever returning a roster - so `_remember_list`'s
+    entity_type="branch" path (the only other writer of this bucket)
+    never runs for them.
+
+    Without this, graph.py's invented-branch guard (`_find_invented_branches`)
+    can only see the name via raw message-history substring scanning,
+    which conversation-history compaction silently erases over time -
+    see `_remember_list`'s own docstring for the confirmed production
+    failure that exact pattern already caused once, for a tool that DID
+    return a roster. `share_branch_location` and `list_branch_services`
+    are the same class of gap for a tool that resolves or confirms a
+    SINGLE branch: a patient legitimately told a branch's address or
+    services many turns ago, in a part of the conversation compaction
+    has since shortened, gets that same real branch name rejected as
+    invented the next time it comes up."""
+
+    session_id = state.get("session_id")
+    if not session_id or not name:
+        return
+    session = _get_booking_session(session_id)
+    session.setdefault("known_branch_names", set()).add(str(name))
+
+
 def get_known_entity_names(session_id: Optional[str], entity_type: str) -> set:
     """Public accessor for graph.py's invented-branch/invented-doctor
     guards - every branch or doctor name any tool has returned in this
@@ -5544,6 +5570,13 @@ def list_branch_services(
 
     branch_info = {"id": branch_id, "name": branch_display}
 
+    # See `_remember_branch_name`'s docstring: this tool confirms ONE
+    # branch and never returns a roster, so nothing else registers this
+    # name in the permanent known-branch memory the invented-branch
+    # guard relies on once older turns get compacted out of the raw
+    # message history.
+    _remember_branch_name(state, branch_display)
+
     logger.info(
         "list_branch_services: branch_id=%s (%s) -> %d published service(s)",
         branch_id, branch_display, len(services),
@@ -6434,6 +6467,7 @@ def match_entity_info(
         # booked at.
         if entity_type == "branch":
             _note_info_branch_availability(state, shaped_pos)
+            _remember_branch_name(state, _arabic_preferred_name(shaped_pos) or shaped_pos.get("name"))
 
         return {"status": "matched", "item": shaped_pos}
 
@@ -6584,6 +6618,7 @@ def match_entity_info(
         if entity_type == "branch":
             # Same reason as the positional-pick path above.
             _note_info_branch_availability(state, matched_item)
+            _remember_branch_name(state, _arabic_preferred_name(matched_item) or matched_item.get("name"))
         elif entity_type == "doctor" and matched_item.get("id"):
             # See `_doctor_active_branch_names`'s own docstring for the
             # confirmed production failure this closes - only fetched
@@ -10857,6 +10892,12 @@ def share_branch_location(
         "share_branch_location: session_id=%s client_id=%s branch_name=%r",
         state.get("session_id"), state.get("client_id"), branch_name,
     )
+    # See `_remember_branch_name`'s docstring: this tool confirms ONE
+    # branch by name and never returns a roster, so nothing else
+    # registers it in the permanent known-branch memory the
+    # invented-branch guard relies on once older turns get compacted
+    # out of the raw message history.
+    _remember_branch_name(state, branch_name)
     return {"status": "location_requested", "branch_name": branch_name}
 
 
