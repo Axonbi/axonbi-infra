@@ -256,6 +256,7 @@ move something instead, just take the next natural step with them.""",
             "check_booking_status",
             "get_doctor_schedule",
             "get_available_reschedule_slots",
+            "select_reschedule_slot",
             "reschedule_appointment",
             "get_next_weekday_date",
             "resolve_available_day",
@@ -274,9 +275,10 @@ identity work exactly like cancellation's STEP 1-2, which is included
 below for that reason - use it for those two steps only, and never
 actually cancel anything.
 
-Never reschedule without a fresh `lookup_appointment` in the same turn,
-and never alter a slot value returned by
-`get_available_reschedule_slots` before passing it on.""",
+Never reschedule without a fresh `lookup_appointment` in the same turn.
+When the patient picks a time from `get_available_reschedule_slots`'s
+list, call `select_reschedule_slot` with their raw reply to lock it in -
+never alter or retype the slot value yourself.""",
     ),
 
     AgentSpec(
