@@ -11709,7 +11709,17 @@ def _answered_our_question_correction_directive(reply_text: str, state: AgentSta
     last_ai = _last_ai_reply_text(messages) or ""
 
     pending_question = ""
-    match = re.search(r"([^.\n]*[؟?])\s*$", last_ai.strip())
+    # NOT ANCHORED WITH \s*$ ANY MORE - a trailing emoji or decoration
+    # after the question mark ("...اليوم؟ 😊") made the old anchored
+    # version match nothing at all, so this fell back to the base
+    # directive with no question to restate. CONFIRMED REAL PRODUCTION
+    # FAILURE: the opening greeting itself ends in exactly that shape,
+    # and an out-of-scope first message ("احجزيلي حفلة مع [مطرب]")
+    # right after it hit this exact gap - fell back to the canned menu
+    # twice with nothing telling it what to say instead, then the
+    # generic fallback. Allowing anything after the "؟"/"?" still finds
+    # the actual question and simply keeps the reply from ending there.
+    match = re.search(r"([^.\n]*[؟?])[^\n]*$", last_ai.strip())
     if match:
         pending_question = match.group(1).strip()
 
