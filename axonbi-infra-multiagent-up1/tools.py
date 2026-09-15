@@ -10874,6 +10874,7 @@ ALL_TOOLS = [
     get_next_weekday_date,
     get_doctor_schedule,
     get_available_reschedule_slots,
+    select_reschedule_slot,
     reschedule_appointment,
     answer_hospital_faq,
     list_hospital_services,
