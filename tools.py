@@ -10734,7 +10734,7 @@ def search_lab_services(
     # API tenant was shown to a patient who asked for a blood test).
     doctors_result = api.get_doctors(
         base_url, has_published_service=False, has_service_schedule=False,
-        language=language,
+        page_size=1000, language=language,
     )
     if not doctors_result["success"]:
         logger.error(
@@ -10913,7 +10913,7 @@ def select_sample_collection_mode(
 
     doctors_result = api.get_doctors(
         base_url, has_published_service=False, has_service_schedule=False,
-        language=language,
+        page_size=1000, language=language,
     )
     if not doctors_result["success"]:
         logger.error(
