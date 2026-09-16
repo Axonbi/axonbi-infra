@@ -15862,7 +15862,12 @@ _SUMMARY_OR_CONFIRMATION_CUE_RE = re.compile(
 # A bare yes. The patient agreeing to a yes/no question the assistant
 # itself asked.
 _BARE_AFFIRMATION_RE = re.compile(
-    r"^\s*(?:اه|ايه|أيوه|ايوه|ايوا|نعم|تمام|اوك|أوك|ok|okay|yes|yep|sure|"
+    # Each Arabic stem allows trailing letter elongation (اه/اها/اهاا،
+    # ايوه/ايوووه...) - CONFIRMED REAL PRODUCTION FAILURE: "اهاا" is one
+    # informal spelling away from "اها", which this regex already
+    # matched, and was missed entirely because the list only ever held
+    # exact words, never variants of them.
+    r"^\s*(?:اه+ا*|ايه+|أيوه+|ايوه+|ايوا+|نعم|تمام|اوك+|أوك+|ok(?:ay)?|yes|yep|sure|"
     r"اكمل|كمل|اه\s*اكمل|ماشي|حاضر|طبعا|أكيد|اكيد)"
     r"\s*[.!؟?،,]*\s*$",
     re.IGNORECASE,
@@ -17124,6 +17129,54 @@ _PATIENT_NAME_PICKER_CUE_RE = re.compile(
 )
 
 
+def _classify_bare_affirmation_with_llm(text: str) -> Optional[bool]:
+    """Fallback for the one call site (`_reply_asks_for_a_phone_already_known`)
+    where missing an affirmative reply `_BARE_AFFIRMATION_RE` doesn't
+    recognise means a patient's "yes" gets silently treated as if they
+    never answered, and they're asked for a number they already gave.
+
+    Only reached for a SHORT, digit-free reply that the regex above did
+    not match - i.e. one that MIGHT be a "yes" spelled/worded in a way
+    the fixed word list hasn't caught up with, not routine conversation.
+    A regex word list can never be complete; asking a model "is this a
+    yes?" generalises to any dialect spelling instead of waiting for the
+    next one to fail in production and be added by hand.
+
+    Uses `_router_llm` - the same fast-failing, temperature=0, no-retry
+    binding the router uses (see its own comment above) - because a
+    slow or wrong answer here must never hold up the turn. Any failure,
+    timeout, or answer that isn't a clean yes/no returns None, and the
+    caller then behaves exactly as it did before this fallback existed
+    (no correction fires) - this can only ADD coverage, never remove
+    the regex's own matches."""
+
+    try:
+        from langchain_core.messages import HumanMessage as _HumanMessage5
+
+        prompt = (
+            "A hospital WhatsApp assistant asked the patient a plain "
+            "yes/no question. Does the patient's message below mean "
+            "\"yes\"? Reply with exactly one word: YES, NO, or UNCLEAR.\n\n"
+            f"Patient's message: {text[:200]!r}"
+        )
+        answer = _router_llm.invoke([_HumanMessage5(content=prompt)])
+        choice = str(getattr(answer, "content", "")).strip().upper()
+
+        if choice.startswith("YES"):
+            return True
+        if choice.startswith("NO"):
+            return False
+
+    except Exception as exc:
+        logger.warning(
+            "_classify_bare_affirmation_with_llm: classification failed "
+            "(%s: %s) - treating as unclear, no correction will fire",
+            type(exc).__name__, exc,
+        )
+
+    return None
+
+
 def _reply_asks_for_a_phone_already_known(reply_text: str, state: AgentState) -> bool:
     """True when the reply asks the patient for their phone number (or a
     booking reference in its place) immediately after they agreed to
@@ -17164,7 +17217,22 @@ def _reply_asks_for_a_phone_already_known(reply_text: str, state: AgentState) ->
             continue
         content = getattr(msg, "content", "")
         text = content if isinstance(content, str) else str(content)
-        return bool(_BARE_AFFIRMATION_RE.match(_norm_ar(text)))
+
+        if _BARE_AFFIRMATION_RE.match(_norm_ar(text)):
+            return True
+
+        # Short, no digits (so it isn't itself a phone/reference number,
+        # which is a real answer, not a "yes") and not matched by the
+        # regex above - genuinely ambiguous, not routine text. Ask the
+        # fast-failing router model rather than silently treating an
+        # unrecognised "yes" as if it were a "no".
+        stripped = text.strip()
+        if stripped and len(stripped) <= 12 and not re.search(r"\d", stripped):
+            classified = _classify_bare_affirmation_with_llm(stripped)
+            if classified is not None:
+                return classified
+
+        return False
 
     return False
 
@@ -19498,6 +19566,24 @@ def _blocked_create_new_booking_tool_calls(state: AgentState) -> list:
     if not booking_calls:
         return []
 
+    # confirm_booking_review is being called in THIS SAME TURN, alongside
+    # create_new_booking. Its effect (session["review_shown"] = True) has
+    # not run yet at this point - this whole check happens BEFORE any
+    # tool in the batch executes - so the stored session flag still
+    # being stale here is not evidence the review was skipped; it is
+    # evidence the review is being confirmed RIGHT NOW.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE this fixes: a patient said "اه"
+    # to a fully correct, complete review card. The model (correctly)
+    # called confirm_booking_review + create_new_booking together in one
+    # turn. This check saw the pre-turn review_shown still False,
+    # stripped create_new_booking out of the batch, and returned
+    # "missing_review_confirmation". The model, reading that guidance
+    # literally, reprinted the identical review card a second time
+    # instead of finishing the booking - looping instead of confirming.
+    if any(tc.get("name") == "confirm_booking_review" for tc in tool_calls):
+        return []
+
     session_id = state.get("session_id")
     session = tools._BOOKING_SESSIONS.get(session_id) if session_id else None
     if session and session.get("review_shown"):
@@ -19545,6 +19631,27 @@ def _tool_node(state: AgentState, config: RunnableConfig) -> dict:
     trailing the JSON; an extra key is invisible to every one of them.
     A payload that isn't a dict, or a tool with nothing to say about
     this status, is passed through completely untouched."""
+
+    # Guarantee confirm_booking_review's session-state effect
+    # (review_shown = True) is visible to create_new_booking's OWN
+    # internal gate in tools.py when both are called in the same turn.
+    # ToolNode does not promise to execute same-batch tool_calls in the
+    # model's own listed order, and create_new_booking reads
+    # session["review_shown"] live at call time - so if it happened to
+    # run before confirm_booking_review, it would see the stale value
+    # and refuse with "needs_review" even though the patient had just
+    # said yes to a correct review card. Reordering here removes that
+    # race entirely: whatever order the model listed them in,
+    # confirm_booking_review always executes first.
+    last_message = state["messages"][-1] if state.get("messages") else None
+    _tc = list(getattr(last_message, "tool_calls", None) or [])
+    if (any(t.get("name") == "confirm_booking_review" for t in _tc)
+            and any(t.get("name") == "create_new_booking" for t in _tc)):
+        _reordered = sorted(
+            _tc, key=lambda t: 0 if t.get("name") == "confirm_booking_review" else 1
+        )
+        _patched = last_message.model_copy(update={"tool_calls": _reordered})
+        state = {**state, "messages": state["messages"][:-1] + [_patched]}
 
     blocked_calls = _blocked_create_new_booking_tool_calls(state)
 
