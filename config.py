@@ -936,9 +936,9 @@ def _read_csv_rows(filename: str) -> list:
 # (confirmed via api.get_doctors / api.get_branches), not a translation
 # or a close paraphrase of it. Overridable via env so a name change on
 # the API side doesn't require touching code.
-LAB_IN_PLACE_DOCTOR_NAME = os.getenv("LAB_IN_PLACE_DOCTOR_NAME", "البرج - سحب بالمعمل")
-LAB_HOME_DOCTOR_NAME = os.getenv("LAB_HOME_DOCTOR_NAME", "البرج - سحب من المنزل")
-LAB_HOME_SERVICE_BRANCH_NAME = os.getenv("LAB_HOME_SERVICE_BRANCH_NAME", "خدمة منزلية")
+LAB_IN_PLACE_DOCTOR_NAME = os.getenv("LAB_IN_PLACE_DOCTOR_NAME", "in-lab")
+LAB_HOME_DOCTOR_NAME = os.getenv("LAB_HOME_DOCTOR_NAME", "home")
+LAB_HOME_SERVICE_BRANCH_NAME = os.getenv("LAB_HOME_SERVICE_BRANCH_NAME", "home branch")
 
 
 # ==========================================================
