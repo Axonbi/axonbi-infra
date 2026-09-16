@@ -6151,6 +6151,12 @@ _NOT_A_BRANCH_NAME = {
     #              the branch list was never the variable, the closing
     #              sentence was.
     "له", "لها", "لهم", "لك", "لكم", "لي", "لنا",
+    # Egyptian-dialect forms of the same pronouns ("فرع ليكي" = "a
+    # branch for you") - CONFIRMED REAL PRODUCTION FAILURE: "أقرب فرع
+    # ليكي" (from the nearest-branch flow) captured "ليكي" as an
+    # invented branch name, discarding a reply that named no branch at
+    # all - the MSA forms above were covered, these weren't.
+    "ليك", "ليكي", "ليكم", "ليه", "ليها", "ليهم",
     "منهم", "منها", "منه", "منك", "منكم", "مننا",
     "بيهم", "بيها", "بيه", "فيهم", "عليهم", "عليها", "عنده", "عندها",
     "بعد", "بعده", "بعدها", "بعدين", "لسه", "لسة", "قبل",
