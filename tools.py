@@ -10791,6 +10791,10 @@ def search_lab_services(
             "get_doctors - nothing to search",
             in_place_name, home_name,
         )
+        _log_fixed_name_candidates(
+            "search_lab_services", f"{in_place_name!r} / {home_name!r}",
+            (doctors_result["data"] or {}).get("items", []),
+        )
         return {"status": "not_configured"}
 
     # The services actually registered under those doctors specifically
@@ -10892,6 +10896,33 @@ def _matches_fixed_name(candidate: dict, target: str) -> bool:
     return False
 
 
+def _log_fixed_name_candidates(context: str, target: str, items: list) -> None:
+    """Diagnostic-only: when a fixed-name lookup (see
+    `_matches_fixed_name`) fails to find `target` among `items`, log
+    every candidate's raw name/altName/formatedName exactly as the API
+    returned them (repr'd, so trailing spaces/invisible characters show
+    up) next to what we were looking for. Screenshots of an admin panel
+    can silently drop or reformat exactly the characters that matter
+    here (extra spaces, a different "ة" vs "ه", RTL marks, a title
+    prefix the panel displays but doesn't store) - this prints the
+    actual bytes the match is being done against so that doesn't have
+    to be guessed a second time."""
+
+    logger.error(
+        "%s: no candidate matched target=%r - raw candidates: %s",
+        context, target,
+        [
+            {
+                "id": c.get("id"),
+                "name": repr(c.get("name")),
+                "altName": repr(c.get("altName")),
+                "formatedName": repr(c.get("formatedName")),
+            }
+            for c in items
+        ],
+    )
+
+
 @tool
 def select_sample_collection_mode(
     state: Annotated[AgentState, InjectedState],
@@ -10972,6 +11003,10 @@ def select_sample_collection_mode(
             "via get_doctors - not registered/published yet in the Booking API",
             doctor_name, mode,
         )
+        _log_fixed_name_candidates(
+            "select_sample_collection_mode", doctor_name,
+            (doctors_result["data"] or {}).get("items", []),
+        )
         return {"status": "doctor_not_configured", "mode": mode}
 
     session_id = state.get("session_id")
@@ -11005,6 +11040,10 @@ def select_sample_collection_mode(
                 "select_sample_collection_mode: fixed home-service branch %r not "
                 "found via get_branches - not registered yet in the Booking API",
                 home_branch_name,
+            )
+            _log_fixed_name_candidates(
+                "select_sample_collection_mode (branch)", home_branch_name,
+                (branches_result["data"] or {}).get("items", []),
             )
             return {"status": "branch_not_configured"}
 
