@@ -956,6 +956,30 @@ LAB_IN_PLACE_DOCTOR_NAME = os.getenv("LAB_IN_PLACE_DOCTOR_NAME", "in-lab")
 LAB_HOME_DOCTOR_NAME = os.getenv("LAB_HOME_DOCTOR_NAME", "home")
 LAB_HOME_SERVICE_BRANCH_NAME = os.getenv("LAB_HOME_SERVICE_BRANCH_NAME", "home branch")
 
+# Confirmed real production issue (Al-Borg specifically): the Doctors/
+# Specialties API for this client does NOT live on the same base_url as
+# GuestBookings/Branches (port 1102), despite api.get_doctors' own
+# comment assuming "confirmed on a different port (1102 vs 1101)" as
+# the general rule - this client's Doctors/Specialties service is
+# actually on port 1302. n8n's own `doctors_base_url` column for this
+# client is empty, so `_doctors_base_url()` was silently falling back
+# to the (wrong-for-doctors) `base_url` - get_branches/get_specialties
+# etc. kept working fine (they're on 1102), while get_doctors quietly
+# returned a real but WRONG doctor roster (whoever happens to be
+# registered on 1102 under the Doctors endpoint there) instead of
+# failing loudly - which is exactly why the fixed "في المعمل"/"سحب
+# عينة من المنزل" doctors were never found even once their names
+# matched exactly.
+#
+# Keyed by client_id, same pattern as CLIENT_LAB_ENTITY_NAMES above -
+# edit directly here if this ever needs to change, no n8n column or env
+# var involved. Wins over both the env override and the client's own
+# `doctors_base_url` column (see get_messages below) since an empty
+# column already proved it silently falls back to the wrong value.
+CLIENT_DOCTORS_BASE_URL_OVERRIDES: Dict[str, str] = {
+    "lab-alborg": "https://demo.catalystsystems.io:1302",
+}
+
 
 # ==========================================================
 # Branch geo-data (data/branches_geo.csv)
@@ -1160,6 +1184,7 @@ def get_messages(client_id: str, dialect: Optional[str] = None, client_row_overr
     # still force it off/on globally.
     merged["_doctors_base_url"] = (
         _ENV_DOCTORS_BASE_URL_OVERRIDE
+        or CLIENT_DOCTORS_BASE_URL_OVERRIDES.get(client_id)
         or client_row.get("doctors_base_url")
         or merged["_base_url"]
     )
