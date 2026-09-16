@@ -10632,7 +10632,6 @@ def find_nearest_branch(
 def search_lab_services(
     state: Annotated[AgentState, InjectedState],
     query: str,
-    branch_name: str = "",
 ) -> dict:
     """Find real, bookable lab/imaging services matching what the
     patient described - even in colloquial Arabic, or when the
@@ -10645,9 +10644,16 @@ def search_lab_services(
     symptom, or body part rather than a service's exact catalogue name.
     Pass their own wording as `query`, unchanged.
 
-    `branch_name`: optional - leave empty to search the whole published
-    catalogue (the usual case for this flow, since the real branch is
-    resolved separately by `select_sample_collection_mode`).
+    Searches ONLY the services actually registered under this clinic's
+    two fixed collection-mode doctors (see `select_sample_collection_mode`)
+    - never the whole Booking API tenant's catalogue, which may hold
+    other clinics'/specialties' unrelated services (eye exams,
+    cardiology consults, and the like). If NEITHER fixed doctor is
+    registered/published yet, there is nothing to search at all.
+
+    `branch_name`: optional - leave empty to search everywhere either
+    fixed doctor is offered (the usual case for this flow, since the
+    real branch is resolved separately).
 
     Returns EVERY real service that matched well enough, most relevant
     first - never a single guess, and never an item outside the real
@@ -10665,16 +10671,68 @@ def search_lab_services(
         )
         return {"status": "not_configured"}
 
-    branch_ids = None
-    if branch_name and branch_name.strip():
-        matched = _resolve_branch_by_name(base_url, branch_name, conversation_language(state), state=state)
-        if matched:
-            branch_ids = [matched.get("id")]
+    language = conversation_language(state)
 
-    result = api.get_services(
-        base_url, branch_ids=branch_ids, is_published=True,
-        language=conversation_language(state),
+    # Resolve the two fixed doctors' real IDs first - the whitelist for
+    # everything below. Not published/registered yet -> nothing to
+    # search, rather than silently falling back to the whole tenant's
+    # catalogue (confirmed real production bug: an unrelated eye-exam/
+    # cardiology/therapy catalogue from elsewhere in the same Booking
+    # API tenant was shown to a patient who asked for a blood test).
+    doctors_result = api.get_doctors(
+        base_url, has_published_service=False, has_service_schedule=False,
+        language=language,
     )
+    if not doctors_result["success"]:
+        logger.error(
+            "search_lab_services: get_doctors failed: status_code=%s error=%s",
+            doctors_result.get("status_code"), doctors_result.get("error"),
+        )
+        return _api_error(doctors_result)
+
+    fixed_doctor_ids = [
+        candidate.get("id")
+        for candidate in (doctors_result["data"] or {}).get("items", [])
+        if _matches_fixed_name(candidate, LAB_IN_PLACE_DOCTOR_NAME)
+        or _matches_fixed_name(candidate, LAB_HOME_DOCTOR_NAME)
+    ]
+    if not fixed_doctor_ids:
+        logger.error(
+            "search_lab_services: neither fixed doctor (%r / %r) found via "
+            "get_doctors - nothing to search",
+            LAB_IN_PLACE_DOCTOR_NAME, LAB_HOME_DOCTOR_NAME,
+        )
+        return {"status": "not_configured"}
+
+    # The services actually registered under those doctors specifically
+    # - api.get_services has no doctor filter at all, but
+    # api.get_doctor_fees (DoctorServices/GetList) does. That endpoint's
+    # response is only confirmed to carry serviceName/price though (see
+    # tools.get_doctor_fees), not a description - so use it as a NAME
+    # WHITELIST, and pull the actual id/description for each from the
+    # full catalogue (api.get_services) rather than assuming fields on
+    # get_doctor_fees that were never confirmed to exist.
+    fees_result = api.get_doctor_fees(base_url, doctor_ids=fixed_doctor_ids, language=language)
+    if not fees_result["success"]:
+        logger.error(
+            "search_lab_services: get_doctor_fees failed: status_code=%s error=%s",
+            fees_result.get("status_code"), fees_result.get("error"),
+        )
+        return _api_error(fees_result)
+
+    allowed_names = {
+        (i.get("serviceName") or "").strip().casefold()
+        for i in (fees_result["data"] or {}).get("items", [])
+        if i.get("serviceName")
+    }
+    if not allowed_names:
+        logger.info(
+            "search_lab_services: fixed doctor(s) %s have no published services yet",
+            fixed_doctor_ids,
+        )
+        return {"status": "not_found"}
+
+    result = api.get_services(base_url, is_published=True, language=language)
 
     if not result["success"]:
         logger.error(
@@ -10683,13 +10741,18 @@ def search_lab_services(
         )
         return _api_error(result)
 
-    language = conversation_language(state)
     items = []
     seen = set()
 
     for item in (result["data"] or {}).get("items", []):
         name = _preferred_name(item, language)
-        if not name or name in seen:
+        if not name:
+            continue
+        raw_names = {
+            (item.get("name") or "").strip().casefold(),
+            (item.get("altName") or "").strip().casefold(),
+        }
+        if not (raw_names & allowed_names) or name in seen:
             continue
         seen.add(name)
         description = (
@@ -10707,8 +10770,9 @@ def search_lab_services(
     services = [item for item, _score in matches]
 
     logger.info(
-        "search_lab_services: query=%r -> %d/%d real service(s) matched",
-        query, len(services), len(items),
+        "search_lab_services: query=%r -> %d/%d real service(s) matched (restricted to "
+        "%d fixed doctor(s))",
+        query, len(services), len(items), len(fixed_doctor_ids),
     )
 
     # Remembered exactly like list_branch_services does, so a bare "2"
@@ -10716,6 +10780,27 @@ def search_lab_services(
     _remember_list(state, "service", services)
 
     return {"status": "found", "services": services}
+
+
+def _matches_fixed_name(candidate: dict, target: str) -> bool:
+    """Whether `candidate` (a raw doctor/branch item from the API) is the
+    fixed record named `target` - checked against every raw name-like
+    field the API might return it under (`name`, `altName`,
+    `formatedName`), case-insensitively, rather than the single
+    display-preferred field `_arabic_preferred_name` picks. That
+    function exists to choose what to SHOW a patient (Arabic first) and
+    can legitimately return a different string than the plain `name` a
+    clinic registered a fixed record under (e.g. an auto-generated
+    "Dr. in-lab" formatedName) - using it for this exact-match lookup
+    was a confirmed real bug: a doctor genuinely named exactly "in-lab"
+    was reported as not found."""
+
+    target_norm = target.strip().casefold()
+    for key in ("name", "altName", "formatedName"):
+        value = (candidate.get(key) or "").strip()
+        if value and value.casefold() == target_norm:
+            return True
+    return False
 
 
 @tool
@@ -10774,7 +10859,7 @@ def select_sample_collection_mode(
     doctor_name = LAB_IN_PLACE_DOCTOR_NAME if mode == "in_lab" else LAB_HOME_DOCTOR_NAME
 
     doctors_result = api.get_doctors(
-        base_url, has_published_service=True, has_service_schedule=True,
+        base_url, has_published_service=False, has_service_schedule=False,
         language=language,
     )
     if not doctors_result["success"]:
@@ -10786,8 +10871,7 @@ def select_sample_collection_mode(
 
     doctor_match = None
     for candidate in (doctors_result["data"] or {}).get("items", []):
-        candidate_name = (_arabic_preferred_name(candidate) or candidate.get("name") or "").strip()
-        if candidate_name == doctor_name.strip():
+        if _matches_fixed_name(candidate, doctor_name):
             doctor_match = candidate
             break
 
@@ -10820,8 +10904,7 @@ def select_sample_collection_mode(
 
         branch_match = None
         for candidate in (branches_result["data"] or {}).get("items", []):
-            candidate_name = (_arabic_preferred_name(candidate) or candidate.get("name") or "").strip()
-            if candidate_name == LAB_HOME_SERVICE_BRANCH_NAME.strip():
+            if _matches_fixed_name(candidate, LAB_HOME_SERVICE_BRANCH_NAME):
                 branch_match = candidate
                 break
 
