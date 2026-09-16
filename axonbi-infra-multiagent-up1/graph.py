@@ -19551,6 +19551,42 @@ def _review_card_shown_immediately_before(messages: list, templates: dict) -> bo
     return False
 
 
+def _review_card_shown_anywhere(messages: list, templates: dict) -> bool:
+    """True if this clinic's approved review-card confirmation question
+    has been sent to the patient AT ANY POINT in this conversation -
+    unlike `_review_card_shown_immediately_before`, this does NOT stop
+    at a ToolMessage boundary.
+
+    Exists for exactly one caller: deciding whether `confirm_booking_review`
+    being present in the SAME tool-call batch as `create_new_booking` is
+    trustworthy. A real card shown a turn earlier legitimately has a
+    HumanMessage (the patient's "yes") between it and this batch, which
+    `_review_card_shown_immediately_before` already handles - but nothing
+    stops the model from also having crossed an intervening ToolMessage
+    (e.g. an earlier `confirm_booking_review` call in a prior round of
+    the SAME turn), so this version does not give up at the first one it
+    meets. `confirm_booking_review` itself is the primary place this is
+    enforced (see `tools._review_card_was_shown`) - this is a second,
+    independent check at the graph level, not a replacement for it."""
+
+    confirmation_sentences = _review_confirmation_sentences(templates)
+    if not confirmation_sentences:
+        return False
+
+    for message in reversed(messages):
+        if not isinstance(message, AIMessage):
+            continue
+        content = getattr(message, "content", "")
+        text = content if isinstance(content, str) else str(content or "")
+        if not text.strip():
+            continue
+        normalized = _normalize_for_compare(text)
+        if any(s in normalized for s in confirmation_sentences):
+            return True
+
+    return False
+
+
 def _blocked_create_new_booking_tool_calls(state: AgentState) -> list:
     """`create_new_booking` tool_call dicts (from the last AIMessage)
     that must NOT be executed because no review card was shown to the
@@ -19590,30 +19626,46 @@ def _blocked_create_new_booking_tool_calls(state: AgentState) -> list:
     if not booking_calls:
         return []
 
+    templates = state.get("templates") or {}
+
     # confirm_booking_review is being called in THIS SAME TURN, alongside
     # create_new_booking. Its effect (session["review_shown"] = True) has
     # not run yet at this point - this whole check happens BEFORE any
     # tool in the batch executes - so the stored session flag still
-    # being stale here is not evidence the review was skipped; it is
-    # evidence the review is being confirmed RIGHT NOW.
+    # being stale here is not, by itself, evidence the review was
+    # skipped. BUT confirm_booking_review's mere PRESENCE in the batch
+    # is not evidence the review was genuinely shown either - only that
+    # the model BELIEVES it was. Require the same real-content proof
+    # `_review_card_shown_immediately_before` looks for below, just
+    # without stopping at a ToolMessage boundary, since a real card
+    # shown a turn or more earlier can legitimately have a ToolMessage
+    # sitting between it and now.
     #
-    # CONFIRMED REAL PRODUCTION FAILURE this fixes: a patient said "اه"
-    # to a fully correct, complete review card. The model (correctly)
-    # called confirm_booking_review + create_new_booking together in one
-    # turn. This check saw the pre-turn review_shown still False,
-    # stripped create_new_booking out of the batch, and returned
-    # "missing_review_confirmation". The model, reading that guidance
-    # literally, reprinted the identical review card a second time
-    # instead of finishing the booking - looping instead of confirming.
+    # CONFIRMED REAL PRODUCTION FAILURE this refinement closes: a plain
+    # "لا" declining the OPTIONAL EMAIL question - never a review card -
+    # was followed by confirm_booking_review + create_new_booking called
+    # together. An earlier version of this function bypassed the block
+    # on confirm_booking_review's presence alone, and the booking went
+    # through with the patient never having seen a review card at all.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE the broader check still fixes: a
+    # patient said "اه" to a fully correct, complete review card. The
+    # model (correctly) called confirm_booking_review + create_new_booking
+    # together. Requiring only the STALE session flag here would have
+    # blocked this legitimate case too - the real-content scan below
+    # finds the genuine card regardless of which turn it was shown in.
     if any(tc.get("name") == "confirm_booking_review" for tc in tool_calls):
-        return []
+        if _review_card_shown_anywhere(messages, templates):
+            return []
+        # confirm_booking_review is present, but no real review card is
+        # anywhere on file - fall through to the ordinary checks below,
+        # which correctly block this as missing_review_confirmation.
 
     session_id = state.get("session_id")
     session = tools._BOOKING_SESSIONS.get(session_id) if session_id else None
     if session and session.get("review_shown"):
         return []
 
-    templates = state.get("templates") or {}
     if _review_card_shown_immediately_before(messages, templates):
         return []
 
