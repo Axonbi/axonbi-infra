@@ -287,6 +287,34 @@ RESULT_GUIDANCE: dict = {
     },
 
     # ------------------------------------------------------------------
+    "confirm_booking_review": {
+        "card_not_shown":
+            "This was refused - `review_shown` was NOT set, and "
+            "`patient_full_name` was NOT confirmed. No consolidated "
+            "review card (branch, doctor, date, time, name, phone, "
+            "email if given, ending in its own confirmation question) "
+            "has actually been sent to the patient anywhere in this "
+            "conversation yet - whatever made you believe one had "
+            "already been agreed to (a vague earlier question, an "
+            "unrelated 'yes'/'لا') does not count.\n\n"
+            "Show the review now, in exactly this shape (translate the "
+            "labels if the conversation is in English; omit the email "
+            "line entirely if none was given):\n\n"
+            "يرجى مراجعة بيانات الحجز:\n"
+            "🏥 الفرع: {branch}\n"
+            "👨‍⚕️ الطبيب: {doctor}\n"
+            "📅 التاريخ: {weekday} {date}\n"
+            "🕐 الوقت: {time}\n"
+            "👤 الاسم: {patient_full_name}\n"
+            "📱 الجوال: {mobile_number}\n"
+            "📧 البريد الإلكتروني: {email}\n\n"
+            "✅ هل جميع البيانات صحيحة وتود تأكيد الحجز؟\n\n"
+            "End your turn there. Only once the patient's NEXT message "
+            "actually agrees TO THAT CARD, call `confirm_booking_review` "
+            "again.",
+    },
+
+    # ------------------------------------------------------------------
     "create_new_booking": {
         "needs_review":
             "You have not shown the patient a CONSOLIDATED review of "
