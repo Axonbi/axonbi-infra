@@ -10459,6 +10459,51 @@ _NOMINATIM_USER_AGENT = os.getenv(
     "NOMINATIM_USER_AGENT", "axonbi-clinic-assistant/1.0 (ops@axonbi.com)"
 )
 
+# ISO-3166 alpha-2 codes for Nominatim's own `countrycodes` bias param,
+# keyed by the same lowercased timezone names _TIMEZONE_COUNTRY_CODES
+# above already uses (that dict is phone DIALLING codes - "20" for
+# Egypt - which Nominatim does not accept; this is the separate mapping
+# it actually wants).
+_TIMEZONE_ISO_COUNTRY = {
+    "africa/cairo": "eg",
+    "asia/riyadh": "sa",
+    "asia/dubai": "ae",
+    "asia/kuwait": "kw",
+    "asia/qatar": "qa",
+    "asia/bahrain": "bh",
+    "asia/muscat": "om",
+    "asia/amman": "jo",
+    "asia/beirut": "lb",
+    "asia/baghdad": "iq",
+    "africa/tripoli": "ly",
+    "africa/tunis": "tn",
+    "africa/algiers": "dz",
+    "africa/casablanca": "ma",
+    "africa/khartoum": "sd",
+}
+
+
+def _geocode_once(address: str, country_code: Optional[str]) -> Optional[dict]:
+    """One Nominatim call; returns its top result dict, or None on no
+    match/failure. Raises nothing - caller decides how to react."""
+
+    params = {"q": address, "format": "json", "limit": 1}
+    if country_code:
+        params["countrycodes"] = country_code
+
+    try:
+        response = requests.get(
+            _NOMINATIM_URL, params=params,
+            headers={"User-Agent": _NOMINATIM_USER_AGENT}, timeout=8,
+        )
+        response.raise_for_status()
+        results = response.json()
+    except Exception:
+        logger.exception("geocode_address: Nominatim request failed for address=%r", address)
+        return None
+
+    return results[0] if results else None
+
 
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Great-circle distance between two real coordinate pairs, in km.
@@ -10475,7 +10520,10 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 
 @tool
-def geocode_address(address: str) -> dict:
+def geocode_address(
+    state: Annotated[AgentState, InjectedState],
+    address: str,
+) -> dict:
     """Convert a real address/location description the patient typed
     into real latitude/longitude coordinates, via OpenStreetMap's
     Nominatim geocoding service (https://nominatim.openstreetmap.org).
@@ -10494,7 +10542,11 @@ def geocode_address(address: str) -> dict:
      "display_name": "..."}   # display_name is Nominatim's own resolved
                                # address text, for you to double-check
                                # against what the patient meant
-    {"status": "not_found"}  # Nominatim could not resolve this address at all
+    {"status": "not_found"}  # Nominatim could not resolve this address at all -
+                              # a genuine, normal outcome for a very short or
+                              # informal address; ask the patient for a
+                              # fuller one (nearest street/landmark) rather
+                              # than treating this as an error
     {"status": "error"}      # the geocoding service itself failed or timed out
     """
 
@@ -10502,24 +10554,25 @@ def geocode_address(address: str) -> dict:
     if not address:
         return {"status": "not_found"}
 
-    try:
-        response = requests.get(
-            _NOMINATIM_URL,
-            params={"q": address, "format": "json", "limit": 1},
-            headers={"User-Agent": _NOMINATIM_USER_AGENT},
-            timeout=8,
-        )
-        response.raise_for_status()
-        results = response.json()
-    except Exception:
-        logger.exception("geocode_address: Nominatim request failed for address=%r", address)
-        return {"status": "error"}
+    timezone_name = str((state.get("templates") or {}).get("_timezone") or "").strip().lower()
+    country_code = _TIMEZONE_ISO_COUNTRY.get(timezone_name)
 
-    if not results:
+    # First try biased to the clinic's own country (both more accurate
+    # AND, for a short/ambiguous local name Nominatim's global index
+    # would otherwise miss entirely, more likely to match at all).
+    top = _geocode_once(address, country_code) if country_code else None
+
+    # Unbiased retry: either there was no country to bias with, or the
+    # biased search itself found nothing - a plain free-text retry is a
+    # different query to Nominatim, not a guess, so it's still real
+    # data if it succeeds.
+    if top is None:
+        top = _geocode_once(address, None)
+
+    if top is None:
         logger.info("geocode_address: Nominatim returned no match for address=%r", address)
         return {"status": "not_found"}
 
-    top = results[0]
     try:
         latitude = float(top["lat"])
         longitude = float(top["lon"])
