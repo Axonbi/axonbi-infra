@@ -934,8 +934,24 @@ def _read_csv_rows(filename: str) -> list:
 # them from (see tools.select_sample_collection_mode) - they MUST match
 # EXACTLY what is registered in the Booking API's own admin panel
 # (confirmed via api.get_doctors / api.get_branches), not a translation
-# or a close paraphrase of it. Overridable via env so a name change on
-# the API side doesn't require touching code.
+# or a close paraphrase of it. LAB_IN_PLACE_DOCTOR_NAME etc. below are
+# only the FALLBACK default (still overridable via env) for a client
+# not listed in CLIENT_LAB_ENTITY_NAMES.
+#
+# Confirmed different clients register these under genuinely different
+# strings (one used the literal sentinel "in-lab"/"home", Al-Borg uses
+# full Arabic descriptions instead) - so this is keyed by client_id
+# rather than being a single global value. Edit this dict directly to
+# add/change a client's names; no env var or external config table
+# involved.
+CLIENT_LAB_ENTITY_NAMES: Dict[str, Dict[str, str]] = {
+    "lab-alborg": {
+        "lab_in_place_doctor_name": "في المعمل",
+        "lab_home_doctor_name": "سحب عينة من المنزل",
+        "lab_home_service_branch_name": "فرع خدمة منزلية",
+    },
+}
+
 LAB_IN_PLACE_DOCTOR_NAME = os.getenv("LAB_IN_PLACE_DOCTOR_NAME", "in-lab")
 LAB_HOME_DOCTOR_NAME = os.getenv("LAB_HOME_DOCTOR_NAME", "home")
 LAB_HOME_SERVICE_BRANCH_NAME = os.getenv("LAB_HOME_SERVICE_BRANCH_NAME", "home branch")
@@ -1146,6 +1162,32 @@ def get_messages(client_id: str, dialect: Optional[str] = None, client_row_overr
         _ENV_DOCTORS_BASE_URL_OVERRIDE
         or client_row.get("doctors_base_url")
         or merged["_base_url"]
+    )
+    # Al-Borg-style lab/imaging clients each register their own two
+    # fixed "collection mode" doctors (and home-service branch) in the
+    # Booking API's admin panel, under whatever display name their own
+    # staff typed in there - confirmed NOT to be consistent across
+    # clients. Resolution order: this client's own config-row column
+    # (if a data source ever sets one) -> CLIENT_LAB_ENTITY_NAMES (this
+    # file, keyed by client_id) -> the global env-var/default constant.
+    # See tools.select_sample_collection_mode / tools.search_lab_services
+    # (the only readers) and the LAB_IN_PLACE_DOCTOR_NAME et al.
+    # constants above for the exact-match requirement itself.
+    _lab_overrides = CLIENT_LAB_ENTITY_NAMES.get(client_id, {})
+    merged["_lab_in_place_doctor_name"] = (
+        client_row.get("lab_in_place_doctor_name")
+        or _lab_overrides.get("lab_in_place_doctor_name")
+        or LAB_IN_PLACE_DOCTOR_NAME
+    )
+    merged["_lab_home_doctor_name"] = (
+        client_row.get("lab_home_doctor_name")
+        or _lab_overrides.get("lab_home_doctor_name")
+        or LAB_HOME_DOCTOR_NAME
+    )
+    merged["_lab_home_service_branch_name"] = (
+        client_row.get("lab_home_service_branch_name")
+        or _lab_overrides.get("lab_home_service_branch_name")
+        or LAB_HOME_SERVICE_BRANCH_NAME
     )
     merged["_phone_example"] = client_row.get("phone_example")
     # COMPATIBILITY ONLY. `bsuid` identifies the SENDER, not the clinic,
