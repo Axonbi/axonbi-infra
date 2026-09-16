@@ -1366,6 +1366,40 @@ def _doctors_base_url(state: AgentState) -> Optional[str]:
     return (state.get("templates") or {}).get("_doctors_base_url")
 
 
+def _lab_in_place_doctor_name(state: AgentState) -> str:
+    """This client's exact registered name for the fixed "in lab"
+    collection-mode doctor (see select_sample_collection_mode /
+    search_lab_services) - per-client via config.py's merge (falls back
+    to the LAB_IN_PLACE_DOCTOR_NAME env var/default when the client's
+    own config row doesn't set one). Different clients have been
+    confirmed to register this under genuinely different strings (a
+    literal sentinel like "in-lab" for one, a full Arabic description
+    like "في المعمل" for another) - never assume the module-level
+    default applies to every client."""
+
+    return (state.get("templates") or {}).get(
+        "_lab_in_place_doctor_name", LAB_IN_PLACE_DOCTOR_NAME
+    )
+
+
+def _lab_home_doctor_name(state: AgentState) -> str:
+    """Same as `_lab_in_place_doctor_name`, for the fixed home-collection
+    doctor."""
+
+    return (state.get("templates") or {}).get(
+        "_lab_home_doctor_name", LAB_HOME_DOCTOR_NAME
+    )
+
+
+def _lab_home_service_branch_name(state: AgentState) -> str:
+    """Same as `_lab_in_place_doctor_name`, for the fixed home-service
+    branch."""
+
+    return (state.get("templates") or {}).get(
+        "_lab_home_service_branch_name", LAB_HOME_SERVICE_BRANCH_NAME
+    )
+
+
 # ==========================================================
 # Booking session store (moved ABOVE the doctor/specialty tools)
 # ==========================================================
@@ -10743,17 +10777,19 @@ def search_lab_services(
         )
         return _api_error(doctors_result)
 
+    in_place_name = _lab_in_place_doctor_name(state)
+    home_name = _lab_home_doctor_name(state)
     fixed_doctor_ids = [
         candidate.get("id")
         for candidate in (doctors_result["data"] or {}).get("items", [])
-        if _matches_fixed_name(candidate, LAB_IN_PLACE_DOCTOR_NAME)
-        or _matches_fixed_name(candidate, LAB_HOME_DOCTOR_NAME)
+        if _matches_fixed_name(candidate, in_place_name)
+        or _matches_fixed_name(candidate, home_name)
     ]
     if not fixed_doctor_ids:
         logger.error(
             "search_lab_services: neither fixed doctor (%r / %r) found via "
             "get_doctors - nothing to search",
-            LAB_IN_PLACE_DOCTOR_NAME, LAB_HOME_DOCTOR_NAME,
+            in_place_name, home_name,
         )
         return {"status": "not_configured"}
 
@@ -10909,7 +10945,9 @@ def select_sample_collection_mode(
         return {"status": "not_configured"}
 
     language = conversation_language(state)
-    doctor_name = LAB_IN_PLACE_DOCTOR_NAME if mode == "in_lab" else LAB_HOME_DOCTOR_NAME
+    doctor_name = (
+        _lab_in_place_doctor_name(state) if mode == "in_lab" else _lab_home_doctor_name(state)
+    )
 
     doctors_result = api.get_doctors(
         base_url, has_published_service=False, has_service_schedule=False,
@@ -10955,9 +10993,10 @@ def select_sample_collection_mode(
             )
             return _api_error(branches_result)
 
+        home_branch_name = _lab_home_service_branch_name(state)
         branch_match = None
         for candidate in (branches_result["data"] or {}).get("items", []):
-            if _matches_fixed_name(candidate, LAB_HOME_SERVICE_BRANCH_NAME):
+            if _matches_fixed_name(candidate, home_branch_name):
                 branch_match = candidate
                 break
 
@@ -10965,7 +11004,7 @@ def select_sample_collection_mode(
             logger.error(
                 "select_sample_collection_mode: fixed home-service branch %r not "
                 "found via get_branches - not registered yet in the Booking API",
-                LAB_HOME_SERVICE_BRANCH_NAME,
+                home_branch_name,
             )
             return {"status": "branch_not_configured"}
 
