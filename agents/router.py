@@ -908,7 +908,13 @@ _ASKED_SPECIALTY_OR_DOCTOR_RE = re.compile(
     r"طبيب\s*(?:معين|محدد)[^.\n؟?]{0,40}(?:ولا|او|ام)[^.\n؟?]{0,20}تخصص|"
     r"تخصص[^.\n؟?]{0,40}(?:ولا|او|ام)[^.\n؟?]{0,20}(?:طبيب|دكتور)|"
     r"specific\s+doctor[^.\n?]{0,40}(?:or|prefer)[^.\n?]{0,25}specialt|"
-    r"by\s+specialty\s+or\s+by\s+doctor"
+    r"by\s+specialty\s+or\s+by\s+doctor|"
+    # THE LAB/IMAGING CLINIC'S OWN OPENING QUESTION - see the matching
+    # note in graph.py's copy of this regex (kept in step with this one).
+    r"(?:بال|في\s*ال)?معمل[^.\n؟?]{0,20}(?:ولا|او)[^.\n؟?]{0,20}(?:بيت|منزل)|"
+    r"(?:بيت|منزل)[^.\n؟?]{0,20}(?:ولا|او)[^.\n؟?]{0,20}معمل|"
+    r"in.?lab[^.\n?]{0,25}(?:or|prefer)[^.\n?]{0,25}home|"
+    r"home[^.\n?]{0,25}(?:or|prefer)[^.\n?]{0,25}in.?lab"
 )
 
 _CRISIS_OVERRIDE_RE = CRISIS_RE
