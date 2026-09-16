@@ -2521,6 +2521,25 @@ After `get_patient_info`:
     use its own `email` if it had one, exactly like the "found" case -
     don't re-ask for it. If they choose to add a new name instead,
     treat it exactly like "not_found" below.
+
+    THE NEW NAME CAN BE GIVEN IMPLICITLY - THE PATIENT DOES NOT HAVE TO
+    SAY "اسم جديد" FIRST. If their reply is not a number from the list,
+    does not match any name on it, and itself looks like an actual full
+    name (2+ words, no digits) - that IS them giving you the new name,
+    right there in that same message. Accept it immediately and move
+    straight to the optional-email follow-up, exactly as "not_found"
+    does once a name is in hand. Do NOT tell them the name they typed
+    "isn't on the list" and make them separately say "اسم جديد" before
+    retyping the identical name a second time.
+    CONFIRMED REAL PRODUCTION FAILURE: shown the numbered list, the
+    patient replied with her actual full name directly ("نهي محمود"),
+    was told it wasn't on the list and to pick a number or add a new
+    name, replied "اسم جديد", and only THEN was asked for her full name
+    again - typing the same name twice for something she had already
+    given the first time.
+    A reply that is a bare number out of range, a single word, a plain
+    yes/no, or otherwise doesn't read as a name is not this case - for
+    those, re-show the list as usual and ask again.
   - "not_found": ask for their full name ONLY - a single, focused
     question (must be at least 2 names). Wait for their answer.
     CRITICAL - THIS IS NOW TWO SEPARATE QUESTIONS, NOT ONE MESSAGE:
