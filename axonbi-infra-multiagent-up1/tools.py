@@ -9254,6 +9254,69 @@ def list_available_days_for_booking(
     }
 
 
+_REVIEW_CARD_QUESTION_FALLBACKS = (
+    "is everything correct - shall i confirm the booking",
+    "هل جميع البيانات صحيحه وتود تاكيد الحجز",
+)
+
+
+def _review_card_was_shown(state: AgentState) -> bool:
+    """True only if the clinic's own consolidated review-card
+    confirmation QUESTION has actually been sent to the patient at some
+    point in this conversation - scanned across every assistant
+    message, not just the immediately preceding one, since
+    `confirm_booking_review` can legitimately be called a turn (or a
+    tool-call batch) after the card itself was shown.
+
+    THIS IS THE ONLY THING THAT MAY SET `review_shown = True`.
+    `confirm_booking_review` used to trust the model's own judgment
+    unconditionally - "regardless of the exact wording the patient
+    used, because it's the model's own judgment that the patient
+    agreed" - which sounds reasonable but has no way to tell a real
+    "the patient agreed to the actual card" from a model that merely
+    BELIEVES a review happened.
+
+    CONFIRMED REAL PRODUCTION FAILURE this exists to prevent:
+    `create_new_booking`'s own "needs_review" guidance tells the model
+    that if the patient's last message already agreed to "this exact
+    same review", it may call `confirm_booking_review` immediately
+    without re-printing the card - a legitimate shortcut for the case
+    where the card really was shown a turn earlier. A model can
+    misapply that shortcut when it was NOT shown. In one real case, a
+    plain "لا" declining the OPTIONAL EMAIL question was treated as if
+    it had confirmed a review card that had never once been sent, and
+    `confirm_booking_review` set `review_shown = True` on that
+    strength alone - a real, irreversible booking went through with
+    the patient never having seen branch/doctor/date/time/name/phone
+    together in one place."""
+
+    templates = state.get("templates") or {}
+    template_value = templates.get("msg_booking_confirmation")
+
+    needles = []
+    if template_value and isinstance(template_value, str):
+        for line in template_value.replace("\r", "\n").split("\n"):
+            if "؟" in line or "?" in line:
+                needles.append(_normalize_arabic(line))
+    if not needles:
+        needles = [_normalize_arabic(s) for s in _REVIEW_CARD_QUESTION_FALLBACKS]
+    needles = [n for n in needles if n]
+    if not needles:
+        return False
+
+    for msg in reversed(state.get("messages") or []):
+        if getattr(msg, "type", None) != "ai":
+            continue
+        content = getattr(msg, "content", "")
+        text = content if isinstance(content, str) else str(content or "")
+        if not text.strip():
+            continue
+        if any(needle in _normalize_arabic(text) for needle in needles):
+            return True
+
+    return False
+
+
 @tool
 def confirm_booking_review(
     state: Annotated[AgentState, InjectedState],
@@ -9289,11 +9352,26 @@ def confirm_booking_review(
     confirm.
 
     Returns {"status": "confirmed"} - proceed straight to
-    `create_new_booking` with the same values. There is no other
-    status; a missing session simply means nothing has been confirmed
-    yet."""
+    `create_new_booking` with the same values.
+    Returns {"status": "card_not_shown"} if the consolidated review
+    card above has not actually been sent to the patient yet anywhere
+    in this conversation - show it first (the exact shape above), end
+    your turn, and only call this again once the patient's NEXT
+    message actually agrees to THAT card."""
 
     session_id = state.get("session_id")
+
+    if not _review_card_was_shown(state):
+        logger.warning(
+            "confirm_booking_review: refusing for session_id=%s - no "
+            "consolidated review card (branch/doctor/date/time/name/"
+            "phone together, ending in its own confirmation question) "
+            "has actually been sent to the patient yet in this "
+            "conversation - patient_full_name=%r was NOT confirmed.",
+            session_id, patient_full_name,
+        )
+        return {"status": "card_not_shown"}
+
     session = _get_booking_session(session_id)
     session["review_shown"] = True
     logger.info(
