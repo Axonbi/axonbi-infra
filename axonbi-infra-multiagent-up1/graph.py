@@ -19310,7 +19310,7 @@ def router(state: AgentState) -> dict:
     # Once per turn, from the node - never from the conditional edge,
     # which LangGraph may call more than once. See _clear_stale_branch_context.
     _clear_stale_branch_context(chosen, state.get("session_id"))
-    _clear_abandoned_booking_context(chosen, previous, state.get("session_id"))
+    _clear_abandoned_booking_context(chosen, previous, reason, state.get("session_id"))
 
     if chosen != previous:
         logger.info(
@@ -19330,7 +19330,7 @@ def router(state: AgentState) -> dict:
     }
 
 
-def _clear_abandoned_booking_context(chosen: Optional[str], previous: Optional[str], session_id: Optional[str]) -> None:
+def _clear_abandoned_booking_context(chosen: Optional[str], previous: Optional[str], reason: Optional[str], session_id: Optional[str]) -> None:
     """Deterministically drops a stale doctor/specialty from a booking
     attempt the patient has clearly walked away from, the moment the
     router hands the turn to `booking` from a DIFFERENT specialist.
@@ -19360,9 +19360,33 @@ def _clear_abandoned_booking_context(chosen: Optional[str], previous: Optional[s
     (not a continuation) - a detour that stays inside `booking` the
     whole time (`previous == "booking"`) never reaches here, and
     neither does the ordinary medical -> booking handoff, which never
-    populates these session fields until real booking tools run."""
+    populates these session fields until real booking tools run.
+
+    EXCEPTION - A BARE "YES" CONTINUING THE SAME BOOKING IS NOT AN
+    ABANDONMENT, EVEN THOUGH IT SWITCHES AGENTS. `route_turn` itself
+    already recognises this exact case - see its own reason string,
+    "bare affirmation answering the assistant's own booking offer" -
+    for a patient who said "اه" to the booking flow's own offer while a
+    DIFFERENT specialist (e.g. reschedule) happened to own the
+    immediately preceding turn. Clearing doctor_id/branch_id here would
+    delete the very appointment being confirmed, not an abandoned one.
+
+    CONFIRMED REAL PRODUCTION FAILURE this exception fixes: doctor and
+    branch were confirmed, the patient declined a day ("مش مناسب السبت
+    دا"), one turn got briefly misrouted to `reschedule`, the patient
+    said "اه" to the alternative day offered, routing correctly came
+    back to `booking` on that bare affirmation - and this function
+    wiped doctor_id/branch_id anyway because `previous != "booking"`.
+    With no doctor/branch left on file, the model could not legitimately
+    re-verify availability and invented contradicting claims instead -
+    "no clinic on Wednesday" for a doctor whose own justfetched schedule
+    said otherwise, then "no Saturday slots" for a time slot the same
+    conversation had already returned moments earlier."""
 
     if chosen != "booking" or not previous or previous == "booking" or not session_id:
+        return
+
+    if reason == "bare affirmation answering the assistant's own booking offer":
         return
 
     session = tools._BOOKING_SESSIONS.get(session_id)
