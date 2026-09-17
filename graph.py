@@ -9157,7 +9157,10 @@ _DOCTOR_ESTABLISHING_TOOLS = (
 
 
 _NEAREST_BRANCH_CLAIM_RE = re.compile(
-    r"اقرب\s*(?:ال)?فرو?ع|nearest\s+branch|closest\s+branch", re.IGNORECASE
+    r"اقرب\s*(?:ال)?فرو?ع[^.؟!\n]{0,40}?هو\b"
+    r"|nearest\s+branch[^.?!\n]{0,40}?\bis\b"
+    r"|closest\s+branch[^.?!\n]{0,40}?\bis\b",
+    re.IGNORECASE,
 )
 
 
@@ -9179,7 +9182,13 @@ def _reply_claims_nearest_branch_without_lookup(reply_text: str, state: AgentSta
     A "nearest branch" claim is a FACT about geography, and it only
     ever comes from `find_nearest_branch`'s own distance_km values -
     never from memory, and never from an unrelated branch list (which
-    tests/services a branch offers says nothing about how far it is)."""
+    tests/services a branch offers says nothing about how far it is).
+
+    SCOPED TO AN ASSERTION, NOT AN OFFER: the regex requires an
+    assertive "هو"/"is" shortly after the phrase, so a legitimate
+    question like "تحبي أقولك أقرب فرع ليكي لو سمحتي اديني عنوانك؟" (an
+    OFFER to look one up, still awaiting the patient's address) is never
+    flagged - only a reply that already NAMES one as the answer is."""
 
     if not reply_text:
         return False
@@ -9208,12 +9217,17 @@ _NEAREST_BRANCH_CORRECTION_DIRECTIVE = (
     "FACT that only ever comes from `find_nearest_branch`'s own "
     "distance_km values - never from memory, and never substituted from "
     "an unrelated branch list (e.g. which branches offer a given test).\n\n"
-    "Call `geocode_address` on the patient's address (if you have not "
-    "already this turn), then call `find_nearest_branch` with the "
-    "coordinates it returns, and answer from what it actually reports - "
-    "the first (nearest) branch in its sorted list, with its real name, "
-    "address, distance and phone. Do not substitute any other branch you "
-    "already know about, however relevant it seemed."
+    "If the patient has NOT actually given a real address/area/landmark "
+    "yet anywhere in this conversation, do not call any tool with "
+    "nothing to geocode - just ask them plainly for one, e.g. 'تقدر "
+    "تقولي عنوانك أو أقرب شارع/معلم معروف عشان أقدر أدورلك على أقرب فرع؟' "
+    "and wait for their answer.\n\n"
+    "If they HAVE already given one, call `geocode_address` on it, then "
+    "call `find_nearest_branch` with the coordinates it returns, and "
+    "answer from what it actually reports - the first (nearest) branch "
+    "in its sorted list, with its real name, address, distance and "
+    "phone. Do not substitute any other branch you already know about, "
+    "however relevant it seemed."
 )
 
 
