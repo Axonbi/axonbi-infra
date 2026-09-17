@@ -946,9 +946,9 @@ def _read_csv_rows(filename: str) -> list:
 # involved.
 CLIENT_LAB_ENTITY_NAMES: Dict[str, Dict[str, str]] = {
     "lab-alborg": {
-        "lab_in_place_doctor_name": "في المعمل",
-        "lab_home_doctor_name": "سحب عينة من المنزل",
-        "lab_home_service_branch_name": "فرع خدمة منزلية",
+        "lab_in_place_doctor_name": "in-lab",
+        "lab_home_doctor_name": "Home",
+        "lab_home_service_branch_name": "Home",
     },
 }
 
@@ -1199,6 +1199,12 @@ def get_messages(client_id: str, dialect: Optional[str] = None, client_row_overr
     # (the only readers) and the LAB_IN_PLACE_DOCTOR_NAME et al.
     # constants above for the exact-match requirement itself.
     _lab_overrides = CLIENT_LAB_ENTITY_NAMES.get(client_id, {})
+    # True only for clients actually registered in CLIENT_LAB_ENTITY_NAMES
+    # above - not for every client (which would all otherwise inherit the
+    # global fallback names and be treated as lab clients too). Used only
+    # to decide whether tools.match_entity_info should restrict its
+    # branch listing to this client's lab-service branches.
+    merged["_is_lab_client"] = bool(_lab_overrides)
     merged["_lab_in_place_doctor_name"] = (
         client_row.get("lab_in_place_doctor_name")
         or _lab_overrides.get("lab_in_place_doctor_name")
