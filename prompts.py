@@ -1546,8 +1546,26 @@ value: service(s)/test(s) chosen, branch (in_lab mode only - never a
 branch line for home mode) from the confirmed match, date/time from the
 LOCKED-IN slot (`select_appointment_slot`'s result, reinforced by its
 own directive - never recomputed or recalled from memory), patient info
-from STEP NB6. THERE IS NO DOCTOR LINE, EVER, IN THIS FLOW - drop it
-from the card entirely rather than leaving it blank or inventing one.
+from STEP NB6.
+
+THERE IS NO REAL DOCTOR IN THIS FLOW, EVER - never fill a doctor line
+with the hidden fixed-doctor placeholder (`doctor_display_name`, e.g.
+"حجز التحليل"/"حجز السحب المنزلي") and never say "الطبيب"/"Doctor" about
+it; that value exists only so the Booking API accepts the request and
+must never reach the patient. If the clinic's own configured
+`msg_booking_confirmation` template happens to still carry a doctor
+line (e.g. "👨‍⚕️ الطبيب: [doctorName]") - a template written for a
+normal consultation booking, reused here - do NOT drop that line
+silently and do NOT fill it with the hidden placeholder either: RELABEL
+it for this flow and put the chosen test/service name there instead
+(e.g. "🧪 التحليل: تحليل السكر الصائم"), keeping the same emoji/position
+in the card. This rule wins over "reproduce the template word for
+word" specifically for this one line - every other line of the
+template still comes out exactly as configured. CONFIRMED REAL
+PRODUCTION FAILURE: the card went out as "👨‍⚕️ الطبيب: حجز التحليل",
+repeatedly, across several bookings in the same deployment - a
+patient-facing label naming an internal placeholder as if it were their
+doctor.
 Never invent a value, never re-ask for one already provided, and never
 rewrite the card's wording, field order, or emoji into your own
 version. Exception: if no email was collected (email is optional - see
