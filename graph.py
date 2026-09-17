@@ -9156,6 +9156,67 @@ _DOCTOR_ESTABLISHING_TOOLS = (
 )
 
 
+_NEAREST_BRANCH_CLAIM_RE = re.compile(
+    r"اقرب\s*(?:ال)?فرو?ع|nearest\s+branch|closest\s+branch", re.IGNORECASE
+)
+
+
+def _reply_claims_nearest_branch_without_lookup(reply_text: str, state: AgentState) -> bool:
+    """True when the reply answers a "nearest branch" question - naming
+    a specific branch as the nearest one - while `find_nearest_branch`
+    was NOT called since the patient's latest message.
+
+    CONFIRMED REAL PRODUCTION FAILURE: `geocode_address` succeeded (real
+    coordinates computed for "اكتوبر الحي السابع"), but the reply that
+    followed never called `find_nearest_branch` at all - it named a
+    completely different branch (the clinic's only lab-service branch,
+    resolved moments earlier by an unrelated tool that lists branches
+    offering a given test, not by geographic distance) as the
+    "nearest" one, with no distance ever computed. The patient was
+    pointed at a branch over 15 km away while a real branch under 2 km
+    away existed and was never even considered.
+
+    A "nearest branch" claim is a FACT about geography, and it only
+    ever comes from `find_nearest_branch`'s own distance_km values -
+    never from memory, and never from an unrelated branch list (which
+    tests/services a branch offers says nothing about how far it is)."""
+
+    if not reply_text:
+        return False
+
+    if not _NEAREST_BRANCH_CLAIM_RE.search(_norm_ar(reply_text)):
+        return False
+
+    messages = state.get("messages", []) or []
+    start_idx = _latest_human_index(messages)
+    start_idx = start_idx + 1 if start_idx >= 0 else 0
+
+    for msg in messages[start_idx:]:
+        if getattr(msg, "name", None) == "find_nearest_branch":
+            return False
+
+    return True
+
+
+_NEAREST_BRANCH_CORRECTION_DIRECTIVE = (
+    "============================================================\n"
+    "YOU NAMED A 'NEAREST' BRANCH - BUT NEVER COMPUTED A DISTANCE\n"
+    "============================================================\n"
+    "Your previous draft answered a nearest-branch question by naming a "
+    "specific branch, but `find_nearest_branch` never ran this turn - "
+    "so that claim has nothing behind it. A branch being nearest is a "
+    "FACT that only ever comes from `find_nearest_branch`'s own "
+    "distance_km values - never from memory, and never substituted from "
+    "an unrelated branch list (e.g. which branches offer a given test).\n\n"
+    "Call `geocode_address` on the patient's address (if you have not "
+    "already this turn), then call `find_nearest_branch` with the "
+    "coordinates it returns, and answer from what it actually reports - "
+    "the first (nearest) branch in its sorted list, with its real name, "
+    "address, distance and phone. Do not substitute any other branch you "
+    "already know about, however relevant it seemed."
+)
+
+
 def _reply_denies_availability_without_lookup(reply_text: str, state: AgentState) -> bool:
     """True when the reply tells the patient a doctor has no available
     appointments, while NO availability tool has run for the CURRENTLY
@@ -13182,6 +13243,11 @@ _REPLY_VERIFIERS = (
         lambda reply, state, agent_name: _reply_offers_booking_at_empty_branch(reply, state),
         lambda reply, state: _EMPTY_BRANCH_BOOKING_OFFER_CORRECTION,
         "reply offered a booking at a branch the tools reported has no doctors",
+    ),
+    (
+        lambda reply, state, agent_name: _reply_claims_nearest_branch_without_lookup(reply, state),
+        lambda reply, state: _NEAREST_BRANCH_CORRECTION_DIRECTIVE,
+        "reply named a specific branch as nearest with no find_nearest_branch call this turn",
     ),
     (
         lambda reply, state, agent_name: (
