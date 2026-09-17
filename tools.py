@@ -9044,11 +9044,17 @@ def confirm_booking_review(
     separately confirmed earlier in the conversation.
 
     Show the review in exactly this shape (translate the labels if the
-    conversation is in English, keep the structure):
+    conversation is in English, keep the structure). The identifying
+    line after the branch is normally the doctor - EXCEPT for a lab/
+    imaging flow with no real doctor (see select_sample_collection_mode),
+    where that same line must show the chosen test/service name instead
+    (never the hidden fixed-doctor placeholder, and never literally
+    "الطبيب"/"Doctor" as the label in that case):
 
     يرجى مراجعة بيانات الحجز:
     🏥 الفرع: {branch}
-    👨‍⚕️ الطبيب: {doctor}
+    👨‍⚕️ الطبيب: {doctor}          <- normal consultation booking
+    🧪 التحليل: {service}          <- lab/imaging booking instead of the line above
     📅 التاريخ: {weekday} {date}
     🕐 الوقت: {time}
     👤 الاسم: {patient_full_name}
@@ -11328,6 +11334,7 @@ ALL_TOOLS = [
     get_patient_info,
     resolve_available_day,
     list_available_days_for_booking,
+    confirm_booking_review,
     create_new_booking,
     get_doctor_schedule_for_booking,
     get_available_slots_for_booking,
