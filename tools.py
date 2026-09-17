@@ -3360,6 +3360,28 @@ def list_branches_for_specialty(
 
     branches.sort(key=lambda b: b["doctorCount"], reverse=True)
 
+    # LAB-STYLE CLIENTS ONLY (see match_entity_info for the same
+    # pattern): this tool exists for real specialty clinics where
+    # showing "which doctors work where" is the point. For a lab client
+    # every "doctor" this call sees is either the fixed hidden in-lab/
+    # home doctor or an unrelated real specialist elsewhere in the same
+    # tenant - never something to name or count to the patient in this
+    # flow (see select_sample_collection_mode). Restrict to the real
+    # lab-service branches (branches the fixed "in-lab" doctor is
+    # actually assigned to - this alone already excludes the separate
+    # fixed home-service branch, which belongs to the "Home" doctor,
+    # not this one) and strip doctor names/counts from what's returned.
+    if (state.get("templates") or {}).get("_is_lab_client"):
+        lab_branch_ids = _lab_service_branch_ids(state, base_url)
+        if lab_branch_ids is not None:
+            branches = [b for b in branches if b.get("id") in lab_branch_ids]
+        for b in branches:
+            b["doctors"] = []
+            b["doctorCount"] = 0
+        if not branches:
+            logger.info("list_branches_for_specialty: lab client - no lab-service branch matched")
+            return {"status": "not_found"}
+
     _remember_list(state, "branch", branches)
 
     # A SINGLE BRANCH IS NOT A CHOICE - AND ITS DOCTORS ARE THE REAL LIST.
@@ -9081,8 +9103,12 @@ def create_new_booking(
     itself (the `_guidance` field) - read that when it arrives.
 
     Returns one of:
-    {"status": "success", "booking_ref": "GBN-..."}
-    {"status": "success_ref_pending", "booking_id": "..."}
+    {"status": "success", "booking_ref": "GBN-...", "prep_instructions": "..."}
+        # prep_instructions is this clinic's own prep text for the
+        # booked service (fasting duration, sample type, etc. - see
+        # search_lab_services) when one was cached for it this
+        # conversation, else None. Lab clients only.
+    {"status": "success_ref_pending", "booking_id": "...", "prep_instructions": "..."}
     {"status": "needs_review", "doctor_display_name": ..., "branch_display_name": ...,
      "slot": {...}}
         # You have not shown the patient a consolidated review of every
@@ -9387,6 +9413,16 @@ def create_new_booking(
                 new_booking_id, lookup_result.get("status_code"), lookup_result.get("error"),
             )
 
+    # Grab any cached prep-instructions text for the service actually
+    # booked (see search_lab_services) BEFORE the session is cleared
+    # below - lab clients only; for every other client this is always
+    # empty and the field stays absent, changing nothing for them.
+    booked_service_id = matched_slot.get("serviceId")
+    prep_instructions = (
+        (session.get("lab_service_descriptions") or {}).get(booked_service_id)
+        if booked_service_id else None
+    )
+
     # Booking complete - clear the session so a subsequent NEW booking
     # in the same conversation starts clean, matching the confirmed
     # production behavior (session auto-cleans on success).
@@ -9408,9 +9444,10 @@ def create_new_booking(
             "status": "success_ref_pending",
             "booking_id": new_booking_id,
             "booking_ref": None,
+            "prep_instructions": prep_instructions,
         }
 
-    return {"status": "success", "booking_ref": booking_ref}
+    return {"status": "success", "booking_ref": booking_ref, "prep_instructions": prep_instructions}
 
 
 @tool
@@ -10751,6 +10788,25 @@ def find_nearest_branch(
         logger.warning("find_nearest_branch: branches_geo.csv has no usable rows")
         return {"status": "not_found"}
 
+    # NORMALIZED LOOKUP INDEX, built once. `branches_geo.csv` is meant to
+    # be keyed EXACTLY by the live API's own branch name (see config.py's
+    # header comment on this file) - but confirmed real production
+    # mismatch: the API's real name is "فرع اكتوبر" while the CSV row is
+    # "اكتوبر" (no "فرع"). An exact-string lookup then silently drops
+    # that branch from EVERY distance ranking, not just this one - a
+    # genuinely nearer branch never gets the chance to be nearest. Same
+    # normalize+strip-filler pattern already used for doctor/branch name
+    # matching elsewhere in this file (`_normalize_arabic`,
+    # `_strip_entity_filler`) - so "فرع اكتوبر" and "اكتوبر" collapse to
+    # the same key. This is a fallback ONLY: the exact key is still tried
+    # first, so a clinic whose branch is genuinely named with a filler
+    # word as part of its real identity is unaffected.
+    normalized_geo_index = {}
+    for raw_name, geo in geo_rows.items():
+        norm_key = _normalize_arabic(_strip_entity_filler(raw_name))
+        if norm_key:
+            normalized_geo_index.setdefault(norm_key, geo)
+
     result = api.get_branches(base_url, language=conversation_language(state))
     if not result["success"]:
         logger.error(
@@ -10765,6 +10821,17 @@ def find_nearest_branch(
     for item in items:
         name = _arabic_preferred_name(item) or item.get("name")
         geo = geo_rows.get(name)
+        if not geo:
+            # Exact match missed - try every name-like field this item
+            # has, normalized and filler-stripped, before giving up on a
+            # branch that may well have real geo data under a slightly
+            # different string.
+            for candidate_name in (name, item.get("name"), item.get("altName"), item.get("formatedName")):
+                if not candidate_name:
+                    continue
+                geo = normalized_geo_index.get(_normalize_arabic(_strip_entity_filler(candidate_name)))
+                if geo:
+                    break
         if not geo:
             continue
         distance_km = _haversine_km(latitude, longitude, geo["latitude"], geo["longitude"])
@@ -10954,6 +11021,19 @@ def search_lab_services(
     # Remembered exactly like list_branch_services does, so a bare "2"
     # picks a service by position afterwards.
     _remember_list(state, "service", services)
+
+    # Cache id -> description (this clinic's prep-instructions text, e.g.
+    # fasting duration/sample type) on the booking session too - not just
+    # the remembered list, which a LATER unrelated list (a branch list, a
+    # day list) overwrites. `create_new_booking` reads this back by the
+    # service id on the slot actually booked, so the same instructions
+    # already shown here can be repeated at the confirmation step,
+    # rather than making the patient scroll back up to find them.
+    session = _get_booking_session(state.get("session_id"))
+    descriptions = session.setdefault("lab_service_descriptions", {})
+    for item in services:
+        if item.get("id") and item.get("description"):
+            descriptions[item["id"]] = item["description"]
 
     return {"status": "found", "services": services}
 
