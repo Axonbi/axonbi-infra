@@ -7089,6 +7089,40 @@ def match_entity_for_booking(
     session_id = state.get("session_id")
     session = _get_booking_session(session_id)
 
+    # SAFETY NET FOR THE PER-TEST-DOCTORS MODEL (see
+    # _lab_uses_per_test_doctors): the prompt tells the model to
+    # confirm the chosen test as a doctor (match_entity_for_booking,
+    # entity_type="doctor") the moment it's settled, before doing
+    # anything else - but that instruction has been observed skipped
+    # in real conversations, and the branch list that follows without
+    # it is unfiltered (every branch, including the fixed home-service
+    # one) because no doctor_id is on session yet to filter by.
+    #
+    # If exactly one test is still pending from `search_lab_services`
+    # (the single-match case, the common one) and no doctor is
+    # confirmed yet, resolve it here rather than trust a later turn to
+    # do it - in this architecture the "service" id IS the doctor id.
+    # Deliberately NOT attempted for 2+ pending tests: which one the
+    # patient meant is genuinely ambiguous without their own wording,
+    # and this is not the place to guess it.
+    if (
+        entity_type == "branch"
+        and not session.get("doctor_id")
+        and _lab_uses_per_test_doctors(state)
+    ):
+        pending = (session.get("last_list") or {})
+        if pending.get("entity_type") == "service":
+            pending_items = pending.get("items") or []
+            if len(pending_items) == 1 and pending_items[0].get("id"):
+                session["doctor_id"] = pending_items[0]["id"]
+                session["doctor_display_name"] = "حجز التحليل"
+                logger.info(
+                    "match_entity_for_booking: auto-confirmed doctor_id=%s from the "
+                    "single pending test (per-test-doctors mode) before listing "
+                    "branches - the model did not call the doctor-confirm step first",
+                    session["doctor_id"],
+                )
+
     # Set only on the doctor-filtered branch path below. None means
     # "no availability check ran", which is NOT the same as "nothing
     # is available" - see the fullyBooked flag near the end.
