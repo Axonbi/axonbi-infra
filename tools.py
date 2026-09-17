@@ -1400,6 +1400,28 @@ def _lab_home_service_branch_name(state: AgentState) -> str:
     )
 
 
+def _lab_uses_per_test_doctors(state: AgentState) -> bool:
+    """Opt-in, per-client architecture switch (default OFF - changes
+    nothing for any client that hasn't explicitly turned it on in
+    config.CLIENT_LAB_ENTITY_NAMES).
+
+    OFF (default): the original fixed-sentinel-doctor model - one
+    hidden doctor per collection mode, never named to the patient (see
+    select_sample_collection_mode).
+
+    ON: this client instead registers ONE REAL DOCTOR PER TEST, whose
+    real name IS the test's name (e.g. a doctor literally named
+    "تحليل السكر الصائم") - so the doctor never needs to be hidden, and
+    `select_sample_collection_mode` does not resolve a doctor at all;
+    `search_lab_services` searches every such doctor directly instead of
+    two fixed ones. For "home" mode, the SAME test-doctor is expected to
+    also carry a schedule at the fixed home-service branch (see
+    `_lab_home_service_branch_name`) - the branch is still auto-resolved
+    exactly as before, only the doctor differs."""
+
+    return bool((state.get("templates") or {}).get("_lab_uses_per_test_doctors"))
+
+
 # ==========================================================
 # Booking session store (moved ABOVE the doctor/specialty tools)
 # ==========================================================
@@ -2992,22 +3014,49 @@ def _branch_ids_with_available_doctors(
 
 
 def _lab_service_branch_ids(state: AgentState, base_url: str) -> Optional[set]:
-    """Branch ids where this client's fixed "in-lab" collection-mode
-    doctor (see select_sample_collection_mode) currently has an ACTIVE
-    schedule - i.e. the real lab/imaging-service branches, as opposed
+    """Branch ids that are real lab/imaging-service branches, as opposed
     to every branch this clinic's Booking API happens to list.
 
     Only meaningful for a lab-style client (see AgentState.templates
     `_is_lab_client`) - the caller must check that flag before relying
-    on this; for any other client this fixed doctor simply doesn't
-    exist and this always returns None.
+    on this.
 
-    Returns None when the fixed doctor can't be resolved at all (not
-    registered, or an API failure) - the caller must treat that as
-    "unknown" and skip filtering, never as "no branches qualify".
-    Returns a (possibly empty) set of branch ids on success."""
+    TWO ARCHITECTURES (see `_lab_uses_per_test_doctors`):
+    - Off (default): branch ids where the fixed "in-lab" collection-
+      mode doctor (see select_sample_collection_mode) currently has an
+      ACTIVE schedule.
+    - On: every real branch EXCEPT the fixed home-service branch - there
+      is no single fixed "in-lab" doctor to key off in this model (every
+      doctor is a different real test), so any branch is potentially a
+      real lab branch; the one branch that is never a real walk-in
+      option is the fixed home-service one (see
+      `_lab_home_service_branch_name`), which every test-doctor is also
+      expected to carry a schedule at for "home" mode's sake.
+
+    Returns None when this can't be resolved at all (not registered, or
+    an API failure) - the caller must treat that as "unknown" and skip
+    filtering, never as "no branches qualify". Returns a (possibly
+    empty) set of branch ids on success."""
 
     language = conversation_language(state)
+
+    if _lab_uses_per_test_doctors(state):
+        branches_result = api.get_branches(base_url, language=language)
+        if not branches_result["success"]:
+            logger.warning(
+                "_lab_service_branch_ids (per-test-doctors): get_branches failed - "
+                "status_code=%s error=%s",
+                branches_result.get("status_code"), branches_result.get("error"),
+            )
+            return None
+
+        home_branch_name = _lab_home_service_branch_name(state)
+        return {
+            b.get("id")
+            for b in (branches_result["data"] or {}).get("items", [])
+            if b.get("id") and not _matches_fixed_name(b, home_branch_name)
+        }
+
     doctor_name = _lab_in_place_doctor_name(state)
 
     doctors_result = api.get_doctors(
@@ -7228,6 +7277,26 @@ def match_entity_for_booking(
         all_branch_items = (all_branches_result["data"] or {}).get("items", [])
         candidate_branches = [b for b in all_branch_items if b.get("id") in doctor_branch_ids]
 
+        # PER-TEST-DOCTORS MODEL ONLY (see _lab_uses_per_test_doctors):
+        # the same doctor is expected to also carry a schedule at the
+        # fixed home-service branch (so "home" mode can auto-resolve to
+        # it) - that branch is an internal routing fixture, never a real
+        # walk-in option, and must never appear here as something the
+        # patient can pick for an in-lab visit.
+        if _lab_uses_per_test_doctors(state):
+            home_branch_name = _lab_home_service_branch_name(state)
+            before_count = len(candidate_branches)
+            candidate_branches = [
+                b for b in candidate_branches
+                if not _matches_fixed_name(b, home_branch_name)
+            ]
+            if len(candidate_branches) != before_count:
+                logger.info(
+                    "match_entity_for_booking (branch, doctor-filtered): dropped the "
+                    "fixed home-service branch %r from doctor_id=%s's in-lab branch list",
+                    home_branch_name, session["doctor_id"],
+                )
+
         # ONE extra batched call cross-checks these candidate branches
         # against real schedule slots, so a branch that's only a general
         # schedule assignment - with nothing actually bookable there
@@ -10887,12 +10956,22 @@ def search_lab_services(
     symptom, or body part rather than a service's exact catalogue name.
     Pass their own wording as `query`, unchanged.
 
-    Searches ONLY the services actually registered under this clinic's
-    two fixed collection-mode doctors (see `select_sample_collection_mode`)
-    - never the whole Booking API tenant's catalogue, which may hold
-    other clinics'/specialties' unrelated services (eye exams,
-    cardiology consults, and the like). If NEITHER fixed doctor is
-    registered/published yet, there is nothing to search at all.
+    Searches ONLY real, bookable entries for this clinic - never the
+    whole Booking API tenant's catalogue, which may hold other clinics'/
+    specialties' unrelated services (eye exams, cardiology consults, and
+    the like). TWO ARCHITECTURES (see `_lab_uses_per_test_doctors`,
+    opt-in per client, default off):
+      - Off (default): searches the services registered under this
+        clinic's two fixed collection-mode doctors (see
+        `select_sample_collection_mode`). If neither fixed doctor is
+        registered/published yet, there is nothing to search at all.
+        The returned "id" is a SERVICE id.
+      - On: searches every real doctor directly, one per test (the
+        doctor's own name IS the test's name). The returned "id" here
+        is the DOCTOR's own id - once the patient picks one, call
+        `match_entity_for_booking` (entity_type="doctor") with that
+        exact name to confirm+lock it (session.doctor_id is NOT set yet
+        at this point in this mode).
 
     `branch_name`: optional - leave empty to search everywhere either
     fixed doctor is offered (the usual case for this flow, since the
@@ -10933,6 +11012,80 @@ def search_lab_services(
         )
         return _api_error(doctors_result)
 
+    if _lab_uses_per_test_doctors(state):
+        # NEW MODEL (opt-in, see _lab_uses_per_test_doctors): every
+        # published+scheduled doctor IS a real, bookable test - no
+        # fixed-name restriction to two sentinel doctors at all. The
+        # returned "id" below is the DOCTOR's own real id; once the
+        # patient picks one, confirm it with `match_entity_for_booking`
+        # (entity_type="doctor") using that exact name - session.doctor_id
+        # is NOT set yet at this point (select_sample_collection_mode
+        # deliberately skips it in this mode).
+        all_doctors = (doctors_result["data"] or {}).get("items", [])
+        if not all_doctors:
+            logger.info("search_lab_services (per-test-doctors): no published+scheduled doctors at all")
+            return {"status": "not_found"}
+
+        # Each doctor's own about/altAbout is generic marketing copy
+        # (confirmed from a real dump - "AlBorg is a diagnostic medical
+        # laboratory established for over 30 years..."), not clinical
+        # prep instructions. The real per-test instructions (fasting
+        # duration, sample type, etc.) live on the SERVICE record itself
+        # - fetch the catalogue once and key it by id so each doctor's
+        # own `defaultServiceId` can look its description up directly.
+        services_result = api.get_services(base_url, is_published=True, language=language)
+        service_descriptions = {}
+        if services_result["success"]:
+            for svc in (services_result["data"] or {}).get("items", []):
+                svc_id = svc.get("id")
+                if not svc_id:
+                    continue
+                desc = (
+                    svc.get("altDescription") if language != "en" else svc.get("description")
+                ) or svc.get("description") or svc.get("altDescription")
+                if desc:
+                    service_descriptions[svc_id] = desc
+        else:
+            logger.warning(
+                "search_lab_services (per-test-doctors): get_services failed - "
+                "proceeding without descriptions: status_code=%s error=%s",
+                services_result.get("status_code"), services_result.get("error"),
+            )
+
+        items = []
+        for doctor in all_doctors:
+            doctor_id = doctor.get("id")
+            name = _arabic_preferred_name(doctor) or doctor.get("name") or doctor.get("formatedName")
+            if not doctor_id or not name:
+                continue
+            description = service_descriptions.get(doctor.get("defaultServiceId"))
+            items.append({"id": doctor_id, "name": name, "description": description})
+
+        if not items:
+            return {"status": "not_found"}
+
+        matches = rag.search_items(items, query)
+        if not matches:
+            return {"status": "not_found"}
+
+        services = [item for item, _score in matches]
+
+        logger.info(
+            "search_lab_services (per-test-doctors): query=%r -> %d/%d real test(s) matched",
+            query, len(services), len(items),
+        )
+
+        _remember_list(state, "service", services)
+
+        session = _get_booking_session(state.get("session_id"))
+        descriptions = session.setdefault("lab_service_descriptions", {})
+        for item in services:
+            if item.get("id") and item.get("description"):
+                descriptions[item["id"]] = item["description"]
+
+        return {"status": "found", "services": services}
+
+    # ORIGINAL FIXED-SENTINEL-DOCTOR MODEL (default) below - unchanged.
     in_place_name = _lab_in_place_doctor_name(state)
     home_name = _lab_home_doctor_name(state)
     fixed_doctor_ids = [
@@ -11092,6 +11245,52 @@ def _log_fixed_name_candidates(context: str, target: str, items: list) -> None:
     )
 
 
+def _resolve_home_service_branch(state: AgentState, base_url: str, session: dict, language: str) -> Optional[dict]:
+    """Resolve and lock the fixed home-service branch onto `session`.
+    Shared by both collection-mode architectures (see
+    `select_sample_collection_mode`) - the home branch is fixed either
+    way, only how the DOCTOR is resolved differs between them.
+
+    Returns None on success (session already updated), or a status dict
+    to return immediately to the caller on failure."""
+
+    branches_result = api.get_branches(base_url, language=language)
+    if not branches_result["success"]:
+        logger.error(
+            "_resolve_home_service_branch: get_branches failed: status_code=%s error=%s",
+            branches_result.get("status_code"), branches_result.get("error"),
+        )
+        return _api_error(branches_result)
+
+    home_branch_name = _lab_home_service_branch_name(state)
+    branch_match = None
+    for candidate in (branches_result["data"] or {}).get("items", []):
+        if _matches_fixed_name(candidate, home_branch_name):
+            branch_match = candidate
+            break
+
+    if branch_match is None:
+        logger.error(
+            "_resolve_home_service_branch: fixed home-service branch %r not "
+            "found via get_branches - not registered yet in the Booking API",
+            home_branch_name,
+        )
+        _log_fixed_name_candidates(
+            "_resolve_home_service_branch", home_branch_name,
+            (branches_result["data"] or {}).get("items", []),
+        )
+        return {"status": "branch_not_configured"}
+
+    session["branch_id"] = branch_match.get("id")
+    session["branch_display_name"] = "سحب من المنزل"
+    # CODE resolved this branch, the patient did not choose it from
+    # a real list - same flag `_retire_previous_doctors_branch` and
+    # match_entity_for_booking's own auto-resolution already use for
+    # exactly this distinction.
+    session["branch_auto_resolved"] = True
+    return None
+
+
 @tool
 def select_sample_collection_mode(
     state: Annotated[AgentState, InjectedState],
@@ -11105,28 +11304,43 @@ def select_sample_collection_mode(
     `mode`: "in_lab" or "home" - never anything else, never guessed;
     ask the patient directly if it isn't already clear from this turn.
 
-    This booking system has no concept of "book a test, no doctor" - a
-    fixed real doctor stands in for whoever draws the sample, one per
-    mode, and NEITHER is ever named to the patient (never say "دكتور"
-    or a doctor's name for this flow - refer to it as "الحجز"/"الموعد"
-    only). Home-collection bookings all land on one fixed real branch
-    (a human team is dispatched to the patient's own address regardless
-    of which branch is on record) - ask for and confirm the patient's
-    real address separately; this tool does not collect it.
+    TWO ARCHITECTURES, SAME PATIENT-FACING BEHAVIOR - see
+    `_lab_uses_per_test_doctors` (AgentState.templates
+    `_lab_uses_per_test_doctors`, opt-in per client, default off):
+
+    - Off (default): this booking system has no concept of "book a
+      test, no doctor" - a fixed real doctor stands in for whoever
+      draws the sample, one per mode, and NEITHER is ever named to the
+      patient (never say "دكتور" or a doctor's name for this flow -
+      refer to it as "الحجز"/"الموعد" only). This tool resolves that
+      hidden doctor immediately.
+    - On: each real test IS its own real doctor record (the doctor's
+      real name is the test's name, so it is fine to show it plainly -
+      see `search_lab_services`). This tool does NOT resolve a doctor
+      at all in this case - only the mode itself, and (for "home") the
+      fixed branch; the doctor is resolved later, when the patient
+      actually names/picks the test.
+
+    Home-collection bookings all land on one fixed real branch (a human
+    team is dispatched to the patient's own address regardless of which
+    branch is on record) - ask for and confirm the patient's real
+    address separately; this tool does not collect it.
 
     For "in_lab", the patient must still separately confirm which real
     branch they'll physically visit (via `match_entity_for_booking`,
-    entity_type="branch") - this tool resolves the hidden doctor only,
-    not that choice.
+    entity_type="branch") - this tool never resolves that choice.
 
     Returns:
     {"status": "ready", "mode": "in_lab" | "home"}
-        # doctor_id (and, for "home", branch_id) are now set on this
-        # booking session - continue straight to service/slot selection.
+        # (with the flag off) doctor_id (and, for "home", branch_id)
+        # are now set on this booking session - continue straight to
+        # service/slot selection. (With the flag on) only branch_id
+        # (home mode only) is set here - continue to test selection.
     {"status": "doctor_not_configured", "mode": ...}
-        # the fixed doctor for this mode isn't registered/published in
-        # the Booking API yet - tell the patient this option isn't
-        # available right now, don't invent a workaround.
+        # (flag off only) the fixed doctor for this mode isn't
+        # registered/published in the Booking API yet - tell the
+        # patient this option isn't available right now, don't invent
+        # a workaround.
     {"status": "branch_not_configured"}
         # ("home" only) the fixed home-service branch isn't registered
     {"status": "invalid_mode"} / {"status": "not_configured"} / {"status": "error"}
@@ -11145,6 +11359,29 @@ def select_sample_collection_mode(
         return {"status": "not_configured"}
 
     language = conversation_language(state)
+    session_id = state.get("session_id")
+    session = _get_booking_session(session_id)
+
+    if _lab_uses_per_test_doctors(state):
+        # NEW MODEL: the doctor is whichever real test the patient picks
+        # later (see search_lab_services) - nothing to resolve here
+        # beyond the mode itself and, for "home", the fixed branch.
+        session["collection_mode"] = mode
+        session["doctor_display_name"] = "حجز التحليل" if mode == "in_lab" else "حجز السحب المنزلي"
+
+        if mode == "home":
+            failure = _resolve_home_service_branch(state, base_url, session, language)
+            if failure is not None:
+                return failure
+
+        logger.info(
+            "select_sample_collection_mode (per-test-doctors): session_id=%s mode=%s -> "
+            "branch_id=%s (doctor resolved later, once the test is chosen)",
+            session_id, mode, session.get("branch_id"),
+        )
+        return {"status": "ready", "mode": mode}
+
+    # ORIGINAL FIXED-SENTINEL-DOCTOR MODEL (default, unchanged) below.
     doctor_name = (
         _lab_in_place_doctor_name(state) if mode == "in_lab" else _lab_home_doctor_name(state)
     )
@@ -11178,8 +11415,6 @@ def select_sample_collection_mode(
         )
         return {"status": "doctor_not_configured", "mode": mode}
 
-    session_id = state.get("session_id")
-    session = _get_booking_session(session_id)
     session["doctor_id"] = doctor_match.get("id")
     # Deliberately NOT the real doctor_name - this is read by other
     # session bookkeeping (known_doctor_names), and the whole point of
@@ -11189,40 +11424,9 @@ def select_sample_collection_mode(
     session["doctor_display_name"] = "حجز التحليل" if mode == "in_lab" else "حجز السحب المنزلي"
 
     if mode == "home":
-        branches_result = api.get_branches(base_url, language=language)
-        if not branches_result["success"]:
-            logger.error(
-                "select_sample_collection_mode: get_branches failed: status_code=%s error=%s",
-                branches_result.get("status_code"), branches_result.get("error"),
-            )
-            return _api_error(branches_result)
-
-        home_branch_name = _lab_home_service_branch_name(state)
-        branch_match = None
-        for candidate in (branches_result["data"] or {}).get("items", []):
-            if _matches_fixed_name(candidate, home_branch_name):
-                branch_match = candidate
-                break
-
-        if branch_match is None:
-            logger.error(
-                "select_sample_collection_mode: fixed home-service branch %r not "
-                "found via get_branches - not registered yet in the Booking API",
-                home_branch_name,
-            )
-            _log_fixed_name_candidates(
-                "select_sample_collection_mode (branch)", home_branch_name,
-                (branches_result["data"] or {}).get("items", []),
-            )
-            return {"status": "branch_not_configured"}
-
-        session["branch_id"] = branch_match.get("id")
-        session["branch_display_name"] = "سحب من المنزل"
-        # CODE resolved this branch, the patient did not choose it from
-        # a real list - same flag `_retire_previous_doctors_branch` and
-        # match_entity_for_booking's own auto-resolution already use for
-        # exactly this distinction.
-        session["branch_auto_resolved"] = True
+        failure = _resolve_home_service_branch(state, base_url, session, language)
+        if failure is not None:
+            return failure
 
     logger.info(
         "select_sample_collection_mode: session_id=%s mode=%s -> doctor_id=%s branch_id=%s",
