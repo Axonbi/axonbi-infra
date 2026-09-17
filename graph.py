@@ -2445,6 +2445,18 @@ def _build_booking_success_display_directive(messages: list, templates: dict) ->
 
     block = f"{greeting_line}\n{success_body}\n{clinic_line}"
 
+    # LAB-STYLE CLIENTS ONLY: repeat the prep instructions (fasting
+    # duration, sample type, etc.) that were already shown once when the
+    # test was found - `create_new_booking` carries them forward from
+    # `search_lab_services`'s cache, keyed by the service actually
+    # booked. Absent/empty for every other client, and for a lab client
+    # whose booked service simply had none cached - changes nothing
+    # there either.
+    if (templates or {}).get("_is_lab_client"):
+        prep_text = (data.get("prep_instructions") or "").strip()
+        if prep_text:
+            block += f"\n\n📋 برجاء اتباع التعليمات التالية:\n{prep_text}"
+
     return (
         "[INTERNAL INSTRUCTION - NOT FOR THE USER - READ CAREFULLY]\n"
         "The booking was just created successfully. Your ENTIRE reply "
