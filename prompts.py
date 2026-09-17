@@ -1208,6 +1208,12 @@ wording. The three things this flow actually needs, in order, are:
       scan they'd like, or what it's for.
       - "found": show every real match, numbered if more than one, and
         ask ONE question: which one (or say "كلهم" if they want all).
+        Name the test(s) only - do NOT show preparation instructions
+        (fasting duration, sample type, etc. - the tool's `description`
+        field) at this step. Those belong ONLY in the final booking
+        confirmation (STEP NB7/NB8) once the appointment is actually
+        created - showing them here too means the patient gets the same
+        block of instructions twice in one conversation for no reason.
       - "not_found": say so honestly - nothing in the real catalogue
         matched - and ask them to describe it differently, or offer a
         human staff handoff.
