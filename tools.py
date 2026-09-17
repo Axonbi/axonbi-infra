@@ -7111,7 +7111,7 @@ def match_entity_for_booking(
         and _lab_uses_per_test_doctors(state)
     ):
         pending = (session.get("last_list") or {})
-        if pending.get("entity_type") == "service":
+        if pending.get("entity_type") == "lab_test_doctor":
             pending_items = pending.get("items") or []
             if len(pending_items) == 1 and pending_items[0].get("id"):
                 session["doctor_id"] = pending_items[0]["id"]
@@ -11180,7 +11180,19 @@ def search_lab_services(
             query, len(services), len(items),
         )
 
-        _remember_list(state, "service", services)
+        # TAGGED DISTINCTLY FROM "service" ON PURPOSE. These items carry
+        # a real DOCTOR id under "id" (see the items list built above) -
+        # a different tool's genuine service-catalogue list (e.g.
+        # `find_available_doctors`'s own service resolution) is ALSO
+        # tagged "service" for its own, unrelated purpose, and sits in
+        # the exact same `session["last_list"]` slot. CONFIRMED REAL
+        # PRODUCTION FAILURE: match_entity_for_booking's safety net
+        # (see below in this file) once picked up a stale "service" list
+        # left behind by `find_available_doctors` - a real SERVICE id,
+        # not a doctor id - and set it as session.doctor_id, so every
+        # later doctor-schedule lookup silently queried a doctor that
+        # does not exist and returned zero rows every time.
+        _remember_list(state, "lab_test_doctor", services)
 
         session = _get_booking_session(state.get("session_id"))
         descriptions = session.setdefault("lab_service_descriptions", {})
