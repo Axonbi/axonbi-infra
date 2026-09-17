@@ -724,9 +724,24 @@ _BARE_AFFIRMATION_RE = re.compile(
 # question-mark boundary crossed) catches "لك موعد عند"/"لك كشف عند"
 # and similar short insertions without matching across unrelated
 # sentences.
+#
+# "في فرع" ADDED FOR THE SAME REASON, LATER - a lab/imaging booking
+# flow has no doctor to offer "عند"; its own natural offer names a
+# BRANCH instead ("حابب أحجز لك تحليل سكر صائم في فرع حدائق الأهرام؟").
+# CONFIRMED REAL PRODUCTION FAILURE: that exact offer, answered with a
+# bare "اه", stayed on `faq` (which cannot complete a booking at all)
+# for the rest of the flow - it used its one available booking-adjacent
+# tool (`find_available_doctors`) instead of the real booking flow, and
+# never reached STEP NB1-NB7 at all.
+#
+# FIRST-PERSON "أحجز" ALSO ADDED: the existing "حاب\w*\s*تحجز"
+# alternative only matched the SECOND-person phrasing ("تحب تحجز؟" -
+# "would YOU like to book?"), not the equally natural first-person
+# offer above ("حابب أحجز لك..." - "I'd like to book YOU..."), which
+# fell through it entirely.
 _PREVIOUS_REPLY_OFFERED_BOOKING_RE = re.compile(
-    r"(?:تحجز|أحجز|احجز|نحجز)\w*[^.\n؟?]{0,20}?عند|"
-    r"نكمل\s*الحجز|تحب\w*\s*تحجز|حاب\w*\s*تحجز|"
+    r"(?:تحجز|أحجز|احجز|نحجز)\w*[^.\n؟?]{0,20}?(?:عند|في\s*فرع)|"
+    r"نكمل\s*الحجز|تحب\w*\s*(?:تحجز|أحجز)|حاب\w*\s*(?:تحجز|أحجز)|"
     r"تبغى\s*أحجز|تبي\s*أحجز|ابدأ\s*الحجز|أبدأ\s*بالحجز"
 )
 
