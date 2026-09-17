@@ -8199,7 +8199,7 @@ def resolve_available_day(
         tz = ZoneInfo(DEFAULT_TIMEZONE)
 
     now = datetime.now(tz)
-    horizon_days = 42  # matches the confirmed production booking window
+    horizon_days = DOCTOR_AVAILABILITY_WINDOW_DAYS  # same knob every other availability window in this file uses - one place to tune it
     from_date = now.isoformat()
     to_date = (now + timedelta(days=horizon_days)).isoformat()
 
@@ -8979,7 +8979,7 @@ def list_available_days_for_booking(
         tz = ZoneInfo(DEFAULT_TIMEZONE)
 
     now = datetime.now(tz)
-    horizon_days = 42  # same booking window resolve_available_day uses
+    horizon_days = DOCTOR_AVAILABILITY_WINDOW_DAYS  # same knob resolve_available_day uses
     # Naive for the same reason as resolve_available_day's - it is
     # compared against wall-clock slot times.
     lead_time = now.replace(tzinfo=None) + timedelta(hours=12)  # same 12h minimum advance lead
@@ -9002,8 +9002,8 @@ def list_available_days_for_booking(
         # appear. Worth knowing about when availability looks wrong.
         logger.warning(
             "list_available_days_for_booking: page cap reached (%d items) for doctor_id=%s - "
-            "the 42-day availability sweep is truncated",
-            len(items), doctor_id,
+            "the %d-day availability sweep is truncated",
+            len(items), doctor_id, horizon_days,
         )
 
     by_date: Dict[str, list] = {}
@@ -9683,6 +9683,30 @@ def get_doctor_schedule_for_booking(
         return _api_error(result)
 
     items = (result["data"] or {}).get("items", [])
+
+    # PER-TEST-DOCTORS MODEL ONLY (see _lab_uses_per_test_doctors, and
+    # the same exclusion already applied in match_entity_for_booking's
+    # branch listing): this doctor may also carry a schedule at the
+    # fixed home-service branch, purely so "home" mode can auto-resolve
+    # to it - never a real walk-in option for an "in the lab" schedule
+    # display. CONFIRMED REAL PRODUCTION RISK: this function is a
+    # SEPARATE code path from match_entity_for_booking and was not
+    # covered by that earlier fix - without this, "فرع خدمة منزلية"
+    # would appear alongside the doctor's real branches here.
+    if _lab_uses_per_test_doctors(state):
+        home_branch_name = _lab_home_service_branch_name(state)
+        before_count = len(items)
+        items = [
+            item for item in items
+            if not _matches_fixed_name({"name": item.get("branchName")}, home_branch_name)
+        ]
+        if len(items) != before_count:
+            logger.info(
+                "get_doctor_schedule_for_booking (per-test-doctors): dropped %d "
+                "row(s) belonging to the fixed home-service branch %r from "
+                "doctor_id=%s's schedule", before_count - len(items),
+                home_branch_name, doctor_id,
+            )
 
     # DIAGNOSTIC - SETTLES WHETHER include_future ACTUALLY WORKS.
     #
