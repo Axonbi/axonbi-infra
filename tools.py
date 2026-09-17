@@ -2991,6 +2991,74 @@ def _branch_ids_with_available_doctors(
     return {row.get("branchId") for row in (schedule_result["data"] or {}).get("items", []) if row.get("branchId")}
 
 
+def _lab_service_branch_ids(state: AgentState, base_url: str) -> Optional[set]:
+    """Branch ids where this client's fixed "in-lab" collection-mode
+    doctor (see select_sample_collection_mode) currently has an ACTIVE
+    schedule - i.e. the real lab/imaging-service branches, as opposed
+    to every branch this clinic's Booking API happens to list.
+
+    Only meaningful for a lab-style client (see AgentState.templates
+    `_is_lab_client`) - the caller must check that flag before relying
+    on this; for any other client this fixed doctor simply doesn't
+    exist and this always returns None.
+
+    Returns None when the fixed doctor can't be resolved at all (not
+    registered, or an API failure) - the caller must treat that as
+    "unknown" and skip filtering, never as "no branches qualify".
+    Returns a (possibly empty) set of branch ids on success."""
+
+    language = conversation_language(state)
+    doctor_name = _lab_in_place_doctor_name(state)
+
+    doctors_result = api.get_doctors(
+        base_url, has_published_service=False, has_service_schedule=False,
+        page_size=1000, language=language,
+    )
+    if not doctors_result["success"]:
+        logger.warning(
+            "_lab_service_branch_ids: get_doctors failed - status_code=%s error=%s",
+            doctors_result.get("status_code"), doctors_result.get("error"),
+        )
+        return None
+
+    doctor_match = None
+    for candidate in (doctors_result["data"] or {}).get("items", []):
+        if _matches_fixed_name(candidate, doctor_name):
+            doctor_match = candidate
+            break
+
+    if doctor_match is None:
+        logger.warning(
+            "_lab_service_branch_ids: fixed doctor %r not found via get_doctors",
+            doctor_name,
+        )
+        return None
+
+    today_iso = None
+    try:
+        timezone_name = (state.get("templates") or {}).get("_timezone", DEFAULT_TIMEZONE)
+        today_iso = datetime.now(ZoneInfo(timezone_name)).date().isoformat()
+    except Exception:
+        logger.exception("_lab_service_branch_ids: failed to compute today's date")
+
+    schedule_result = api.get_doctor_schedule(
+        base_url, doctor_ids=[doctor_match.get("id")],
+        effective_date=today_iso, include_future=True, language=language,
+    )
+    if not schedule_result["success"]:
+        logger.warning(
+            "_lab_service_branch_ids: get_doctor_schedule failed - status_code=%s error=%s",
+            schedule_result.get("status_code"), schedule_result.get("error"),
+        )
+        return None
+
+    return {
+        row.get("branchId")
+        for row in (schedule_result["data"] or {}).get("items", [])
+        if row.get("branchId")
+    }
+
+
 def _resolve_branch_by_name(base_url: str, branch_name: str, language: str = "ar", state=None) -> Optional[dict]:
     """Fuzzy-match the user's raw branch text against the clinic's real
     branch list. Returns the raw branch row, or None if nothing matched
@@ -6077,6 +6145,21 @@ def match_entity_info(
             # name match), which is the only moment it's actually needed
             # - deciding whether to offer a booking there.
             bookable_branch_ids = _branch_ids_with_available_doctors(state, base_url) or set()
+
+            # LAB-STYLE CLIENTS ONLY: the general "what are your
+            # branches?" answer must list lab/imaging-service branches
+            # only (the ones the fixed "in-lab" doctor actually works
+            # at) - not every branch record this clinic's Booking API
+            # happens to hold. Skipped entirely for any other client -
+            # `_is_lab_client` is only ever true for clients registered
+            # in config.CLIENT_LAB_ENTITY_NAMES. If the lookup itself
+            # fails (None), leave the list unfiltered rather than
+            # hiding every branch on a transient error.
+            if (state.get("templates") or {}).get("_is_lab_client"):
+                lab_branch_ids = _lab_service_branch_ids(state, base_url)
+                if lab_branch_ids is not None:
+                    items = [i for i in items if i.get("id") in lab_branch_ids]
+
             # ARABIC NAME FIRST. `_arabic_preferred_name` exists exactly
             # for this: `altName` is the Arabic form across every
             # endpoint in this API, and putting the English `name` in
