@@ -1,4 +1,4 @@
-="""
+"""
 Central configuration for the Guest Booking Cancellation Agent.
 
 All environment-dependent values live here so that services/nodes never
