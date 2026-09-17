@@ -949,6 +949,13 @@ CLIENT_LAB_ENTITY_NAMES: Dict[str, Dict[str, str]] = {
         "lab_in_place_doctor_name": "in-lab",
         "lab_home_doctor_name": "Home",
         "lab_home_service_branch_name": "Home",
+        # Opt-in architecture switch - "true" to move this client from
+        # two fixed sentinel doctors to one real doctor per test (see
+        # tools._lab_uses_per_test_doctors). Leave unset/"" until the
+        # real per-test doctor records actually exist in the Booking
+        # API - flipping this before they're created would leave
+        # search_lab_services searching zero real tests.
+        "lab_uses_per_test_doctors": "",
     },
 }
 
@@ -1219,6 +1226,15 @@ def get_messages(client_id: str, dialect: Optional[str] = None, client_row_overr
         client_row.get("lab_home_service_branch_name")
         or _lab_overrides.get("lab_home_service_branch_name")
         or LAB_HOME_SERVICE_BRANCH_NAME
+    )
+    # Opt-in per-test-doctors architecture switch - see
+    # tools._lab_uses_per_test_doctors. Truthy string ("true"/"1"/...)
+    # turns it on; unset/empty (the default for every client, including
+    # lab-alborg until explicitly flipped) keeps the original
+    # fixed-sentinel-doctor behavior unchanged.
+    merged["_lab_uses_per_test_doctors"] = bool(
+        client_row.get("lab_uses_per_test_doctors")
+        or _lab_overrides.get("lab_uses_per_test_doctors")
     )
     merged["_phone_example"] = client_row.get("phone_example")
     # COMPATIBILITY ONLY. `bsuid` identifies the SENDER, not the clinic,
