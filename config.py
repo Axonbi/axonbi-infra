@@ -948,7 +948,7 @@ CLIENT_LAB_ENTITY_NAMES: Dict[str, Dict[str, str]] = {
     "lab-alborg": {
         "lab_in_place_doctor_name": "in-lab",
         "lab_home_doctor_name": "Home",
-        "lab_home_service_branch_name": "Home",
+        "lab_home_service_branch_name": "Home Branch",
         # Opt-in architecture switch - "true" to move this client from
         # two fixed sentinel doctors to one real doctor per test (see
         # tools._lab_uses_per_test_doctors). Flipped on 2026-09-17: the
