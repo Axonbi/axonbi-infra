@@ -9231,6 +9231,78 @@ _NEAREST_BRANCH_CORRECTION_DIRECTIVE = (
 )
 
 
+_DAY_DENIAL_NO_ALTERNATIVE_RE = re.compile(
+    r"مش\s*قادر[ةه]?[^.\n؟]{0,60}مواعيد|"
+    r"ما\s*(?:في|فيه|ظهر|لقيت|لقينا|عندي|عندنا|عنده|عندها)[^.\n؟]{0,60}مواعيد|"
+    r"مفيش[^.\n؟]{0,60}مواعيد|"
+    r"لا\s*(?:يوجد|توجد)[^.\n؟]{0,60}مواعيد|"
+    r"no\s+(?:available\s+)?(?:appointments?|slots?|availability)",
+    re.IGNORECASE,
+)
+
+_ALTERNATIVE_DAY_HINT_RE = re.compile(
+    r"الاحد|الاثنين|الثلاثاء|الاربعاء|الخميس|الجمعه|السبت|"
+    r"\d{1,2}\s*/\s*\d{1,2}|"
+    r"sunday|monday|tuesday|wednesday|thursday|friday|saturday|"
+    r"1\ufe0f?\u20e3|2\ufe0f?\u20e3|3\ufe0f?\u20e3",
+    re.IGNORECASE,
+)
+
+
+def _reply_denies_day_without_alternatives(reply_text: str, state: AgentState) -> bool:
+    """True when the reply tells the patient there's no availability for
+    the day they asked about, but names no specific alternative day or
+    date anywhere in the SAME reply - just a bare "want to try another
+    day?" with nothing to act on.
+
+    CONFIRMED REAL PRODUCTION FAILURE: "عذرًا، مش قادر أجيب مواعيد متاحة
+    يوم الاثنين في فرع اكتوبر للتحليل ده.\nتحب تجرب يوم تاني؟" - STEP NB4
+    already requires this exact case ("not_found") to show the days the
+    patient DOES have open in the SAME message, precisely so they are
+    never left holding only the bad news with nothing to pick from
+    instead of continuing toward an actual booking. The reply above
+    asks them to guess again instead.
+
+    Deliberately checked on the reply TEXT alone, not on which tool ran
+    this turn - a lookup can genuinely run and correctly report
+    "not_found" and still leave the patient stuck if the model then
+    fails to also surface the real alternative days from that same
+    lookup (or a list already on the table from earlier this turn)."""
+
+    if not reply_text:
+        return False
+
+    normalized = _norm_ar(reply_text)
+    if not _DAY_DENIAL_NO_ALTERNATIVE_RE.search(normalized):
+        return False
+
+    # A single day/date mention is just the DENIED day repeated - only
+    # two or more distinct mentions mean a real alternative was also
+    # named (the denied day itself, plus at least one open day/date).
+    if len(_ALTERNATIVE_DAY_HINT_RE.findall(normalized)) >= 2:
+        return False
+
+    return True
+
+
+_DAY_DENIAL_CORRECTION_DIRECTIVE = (
+    "============================================================\n"
+    "YOU SAID THIS DAY HAS NO OPENINGS - BUT DIDN'T OFFER ANY OTHER\n"
+    "============================================================\n"
+    "Your previous draft told the patient there are no appointments for "
+    "the day they asked about, then just asked if they want to try "
+    "another day - with no day actually named. Never leave them to "
+    "guess which day to try.\n\n"
+    "In the SAME reply, show the real days that ARE open: the ones "
+    "`list_available_days_for_booking`/`resolve_available_day` already "
+    "returned this turn, or a list still on the table from earlier this "
+    "conversation. If you don't have one, call "
+    "`list_available_days_for_booking` now instead of asking the "
+    "open-ended question. Never invent a day - only ones a tool "
+    "actually returned."
+)
+
+
 def _reply_denies_availability_without_lookup(reply_text: str, state: AgentState) -> bool:
     """True when the reply tells the patient a doctor has no available
     appointments, while NO availability tool has run for the CURRENTLY
@@ -13326,6 +13398,12 @@ _REPLY_VERIFIERS = (
         lambda reply, state: _AVAILABILITY_DENIAL_CORRECTION_DIRECTIVE,
         "reply said a doctor has no available appointments while no availability "
         "tool has run in this conversation",
+    ),
+    (
+        lambda reply, state, agent_name: _reply_denies_day_without_alternatives(reply, state),
+        lambda reply, state: _DAY_DENIAL_CORRECTION_DIRECTIVE,
+        "reply denied a day's availability and asked to try another day instead "
+        "of continuing with the real alternative days already available",
     ),
     (
         lambda reply, state, agent_name: _reply_denies_a_branch_the_tools_offered(reply, state),
