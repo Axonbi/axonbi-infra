@@ -1422,6 +1422,49 @@ def _lab_uses_per_test_doctors(state: AgentState) -> bool:
     return bool((state.get("templates") or {}).get("_lab_uses_per_test_doctors"))
 
 
+def _lab_test_doctor_ids(state: AgentState) -> Optional[frozenset]:
+    """Explicit whitelist of real doctor ids that represent actual lab
+    tests, for the per-test-doctors model (see
+    `_lab_uses_per_test_doctors`) - comma-separated string, configured
+    per client in config.CLIENT_LAB_ENTITY_NAMES.
+
+    Real doctors NOT on this list (other specialists sharing the same
+    Booking API tenant) must never be searched or shown as a test -
+    this is the same class of confirmed real production bug as an
+    unrelated eye-exam/cardiology catalogue leaking into a lab-test
+    search, and this tenant's own specialtyName field is not reliable
+    enough to separate them on its own (a real non-lab specialist was
+    also found tagged "Laboratory" in a live dump).
+
+    Returns None when nothing is configured - callers must treat that
+    as "fail closed" (refuse to search) rather than "search everyone"."""
+
+    raw = (state.get("templates") or {}).get("_lab_test_doctor_ids") or ""
+    ids = frozenset(part.strip() for part in raw.split(",") if part.strip())
+    return ids or None
+
+
+def _lab_test_specialty_id(state: AgentState) -> Optional[str]:
+    """PRIMARY filter for the per-test-doctors model (see
+    `_lab_uses_per_test_doctors`) - the specialtyId real test-doctors
+    are registered under, configured per client. Preferred over
+    `_lab_test_doctor_ids` whenever set: a newly registered test-doctor
+    under this same specialty is picked up automatically, with no
+    per-test config edit needed - the id whitelist needs one every time.
+
+    Requires every OTHER real doctor in this tenant (unrelated
+    specialists sharing the same Booking API account) to be tagged a
+    DIFFERENT specialtyId - confirmed real risk: a non-lab specialist
+    was found mistagged with the same specialty as the real test-
+    doctors in a live dump, which would have leaked them into every lab
+    search results list.
+
+    Returns None (not "") when unset, so callers can fall back to
+    `_lab_test_doctor_ids` cleanly."""
+
+    return (state.get("templates") or {}).get("_lab_test_specialty_id") or None
+
+
 # ==========================================================
 # Booking session store (moved ABOVE the doctor/specialty tools)
 # ==========================================================
@@ -11021,9 +11064,37 @@ def search_lab_services(
         # (entity_type="doctor") using that exact name - session.doctor_id
         # is NOT set yet at this point (select_sample_collection_mode
         # deliberately skips it in this mode).
-        all_doctors = (doctors_result["data"] or {}).get("items", [])
+        all_doctors_raw = (doctors_result["data"] or {}).get("items", [])
+
+        # FAIL CLOSED. Without a configured filter, "every published+
+        # scheduled doctor" includes any other real specialist sharing
+        # this same Booking API tenant (confirmed real dump: doctors
+        # for entirely unrelated specialties, some even mistagged
+        # specialtyName="Laboratory") - never searchable/offerable as
+        # a lab test just because nothing narrower was configured.
+        # PRIMARY: specialtyId (no per-test config edit needed).
+        # FALLBACK: the explicit id whitelist, only if specialty unset.
+        specialty_id = _lab_test_specialty_id(state)
+        test_doctor_ids = _lab_test_doctor_ids(state)
+
+        if specialty_id:
+            all_doctors = [d for d in all_doctors_raw if d.get("specialtyId") == specialty_id]
+        elif test_doctor_ids:
+            all_doctors = [d for d in all_doctors_raw if d.get("id") in test_doctor_ids]
+        else:
+            logger.error(
+                "search_lab_services (per-test-doctors): neither lab_test_specialty_id "
+                "nor lab_test_doctor_ids configured for client_id=%s - refusing to "
+                "search every real doctor in the tenant", state.get("client_id"),
+            )
+            return {"status": "not_configured"}
+
         if not all_doctors:
-            logger.info("search_lab_services (per-test-doctors): no published+scheduled doctors at all")
+            logger.info(
+                "search_lab_services (per-test-doctors): the configured filter "
+                "(specialty_id=%r, %d whitelisted id(s)) matched no published+"
+                "scheduled doctor right now", specialty_id, len(test_doctor_ids or ()),
+            )
             return {"status": "not_found"}
 
         # Each doctor's own about/altAbout is generic marketing copy
