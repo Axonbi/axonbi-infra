@@ -3011,7 +3011,7 @@ def _lab_service_branch_ids(state: AgentState, base_url: str) -> Optional[set]:
     doctor_name = _lab_in_place_doctor_name(state)
 
     doctors_result = api.get_doctors(
-        base_url, has_published_service=False, has_service_schedule=False,
+        base_url, has_published_service=True, has_service_schedule=True,
         page_size=1000, language=language,
     )
     if not doctors_result["success"]:
@@ -10850,7 +10850,7 @@ def search_lab_services(
     # cardiology/therapy catalogue from elsewhere in the same Booking
     # API tenant was shown to a patient who asked for a blood test).
     doctors_result = api.get_doctors(
-        base_url, has_published_service=False, has_service_schedule=False,
+        base_url, has_published_service=True, has_service_schedule=True,
         page_size=1000, language=language,
     )
     if not doctors_result["success"]:
@@ -11064,7 +11064,7 @@ def select_sample_collection_mode(
     )
 
     doctors_result = api.get_doctors(
-        base_url, has_published_service=False, has_service_schedule=False,
+        base_url, has_published_service=True, has_service_schedule=True,
         page_size=1000, language=language,
     )
     if not doctors_result["success"]:
