@@ -951,11 +951,34 @@ CLIENT_LAB_ENTITY_NAMES: Dict[str, Dict[str, str]] = {
         "lab_home_service_branch_name": "Home",
         # Opt-in architecture switch - "true" to move this client from
         # two fixed sentinel doctors to one real doctor per test (see
-        # tools._lab_uses_per_test_doctors). Leave unset/"" until the
-        # real per-test doctor records actually exist in the Booking
-        # API - flipping this before they're created would leave
-        # search_lab_services searching zero real tests.
-        "lab_uses_per_test_doctors": "",
+        # tools._lab_uses_per_test_doctors). Flipped on 2026-09-17: the
+        # old "in-lab"/"Home" sentinel doctors are confirmed gone from
+        # the real roster (get_doctors no longer returns them at all -
+        # select_sample_collection_mode's exact-name lookup started
+        # failing for both), while real per-test doctors ("تحليل سكر
+        # صائم", "دهون الدم الكاملة") are confirmed present instead.
+        "lab_uses_per_test_doctors": "true",
+        # PRIMARY filter for the per-test-doctors model: real doctors
+        # under this specialtyId are treated as lab tests, with zero
+        # ongoing config maintenance as new tests get registered (see
+        # tools._lab_test_specialty_id). Confirmed from a real dump as
+        # the specialtyId both existing test-doctors ("تحليل سكر صائم",
+        # "دهون الدم الكاملة") are registered under. REQUIRES every
+        # non-test doctor in this tenant to be tagged a DIFFERENT
+        # specialty - confirmed fixed for "Mohamed Zayed" (previously
+        # mistagged this same specialty) on 2026-09-17.
+        "lab_test_specialty_id": "b671c879-7375-4be6-9971-0cb327bf1a7a",
+        # FALLBACK ONLY (see tools._lab_test_doctor_ids) - used only if
+        # lab_test_specialty_id above is ever unset. Comma-separated
+        # explicit doctor ids; needs a manual edit here per new test, so
+        # prefer the specialty filter above whenever the specialty data
+        # is kept clean. Confirmed so far:
+        #   17367696-f551-4d28-bd3d-0838bc7f2180 = تحليل سكر صائم (Fasting glucose)
+        #   d307741a-6c50-467a-8a12-adb8e59c5db8 = دهون الدم الكاملة (Lipid panel)
+        "lab_test_doctor_ids": (
+            "17367696-f551-4d28-bd3d-0838bc7f2180,"
+            "d307741a-6c50-467a-8a12-adb8e59c5db8"
+        ),
     },
 }
 
@@ -1235,6 +1258,23 @@ def get_messages(client_id: str, dialect: Optional[str] = None, client_row_overr
     merged["_lab_uses_per_test_doctors"] = bool(
         client_row.get("lab_uses_per_test_doctors")
         or _lab_overrides.get("lab_uses_per_test_doctors")
+    )
+    # Explicit whitelist (comma-separated string of real doctor ids) -
+    # see tools._lab_test_doctor_ids. Empty/unset means "fail closed":
+    # the per-test-doctors search refuses to run rather than searching
+    # every real doctor in the tenant.
+    merged["_lab_test_doctor_ids"] = (
+        client_row.get("lab_test_doctor_ids")
+        or _lab_overrides.get("lab_test_doctor_ids")
+        or ""
+    )
+    # PRIMARY filter (see tools._lab_test_specialty_id) - preferred over
+    # the id whitelist above whenever set, since it needs no per-test
+    # config edit.
+    merged["_lab_test_specialty_id"] = (
+        client_row.get("lab_test_specialty_id")
+        or _lab_overrides.get("lab_test_specialty_id")
+        or ""
     )
     merged["_phone_example"] = client_row.get("phone_example")
     # COMPATIBILITY ONLY. `bsuid` identifies the SENDER, not the clinic,
