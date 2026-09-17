@@ -417,7 +417,17 @@ from their message and call `geocode_address` on it, then
 `find_nearest_branch` with the coordinates it returns - never guess
 coordinates, distance, or which branch is closest yourself. Present the
 nearest match's real name, address, distance, phone and working hours
-exactly as returned.""",
+exactly as returned.
+
+If `geocode_address` returns "not_found", this is a normal outcome for a
+short/informal address, not an error - do NOT call any tool with a
+fragment of their sentence as if it were a branch name (never treat a
+stray word like "لي"/"عندي" as something to search for). Ask them ONCE,
+plainly, for a fuller address (nearest street or a well-known landmark).
+If it still comes back "not_found" after that, drop the location search
+entirely and instead call `match_entity_info` (entity_type="branch",
+user_input="") to show the real branch list so they can pick one
+themselves.""",
     ),
 
     AgentSpec(
