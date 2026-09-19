@@ -9302,6 +9302,43 @@ _DAY_DENIAL_CORRECTION_DIRECTIVE = (
     "actually returned."
 )
 
+_FAKE_HOME_ADDRESS_RE = re.compile(
+    r"عنوان\s*الاستلام\s*[:：]\s*(?:من\s*المنزل|في\s*المنزل|بالمنزل|بالبيت|من\s*البيت|في\s*البيت|at\s*home|home)\b",
+    re.IGNORECASE,
+)
+
+
+def _reply_shows_fake_home_address(reply_text: str, state: AgentState) -> bool:
+    """True when a review card's "عنوان الاستلام" (collection address)
+    line is filled with the COLLECTION MODE itself ("من المنزل"/"at
+    home") rather than a real address the patient actually gave.
+
+    CONFIRMED REAL PRODUCTION FAILURE, TWICE, DESPITE PROMPT GUIDANCE
+    BOTH TIMES: the address question was never asked, and the review
+    card still showed "📍 عنوان الاستلام: من المنزل" as if that were an
+    answer - the collection team has no idea where to actually go. A
+    prompt-only fix did not hold, so this is enforced here instead."""
+
+    if not reply_text:
+        return False
+    return bool(_FAKE_HOME_ADDRESS_RE.search(_norm_ar(reply_text)))
+
+
+_FAKE_HOME_ADDRESS_CORRECTION_DIRECTIVE = (
+    "============================================================\n"
+    "THE ADDRESS LINE IN YOUR REVIEW CARD ISN'T A REAL ADDRESS\n"
+    "============================================================\n"
+    "Your draft's \"📍 عنوان الاستلام\" line says something like \"من "
+    "المنزل\" - that is the COLLECTION MODE (home vs in-lab), not an "
+    "address, and the patient never actually said it. Drop the review "
+    "card for now. First ask them a separate, focused question for "
+    "their real collection address (street, building, area - enough for "
+    "someone to actually find them), wait for their answer, and only "
+    "then show the review card again with THEIR OWN words on that line. "
+    "Never fill it with the mode name, a placeholder, or anything else "
+    "not in their own words."
+)
+
 
 def _reply_denies_availability_without_lookup(reply_text: str, state: AgentState) -> bool:
     """True when the reply tells the patient a doctor has no available
@@ -13404,6 +13441,12 @@ _REPLY_VERIFIERS = (
         lambda reply, state: _DAY_DENIAL_CORRECTION_DIRECTIVE,
         "reply denied a day's availability and asked to try another day instead "
         "of continuing with the real alternative days already available",
+    ),
+    (
+        lambda reply, state, agent_name: _reply_shows_fake_home_address(reply, state),
+        lambda reply, state: _FAKE_HOME_ADDRESS_CORRECTION_DIRECTIVE,
+        "reply's review card filled the collection-address line with the "
+        "collection mode itself instead of a real address the patient gave",
     ),
     (
         lambda reply, state, agent_name: _reply_denies_a_branch_the_tools_offered(reply, state),
