@@ -7055,6 +7055,11 @@ def match_entity_for_booking(
      "specialty_id": ...}
     {"matched": false, "status": "out_of_range", "list_size": N}
     {"matched": false, "status": "no_list_shown"}
+    {"matched": false, "ambiguous": false, "status": "no_real_branches"}
+        # entity_type="branch", a doctor already confirmed, per-test-
+        # doctors model only: this test has NO real in-lab branch right
+        # now (only the fixed home-service one, which is never offered
+        # here) - say so plainly, don't say a branch "doesn't exist".
     {"status": "list", "items": [...]}
     {"status": "not_configured"} / {"status": "error"}"""
 
@@ -7373,6 +7378,25 @@ def match_entity_for_booking(
                     "fixed home-service branch %r from doctor_id=%s's in-lab branch list",
                     home_branch_name, session["doctor_id"],
                 )
+            if not candidate_branches:
+                # CONFIRMED REAL PRODUCTION FAILURE: falling through to
+                # the normal name-matching logic below with an empty
+                # candidate list produced "not_matched" against
+                # whatever branch name the patient/model happened to
+                # mention - which the model then reported as "معنديش
+                # فرع اسمه [X]", as if that branch didn't exist at all.
+                # The real, honest fact is different: this TEST has no
+                # real in-lab branch scheduled right now (only the
+                # fixed home-service one, which was just excluded) -
+                # a distinct status so the model can say that plainly
+                # instead.
+                logger.info(
+                    "match_entity_for_booking (branch, doctor-filtered): doctor_id=%s "
+                    "has zero real branches after excluding the home-service one - "
+                    "only home-mode is actually bookable for this test right now",
+                    session["doctor_id"],
+                )
+                return {"matched": False, "ambiguous": False, "status": "no_real_branches"}
 
         # ONE extra batched call cross-checks these candidate branches
         # against real schedule slots, so a branch that's only a general
