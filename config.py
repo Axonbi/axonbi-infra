@@ -174,7 +174,7 @@ DOCTOR_LIST_CACHE_SECONDS: float = float(
 # a call per day - so the change is more rows returned, not more round
 # trips. Lower it if a client's booking horizon is genuinely shorter.
 DOCTOR_AVAILABILITY_WINDOW_DAYS: int = int(
-    os.getenv("DOCTOR_AVAILABILITY_WINDOW_DAYS", "60")
+    os.getenv("DOCTOR_AVAILABILITY_WINDOW_DAYS", "7")
 )
 
 
