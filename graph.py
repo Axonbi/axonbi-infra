@@ -9303,7 +9303,8 @@ _DAY_DENIAL_CORRECTION_DIRECTIVE = (
 )
 
 _FAKE_HOME_ADDRESS_RE = re.compile(
-    r"عنوان\s*الاستلام\s*[:：]\s*(?:من\s*المنزل|في\s*المنزل|بالمنزل|بالبيت|من\s*البيت|في\s*البيت|at\s*home|home)\b",
+    r"عنوان\s*الاستلام\s*[:：]\s*[\[\(\"'\u201c\u2018]*\s*"
+    r"(?:من\s*المنزل|في\s*المنزل|بالمنزل|بالبيت|من\s*البيت|في\s*البيت|at\s*home|home)\b",
     re.IGNORECASE,
 )
 
@@ -9330,13 +9331,15 @@ _FAKE_HOME_ADDRESS_CORRECTION_DIRECTIVE = (
     "============================================================\n"
     "Your draft's \"📍 عنوان الاستلام\" line says something like \"من "
     "المنزل\" - that is the COLLECTION MODE (home vs in-lab), not an "
-    "address, and the patient never actually said it. Drop the review "
-    "card for now. First ask them a separate, focused question for "
-    "their real collection address (street, building, area - enough for "
-    "someone to actually find them), wait for their answer, and only "
-    "then show the review card again with THEIR OWN words on that line. "
-    "Never fill it with the mode name, a placeholder, or anything else "
-    "not in their own words."
+    "address, and the patient never actually said it. Wrapping the same "
+    "words in brackets or quotes (\"[من المنزل]\") is NOT a fix either -"
+    " it is still not an address. Drop the review card for now. First "
+    "ask them a separate, focused question for their real collection "
+    "address (street, building, area - enough for someone to actually "
+    "find them), wait for their answer, and only then show the review "
+    "card again with THEIR OWN words on that line. Never fill it with "
+    "the mode name, a placeholder, or anything else not in their own "
+    "words."
 )
 
 
