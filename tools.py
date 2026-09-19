@@ -7094,39 +7094,11 @@ def match_entity_for_booking(
     session_id = state.get("session_id")
     session = _get_booking_session(session_id)
 
-    # SAFETY NET FOR THE PER-TEST-DOCTORS MODEL (see
-    # _lab_uses_per_test_doctors): the prompt tells the model to
-    # confirm the chosen test as a doctor (match_entity_for_booking,
-    # entity_type="doctor") the moment it's settled, before doing
-    # anything else - but that instruction has been observed skipped
-    # in real conversations, and the branch list that follows without
-    # it is unfiltered (every branch, including the fixed home-service
-    # one) because no doctor_id is on session yet to filter by.
-    #
-    # If exactly one test is still pending from `search_lab_services`
-    # (the single-match case, the common one) and no doctor is
-    # confirmed yet, resolve it here rather than trust a later turn to
-    # do it - in this architecture the "service" id IS the doctor id.
-    # Deliberately NOT attempted for 2+ pending tests: which one the
-    # patient meant is genuinely ambiguous without their own wording,
-    # and this is not the place to guess it.
-    if (
-        entity_type == "branch"
-        and not session.get("doctor_id")
-        and _lab_uses_per_test_doctors(state)
-    ):
-        pending = (session.get("last_list") or {})
-        if pending.get("entity_type") == "lab_test_doctor":
-            pending_items = pending.get("items") or []
-            if len(pending_items) == 1 and pending_items[0].get("id"):
-                session["doctor_id"] = pending_items[0]["id"]
-                session["doctor_display_name"] = "حجز التحليل"
-                logger.info(
-                    "match_entity_for_booking: auto-confirmed doctor_id=%s from the "
-                    "single pending test (per-test-doctors mode) before listing "
-                    "branches - the model did not call the doctor-confirm step first",
-                    session["doctor_id"],
-                )
+    # SAFETY NET FOR THE PER-TEST-DOCTORS MODEL - see
+    # _auto_confirm_pending_test_doctor's own docstring for why this
+    # exists and why it now lives in a shared helper.
+    if entity_type == "branch":
+        _auto_confirm_pending_test_doctor(state, session)
 
     # Set only on the doctor-filtered branch path below. None means
     # "no availability check ran", which is NOT the same as "nothing
@@ -8137,6 +8109,7 @@ def resolve_available_day(
 
     session_id = state.get("session_id")
     session = _get_booking_session(session_id)
+    _auto_confirm_pending_test_doctor(state, session)
     doctor_id = session.get("doctor_id")
     branch_id = session.get("branch_id")
 
@@ -8848,6 +8821,7 @@ def list_available_days_for_booking(
 
     session_id = state.get("session_id")
     session = _get_booking_session(session_id)
+    _auto_confirm_pending_test_doctor(state, session)
     doctor_id = session.get("doctor_id")
     branch_id = session.get("branch_id")
 
@@ -9652,6 +9626,7 @@ def get_doctor_schedule_for_booking(
 
     session_id = state.get("session_id")
     session = _get_booking_session(session_id)
+    _auto_confirm_pending_test_doctor(state, session)
     doctor_id = session.get("doctor_id")
 
     if not doctor_id:
@@ -9876,6 +9851,7 @@ def get_available_slots_for_booking(
 
     session_id = state.get("session_id")
     session = _get_booking_session(session_id)
+    _auto_confirm_pending_test_doctor(state, session)
     doctor_id = session.get("doctor_id")
     branch_id = session.get("branch_id")
 
@@ -11408,6 +11384,55 @@ def _log_fixed_name_candidates(context: str, target: str, items: list) -> None:
             for c in items
         ],
     )
+
+
+def _auto_confirm_pending_test_doctor(state: AgentState, session: dict) -> None:
+    """SAFETY NET FOR THE PER-TEST-DOCTORS MODEL (see
+    _lab_uses_per_test_doctors) - call this at the top of ANY tool that
+    reads `session["doctor_id"]` to act on a confirmed doctor
+    (`list_available_days_for_booking`, `get_doctor_schedule_for_booking`,
+    `resolve_available_day`, `get_available_slots_for_booking`,
+    `match_entity_for_booking`, and any similar lookup).
+
+    The prompt tells the model to confirm the chosen test as a doctor
+    (`match_entity_for_booking`, entity_type="doctor") the moment it's
+    settled, before doing anything else - CONFIRMED REPEATEDLY SKIPPED
+    IN REAL CONVERSATIONS regardless of that instruction, at more than
+    one point in the flow (not just before listing branches, where this
+    was first caught): a whole booking attempt went through
+    NB1-Q1 -> NB1-Q2 -> "which day?" with no doctor ever confirmed, and
+    every later tool call that needed one either returned an unhelpful
+    "missing_doctor"/"missing_branch" status or, worse, the model gave
+    up and invented a generic "there's a problem" reply without calling
+    anything at all. A single point of defense inside one tool cannot
+    cover a model that skips the step and then never calls that one
+    tool either - so this now runs everywhere a confirmed doctor is
+    assumed, not only in match_entity_for_booking.
+
+    If exactly one test is still pending from `search_lab_services` (the
+    single-match case, by far the common one) and no doctor is confirmed
+    yet, resolves it here rather than trusting a later turn to. Does
+    nothing (silently) for 2+ pending tests - which one the patient
+    meant is genuinely ambiguous without their own wording, and this is
+    not the place to guess it - or when a doctor is already confirmed,
+    or for any client not using this architecture."""
+
+    if session.get("doctor_id") or not _lab_uses_per_test_doctors(state):
+        return
+
+    pending = (session.get("last_list") or {})
+    if pending.get("entity_type") != "lab_test_doctor":
+        return
+
+    pending_items = pending.get("items") or []
+    if len(pending_items) == 1 and pending_items[0].get("id"):
+        session["doctor_id"] = pending_items[0]["id"]
+        session["doctor_display_name"] = "حجز التحليل"
+        logger.info(
+            "_auto_confirm_pending_test_doctor: auto-confirmed doctor_id=%s from the "
+            "single pending test - the model did not call the doctor-confirm step first",
+            session["doctor_id"],
+        )
 
 
 def _resolve_home_service_branch(state: AgentState, base_url: str, session: dict, language: str) -> Optional[dict]:
