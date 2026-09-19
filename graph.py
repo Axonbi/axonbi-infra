@@ -19131,6 +19131,22 @@ def _review_card_shown_immediately_before(messages: list, templates: dict) -> bo
 
     for message in reversed(messages[:-1]):
         if isinstance(message, ToolMessage):
+            if getattr(message, "name", None) == "confirm_booking_review":
+                # CONFIRMED REAL PRODUCTION FAILURE (a second one, on top
+                # of the one this function's own docstring describes):
+                # confirm_booking_review's entire job is to gate this
+                # exact confirmation, and it runs BETWEEN the review
+                # card and create_new_booking by design - so its own
+                # ToolMessage showing up here is not "a fresh reasoning
+                # turn with nothing shown to the patient" the way any
+                # other tool's boundary would be. Once this tool was
+                # actually reachable (see tools.ALL_TOOLS's own history),
+                # every booking that used it got blocked here anyway,
+                # in an unbreakable loop - the check that was meant to
+                # protect the review step ended up defeating the one
+                # tool built specifically to satisfy it. Skip over it
+                # and keep looking for the actual review-card text.
+                continue
             return False
         if isinstance(message, _HumanMessage):
             continue
