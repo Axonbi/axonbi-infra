@@ -9342,6 +9342,52 @@ _FAKE_HOME_ADDRESS_CORRECTION_DIRECTIVE = (
     "words."
 )
 
+_DOCTOR_LABEL_RE = re.compile(
+    r"👨\u200d⚕️\s*الطبيب\s*[:：]|(?<![\w\u0600-\u06FF])الطبيب\s*[:：]|\bdoctor\s*[:：]",
+    re.IGNORECASE,
+)
+
+
+def _reply_labels_a_doctor_for_lab_client(reply_text: str, state: AgentState) -> bool:
+    """True when a "الطبيب"/"Doctor" label appears anywhere in the reply
+    for a lab-style client (see AgentState.templates `_is_lab_client`) -
+    no real doctor concept exists for this flow at all (see
+    select_sample_collection_mode's own docstring on the two lab
+    architectures), in EITHER architecture: the fixed sentinel doctor is
+    a hidden internal placeholder, and the per-test-doctor's real name
+    IS the test - neither is ever something to call "the doctor" to the
+    patient, in any part of the conversation (booking, cancellation,
+    reschedule, or anywhere else).
+
+    CONFIRMED REAL PRODUCTION FAILURE, IN THE CANCEL/RESCHEDULE FLOW
+    SPECIFICALLY (a different part of the prompt from the booking
+    review card, where this exact class of leak was already fixed
+    once): an appointment card read "👨‍⚕️ الطبيب: تحليل سكر صائم" -
+    naming a lab test as if it were a doctor. Existing prompt guidance
+    already covers this and was not followed, so it is enforced here
+    too."""
+
+    if not reply_text:
+        return False
+    if not (state.get("templates") or {}).get("_is_lab_client"):
+        return False
+    return bool(_DOCTOR_LABEL_RE.search(reply_text))
+
+
+_DOCTOR_LABEL_CORRECTION_DIRECTIVE = (
+    "============================================================\n"
+    "YOU LABELED SOMETHING \"الطبيب\"/\"DOCTOR\" - THERE IS NO DOCTOR HERE\n"
+    "============================================================\n"
+    "This clinic's lab/imaging flow has no real doctor concept at all - "
+    "the value you labeled \"الطبيب\" is either a hidden internal "
+    "placeholder or, in the per-test-doctors architecture, actually the "
+    "TEST name. Relabel that exact line \"🧪 التحليل: [the same value]\" "
+    "instead, in every card or message this turn - a cancellation card, "
+    "a reschedule confirmation, an appointment list, or anywhere else. "
+    "Never say \"الطبيب\"/\"doctor\" about it, and never drop the line - "
+    "just rename the label and keep the value."
+)
+
 
 def _reply_denies_availability_without_lookup(reply_text: str, state: AgentState) -> bool:
     """True when the reply tells the patient a doctor has no available
@@ -13450,6 +13496,12 @@ _REPLY_VERIFIERS = (
         lambda reply, state: _FAKE_HOME_ADDRESS_CORRECTION_DIRECTIVE,
         "reply's review card filled the collection-address line with the "
         "collection mode itself instead of a real address the patient gave",
+    ),
+    (
+        lambda reply, state, agent_name: _reply_labels_a_doctor_for_lab_client(reply, state),
+        lambda reply, state: _DOCTOR_LABEL_CORRECTION_DIRECTIVE,
+        "reply labeled something \"الطبيب\"/\"doctor\" for a lab client that has "
+        "no real doctor concept at all",
     ),
     (
         lambda reply, state, agent_name: _reply_denies_a_branch_the_tools_offered(reply, state),
