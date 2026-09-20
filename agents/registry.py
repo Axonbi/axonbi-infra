@@ -306,6 +306,7 @@ and never alter a slot value returned by
             "share_branch_location",
             "select_sample_collection_mode",
             "search_lab_services",
+            "set_home_collection_address",
         ),
         job="""\
 ============================================================
