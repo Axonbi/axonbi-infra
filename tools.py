@@ -1469,6 +1469,30 @@ def _lab_uses_per_test_doctors(state: AgentState) -> bool:
     return bool((state.get("templates") or {}).get("_lab_uses_per_test_doctors"))
 
 
+def _collection_mode_missing(state: AgentState, session: dict) -> bool:
+    """True for a per-test-doctors lab client whose patient has not yet
+    chosen IN THE LAB vs AT HOME (`select_sample_collection_mode` sets
+    `session["collection_mode"]`; `reset_booking_session` clears it at
+    the start of every booking).
+
+    WHY THE SCHEDULE / DAYS / SLOTS TOOLS CHECK THIS.
+    CONFIRMED REAL PRODUCTION FAILURE (session 201158877175+medtown2,
+    2026-09-20): the patient said "طب عاوزه احجز تحليل من البيت", was
+    asked lab-or-home anyway, ignored it and typed a test name. The
+    flow went on WITHOUT a mode: the test's doctor was confirmed, the
+    schedule tool dropped the home-service rows and auto-confirmed the
+    only remaining branch (a LAB branch, حدائق الاهرام), and the reply
+    listed slots for it - a branch the patient never chose, for a mode
+    they had explicitly not asked for. The mode decides which branch
+    everything after it is about, so nothing that returns a branch,
+    day or time may run before it is known.
+
+    Off for every client that does not use the per-test-doctors
+    architecture, so ordinary doctor bookings are untouched."""
+
+    return _lab_uses_per_test_doctors(state) and not session.get("collection_mode")
+
+
 def _lab_test_doctor_ids(state: AgentState) -> Optional[frozenset]:
     """Explicit whitelist of real doctor ids that represent actual lab
     tests, for the per-test-doctors model (see
@@ -8287,6 +8311,12 @@ def resolve_available_day(
     session_id = state.get("session_id")
     session = _get_booking_session(session_id)
     _auto_confirm_pending_test_doctor(state, session)
+    if _collection_mode_missing(state, session):
+        logger.info(
+            "%s: collection mode not chosen yet for session_id=%s - refusing to "
+            "resolve a branch/day/time before it is known", "resolve_available_day", session_id,
+        )
+        return {"status": "missing_collection_mode"}
     doctor_id = session.get("doctor_id")
     branch_id = session.get("branch_id")
 
@@ -8919,6 +8949,19 @@ def _open_slots_on_day(state, base_url: str, doctor_id: str, branch_id: str,
         )
         return None
 
+    # DIAGNOSTIC (2026-09-20, medtown2): a day verified here has been offered
+    # and then returned ZERO items from `get_available_slots_for_booking`
+    # for the identical query. The raw response is the only thing that can
+    # say which side is wrong, so log its shape whenever this runs.
+    _raw_items = (result["data"] or {}).get("items", [])
+    logger.info(
+        "_open_slots_on_day: doctor_id=%s branch_id=%s from=%s to=%s raw_items=%d "
+        "first_slotStart=%r last_slotStart=%r",
+        doctor_id, branch_id, from_iso, to_iso, len(_raw_items),
+        (_raw_items[0].get("slotStart") if _raw_items else None),
+        (_raw_items[-1].get("slotStart") if _raw_items else None),
+    )
+
     # Naive, to match the wall-clock slot times - see _local_now_naive.
     now_local = _local_now_naive(timezone_name)
 
@@ -8999,6 +9042,12 @@ def list_available_days_for_booking(
     session_id = state.get("session_id")
     session = _get_booking_session(session_id)
     _auto_confirm_pending_test_doctor(state, session)
+    if _collection_mode_missing(state, session):
+        logger.info(
+            "%s: collection mode not chosen yet for session_id=%s - refusing to "
+            "resolve a branch/day/time before it is known", "list_available_days_for_booking", session_id,
+        )
+        return {"status": "missing_collection_mode"}
     doctor_id = session.get("doctor_id")
     branch_id = session.get("branch_id")
 
@@ -9159,27 +9208,79 @@ def list_available_days_for_booking(
     # compared against wall-clock slot times.
     lead_time = now.replace(tzinfo=None) + timedelta(hours=12)  # same 12h minimum advance lead
 
-    result = api.get_doctor_schedule_slots(
-        base_url, doctor_ids=[doctor_id], branch_ids=[branch_id],
-        from_date=now.isoformat(), to_date=(now + timedelta(days=horizon_days)).isoformat(),
-        is_booked=False, page_size=1000,
-     language=conversation_language(state),)
+    # SWEEP THE HORIZON IN CHUNKS, NOT IN ONE CALL.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (session 201158877175+medtown2,
+    # 2026-09-20 12:42:00): one call covering the whole horizon came
+    # back with exactly 1000 items - its page cap - and those 1000 items
+    # spanned only FOUR distinct dates. This endpoint returns roughly
+    # 200 rows for a single day at this branch (the per-day lookup later
+    # in the same session returned 200 rows for 20 distinct times), so
+    # the cap is used up inside the first few days and every day after
+    # that is invisible. The patient is not being shown the doctor's
+    # availability; they are being shown however much of it fitted in
+    # one page.
+    #
+    # `pageNumber` is fixed at 1 inside api.get_doctor_schedule_slots,
+    # so paging is not available here. Narrow windows are: each chunk
+    # asks for a few days at a time, which keeps every response well
+    # under the cap, and the results are merged. The loop stops early
+    # once enough distinct days have been collected to fill the list,
+    # so a doctor with daily availability still costs one or two calls.
+    CHUNK_DAYS = 4
+    ENOUGH_DISTINCT_DAYS = max(7, limit * 3)
 
-    if not result["success"]:
-        logger.error("list_available_days_for_booking API call failed: status_code=%s error=%s", result.get("status_code"), result.get("error"))
-        return _api_error(result)
+    items: list = []
+    truncated_chunks = 0
+    chunk_start = now
 
-    items = (result["data"] or {}).get("items", [])
+    while chunk_start < now + timedelta(days=horizon_days):
+        chunk_end = min(chunk_start + timedelta(days=CHUNK_DAYS), now + timedelta(days=horizon_days))
 
-    if len(items) >= 1000:
-        # The sweep hit its page cap, so this is a TRUNCATED view of the
-        # doctor's availability - days beyond the cut-off simply won't
-        # appear. Worth knowing about when availability looks wrong.
-        logger.warning(
-            "list_available_days_for_booking: page cap reached (%d items) for doctor_id=%s - "
-            "the %d-day availability sweep is truncated",
-            len(items), doctor_id, horizon_days,
-        )
+        result = api.get_doctor_schedule_slots(
+            base_url, doctor_ids=[doctor_id], branch_ids=[branch_id],
+            from_date=chunk_start.isoformat(), to_date=chunk_end.isoformat(),
+            is_booked=False, page_size=1000,
+         language=conversation_language(state),)
+
+        if not result["success"]:
+            if items:
+                # Later chunks are a bonus; what has already been
+                # collected is still a usable list of days.
+                logger.error(
+                    "list_available_days_for_booking: chunk %s..%s failed (status_code=%s) - "
+                    "continuing with the %d item(s) already gathered",
+                    chunk_start.date(), chunk_end.date(), result.get("status_code"), len(items),
+                )
+                break
+            logger.error("list_available_days_for_booking API call failed: status_code=%s error=%s", result.get("status_code"), result.get("error"))
+            return _api_error(result)
+
+        chunk_items = (result["data"] or {}).get("items", [])
+        if len(chunk_items) >= 1000:
+            truncated_chunks += 1
+            logger.warning(
+                "list_available_days_for_booking: page cap reached inside chunk %s..%s for "
+                "doctor_id=%s - days in this window may still be missing",
+                chunk_start.date(), chunk_end.date(), doctor_id,
+            )
+        items.extend(chunk_items)
+
+        distinct_so_far = {
+            (to_clinic_local(i.get("slotStart"), timezone_name) or "")[:10]
+            for i in items if not i.get("isBooked")
+        }
+        distinct_so_far.discard("")
+        if len(distinct_so_far) >= ENOUGH_DISTINCT_DAYS:
+            break
+
+        chunk_start = chunk_end
+
+    logger.info(
+        "list_available_days_for_booking: chunked sweep gathered %d item(s) for doctor_id=%s "
+        "(chunk=%dd, horizon=%dd, truncated_chunks=%d)",
+        len(items), doctor_id, CHUNK_DAYS, horizon_days, truncated_chunks,
+    )
 
     by_date: Dict[str, list] = {}
 
@@ -9804,6 +9905,12 @@ def get_doctor_schedule_for_booking(
     session_id = state.get("session_id")
     session = _get_booking_session(session_id)
     _auto_confirm_pending_test_doctor(state, session)
+    if _collection_mode_missing(state, session):
+        logger.info(
+            "%s: collection mode not chosen yet for session_id=%s - refusing to "
+            "resolve a branch/day/time before it is known", "get_doctor_schedule_for_booking", session_id,
+        )
+        return {"status": "missing_collection_mode"}
     doctor_id = session.get("doctor_id")
 
     if not doctor_id:
@@ -10027,6 +10134,12 @@ def get_available_slots_for_booking(
     session_id = state.get("session_id")
     session = _get_booking_session(session_id)
     _auto_confirm_pending_test_doctor(state, session)
+    if _collection_mode_missing(state, session):
+        logger.info(
+            "%s: collection mode not chosen yet for session_id=%s - refusing to "
+            "resolve a branch/day/time before it is known", "get_available_slots_for_booking", session_id,
+        )
+        return {"status": "missing_collection_mode"}
     doctor_id = session.get("doctor_id")
     branch_id = session.get("branch_id")
 
@@ -10048,6 +10161,30 @@ def get_available_slots_for_booking(
             from_date, to_date = to_date, from_date
     except ValueError:
         pass
+
+    # BARE DATES ARE A ZERO-WIDTH WINDOW. CONFIRMED REAL PRODUCTION
+    # FAILURE (session 201158877175+medtown2, 2026-09-20 12:42:20):
+    # the model called this tool with from_date="2026-09-25"
+    # to_date="2026-09-25". A bare date parses as midnight, so the
+    # request asked for the instant 00:00:00 to the instant 00:00:00 -
+    # the API returned 0 items, and the agent told the patient Friday
+    # had no appointments one message after offering Friday.
+    #
+    # The same call for "2026-09-28" returned 200 items that were all
+    # dated 29/09 locally, and those were shown as Monday's times. Both
+    # symptoms are the one cause: no end-of-day bound, so the window is
+    # either empty or runs into whatever the API decides comes next.
+    #
+    # A bare date therefore means the whole of that local day, and the
+    # day it named is remembered so the response can be held to it.
+    requested_day_iso: Optional[str] = None
+    if isinstance(from_date, str) and len(from_date.strip()) == 10:
+        requested_day_iso = from_date.strip()
+        from_date = f"{requested_day_iso}T00:00:00"
+    if isinstance(to_date, str) and len(to_date.strip()) == 10:
+        to_date = f"{to_date.strip()}T23:59:59"
+    if requested_day_iso and not to_date:
+        to_date = f"{requested_day_iso}T23:59:59"
 
     result = api.get_doctor_schedule_slots(
         base_url, doctor_ids=[doctor_id], branch_ids=[branch_id],
@@ -10080,6 +10217,34 @@ def get_available_slots_for_booking(
         return {"status": "not_found"}
 
     timezone_name = (state.get("templates") or {}).get("_timezone", DEFAULT_TIMEZONE)
+
+    # HOLD THE ANSWER TO THE DAY THAT WAS ASKED FOR.
+    #
+    # Belt to the bare-date braces above: whatever the range ends up
+    # being, a patient who accepted Monday must not be shown Tuesday.
+    # Returning "no times on Monday" is a correct answer; returning
+    # Tuesday's times under Monday's heading is not, and the agent has
+    # no way to tell the difference once the times reach it.
+    if requested_day_iso:
+        kept = []
+        for item in items:
+            slot_local = to_clinic_local(item.get("slotStart"), timezone_name)
+            if slot_local and slot_local[:10] == requested_day_iso:
+                kept.append(item)
+        if len(kept) != len(items):
+            logger.warning(
+                "get_available_slots_for_booking: dropped %d of %d item(s) that were NOT on the "
+                "requested local day %s (doctor_id=%s branch_id=%s)",
+                len(items) - len(kept), len(items), requested_day_iso, doctor_id, branch_id,
+            )
+        items = kept
+        if not items:
+            logger.info(
+                "get_available_slots_for_booking: not_found - nothing on the requested local day %s",
+                requested_day_iso,
+            )
+            return {"status": "not_found"}
+
     language = conversation_language(state)
     slots = []
     for item in items:
