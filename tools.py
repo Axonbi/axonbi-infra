@@ -5483,6 +5483,19 @@ def list_branch_services(
     {"status": "found", "branch": {"id", "name"}, "services": [{"name", "description"}, ...]}
     {"status": "not_found", "branch": {...}}  # this branch publishes no services
     {"status": "branch_not_matched"}  # branch_name given but nothing matched
+    {"status": "looks_like_stray_word", "word": "..."}
+        # `branch_name` is a common filler/pronoun word ("لي"/"ليا"/
+        # "عندي"/"هنا"...), not a real place name - this almost always
+        # means the CALLER (you) mis-picked this word out of a "nearest
+        # branch" question ("ايه اقرب فرع ليا؟") rather than the patient
+        # actually naming a branch. CONFIRMED REAL PRODUCTION FAILURE:
+        # called with branch_name="ليا" for exactly that question,
+        # returned "branch_not_matched", and the reply told the patient
+        # "معنديش فرع اسمه ليا" - as if that were ever a real answer to
+        # try. Do NOT retry this call with a different guess at the
+        # fragment - go back and ask for their real address/area, or use
+        # `geocode_address` + `find_nearest_branch` if they already gave
+        # one this conversation.
     {"status": "missing_branch"}  # no branch named and none remembered - ask which branch
     {"status": "not_configured"} / {"status": "error"}"""
 
@@ -5500,6 +5513,14 @@ def list_branch_services(
     branch_display = None
 
     if branch_name and branch_name.strip():
+        stripped_branch_name = branch_name.strip()
+        if _normalize_arabic(stripped_branch_name) in _STRAY_WORD_FRAGMENTS:
+            logger.info(
+                "list_branch_services: branch_name=%r looks like a stray filler/pronoun "
+                "word, not a real branch name - refusing rather than searching for it",
+                branch_name,
+            )
+            return {"status": "looks_like_stray_word", "word": stripped_branch_name}
         matched = _resolve_branch_by_name(base_url, branch_name, conversation_language(state), state=state)
         if matched is None:
             logger.info("list_branch_services: branch_name=%r did not match any branch", branch_name)
@@ -5768,6 +5789,18 @@ def answer_hospital_faq(
 # READ-ONLY FAQ/info lookup - never touches booking/availability. Fully
 # generic: works off whatever Doctors/GetList and Branches/GetList
 # return for THIS client_id, no per-clinic hardcoding.
+
+# Common Egyptian-Arabic filler/pronoun words that a "nearest branch"
+# question ("ايه اقرب فرع ليا؟") can leave dangling at the end of a
+# sentence, which have been mistaken for a BRANCH NAME and searched for
+# literally - see list_branch_services's own docstring for the
+# confirmed real failure this guards against. Deliberately short and
+# specific (not a general stopword list) to avoid ever rejecting a
+# real, if short, branch name.
+_STRAY_WORD_FRAGMENTS = frozenset({
+    "لي", "ليا", "ليه", "عندي", "عندنا", "هنا", "هناك", "دلوقتي", "بس",
+})
+
 
 def _normalize_arabic(text: str) -> str:
     """Normalize Arabic text for fuzzy comparison: strip diacritics and
