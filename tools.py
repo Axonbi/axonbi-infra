@@ -5010,6 +5010,28 @@ def get_doctor_schedule(
         return _api_error(result)
 
     items = (result["data"] or {}).get("items", [])
+
+    # PER-TEST-DOCTORS MODEL ONLY (see _lab_uses_per_test_doctors) - same
+    # exclusion already applied to get_doctor_schedule_for_booking and
+    # match_entity_for_booking's branch listing: this doctor may also
+    # carry a schedule at the fixed home-service branch purely so "home"
+    # mode can auto-resolve to it - never a real walk-in reschedule
+    # option. This tool is the older, generic reschedule-flow one and
+    # was not covered by those earlier fixes.
+    if _lab_uses_per_test_doctors(state):
+        home_branch_name = _lab_home_service_branch_name(state)
+        before_count = len(items)
+        items = [
+            item for item in items
+            if not _matches_fixed_name({"name": item.get("branchName")}, home_branch_name)
+        ]
+        if len(items) != before_count:
+            logger.info(
+                "get_doctor_schedule (per-test-doctors): dropped %d row(s) "
+                "belonging to the fixed home-service branch %r",
+                before_count - len(items), home_branch_name,
+            )
+
     if not items:
         return {"status": "not_found"}
 
@@ -10813,13 +10835,43 @@ _TIMEZONE_ISO_COUNTRY = {
 }
 
 
-def _geocode_once(address: str, country_code: Optional[str]) -> Optional[dict]:
+def _client_branches_viewbox() -> Optional[str]:
+    """A Nominatim `viewbox` string ("left,top,right,bottom") covering
+    this deployment's own real branches (see config.load_branches_geo),
+    padded by a margin - a SOFT geographic bias (never `bounded=1`, so
+    an address genuinely outside it can still resolve, just deprioritized
+    relative to a same-named place elsewhere in the country.
+
+    CONFIRMED REAL PRODUCTION FAILURE: "النزهة" (a well-known Cairo
+    neighborhood, and where the patient clearly meant, since every real
+    branch is in Greater Cairo) resolved instead to a same-named village
+    near القصير on the Red Sea, over 500 km from every real branch -
+    country-level biasing alone does not disambiguate a short, common
+    place name that exists more than once within the same country.
+
+    Returns None if there are no real branch coordinates to bias with."""
+
+    rows = load_branches_geo().values()
+    lats = [r["latitude"] for r in rows if isinstance(r.get("latitude"), (int, float))]
+    lons = [r["longitude"] for r in rows if isinstance(r.get("longitude"), (int, float))]
+    if not lats or not lons:
+        return None
+
+    margin_deg = 0.5  # roughly 50-55 km at these latitudes - generous, still a real narrowing
+    lat_min, lat_max = min(lats) - margin_deg, max(lats) + margin_deg
+    lon_min, lon_max = min(lons) - margin_deg, max(lons) + margin_deg
+    return f"{lon_min},{lat_max},{lon_max},{lat_min}"
+
+
+def _geocode_once(address: str, country_code: Optional[str], viewbox: Optional[str] = None) -> Optional[dict]:
     """One Nominatim call; returns its top result dict, or None on no
     match/failure. Raises nothing - caller decides how to react."""
 
     params = {"q": address, "format": "json", "limit": 1}
     if country_code:
         params["countrycodes"] = country_code
+    if viewbox:
+        params["viewbox"] = viewbox
 
     try:
         response = requests.get(
@@ -10886,11 +10938,14 @@ def geocode_address(
 
     timezone_name = str((state.get("templates") or {}).get("_timezone") or "").strip().lower()
     country_code = _TIMEZONE_ISO_COUNTRY.get(timezone_name)
+    viewbox = _client_branches_viewbox()
 
-    # First try biased to the clinic's own country (both more accurate
-    # AND, for a short/ambiguous local name Nominatim's global index
-    # would otherwise miss entirely, more likely to match at all).
-    top = _geocode_once(address, country_code) if country_code else None
+    # First try biased to the clinic's own country AND its own branches'
+    # real geographic area (both more accurate AND, for a short/ambiguous
+    # local name Nominatim's global index would otherwise miss entirely
+    # or resolve to a same-named place elsewhere, more likely to match
+    # the right one at all).
+    top = _geocode_once(address, country_code, viewbox) if country_code else None
 
     # Unbiased retry: either there was no country to bias with, or the
     # biased search itself found nothing - a plain free-text retry is a
@@ -10946,7 +11001,13 @@ def find_nearest_branch(
     Returns every branch that HAS geo data configured, sorted nearest
     first:
     {"status": "found", "branches": [{"name", "address", "phone",
-      "working_hours", "distance_km"}, ...]}
+      "working_hours", "distance_km"}, ...], "unusually_far": true only
+      when present - the nearest real branch is over 100 km away, which
+      usually means `geocode_address` matched a different, same-named
+      place rather than the one the patient meant (Egypt has several
+      towns/areas that share a name) - do not hide the branch, but tell
+      the patient the distance looks off and confirm their city/area
+      before treating this as their real nearest branch}
     {"status": "not_found"}  # no branch has geo data configured at all
     {"status": "not_configured"} / {"status": "error"}
     """
@@ -11033,7 +11094,28 @@ def find_nearest_branch(
         latitude, longitude, ranked[0]["name"], ranked[0]["distance_km"],
     )
 
-    return {"status": "found", "branches": ranked}
+    result = {"status": "found", "branches": ranked}
+
+    # CONFIRMED REAL PRODUCTION FAILURE: geocode_address resolved
+    # "النزهة" to a same-named town on the Red Sea coast, ~530 km from
+    # every real branch, and the reply confidently named a "nearest"
+    # branch anyway with no hint anything was off - there are several
+    # places in Egypt (and elsewhere) sharing a common name, and this
+    # clinic's own real coverage area is a useful signal that the
+    # geocoder picked the wrong one. This is NOT a tool failure (a
+    # coordinate pair and a distance were both computed correctly) - it
+    # is a signal for the model to add to its own reply, not something
+    # to hide the branch behind.
+    if ranked[0]["distance_km"] > 100:
+        result["unusually_far"] = True
+        logger.warning(
+            "find_nearest_branch: nearest real branch is %.1f km away - "
+            "likely the wrong same-named place was geocoded, not a real "
+            "answer",
+            ranked[0]["distance_km"],
+        )
+
+    return result
 
 
 # ==========================================================
