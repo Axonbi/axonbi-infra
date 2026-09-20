@@ -9207,6 +9207,102 @@ def _reply_claims_nearest_branch_without_lookup(reply_text: str, state: AgentSta
     return True
 
 
+def _last_find_nearest_branch_result(state: AgentState) -> Optional[dict]:
+    """The most recent `find_nearest_branch` tool result anywhere in
+    this conversation, parsed - or None if it was never called, or its
+    result can't be parsed. `find_nearest_branch` itself already returns
+    EVERY branch with geo data (not only the nearest one), each with its
+    own real `distance_km` - this lets a later turn check a NEW branch-
+    distance claim against real data already sitting in the
+    conversation, without needing a fresh tool call every time."""
+
+    messages = state.get("messages", []) or []
+    for msg in reversed(messages):
+        if getattr(msg, "name", None) == "find_nearest_branch":
+            try:
+                return json.loads(msg.content)
+            except Exception:
+                return None
+    return None
+
+
+_KM_DISTANCE_RE = re.compile(r"([\d.]+)\s*(?:كم|km)\b", re.IGNORECASE)
+
+
+def _reply_misattributes_branch_distance(reply_text: str, state: AgentState) -> bool:
+    """True when the reply states a specific km distance for a real
+    branch, close to that branch's own name, that does NOT match the
+    distance `find_nearest_branch`'s own last real result actually
+    reported for that exact branch - i.e. a real number, just attached
+    to the wrong branch.
+
+    CONFIRMED REAL PRODUCTION FAILURE: `find_nearest_branch` reported
+    "حدائق الاهرام" at 43.04 km. The patient then asked specifically
+    about a DIFFERENT branch ("فرع الفردوس"), and the reply answered
+    "المسافة بين ... وفرع مدينة الفردوس تقريبًا 43.04 كم، وهي نفس
+    المسافة تقريبًا لفرع حدائق الاهرام" - reusing حدائق الاهرام's exact
+    number for الفردوس, which was never looked up at all (and which the
+    SAME earlier tool call's own branch list already had the real
+    distance_km for - the reply had no need to invent anything)."""
+
+    if not reply_text:
+        return False
+
+    result = _last_find_nearest_branch_result(state)
+    if not result or result.get("status") != "found":
+        return False
+
+    branches = result.get("branches") or []
+    if len(branches) < 2:
+        # Nothing else on record to have confused this branch's number
+        # with.
+        return False
+
+    normalized_reply = _norm_ar(reply_text)
+
+    for branch in branches:
+        name = branch.get("name")
+        real_km = branch.get("distance_km")
+        if not name or real_km is None:
+            continue
+        norm_name = _norm_ar(str(name))
+        if not norm_name:
+            continue
+        for name_match in re.finditer(re.escape(norm_name), normalized_reply):
+            # AFTER the name only, not before - natural phrasing states
+            # the branch, then its distance ("... حدائق الاهرام على بعد
+            # 43.04 كم"); a window spanning backward too could pick up
+            # a DIFFERENT, adjacent branch's correct figure instead.
+            window = normalized_reply[name_match.end():name_match.end() + 50]
+            km_match = _KM_DISTANCE_RE.search(window)
+            if not km_match:
+                continue
+            try:
+                claimed_km = float(km_match.group(1))
+            except ValueError:
+                continue
+            if abs(claimed_km - float(real_km)) > 0.5:
+                return True
+
+    return False
+
+
+_BRANCH_DISTANCE_MISATTRIBUTION_CORRECTION_DIRECTIVE = (
+    "============================================================\n"
+    "THAT DISTANCE DOESN'T BELONG TO THAT BRANCH\n"
+    "============================================================\n"
+    "You stated a km distance for a specific branch that does not match "
+    "what `find_nearest_branch` actually reported for that branch - most "
+    "likely a number copied from a DIFFERENT branch in the same result. "
+    "That tool's own result already lists EVERY branch it found, each "
+    "with its own real distance_km - look up the exact branch the "
+    "patient is asking about in that same list and use ITS OWN number. "
+    "Never reuse one branch's distance for another, and never say two "
+    "different branches are \"the same distance\" unless their real "
+    "distance_km values actually are."
+)
+
+
 _NEAREST_BRANCH_CORRECTION_DIRECTIVE = (
     "============================================================\n"
     "YOU NAMED A 'NEAREST' BRANCH - BUT NEVER COMPUTED A DISTANCE\n"
@@ -13420,6 +13516,12 @@ _REPLY_VERIFIERS = (
         lambda reply, state, agent_name: _reply_claims_nearest_branch_without_lookup(reply, state),
         lambda reply, state: _NEAREST_BRANCH_CORRECTION_DIRECTIVE,
         "reply named a specific branch as nearest with no find_nearest_branch call this turn",
+    ),
+    (
+        lambda reply, state, agent_name: _reply_misattributes_branch_distance(reply, state),
+        lambda reply, state: _BRANCH_DISTANCE_MISATTRIBUTION_CORRECTION_DIRECTIVE,
+        "reply stated a branch's distance that does not match find_nearest_branch's own "
+        "real result for that branch",
     ),
     (
         lambda reply, state, agent_name: (
