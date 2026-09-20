@@ -43,6 +43,18 @@ GUIDANCE_KEY = "_guidance"
 
 RESULT_GUIDANCE: dict = {
 
+    "get_available_slots_for_booking": {
+        "missing_collection_mode":
+            "The patient has not said yet whether the sample is drawn IN THE "
+            "LAB or AT HOME, and no branch, day or time may be looked up or "
+            "shown until they have. If they ALREADY said it anywhere in this "
+            "conversation (\"من البيت\", \"في المعمل\", or an equivalent), call "
+            "`select_sample_collection_mode` with that mode NOW and then call "
+            "this tool again. Otherwise ask the ONE question - in the lab or "
+            "at home? - and wait. Never guess a mode, and never name a branch, "
+            "day or time on this turn.",
+    },
+
     # ------------------------------------------------------------------
     "find_available_doctors": {
         "found":
@@ -81,6 +93,15 @@ RESULT_GUIDANCE: dict = {
 
     # ------------------------------------------------------------------
     "get_doctor_schedule_for_booking": {
+        "missing_collection_mode":
+            "The patient has not said yet whether the sample is drawn IN THE "
+            "LAB or AT HOME, and no branch, day or time may be looked up or "
+            "shown until they have. If they ALREADY said it anywhere in this "
+            "conversation (\"من البيت\", \"في المعمل\", or an equivalent), call "
+            "`select_sample_collection_mode` with that mode NOW and then call "
+            "this tool again. Otherwise ask the ONE question - in the lab or "
+            "at home? - and wait. Never guess a mode, and never name a branch, "
+            "day or time on this turn.",
         "not_found":
             "The doctor themselves is REAL and already confirmed by "
             "name this turn - this status means they have no schedule "
@@ -213,6 +234,15 @@ RESULT_GUIDANCE: dict = {
 
     # ------------------------------------------------------------------
     "resolve_available_day": {
+        "missing_collection_mode":
+            "The patient has not said yet whether the sample is drawn IN THE "
+            "LAB or AT HOME, and no branch, day or time may be looked up or "
+            "shown until they have. If they ALREADY said it anywhere in this "
+            "conversation (\"من البيت\", \"في المعمل\", or an equivalent), call "
+            "`select_sample_collection_mode` with that mode NOW and then call "
+            "this tool again. Otherwise ask the ONE question - in the lab or "
+            "at home? - and wait. Never guess a mode, and never name a branch, "
+            "day or time on this turn.",
         "found":
             "SHOW `weekday_display` and `date_display`, never `date` - "
             "that is a machine value and reads as a raw timestamp in a "
@@ -245,6 +275,15 @@ RESULT_GUIDANCE: dict = {
 
     # ------------------------------------------------------------------
     "list_available_days_for_booking": {
+        "missing_collection_mode":
+            "The patient has not said yet whether the sample is drawn IN THE "
+            "LAB or AT HOME, and no branch, day or time may be looked up or "
+            "shown until they have. If they ALREADY said it anywhere in this "
+            "conversation (\"من البيت\", \"في المعمل\", or an equivalent), call "
+            "`select_sample_collection_mode` with that mode NOW and then call "
+            "this tool again. Otherwise ask the ONE question - in the lab or "
+            "at home? - and wait. Never guess a mode, and never name a branch, "
+            "day or time on this turn.",
         "not_found":
             "This doctor has no open slot at all in the booking window.",
         "no_more_days":
