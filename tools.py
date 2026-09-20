@@ -9452,6 +9452,38 @@ def list_available_days_for_booking(
 
 
 @tool
+def set_home_collection_address(
+    state: Annotated[AgentState, InjectedState],
+    address: str,
+) -> dict:
+    """HOME MODE ONLY. Call this the moment the patient gives the real
+    address where the sample should be collected (STEP NB6's dedicated
+    address question) - pass exactly what they wrote, never paraphrased
+    or invented. This is what `confirm_booking_review` checks for a
+    home-mode booking: without this call, review confirmation refuses
+    with `missing_address` instead of proceeding.
+
+    This value is never sent to the Booking API (no field there takes
+    it) - it exists purely so it's on record for the collection team
+    and shows up on the review card. Calling this again overwrites the
+    previous address (e.g. if the patient corrects it).
+
+    Returns {"status": "saved"} / {"status": "not_home_mode"} (nothing
+    to save - this booking isn't a home-collection one)."""
+
+    session_id = state.get("session_id")
+    session = _get_booking_session(session_id)
+    if session.get("collection_mode") != "home":
+        return {"status": "not_home_mode"}
+    address = (address or "").strip()
+    session["collection_address"] = address
+    logger.info(
+        "set_home_collection_address: session_id=%s address=%r", session_id, address,
+    )
+    return {"status": "saved"}
+
+
+@tool
 def confirm_booking_review(
     state: Annotated[AgentState, InjectedState],
     patient_full_name: str,
@@ -9464,6 +9496,18 @@ def confirm_booking_review(
     - it refuses with `needs_review` until this has been called for
     the current booking, no matter how many times each detail was
     separately confirmed earlier in the conversation.
+
+    HOME MODE ONLY: this also refuses with `missing_address` unless
+    `set_home_collection_address` was already called this booking (see
+    that tool). CONFIRMED REAL PRODUCTION FAILURE: a home-mode booking
+    reached this call, and the create-new-booking step, having never
+    once asked the patient for their collection address at all - the
+    review card that finally went out just omitted the address line
+    completely, and nothing caught it before the booking was created.
+    Do not paper over `missing_address` by inventing one or reusing the
+    branch address - go back and actually ask the patient, wait for
+    their real answer, call `set_home_collection_address` with it, then
+    retry this call.
 
     Show the review in exactly this shape (translate the labels if the
     conversation is in English, keep the structure). The identifying
@@ -9498,6 +9542,15 @@ def confirm_booking_review(
 
     session_id = state.get("session_id")
     session = _get_booking_session(session_id)
+
+    if session.get("collection_mode") == "home" and not session.get("collection_address"):
+        logger.warning(
+            "confirm_booking_review: session_id=%s is home-mode with no "
+            "collection_address on record - refusing until "
+            "set_home_collection_address is called", session_id,
+        )
+        return {"status": "missing_address"}
+
     session["review_shown"] = True
     logger.info(
         "confirm_booking_review: patient confirmed the reviewed summary for "
@@ -9545,6 +9598,11 @@ def create_new_booking(
         # trying this again.
     {"status": "slot_unavailable"}
     {"status": "missing_doctor"} / {"status": "missing_branch"}
+    {"status": "missing_address"}
+        # HOME MODE ONLY - no real collection address is on record for
+        # this booking. Go back and ask the patient for it now, then
+        # call `set_home_collection_address`, before trying this again.
+        # Never invent one or reuse the branch address.
     {"status": "invalid_details", "rejected": [{"field": ..., "message": ...}]}
     {"status": "phone_not_verified"}
     {"status": "missing_patient_name"}
@@ -9559,6 +9617,16 @@ def create_new_booking(
         return {"status": "missing_doctor"}
     if not branch_id:
         return {"status": "missing_branch"}
+    if session.get("collection_mode") == "home" and not session.get("collection_address"):
+        # SECOND LAYER OF THE SAME GUARD AS `confirm_booking_review` -
+        # that tool is supposed to catch this first, but this booking
+        # must never actually be created without a real collection
+        # address regardless of how it got here.
+        logger.warning(
+            "create_new_booking: session_id=%s is home-mode with no "
+            "collection_address on record - refusing", session_id,
+        )
+        return {"status": "missing_address"}
 
     # THE SLOT THE PATIENT CHOSE WINS OVER THE ONE THE MODEL PASSED.
     #
@@ -9874,6 +9942,17 @@ def create_new_booking(
             "booking_ref": None,
             "prep_instructions": prep_instructions,
         }
+
+    if session.get("collection_mode") == "home":
+        # The collection address never goes to the Booking API (see
+        # set_home_collection_address) - log it here, next to the real
+        # booking_ref, so it isn't ONLY sitting in the chat transcript
+        # for the dispatch team to dig out by hand.
+        logger.info(
+            "create_new_booking: home-collection address for booking_ref=%s "
+            "session_id=%s: %r",
+            booking_ref, session_id, session.get("collection_address"),
+        )
 
     return {"status": "success", "booking_ref": booking_ref, "prep_instructions": prep_instructions}
 
@@ -12141,4 +12220,5 @@ ALL_TOOLS = [
     find_nearest_branch,
     search_lab_services,
     select_sample_collection_mode,
+    set_home_collection_address,
 ]
