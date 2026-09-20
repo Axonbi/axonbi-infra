@@ -949,6 +949,18 @@ CLIENT_LAB_ENTITY_NAMES: Dict[str, Dict[str, str]] = {
         "lab_in_place_doctor_name": "in-lab",
         "lab_home_doctor_name": "Home",
         "lab_home_service_branch_name": "Home Branch",
+        # CONFIRMED REAL PRODUCTION LEAK: some endpoints (the doctor
+        # schedule lookup specifically) return only a bare branchName
+        # STRING, and for this branch that string comes back as the
+        # ARABIC name below - not "Home Branch". Checking only the
+        # English name against that bare string never matches, so the
+        # home-service branch kept leaking into schedule displays that
+        # should show real branches only. See
+        # tools._lab_home_service_branch_alt_name - anywhere that only
+        # has a plain name string to check (not a full branch object
+        # with its own name/altName fields) must check both this and
+        # the value above.
+        "lab_home_service_branch_alt_name": "فرع خدمة منزلية",
         # Opt-in architecture switch - "true" to move this client from
         # two fixed sentinel doctors to one real doctor per test (see
         # tools._lab_uses_per_test_doctors). Flipped on 2026-09-17: the
@@ -1249,6 +1261,16 @@ def get_messages(client_id: str, dialect: Optional[str] = None, client_row_overr
         client_row.get("lab_home_service_branch_name")
         or _lab_overrides.get("lab_home_service_branch_name")
         or LAB_HOME_SERVICE_BRANCH_NAME
+    )
+    # Second real name for the same branch (see the comment on
+    # CLIENT_LAB_ENTITY_NAMES's own "lab_home_service_branch_alt_name" -
+    # some endpoints return a bare name string in this language
+    # specifically). Empty string (not None) when unset, so callers can
+    # check it unconditionally without a None-check first.
+    merged["_lab_home_service_branch_alt_name"] = (
+        client_row.get("lab_home_service_branch_alt_name")
+        or _lab_overrides.get("lab_home_service_branch_alt_name")
+        or ""
     )
     # Opt-in per-test-doctors architecture switch - see
     # tools._lab_uses_per_test_doctors. Truthy string ("true"/"1"/...)
