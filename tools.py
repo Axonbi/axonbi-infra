@@ -32,6 +32,7 @@ import math
 import os
 import re
 import smtplib
+import threading
 import time
 from datetime import date, datetime, timedelta, timezone
 from email.mime.text import MIMEText
@@ -1234,6 +1235,13 @@ def cancel_appointment(
 
 _otp_storage: Dict[str, dict] = {}
 
+# GUARDS EVERY STRUCTURAL CHANGE TO `_otp_storage` (a key added, removed,
+# or the dict iterated for pruning) - see `_BOOKING_SESSIONS_LOCK` just
+# below for the exact failure mode this prevents and why an RLock (not a
+# plain Lock) is required: `send_otp` calls `_prune_otp_storage` while
+# already holding this same lock.
+_OTP_STORAGE_LOCK = threading.RLock()
+
 # An OTP record is unusable the moment it passes OTP_TTL_SECONDS -
 # verify_otp already rejects it. Without eviction, though, the dict kept
 # every code ever sent for the life of the process: a long-running
@@ -1248,21 +1256,22 @@ _otp_writes_since_prune = 0
 def _prune_otp_storage() -> None:
     global _otp_writes_since_prune
 
-    _otp_writes_since_prune += 1
-    if _otp_writes_since_prune < _OTP_PRUNE_EVERY:
-        return
+    with _OTP_STORAGE_LOCK:
+        _otp_writes_since_prune += 1
+        if _otp_writes_since_prune < _OTP_PRUNE_EVERY:
+            return
 
-    _otp_writes_since_prune = 0
-    now = time.time()
-    expired = [
-        key for key, record in _otp_storage.items()
-        if now - record.get("created_at", 0) > OTP_TTL_SECONDS
-    ]
-    for key in expired:
-        _otp_storage.pop(key, None)
+        _otp_writes_since_prune = 0
+        now = time.time()
+        expired = [
+            key for key, record in _otp_storage.items()
+            if now - record.get("created_at", 0) > OTP_TTL_SECONDS
+        ]
+        for key in expired:
+            _otp_storage.pop(key, None)
 
-    if expired:
-        logger.info("_prune_otp_storage: evicted %d expired OTP record(s)", len(expired))
+        if expired:
+            logger.info("_prune_otp_storage: evicted %d expired OTP record(s)", len(expired))
 
 
 @tool
@@ -1299,7 +1308,8 @@ def send_otp(state: Annotated[AgentState, InjectedState], phone: str) -> dict:
         api.authentica_send_otp(normalized)
         return {"status": "otp_sent"}
 
-    _otp_storage[normalized] = {"otp": TEST_OTP, "created_at": time.time()}
+    with _OTP_STORAGE_LOCK:
+        _otp_storage[normalized] = {"otp": TEST_OTP, "created_at": time.time()}
     _prune_otp_storage()
     logger.info("OTP sent for %s (test otp=%s)", normalized, TEST_OTP)
     return {"status": "otp_sent"}
@@ -1556,6 +1566,34 @@ def _lab_test_specialty_id(state: AgentState) -> Optional[str]:
 
 _BOOKING_SESSIONS: Dict[str, dict] = {}
 
+# GUARDS EVERY STRUCTURAL CHANGE TO `_BOOKING_SESSIONS` - a key added
+# (`setdefault`/assignment) or removed (`pop`), and the full iteration
+# `_prune_booking_sessions` does over it. Two or more real WhatsApp
+# conversations are handled concurrently by this same process (this is
+# the normal case, not an edge case - two different patients texting
+# within the same few seconds), each on its own thread, each calling
+# `_get_booking_session` on every turn.
+#
+# CONFIRMED REAL PRODUCTION FAILURE (client_id=lab-alborg, two sessions
+# active in the same window - 201158877175+medtown2 and
+# 201003365691+medtown2, 2026-09-20 15:12-15:14): 201158877175 got a
+# generic "حصل خطأ تقني" with no other tool-level error logged at all,
+# twice, each time landing within a second of the OTHER session's own
+# `_get_booking_session` traffic. A bare Python dict is not safe to
+# mutate from one thread while another iterates it - `dict.items()` (the
+# loop below) raises `RuntimeError: dictionary changed size during
+# iteration` the moment a concurrent `setdefault`/pop changes its size
+# mid-loop. That exception has no session_id of its own in its message,
+# is caught by the outermost handler, and surfaces as this same generic
+# failure - explaining why nothing more specific was ever logged, and
+# why simply retrying the identical message worked every time (the two
+# threads' timing has to collide to trigger it at all).
+#
+# An RLock (not a plain Lock) is required: `_get_booking_session` below
+# calls `_prune_booking_sessions()` while already holding this same
+# lock, and a plain Lock would deadlock a thread against itself there.
+_BOOKING_SESSIONS_LOCK = threading.RLock()
+
 # A booking session holds a doctor list, a branch list and specialty ids
 # - a few KB per conversation. `create_new_booking` clears it on
 # success, but an ABANDONED booking (the overwhelming majority: the
@@ -1575,18 +1613,19 @@ _booking_session_touches_since_prune = 0
 def _prune_booking_sessions() -> None:
     global _booking_session_touches_since_prune
 
-    _booking_session_touches_since_prune += 1
-    if _booking_session_touches_since_prune < _BOOKING_SESSION_PRUNE_EVERY:
-        return
+    with _BOOKING_SESSIONS_LOCK:
+        _booking_session_touches_since_prune += 1
+        if _booking_session_touches_since_prune < _BOOKING_SESSION_PRUNE_EVERY:
+            return
 
-    _booking_session_touches_since_prune = 0
-    now = time.monotonic()
-    stale = [
-        key for key, session in _BOOKING_SESSIONS.items()
-        if now - session.get("_touched_at", now) > _BOOKING_SESSION_TTL_SECONDS
-    ]
-    for key in stale:
-        _BOOKING_SESSIONS.pop(key, None)
+        _booking_session_touches_since_prune = 0
+        now = time.monotonic()
+        stale = [
+            key for key, session in _BOOKING_SESSIONS.items()
+            if now - session.get("_touched_at", now) > _BOOKING_SESSION_TTL_SECONDS
+        ]
+        for key in stale:
+            _BOOKING_SESSIONS.pop(key, None)
 
     if stale:
         logger.info("_prune_booking_sessions: evicted %d abandoned booking session(s)", len(stale))
@@ -1668,18 +1707,26 @@ _SESSION_KEYS_SURVIVING_RESET = (
 
 
 def _get_booking_session(session_id: str) -> dict:
-    session = _BOOKING_SESSIONS.setdefault(session_id, _new_booking_session())
+    with _BOOKING_SESSIONS_LOCK:
+        session = _BOOKING_SESSIONS.setdefault(session_id, _new_booking_session())
 
-    # BACKFILL, EVERY TIME. `setdefault` hands back an EXISTING dict
-    # untouched, so a key added to the shape later - or dropped by a
-    # partial write somewhere else - would otherwise stay missing for
-    # the rest of that session. Cheap, and it makes a hard subscript on
-    # any documented key safe again.
-    for key, default in _new_booking_session().items():
-        if key not in session:
-            session[key] = default
+        # BACKFILL, EVERY TIME. `setdefault` hands back an EXISTING dict
+        # untouched, so a key added to the shape later - or dropped by a
+        # partial write somewhere else - would otherwise stay missing for
+        # the rest of that session. Cheap, and it makes a hard subscript on
+        # any documented key safe again.
+        for key, default in _new_booking_session().items():
+            if key not in session:
+                session[key] = default
 
-    session["_touched_at"] = time.monotonic()
+        session["_touched_at"] = time.monotonic()
+
+    # Outside the lock: this only reacquires it internally, and holding
+    # a lock while calling something that immediately wants the same
+    # lock is how an accidental plain-Lock deadlock gets introduced
+    # later by someone who doesn't notice the nesting. RLock makes it
+    # safe either way, but there's no reason to hold it any longer than
+    # the dict access above actually needs.
     _prune_booking_sessions()
     return session
 
@@ -1942,7 +1989,8 @@ def clear_session(session_id: Optional[str]) -> bool:
     if not session_id:
         return False
 
-    existed = _BOOKING_SESSIONS.pop(session_id, None) is not None
+    with _BOOKING_SESSIONS_LOCK:
+        existed = _BOOKING_SESSIONS.pop(session_id, None) is not None
 
     if existed:
         logger.info(
@@ -6795,14 +6843,15 @@ def reset_booking_session(state: Annotated[AgentState, InjectedState]) -> dict:
     # `_new_booking_session` for the crash the second literal caused.
     # Whatever this session has already PROVEN about the person carries
     # over; only the booking own selections are cleared.
-    previous = _BOOKING_SESSIONS.get(session_id) or {}
-    fresh = _new_booking_session()
-    for key in _SESSION_KEYS_SURVIVING_RESET:
-        if key in previous:
-            fresh[key] = previous[key]
+    with _BOOKING_SESSIONS_LOCK:
+        previous = _BOOKING_SESSIONS.get(session_id) or {}
+        fresh = _new_booking_session()
+        for key in _SESSION_KEYS_SURVIVING_RESET:
+            if key in previous:
+                fresh[key] = previous[key]
 
-    fresh["_touched_at"] = time.monotonic()
-    _BOOKING_SESSIONS[session_id] = fresh
+        fresh["_touched_at"] = time.monotonic()
+        _BOOKING_SESSIONS[session_id] = fresh
     return {"status": "reset"}
 
 
@@ -9922,7 +9971,8 @@ def create_new_booking(
     # Booking complete - clear the session so a subsequent NEW booking
     # in the same conversation starts clean, matching the confirmed
     # production behavior (session auto-cleans on success).
-    _BOOKING_SESSIONS.pop(session_id, None)
+    with _BOOKING_SESSIONS_LOCK:
+        _BOOKING_SESSIONS.pop(session_id, None)
 
     if not booking_ref:
         # A REAL BOOKING WITH NO REFERENCE YET - ITS OWN STATUS.
