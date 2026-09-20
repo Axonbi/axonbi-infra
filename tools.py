@@ -5799,6 +5799,7 @@ def answer_hospital_faq(
 # real, if short, branch name.
 _STRAY_WORD_FRAGMENTS = frozenset({
     "لي", "ليا", "ليه", "عندي", "عندنا", "هنا", "هناك", "دلوقتي", "بس",
+    "me", "here", "there", "now", "us", "please",
 })
 
 
