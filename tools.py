@@ -1400,6 +1400,37 @@ def _lab_home_service_branch_name(state: AgentState) -> str:
     )
 
 
+def _is_home_service_branch_name(raw_name: Optional[str], state: AgentState) -> bool:
+    """True when `raw_name` (a bare branch-name STRING, not a full
+    branch object) is either of this client's two confirmed real names
+    for the fixed home-service branch.
+
+    Some endpoints (the doctor schedule lookup, in particular) return
+    only a bare `branchName` string, in whichever language that
+    specific record happens to carry - CONFIRMED REAL PRODUCTION LEAK:
+    for this branch that string comes back in Arabic ("فرع خدمة
+    منزلية"), while the primary configured name is English ("Home
+    Branch"), so checking against only the primary name via
+    `_matches_fixed_name({"name": raw_name}, ...)` never matched and the
+    branch kept leaking into schedule displays. Wherever a FULL branch
+    object is available instead (from `api.get_branches`, which carries
+    both languages as separate fields), use `_matches_fixed_name`
+    directly on that object - this helper is only for the bare-string
+    case."""
+
+    if not raw_name:
+        return False
+    candidates = [
+        _lab_home_service_branch_name(state),
+        (state.get("templates") or {}).get("_lab_home_service_branch_alt_name") or "",
+    ]
+    return any(
+        _matches_fixed_name({"name": raw_name}, candidate)
+        for candidate in candidates
+        if candidate
+    )
+
+
 def _lab_uses_per_test_doctors(state: AgentState) -> bool:
     """Opt-in, per-client architecture switch (default OFF - changes
     nothing for any client that hasn't explicitly turned it on in
@@ -5019,17 +5050,16 @@ def get_doctor_schedule(
     # option. This tool is the older, generic reschedule-flow one and
     # was not covered by those earlier fixes.
     if _lab_uses_per_test_doctors(state):
-        home_branch_name = _lab_home_service_branch_name(state)
         before_count = len(items)
         items = [
             item for item in items
-            if not _matches_fixed_name({"name": item.get("branchName")}, home_branch_name)
+            if not _is_home_service_branch_name(item.get("branchName"), state)
         ]
         if len(items) != before_count:
             logger.info(
                 "get_doctor_schedule (per-test-doctors): dropped %d row(s) "
-                "belonging to the fixed home-service branch %r",
-                before_count - len(items), home_branch_name,
+                "belonging to the fixed home-service branch",
+                before_count - len(items),
             )
 
     if not items:
@@ -9715,18 +9745,16 @@ def get_doctor_schedule_for_booking(
     # covered by that earlier fix - without this, "فرع خدمة منزلية"
     # would appear alongside the doctor's real branches here.
     if _lab_uses_per_test_doctors(state):
-        home_branch_name = _lab_home_service_branch_name(state)
         before_count = len(items)
         items = [
             item for item in items
-            if not _matches_fixed_name({"name": item.get("branchName")}, home_branch_name)
+            if not _is_home_service_branch_name(item.get("branchName"), state)
         ]
         if len(items) != before_count:
             logger.info(
                 "get_doctor_schedule_for_booking (per-test-doctors): dropped %d "
-                "row(s) belonging to the fixed home-service branch %r from "
-                "doctor_id=%s's schedule", before_count - len(items),
-                home_branch_name, doctor_id,
+                "row(s) belonging to the fixed home-service branch from "
+                "doctor_id=%s's schedule", before_count - len(items), doctor_id,
             )
 
     # DIAGNOSTIC - SETTLES WHETHER include_future ACTUALLY WORKS.
