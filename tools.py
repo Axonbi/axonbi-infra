@@ -290,9 +290,25 @@ def normalize_phone_number(phone: Optional[str], state=None) -> Optional[str]:
     default_code = _client_default_country_code(state)
 
     # Leading zero = local format for whichever country this client is
-    # in ("01158877175" -> Egypt, "0568000000" -> Saudi).
+    # in ("01158877175" -> Egypt, "0568000000" -> Saudi). BUT check
+    # first whether what's left after that single zero is ALREADY a
+    # complete international number - CONFIRMED REAL PRODUCTION BUG:
+    # "0201001255864" (a stray leading 0 in front of an
+    # already-correct "201001255864") was turned into
+    # "+20201001255864", doubling the country code, and that malformed
+    # number was saved on a real completed booking. Only prepend the
+    # country code when the remainder does NOT already start with one.
     if cleaned.startswith("0"):
-        return "+" + default_code + cleaned[1:]
+        without_leading_zero = cleaned[1:]
+        if (
+            without_leading_zero.startswith(default_code)
+            and len(without_leading_zero) >= len(default_code) + 8
+        ):
+            return "+" + without_leading_zero
+        for code in _KNOWN_COUNTRY_CODES:
+            if without_leading_zero.startswith(code) and len(without_leading_zero) >= len(code) + 8:
+                return "+" + without_leading_zero
+        return "+" + default_code + without_leading_zero
 
     # No leading zero: this may already be a full international number
     # written without its "+". Accept it as such when it starts with a
@@ -5802,6 +5818,21 @@ _STRAY_WORD_FRAGMENTS = frozenset({
     "me", "here", "there", "now", "us", "please",
 })
 
+# A LONGER fragment than a single stray word (see _STRAY_WORD_FRAGMENTS
+# just above) - a chunk sliced out of a full address/location sentence
+# rather than a real branch name. Real branch names essentially never
+# start with the bare preposition "ل" ("for/to") or contain these
+# address-structure words ("شارع"/"street", "المجاورة"/"block",
+# "الحي"/"district", "ميدان"/"square", "كوبري"/"bridge") - a `branch`
+# lookup carrying one of these is almost certainly a "nearest branch"
+# question's address, misrouted into an entity-name search instead of
+# geocode_address. See match_entity_info's own confirmed-failure note
+# where this is used.
+_ADDRESS_FRAGMENT_RE = re.compile(
+    r"^ل\s|^لل|شارع|المجاوره|الحي\s|ميدان\s|كوبري\s|street\b",
+    re.IGNORECASE,
+)
+
 
 def _normalize_arabic(text: str) -> str:
     """Normalize Arabic text for fuzzy comparison: strip diacritics and
@@ -6232,6 +6263,14 @@ def match_entity_info(
     {"status": "ambiguous", "candidates": [...]}
     {"status": "not_matched"}
     {"status": "not_matched", "available_branches": [...]}
+    {"status": "looks_like_stray_word", "word": "..."}
+        # entity_type="branch" only: `user_input` looks like a fragment
+        # of an address/location sentence (starts with "ل", contains
+        # "شارع"/"المجاورة"/etc.), not a real branch name - almost
+        # always means a "nearest branch" question got misrouted here
+        # instead of `geocode_address` + `find_nearest_branch`. Go back
+        # and use those instead; do not retry this call with another
+        # guess at the same fragment.
     {"status": "out_of_range", "list_size": N}
     {"status": "no_list_shown"}
     {"status": "not_configured"} / {"status": "error"}
@@ -6308,6 +6347,30 @@ def match_entity_info(
         # Let a branch typed in one language match an API record
         # carrying only the other one - see _with_branch_aliases.
         items = _with_branch_aliases(items, state)
+
+        # THE HOME-SERVICE BRANCH IS NEVER A REAL, VISITABLE PLACE - see
+        # _is_home_service_branch_name's own docstring. This is a
+        # GENERIC, all-clients FAQ/info lookup, so gated on
+        # `_is_lab_client` (true for either lab architecture) rather
+        # than `_lab_uses_per_test_doctors` specifically. CONFIRMED REAL
+        # PRODUCTION FAILURE: a FOURTH separate leak point from the
+        # three already fixed elsewhere (match_entity_for_booking,
+        # get_doctor_schedule_for_booking, the reschedule flow's
+        # get_doctor_schedule) - this tool's own branch list/lookup was
+        # never covered by any of those. "فرع خدمة منزلية" appeared as
+        # option 1️⃣ in a plain "what branches do you have" listing.
+        if (state.get("templates") or {}).get("_is_lab_client"):
+            before_count = len(items)
+            items = [
+                item for item in items
+                if not _matches_fixed_name(item, _lab_home_service_branch_name(state))
+                and not _is_home_service_branch_name(item.get("name"), state)
+            ]
+            if len(items) != before_count:
+                logger.info(
+                    "match_entity_info (branch): dropped %d row(s) belonging to the "
+                    "fixed home-service branch", before_count - len(items),
+                )
 
     if not user_input or not user_input.strip():
         if entity_type == "doctor":
@@ -6479,6 +6542,34 @@ def match_entity_info(
             _note_info_branch_availability(state, shaped_pos)
 
         return {"status": "matched", "item": shaped_pos}
+
+    if entity_type == "branch":
+        stripped_input = (user_input or "").strip()
+        normalized_input = _normalize_arabic(stripped_input)
+        looks_like_address_fragment = (
+            normalized_input in _STRAY_WORD_FRAGMENTS
+            or bool(_ADDRESS_FRAGMENT_RE.search(normalized_input))
+        )
+        if looks_like_address_fragment:
+            # CONFIRMED REAL PRODUCTION FAILURE: asked "ايه اقرب فرع لـ
+            # المجاورة الثانية، شارع أسواق عادل، 6 أكتوبر، الجيزة؟" -
+            # a "nearest branch" question, answerable ONLY by
+            # geocode_address + find_nearest_branch - this tool got
+            # called instead with user_input="ل المجاورة الثانية شارع"
+            # (a chopped fragment of the address, starting with the
+            # bare preposition "ل" and containing "شارع"/"المجاورة" -
+            # never a real branch name), returned "not_matched" as
+            # designed, and the reply told the patient "معنديش فرع اسمه
+            # ل المجاورة الثانية شارع" - as if that were ever a
+            # meaningful thing to search for. Refuse up front with a
+            # distinct status so the model doesn't retry with another
+            # guess at the same fragment.
+            logger.info(
+                "match_entity_info (branch): user_input=%r looks like an address "
+                "fragment, not a real branch name - refusing rather than searching for it",
+                user_input,
+            )
+            return {"status": "looks_like_stray_word", "word": stripped_input}
 
     match_candidates = items
 
