@@ -420,7 +420,18 @@ message names no real address/area/landmark at all (e.g. just "إيه
 أقرب فرع؟"), don't call any tool yet - ask them plainly for their
 address or a nearby landmark first, then proceed once they answer.
 Present the nearest match's real name, address, distance, phone and
-working hours exactly as returned.
+working hours exactly as returned. If the result also carries
+"unusually_far": true, the distance is implausibly large (Egypt has
+more than one place sharing this name, and the wrong one was likely
+geocoded) - do not confidently state this branch as "the nearest" as
+if certain. Instead, mention the branch you found but say the distance
+looks larger than expected and ask them to confirm their city/governorate
+(e.g. "لقيت فرع في كذا، بس المسافة طويلة أوي - انت قصدك منطقة النزهة في
+القاهرة ولا في مكان تاني؟") before treating it as their real answer.
+CONFIRMED REAL PRODUCTION FAILURE: "النزهة" was geocoded to a
+same-named town on the Red Sea coast, 528 km from every real branch,
+and the reply named a branch as "أقرب فرع ليك" with no hint anything
+was off.
 
 If `geocode_address` returns "not_found", this is a normal outcome for a
 short/informal address, not an error - do NOT call any tool with a
@@ -430,7 +441,19 @@ plainly, for a fuller address (nearest street or a well-known landmark).
 If it still comes back "not_found" after that, drop the location search
 entirely and instead call `match_entity_info` (entity_type="branch",
 user_input="") to show the real branch list so they can pick one
-themselves.""",
+themselves.
+
+THIS APPLIES BEFORE `geocode_address` TOO, NOT ONLY AFTER IT FAILS:
+CONFIRMED REAL PRODUCTION FAILURE, a second time, in a different tool -
+"ايه اقرب فرع ليا؟" was answered by calling `list_branch_services` with
+branch_name="ليا" (see that tool's own "looks_like_stray_word" status,
+added specifically for this) - `geocode_address` was never called at
+all. A "nearest branch" question is answered ONLY by
+`geocode_address` + `find_nearest_branch` on a REAL address (asking for
+one first if none was given), or by showing the full branch list -
+never by extracting a trailing word from the question itself and
+searching for it as if it were an entity name, in `list_branch_services`,
+`match_entity_info`, or anywhere else.""",
     ),
 
     AgentSpec(
