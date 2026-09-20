@@ -10912,6 +10912,123 @@ def _honest_unstaffed_reply(draft: str, messages: list,
     return rebuilt
 
 
+def _honest_branch_list_reply(
+    description: Optional[str], state: AgentState, target_language: Optional[str],
+) -> Optional[str]:
+    """Rebuild a twice-flagged branch-related draft from real data
+    already sitting in the session, instead of falling to the fully
+    generic staff-handoff message - same "can the truth be built in
+    code?" pattern as `_honest_unstaffed_reply`, for the two branch
+    checks that hit it most often.
+
+    CONFIRMED REAL PRODUCTION FAILURE (session 201158877175+medtown2,
+    2026-09-20): the patient had already given a detailed address
+    twice, geocoding failed both times, and on the third turn
+    `match_entity_info` correctly fetched the full real branch list -
+    but the model named one of those branches "nearest" from a text
+    match instead of presenting the list, failed the same check twice,
+    and the patient received a plain "let me get you a human" with the
+    real list sitting unused in the session the whole time.
+
+    Returns None when neither case applies, leaving the caller's
+    existing `_safe_fallback_reply` untouched. Safe to call BEFORE
+    `_honest_unstaffed_reply`: it returns None unless `description`
+    is one of the two branch checks below.
+
+    NOTES ON CASE 2:
+    - `last_list` may be a FILTERED branch list (per specialty, per
+      service, per doctor, lab-only clients), so the wording never
+      claims "all" branches - only "the branches I have".
+    - A list of fewer than 2 branches is not a list to pick from, so
+      it returns None.
+    - Numbering uses each item's ORIGINAL position in `last_list` (gaps
+      are deliberate): a bare "3" from the patient resolves by position
+      against that same list, so the numbers shown must match.
+    - Rows flagged `hasAvailableDoctors=False` are still shown; picking
+      one is already handled by the empty-branch directive.
+    """
+
+    desc = description or ""
+    is_english = (target_language or "").strip().lower().startswith("en")
+    session_id = state.get("session_id")
+    session = tools._BOOKING_SESSIONS.get(session_id) or {}
+
+    # CASE 1: offered a booking at a branch already known to have no
+    # doctors. The honest question is fixed text - it doesn't depend on
+    # anything the model drafted, just the branch name already on file.
+    if "branch the tools reported has no doctors" in desc:
+        empty_branch = session.get("info_branch_no_doctors")
+        if not empty_branch:
+            return None
+        if is_english:
+            return (
+                f"There's no booking available at {empty_branch} right now \U0001F337\n"
+                f"Would you like me to show you the branches that do have booking?"
+            )
+        return (
+            f"فرع {empty_branch} مفيهوش حجز حاليًا \U0001F337\n"
+            f"تحب أعرض لك الفروع اللي فيها حجز؟"
+        )
+
+    # CASE 2: named a specific branch as "nearest" with no
+    # `find_nearest_branch` call this turn. The real branch list is
+    # whatever a tool most recently showed - `_remember_list`'s own
+    # `last_list`.
+    if "with no find_nearest_branch call this turn" in desc:
+        last_list = session.get("last_list") or {}
+        if last_list.get("entity_type") != "branch":
+            return None
+        items = last_list.get("items") or []
+        if len(items) < 2:
+            return None
+
+        lines = []
+        for i, item in enumerate(items, start=1):
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name") or item.get("altName")
+            if not name:
+                continue
+            address = item.get("address")
+            entry = f"{_numbered_prefix(i)} {name}"
+            if address:
+                entry += f"\n   {'Address' if is_english else 'العنوان'}: {address}"
+            lines.append(entry)
+
+        if len(lines) < 2:
+            return None
+
+        # ALREADY GAVE AN ADDRESS THIS CONVERSATION? Don't ask again -
+        # per explicit product decision, once `geocode_address` has run
+        # at all this conversation (even if it never resolved), stop
+        # re-asking for the address every turn and just let them pick
+        # from the real list instead.
+        gave_address = any(
+            getattr(msg, "name", None) == "geocode_address"
+            for msg in (state.get("messages") or [])
+        )
+
+        branch_list = "\n".join(lines)
+        if is_english:
+            if gave_address:
+                header = "I can't confirm the exact distance right now \U0001F337\nHere are the branches I have:"
+                footer = "Which number works for you?"
+            else:
+                header = "I can't confirm the nearest one right now \U0001F337\nHere are the branches I have:"
+                footer = "Pick a number, or send me your address and I'll find the real nearest one."
+        else:
+            if gave_address:
+                header = "مش قادرة أتأكد من المسافة بالظبط دلوقتي \U0001F337\nدي الفروع المتاحة عندي:"
+                footer = "قولّي رقم الفرع اللي يناسبك؟"
+            else:
+                header = "مش قادرة أتأكد من أقرب فرع بالظبط دلوقتي \U0001F337\nدي الفروع المتاحة عندي:"
+                footer = "اختار رقم الفرع اللي يناسبك، أو ابعتلي عنوانك وهدور لك على الأقرب فعليًا."
+
+        return f"{header}\n{branch_list}\n{footer}"
+
+    return None
+
+
 def _safe_fallback_reply(
     state: AgentState, target_language: Optional[str], failure_description: Optional[str] = None,
 ) -> str:
@@ -18692,7 +18809,9 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                     # department as unstaffed this turn, the honest
                     # reply is fully determined - keep the advice,
                     # replace the claim. See `_honest_unstaffed_reply`.
-                    rebuilt = _honest_unstaffed_reply(
+                    rebuilt = _honest_branch_list_reply(
+                        description, state, target_language,
+                    ) or _honest_unstaffed_reply(
                         normalized, state["messages"],
                         state.get("templates") or {}, target_language,
                     )
@@ -18788,7 +18907,9 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                         # See `_honest_unstaffed_reply` - a rejected
                         # medical draft is usually wrong in one sentence
                         # and right in all the others.
-                        rebuilt = _honest_unstaffed_reply(
+                        rebuilt = _honest_branch_list_reply(
+                            description, state, target_language,
+                        ) or _honest_unstaffed_reply(
                             normalized, state["messages"],
                             state.get("templates") or {}, target_language,
                         )
@@ -18860,7 +18981,9 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                     # department as unstaffed this turn, the honest
                     # reply is fully determined - keep the advice,
                     # replace the claim. See `_honest_unstaffed_reply`.
-                    rebuilt = _honest_unstaffed_reply(
+                    rebuilt = _honest_branch_list_reply(
+                        description, state, target_language,
+                    ) or _honest_unstaffed_reply(
                         normalized, state["messages"],
                         state.get("templates") or {}, target_language,
                     )
