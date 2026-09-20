@@ -3995,6 +3995,58 @@ def _build_symptom_in_booking_directive(messages: list, agent_name: str) -> str:
     return _SYMPTOM_IN_BOOKING_DIRECTIVE
 
 
+# A COLLECTION MODE NAMED IN THE OPENING REQUEST ITSELF.
+#
+# CONFIRMED REAL PRODUCTION FAILURE (session 201158877175+medtown2,
+# 2026-09-20): "طب عاوزه احجز تحليل من البيت" - the patient said HOME in
+# the request - and the reply was the fixed question "في المعمل ولا في
+# البيت؟". The question is sent from code with no model call, so nothing
+# downstream could notice it was already answered. The patient ignored
+# it and typed a test name; with no mode on file the flow then booked
+# against a LAB branch, for a patient who wanted a home visit.
+#
+# Folded text (see _norm_ar). Exactly one mode must be named: a message
+# naming BOTH ("في المعمل ولا البيت؟") is the patient asking us the
+# question, not answering it.
+_COLLECTION_HOME_RE = re.compile(
+    r"(?<!\w)(?:ال)?(?:بيت|منزل)(?:ي|ك|نا)?(?!\w)|"
+    r"\bat\s+home\b|\bfrom\s+home\b|"
+    r"\bhome\s+(?:visit|collection|service|sample|draw)\b"
+)
+_COLLECTION_LAB_RE = re.compile(
+    r"(?<!\w)(?:في|ف|ب)\s*(?:ال)?معمل|"
+    r"\b(?:in|at)\s+(?:the\s+)?lab\b|\bin.?lab\b"
+)
+
+
+def _collection_mode_stated_in(folded: str) -> Optional[str]:
+    """\"home\" / \"in_lab\" when the folded message names exactly one
+    collection mode, else None."""
+
+    home = bool(_COLLECTION_HOME_RE.search(folded))
+    lab = bool(_COLLECTION_LAB_RE.search(folded))
+    if home == lab:
+        return None
+    return "home" if home else "in_lab"
+
+
+def _booking_entry_mode_given_directive(mode: str) -> str:
+    where = "AT HOME" if mode == "home" else "IN THE LAB"
+    return (
+        "============================================================\n"
+        "THEY ALREADY SAID WHERE THE SAMPLE IS DRAWN - DO NOT ASK\n"
+        "============================================================\n"
+        f"The patient's request already says the sample is drawn {where}. "
+        "Do NOT ask \"in the lab or at home?\" - it is answered, and asking "
+        "it again is the exact failure this directive exists to prevent.\n\n"
+        f"Call `select_sample_collection_mode` with mode=\"{mode}\" now. "
+        "Then carry on with the next step of the flow: if they named a "
+        "specific test, search for it; if they only said \"a test\", ask "
+        "WHICH test they want (one short question). Do not name a branch, "
+        "day or time until the test is settled.\n\n"
+    )
+
+
 def _build_booking_entry_directive(messages: list, session_id: str, agent_name: str) -> str:
     """The opening rung of the booking flow, decided in code.
 
@@ -4081,6 +4133,10 @@ def _build_booking_entry_directive(messages: list, session_id: str, agent_name: 
     # the turn straight to the doctor list instead of asking.
     if _established_specialty(messages, session_id):
         return ""
+
+    stated_mode = _collection_mode_stated_in(folded)
+    if stated_mode:
+        return _booking_entry_mode_given_directive(stated_mode)
 
     return _BOOKING_ENTRY_ASK_DIRECTIVE
 
@@ -11027,6 +11083,68 @@ def _honest_branch_list_reply(
         return f"{header}\n{branch_list}\n{footer}"
 
     return None
+
+
+def _honest_day_list_reply(
+    description: Optional[str], state: AgentState, target_language: Optional[str],
+) -> Optional[str]:
+    """Rebuild a twice-flagged "fabricated appointment" draft from the
+    day list a tool already returned this conversation, instead of the
+    generic "let's start over".
+
+    CONFIRMED REAL PRODUCTION FAILURE (session 201158877175+medtown2,
+    2026-09-20 11:34): `list_available_days_for_booking` returned ONE
+    real day; the model skipped the day step, wrote a 15-minute slot
+    list no tool had returned, failed the check twice, and the patient
+    got "ممكن نرجع نشوف الأيام والمواعيد المتاحة تاني من الأول؟" - a
+    question about work the system had already done. The days were
+    sitting in `last_list` the whole time.
+
+    Only days go back out, and only those a tool returned: never a
+    slot, never a time the tool did not give. Returns None unless the
+    description is that check, the last list is a day list, and no slot
+    is already locked (then a day list would derail a confirmation).
+    """
+
+    if "this is a fabricated appointment" not in (description or ""):
+        return None
+
+    session = tools._BOOKING_SESSIONS.get(state.get("session_id")) or {}
+    if session.get("selected_slot"):
+        return None
+
+    last_list = session.get("last_list") or {}
+    if last_list.get("entity_type") != "day":
+        return None
+
+    is_english = (target_language or "").strip().lower().startswith("en")
+
+    lines = []
+    for i, item in enumerate(last_list.get("items") or [], start=1):
+        if not isinstance(item, dict):
+            continue
+        weekday, date_text = item.get("weekday_display"), item.get("date_display")
+        if not (weekday and date_text):
+            continue
+        entry = f"{_numbered_prefix(i)} {weekday} {date_text}"
+        first, last = item.get("firstTime"), item.get("lastTime")
+        if first and last and "-" not in (first, last):
+            entry += f" - from {first} to {last}" if is_english else f" — من {first} إلى {last}"
+        lines.append(entry)
+
+    if not lines:
+        return None
+
+    if is_english:
+        header, footer = "Here are the days I can book right now \U0001F337", "Which day works for you?"
+    else:
+        header, footer = "دي الأيام المتاحة للحجز دلوقتي \U0001F337", "تحب تحجز في أنهي يوم؟"
+
+    logger.info(
+        "agent: rebuilt a twice-flagged fabricated-appointment draft from the %d "
+        "real day(s) already in the session", len(lines),
+    )
+    return "\n".join([header] + lines + [footer])
 
 
 def _safe_fallback_reply(
@@ -18811,6 +18929,8 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                     # replace the claim. See `_honest_unstaffed_reply`.
                     rebuilt = _honest_branch_list_reply(
                         description, state, target_language,
+                    ) or _honest_day_list_reply(
+                        description, state, target_language,
                     ) or _honest_unstaffed_reply(
                         normalized, state["messages"],
                         state.get("templates") or {}, target_language,
@@ -18909,6 +19029,8 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                         # and right in all the others.
                         rebuilt = _honest_branch_list_reply(
                             description, state, target_language,
+                        ) or _honest_day_list_reply(
+                            description, state, target_language,
                         ) or _honest_unstaffed_reply(
                             normalized, state["messages"],
                             state.get("templates") or {}, target_language,
@@ -18982,6 +19104,8 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                     # reply is fully determined - keep the advice,
                     # replace the claim. See `_honest_unstaffed_reply`.
                     rebuilt = _honest_branch_list_reply(
+                        description, state, target_language,
+                    ) or _honest_day_list_reply(
                         description, state, target_language,
                     ) or _honest_unstaffed_reply(
                         normalized, state["messages"],
