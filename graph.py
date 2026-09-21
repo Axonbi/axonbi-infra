@@ -1367,6 +1367,27 @@ _ENGLISH_GREETING_TEMPLATE = (
     "How can I help you today? \U0001F60A"
 )
 
+# CONFIRMED REAL PRODUCTION FAILURE: a lab/imaging-only client (no
+# specialty/doctor concept at all - see AgentState.templates
+# `_is_lab_client`) got this exact greeting in English, offering
+# "Medical guidance to choose the right specialty or doctor" and
+# "Questions about the hospital's services and doctors" - neither of
+# which exists for a lab client. Same structure/ordering/emoji as the
+# hospital version above, with those two lines swapped for lab-real
+# equivalents and every "hospital" wording removed.
+_ENGLISH_GREETING_TEMPLATE_LAB = (
+    "{salutation}\n"
+    "I'm {agent_name}, the virtual assistant at {clinic_name}, and I'm happy to help you today.\n"
+    "I can help you with:\n"
+    "\U0001F5D3\uFE0F Booking a lab/scan appointment, in the lab or a home sample collection\n"
+    "\u270F\uFE0F Modifying or cancelling an existing appointment\n"
+    "\U0001F9EA Questions about our tests and scans, and their instructions\n"
+    "\U0001F4CD Finding your nearest branch\n"
+    "\U0001F4DD Filing a complaint or a suggestion\n"
+    "\U0001F464 Speaking with a customer service representative\n\n"
+    "How can I help you today? \U0001F60A"
+)
+
 
 def _normalize_for_compare(text: str) -> str:
     """Collapse all whitespace (including \\r\\n vs \\n differences) into
@@ -2408,13 +2429,25 @@ def _build_booking_success_display_directive(messages: list, templates: dict) ->
 
     if not clinic_name:
         clinic_line = "نشكر ثقتك بنا 🌷"
-    elif clinic_name.startswith("مستشفى") or clinic_name.startswith("مركز") or clinic_name.startswith("عيادات"):
+    elif clinic_name.startswith((
+        "مستشفى", "مركز", "عيادات", "معمل", "معامل", "مختبر", "مختبرات",
+    )):
         # The Arabic clinic name usually already carries its own
-        # "مستشفى"/"مركز" prefix - adding another produced
+        # "مستشفى"/"مركز"/"معمل"/... prefix - adding another produced
         # "نشكر ثقتك بمستشفى مستشفى ...".
         clinic_line = f"نشكر ثقتك بـ{clinic_name} 🌷"
     else:
-        clinic_line = f"نشكر ثقتك بمستشفى {clinic_name} 🌷"
+        # CONFIRMED REAL PRODUCTION FAILURE: a lab client whose real name
+        # is "معامل عز" (no self-describing prefix this list recognized
+        # at the time) fell into this branch, which used to hardcode
+        # "مستشفى" unconditionally - producing "نشكر ثقتك بمستشفى معامل
+        # عز 🌷", calling a lab a hospital in the one message every
+        # patient actually reads. There is no safe way to guess a
+        # business type for a name that doesn't self-describe as one -
+        # so this never assumes "مستشفى" (or any other business-type
+        # word) here at all; the clinic's own real name carries whatever
+        # identity it needs.
+        clinic_line = f"نشكر ثقتك بـ{clinic_name} 🌷"
 
     greeting_line = f"✅ عزيزي/عزيزتي {patient_name}" if patient_name else "✅"
 
@@ -5127,7 +5160,12 @@ def _build_greeting(templates: dict, user_message: str, target_language: str) ->
             else:
                 salutation = "Hi there! \U0001F44B"
 
-            return _ENGLISH_GREETING_TEMPLATE.format(
+            template = (
+                _ENGLISH_GREETING_TEMPLATE_LAB
+                if templates.get("_is_lab_client")
+                else _ENGLISH_GREETING_TEMPLATE
+            )
+            return template.format(
                 salutation=salutation,
                 agent_name=templates.get("_agent_name") or "the assistant",
                 clinic_name=templates.get("_clinic_name") or "the clinic",
@@ -11261,12 +11299,17 @@ def _safe_fallback_reply(
             # none free. Saying it cannot understand the symptom is
             # both untrue and useless; saying no doctor is available is
             # true and tells them what to do next.
-            "معلش، ما لقيتش دكتور متاح حاليًا للحالة دي في المستشفى 🌷\n"
-            "أفضل حاجة إنك تتواصل مع فريقنا الطبي مباشرة يوجهوك صح. تحب أحولك لهم؟",
-            "Sorry - I couldn't find a doctor available for this at the "
-            "hospital right now 🌷\nIt's best to speak directly with our "
-            "medical team so they can guide you properly. Would you like "
-            "me to connect you with them?",
+            # SHARED ACROSS ALL CLIENT TYPES, including lab/imaging-only
+            # clients with no doctor-consultation concept at all -
+            # "دكتور"/"المستشفى"/"الطبي" wording here would wrongly call
+            # a lab client a hospital. Kept neutral enough to still read
+            # naturally for a real hospital client too.
+            "معلش، مش قادرة أتأكد إن في حد متاح حاليًا للحالة دي 🌷\n"
+            "أفضل حاجة إنك تتواصل مع فريقنا مباشرة يوجهوك صح. تحب أحولك لهم؟",
+            "Sorry - I couldn't confirm anyone is available for this right "
+            "now 🌷\nIt's best to speak directly with our team so they can "
+            "guide you properly. Would you like me to connect you with "
+            "them?",
         ),
         (
             ("fabricated appointment", "invents availability", "invented availability",
@@ -15596,6 +15639,8 @@ def _build_out_of_scope_block(templates: dict, language: str = "ar") -> str:
 
     templates = templates or {}
 
+    is_lab_client = bool(templates.get("_is_lab_client"))
+
     if language == "en":
         agent_name = (
             templates.get("_agent_name")
@@ -15605,8 +15650,21 @@ def _build_out_of_scope_block(templates: dict, language: str = "ar") -> str:
         clinic_name = (
             templates.get("_clinic_name")
             or templates.get("_clinic_name_ar")
-            or "the hospital"
+            or ("the lab" if is_lab_client else "the hospital")
         )
+        if is_lab_client:
+            # No specialty/doctor concept for a lab/imaging-only client -
+            # CONFIRMED REAL PRODUCTION FAILURE: this fallback offered
+            # "choosing the right specialty or doctor" to a lab client
+            # with no doctors or specialties in its flow at all.
+            return (
+                f"I'm sorry 🌷 I'm {agent_name}, the virtual assistant at "
+                f"{clinic_name}, and I can help you with our lab's own "
+                "services - booking, changing or cancelling appointments, "
+                "questions about our available tests, filing a complaint, "
+                "or putting you through to customer service.\n"
+                "I'd be glad to help with any of those 😊"
+            )
         return (
             f"I'm sorry 🌷 I'm {agent_name}, the virtual assistant at "
             f"{clinic_name}, and I can help you with the hospital's own "
@@ -15630,8 +15688,20 @@ def _build_out_of_scope_block(templates: dict, language: str = "ar") -> str:
     clinic_name = (
         templates.get("_clinic_name_ar")
         or templates.get("_clinic_name")
-        or "المستشفى"
+        or ("المعمل" if is_lab_client else "المستشفى")
     )
+
+    if is_lab_client:
+        # Same fix as above, for the Arabic branch - no "التخصص أو
+        # الطبيب" (specialty/doctor) and no "المستشفى" wording for a
+        # lab/imaging-only client.
+        return (
+            f"عذرًا 🌷 أنا {agent_name}، المساعدة الافتراضية في {clinic_name}، "
+            "ومختصة بمساعدتك في خدمات المعمل مثل حجز أو تعديل مواعيد سحب "
+            "العينات، إلغاء الحجوزات، الاستفسار عن التحاليل المتاحة، تقديم "
+            "شكوى، أو التواصل مع خدمة العملاء.\n"
+            "يسعدني مساعدتك في أي من هذه الخدمات 😊"
+        )
 
     return (
         f"عذرًا 🌷 أنا {agent_name}، المساعدة الافتراضية في {clinic_name}، "
