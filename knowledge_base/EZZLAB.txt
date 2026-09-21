@@ -3937,3 +3937,2161 @@ Every public page on ezzlab.com was crawled. The pages below were deliberately e
 - **https://ezzlab.com/shop/ , /cart/ , /checkout/ , /my-account/** — Empty WooCommerce stubs — no products published.
 - **https://ezzlab.com/sitemap/ , /thanks/ , /g/** — Navigation and utility pages with no informational content.
 - **Picture & video libraries** — Media galleries — the pages carry images/videos only, no extractable text.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Your organization’s subscription is paused. Contact your organization admin to restore access.
+ Your organization’s subscription is paused. Contact your organization admin to restore access.
+
+PreTest_Instructions.md
+PreTest_Instructions.md
+MD
+
+
+
+Type / for skills
+How can I help you today?
+
+
+
+Active
+Clear active
+Patient data extraction
+yesterday
+
+
+Pretest instructions
+· MD
+# PreTest_Instructions
+
+**Patient preparation for laboratory tests and imaging**  
+**تعليمات وتحضيرات ما قبل التحاليل والأشعة — تحضير المريض للتحاليل المعملية والأشعة**
+
+Bilingual knowledge base for a FAQ / RAG assistant · قاعدة معرفة ثنائية اللغة لمساعد الأسئلة الشائعة
+
+- **Compiled:** 2026-09-21
+- **Scope:** general sample-collection precautions · radiology and imaging preparation · test-by-test preparation. Applies to any laboratory or imaging centre; where a local rule differs, the local rule wins.
+- **Entries:** 12 general precaution topics · 10 imaging modalities · 131 tests with a published preparation · 131 tests with none
+- **Languages:** English and العربية in every entry
+- **Provenance:** compiled from published laboratory and radiology patient-preparation guidance — see Appendix B
+
+---
+
+## How to use this document
+## كيفية استخدام هذا المستند
+
+1. Every entry is self-contained and repeats the test or scan name in English and Arabic, so a retrieved chunk can be answered without its neighbours.
+2. Answer in the language the patient used. The English and Arabic texts in an entry are the source's own wording, not translations of each other — quote the one matching the patient's language rather than merging them.
+3. Section 1 holds the general sample-collection rules, Section 2 holds radiology preparation, Section 3 holds test-by-test preparation.
+4. If a test appears in Appendix A, there is **no** special preparation on record for it. Say so plainly; never invent fasting hours.
+5. Entries marked **⚠ Source-data flag** carry a preparation note that appears mis-assigned in the source catalogue. Do not serve them as instructions — tell the patient to confirm with the laboratory taking the sample.
+6. This is general preparation guidance, not the policy of any one laboratory. Fasting windows, appointment rules and sample-transport limits vary between providers, so tell patients to confirm details with the laboratory or imaging centre where the test is booked.
+7. Nothing here replaces the referring doctor's instructions. If a patient reports a conflicting medical instruction, tell them to follow their doctor.
+
+### Contents
+
+- **Section 1** — General sample-collection precautions / الاحتياطات العامة لجمع العينات
+  - 1.1 Urine culture
+  - 1.2 Lipid analysis
+  - 1.3 Fasting sugar
+  - 1.4 Sugar two hours after eating
+  - 1.5 Spit 3 consecutive days
+  - 1.6 Semen analysis
+  - 1.7 Gynecology swab
+  - 1.8 Stool analysis
+  - 1.9 PSA
+  - 1.10 5 HIAA, VMA, Catecholamine Tests
+  - 1.11 Drug Level analysis
+  - 1.12 Prostate
+- **Section 2** — Radiology and imaging preparation / تحضيرات الأشعة والتصوير
+  - 2.1 X-Ray
+  - 2.2 CT Scan
+  - 2.3 MRI
+  - 2.4 Ultrasound
+  - 2.5 Mammogram
+  - 2.6 Bone Density Scan (DEXA)
+  - 2.7 Panorama
+  - 2.8 Gamma Camera
+  - 2.9 Positron Emission Tomography (PET/CT)
+  - 2.10 Electromyography (EMG)
+- **Section 3** — Test-by-test preparation / تحضيرات كل تحليل على حدة
+- **Appendix A** — Tests with no special preparation
+- **Appendix B** — Provenance and data-quality notes
+
+---
+
+## Section 1 — General sample-collection precautions
+## القسم 1 — الاحتياطات العامة لجمع العينات
+
+> **EN:** To ensure the integrity of your samples and to ensure getting accurate test results, please abide by the following precautions and instructions for sample collection.
+>
+> **AR:** لضمان سلامة عيناتك ولضمان الحصول على نتائج اختبار دقيقة، يرجى الالتزام بالاحتياطات والتعليمات التالية الخاصة بجمع العينات.
+
+### 1.1 Urine culture — مزرعة البول
+
+**Topic (EN):** Urine culture  
+**الموضوع (AR):** مزرعة البول
+
+**English — preparation:**
+
+- Washing the hands and genitalia with soap and water.
+- Use disinfectant (Dettol), then wash again with water to remove the excess disinfectant.
+- Empty the first drops of urine into the toilet and put the rest in the sterile container provided by the laboratory.
+- It must arrive at the laboratory within two hours at most, in case the sample is sent from home.
+- Not taking antibiotics for 48 hours.
+- Urine analysis 3 consecutive days.
+- The first sample in the morning for 3 consecutive days.
+
+**العربية — التحضيرات:**
+
+- غسل اليد و الأعضاء التناسلية بالماء و الصابون.
+- تطهير فتحة البول بالمطهر (الديتول) ثم نغسل مرة أخرى بالماء لإزالة المطهر الزائد.
+- نفرغ أول نقط بول في التواليت و نضع الباقي في الإناء المعقم الذي يوفره المعمل.
+- يجب أن تصل إلى المعمل في خلال ساعتين على الأكثر في حالة إرسال العينة من المنزل.
+- عدم أخذ المضادات الحيوية لمدة 48 ساعة.
+- تحليل بول 3 ايام متتالية.
+- أول عينة في الصباح لمدة 3 أيام متتالية.
+
+### 1.2 Lipid analysis — دهون الدم
+
+**Topic (EN):** Lipid analysis  
+**الموضوع (AR):** دهون الدم
+
+**English — preparation:**
+
+- Fasting is required from 10-12 hours (drinking water is allowed).
+
+**العربية — التحضيرات:**
+
+- يشترط الصيام من 10- 12 ساعة ( يسمح بشرب الماء).
+
+### 1.3 Fasting sugar — سكر صائم
+
+**Topic (EN):** Fasting sugar  
+**الموضوع (AR):** سكر صائم
+
+**English — preparation:**
+
+- Fasting is required from 6-8 hours (drinking water is allowed).
+
+**العربية — التحضيرات:**
+
+- يشترط الصيام من 6 -8 ساعات (يسمح بشرب الماء).
+
+### 1.4 Sugar two hours after eating — سكر بعد الأكل بساعتين
+
+**Topic (EN):** Sugar two hours after eating  
+**الموضوع (AR):** سكر بعد الأكل بساعتين
+
+**English — preparation:**
+
+- The two hours are counted from the start of eating.
+- It is required to finish eating within 10 minutes at most. If the patient is taking diabetes medication, the treatment is taken.
+- Please arrive to the laboratory 15 minutes before the time for the analysis.
+
+**العربية — التحضيرات:**
+
+- يتم احتساب الساعتين من بداية الأكل.
+- يشترط الانتهاء من الأكل في خلال 10 دقائق على الأكثر. إذا كان المريض يأخذ علاج للسكر فيتم أخذ العلاج.
+- يرجي الحضور للمعمل قبل ميعاد إجراء التحليل ب 15 دقيقة.
+
+### 1.5 Spit 3 consecutive days — بصاق 3 أيام متتالية
+
+**Topic (EN):** Spit 3 consecutive days  
+**الموضوع (AR):** بصاق 3 أيام متتالية
+
+**English — preparation:**
+
+- The first sputum sample in the morning after gargling with water.
+- Samples are brought daily for 3 consecutive days.
+
+**العربية — التحضيرات:**
+
+- أول عينة بصاق في الصباح بعد الغرغرة بالماء.
+- يتم إحضار العينات يوميا لمدة 3 أيام متتالية.
+
+### 1.6 Semen analysis — تحليل السائل المنوي
+
+**Topic (EN):** Semen analysis  
+**الموضوع (AR):** تحليل السائل المنوي
+
+**English — preparation:**
+
+- It is required to abstain from sexual intercourse for 4 consecutive days.
+- It is preferable to give the sample in the laboratory, taking care to place all the sample, including the first points of sperm, in the container for that.
+- The sample should be brought to the laboratory within 20 minutes if the sample was brought from home.
+
+**العربية — التحضيرات:**
+
+- يشترط الامتناع عن الجماع أو حدوث الاحتلام لمدة 4 أيام متتالية.
+- يفضل إعطاء العينة في المعمل مع الإهتمام بوضع كل العينة بما فيها النقط الأولى من المنى في الوعاء الخاص بذلك.
+- يتم إحضار العينة إلي المعمل في خلال 20 دقيقة إذا أحضرت العينة من المنزل.
+
+### 1.7 Gynecology swab — مسحة أمراض النساء
+
+**Topic (EN):** Gynecology swab  
+**الموضوع (AR):** مسحة أمراض النساء
+
+**Booking:** (Appointment is booked in advance) — (يتم حجز الموعد مسبقا)
+
+**English — preparation:**
+
+- It is required not to have sexual intercourse for two days.
+- Not washing the vagina on the day of the analysis.
+- Abstain from the antibiotic for 48 hours.
+
+**العربية — التحضيرات:**
+
+- يشترط عدم الجماع لمدة يومين.
+- عدم غسيل المهبل يوم إجراء التحليل.
+- الامتناع عن المضاد الحيوي لمدة 48 ساعة.
+
+### 1.8 Stool analysis — مزرعة براز
+
+**Topic (EN):** Stool analysis  
+**الموضوع (AR):** مزرعة براز
+
+**English — preparation:**
+
+- The sample is received in the laboratory container.
+- The sample must arrive at the laboratory within two hours at most.
+- Do not accept samples in Pampers (diapers) or carton boxes.
+- Abstain from the antibiotic for 48 hours.
+
+**العربية — التحضيرات:**
+
+- يتم استلام العينة في الوعاء الخاص بالمعمل.
+- يشترط وصول العينة إلى المعمل في خلال ساعتين على الأكثر.
+- لاتقبل عينات في بامبرز (حفاضات) أو علب من الكرتون.
+- الإمتناع عن المضاد الحيوي لمدة 48 ساعة.
+
+### 1.9 PSA — PSA
+
+**Topic (EN):** PSA  
+**الموضوع (AR):** PSA
+
+**English — preparation:**
+
+- For 10 days before the analysis, the patient is prohibited from inserting an endoscope or catheter.
+- Abstain from sexual intercourse for 48 hours.
+
+**العربية — التحضيرات:**
+
+- يمتنع المريض 10 أيام قبل إجراء التحليل عن إدخال منظار أو قسطرة.
+- الامتناع عن الجماع لمدة 48 ساعة.
+
+### 1.10 5 HIAA, VMA, Catecholamine Tests — 5 HIAA, VMA, Catecholamine Tests
+
+**Topic (EN):** 5 HIAA, VMA, Catecholamine Tests  
+**الموضوع (AR):** 5 HIAA, VMA, Catecholamine Tests
+
+**English — preparation:**
+
+- Collecting 24-hour urine as previously written.
+- Stop drinking tea, coffee, biscuits, vanilla, bananas, pineapples, tomatoes, and eggplant.
+
+**العربية — التحضيرات:**
+
+- تجميع بول 24 ساعة كما هو مكتوب سابقًا.
+- الامتناع عن تناول الشاي , القهوة , البسكويت , الفانيليا , الموز , الأناناس , الطماطم , الباذنجان.
+
+### 1.11 Drug Level analysis — أدوية الربو
+
+**Topic (EN):** Drug Level analysis  
+**الموضوع (AR):** أدوية الربو
+
+**English — preparation:**
+
+- Take the medication for 5 days regularly.
+- It is required not to vomit or diarrhea for 48 hours before the analysis.
+- A sample is taken before the morning dose to calculate the percentage of the drug in the lowest (low) level.
+- Another sample is taken after taking the drug 4 hours later to calculate the highest percentage of the drug in the blood (peak).
+
+**العربية — التحضيرات:**
+
+- يؤخذ الدواء لمدة 5 أيام بانتظام.
+- يشترط عدم القئ أو الإسهال لمدة 48 ساعة قبل إجراء التحليل.
+- تؤخذ عينة قبل جرعة الصباح لحساب نسبة الدواء في أقل مستوى (منخفض).
+- تؤخذ عينة أخرى بعد تناول الدواء بعد 4 ساعات لحساب أعلى نسبة للدواء فى الدم (الذروة).
+
+### 1.12 Prostate — البروستاتا
+
+**Topic (EN):** Prostate  
+**الموضوع (AR):** البروستاتا
+
+**Booking:** (Period booking is a must) — (يتم حجز الموعد مسبقا)
+
+**English — preparation:**
+
+- It is required to abstain from sexual intercourse for 4 days before the analysis.
+- Withholding urine for an hour before the test, in order to take a urine sample before prostate massage and another urine sample after prostate massage.
+- It is preferable to abstain from antibiotics for 24 hours before taking the sample.
+
+**العربية — التحضيرات:**
+
+- يشترط الامتناع عن الجماع لمدة 4 أيام قبل إجراء التحليل.
+- حجز بول لمدة ساعة قبل الاختبار و ذلك لأخذ عينة بول قبل تدليك البروستاتا وعينة بول أخرى بعد تدليك البروستاتا.
+- يفضل الامتناع عن المضادات الحيوية لمدة 24 ساعة قبل أخذ العينة.
+
+---
+
+## Section 2 — Radiology and imaging preparation
+## القسم 2 — تحضيرات الأشعة والتصوير
+
+### 2.1 X-Ray — الأشعة السينية X-Ray
+
+**Modality (EN):** X-Ray  
+**الفحص (AR):** الأشعة السينية X-Ray
+
+#### Preparation guidelines — التحضيرات المطلوبة
+
+**English:**
+
+- Most X‑ray examinations require no special preparation.
+
+**العربية:**
+
+- لا تتطلب معظم فحوصات الأشعة السينية تحضيرًا خاصًا.
+
+#### Duration — مدة الفحص
+
+**English:**
+
+- The average scan time is 10 to 20 minutes.
+
+**العربية:**
+
+- متوسط وقت المسح من 10 إلى 20 دقيقة
+
+#### Service description — وصف الخدمة
+
+**English:**
+
+- X-rays make up X-radiation, a form of high-energy electromagnetic radiation.
+
+**العربية:**
+
+- الأشعة السينية هي شكل من أشكال الإشعاع الكهرومغناطيسي عالي الطاقة
+
+
+### 2.2 CT Scan — الأشعة المقطعية
+
+**Modality (EN):** CT Scan  
+**الفحص (AR):** الأشعة المقطعية
+
+#### Preparation guidelines — التحضيرات المطلوبة
+
+**English:**
+
+- Wear comfortable, loose-fitting clothing to your exam.
+- Remove metal objects (jewelry, eyeglasses, dentures, hairpins); you may also be asked to remove hearing aids and removable dental work.
+- Women may be asked to remove bras containing metal underwire and any piercings if possible.
+- Inform the technologist if you have a pacemaker.
+- You may be asked not to eat or drink for a few hours beforehand, especially if contrast material will be used.
+- Tell your physician about all medications you are taking and any allergies.
+- Inform your doctor of any recent illnesses or medical conditions and whether you have a history of heart disease, asthma, diabetes, kidney disease, or thyroid problems.
+- Women should always inform their physician and the CT technologist if there is any possibility of pregnancy.
+
+**العربية:**
+
+- ارتدِ ملابس مريحة وفضفاضة أثناء الاختبار.
+- إزالة الأغراض المعدنية (المجوهرات، النظارات، أطقم الأسنان، دبابيس الشعر) قبل الاختبار؛ وقد يُطلب منك أيضًا إزالة المعينات السمعية والأعمال السنية القابلة للإزالة.
+- قد يُطلب من النساء إزالة حمالات الصدر التي تحتوي على سلك معدني وأي ثقوب جسدية إن أمكن.
+- أبلغ التقني إذا كان لديك جهاز تنظيم ضربات القلب.
+- قد يُطلب منك الامتناع عن الأكل أو الشرب لبضع ساعات مسبقًا، خاصةً إذا كان سيتم استخدام مادة تباين.
+- أخبر طبيبك بجميع الأدوية التي تتناولها وأي حالات حساسية لديك.
+- أبلغ طبيبك بأي أمراض أو حالات طبية حديثة وهل لديك تاريخ من أمراض القلب أو الربو أو السكري أو أمراض الكلى أو مشاكل الغدة الدرقية.
+- يجب على النساء إبلاغ الطبيب وفني الأشعة المقطعية إذا كان هناك أي احتمال لوجود حمل.
+
+#### Duration — مدة الفحص
+
+**English:**
+
+- Average scan time from 15 to 30 minutes
+
+**العربية:**
+
+- متوسط وقت الفحص من 15 إلى 30 دقيقة
+
+#### Service description — وصف الخدمة
+
+**English:**
+
+- A CT scan, or computed tomography scan is a medical imaging procedure that uses computer-processed combinations of many X-ray measurements taken from different angles to produce cross-sectional images of specific areas of a scanned object, allowing the user to see inside the object without cutting.
+
+**العربية:**
+
+- التصوير المقطعي المحوسب هو إجراء تصوير طبي يستخدم تركيبات معالجة بالكمبيوتر من العديد من قياسات الأشعة السينية المأخوذة من زوايا مختلفة لإنتاج صور مستعرضة لمناطق محددة من كائن ممسوح ضوئيًا، مما يسمح للمستخدم بالرؤية داخل كائن بدون قطع.
+
+
+### 2.3 MRI — التصوير بالرنين المغناطيسي MRI
+
+**Modality (EN):** MRI  
+**الفحص (AR):** التصوير بالرنين المغناطيسي MRI
+
+#### Preparation guidelines — التحضيرات المطلوبة
+
+**English:**
+
+- Guidelines about eating and drinking before an MRI exam vary with the specific exam.
+- The radiologist or technologist may ask if you have allergies of any kind, such as an allergy to iodine or x-ray contrast material, drugs, food, the environment, or asthma.
+- The radiologist should also know if you have any serious health problems, or if you have recently had surgery.
+- Women should always inform their physician or technologist if there is any possibility that they are pregnant.
+- If you have claustrophobia (fear of enclosed spaces) or anxiety, you may want to ask your physician for a prescription for a mild sedative prior to the scheduled examination.
+
+*Some items should be left at home if possible or removed prior to the MRI scan. These items include:*
+
+- Jewelry, watches, credit cards and hearing aids, all of which can be damaged.
+- Pins, hairpins, metal zippers and similar metallic items, which can distort MRI images.
+- Removable dental work.
+- Pens, pocket knives and eyeglasses.
+
+*People with the following implants cannot be scanned and should not enter the MRI scanning area unless explicitly instructed to do so by a radiologist or technologist who is aware of the presence of any of the following:*
+
+- Internal (implanted) defibrillator or pacemaker.
+- Cochlear (ear) implant.
+- Some types of clips used on brain aneurysms.
+- Some types of metal coils placed within blood vessels.
+- You should tell the technologist if you have medical or electronic devices in your body, because they may interfere with the exam or potentially pose a risk, depending on their nature and the strength of the MRI magnet.
+- Some implanted devices require a short period of time after placement (usually six weeks) before being safe for MRI examinations.
+
+*Examples include but are not limited to:*
+
+- Artificial heart valves
+- Implanted drug infusion ports
+- Implanted electronic device, including a cardiac pacemaker
+- Artificial limbs or metallic joint prostheses
+- Implanted nerve stimulators
+- Metal pins, screws, plates, stents or surgical staples.
+- A recently placed artificial joint may require the use of another imaging procedure.
+- If there is any question of their presence, an x-ray may be taken to detect and identify any metal objects.
+- Patients who might have metal objects in certain parts of their bodies may also require an x-ray prior to an MRI.
+- Parents who accompany children into the scanning room also need to remove metal objects and notify the technologist of any medical or electronic devices they may have.
+- Infants and young children may require sedation or anesthesia to complete an MRI exam without moving.
+
+**العربية:**
+
+- تختلف إرشادات تناول الطعام والشراب قبل إجراء فحص التصوير بالرنين المغناطيسي مع الفحص المحدد
+- قد يسأل أخصائي الأشعة أو تقني ما إذا كان لديك حساسية من أي نوع ، مثل الحساسية من مادة اليود أو مادة التباين بالأشعة السينية ، أو الأدوية ، أو الطعام ، أو البيئة ، أو الربو.
+- يجب أن يعرف أخصائي الأشعة أيضًا ما إذا كان لديك أي مشاكل صحية خطيرة ، أو إذا كنت قد أجريت عملية جراحية مؤخرًا.
+- يجب على النساء دائما إبلاغ طبيبهن أو تقنيهن إذا كان هناك أي احتمال أن تكون حاملا.
+- إذا كنت تعاني من رهاب الأماكن المغلقة (الخوف من الأماكن المغلقة) أو القلق ، فقد ترغب في أن تطلب من طبيبك وصفة طبية لمهدئ خفيف قبل الفحص المقرر.
+
+*يجب ترك بعض العناصر في المنزل إذا أمكن أو إزالتها قبل مسح التصوير بالرنين المغناطيسي. تتضمن هذه العناصر:*
+
+- مجوهرات وساعات وبطاقات ائتمان وأجهزة سمعية يمكن أن تتلف جميعها.
+- الدبابيس ودبابيس الشعر والسحابات المعدنية والأشياء المعدنية المماثلة ، والتي يمكن أن تشوه صور التصوير بالرنين المغناطيسي.
+- عمل الأسنان القابل للإزالة.
+- الأقلام وسكاكين الجيب والنظارات.
+
+*يمكن فحص الأشخاص الذين لديهم الغرسات التالية ويجب عدم دخولهم إلى منطقة مسح التصوير بالرنين المغناطيسي ما لم يُطلب منهم ذلك بشكل صريح من قبل أخصائي أشعة أو تقني على دراية بوجود أي مما يلي:*
+
+- مزيل رجفان أو جهاز تنظيم ضربات القلب.
+- زراعة قوقعة الأذن.
+- بعض أنواع المقاطع المستخدمة في تمدد الأوعية الدموية في الدماغ.
+- بعض أنواع الملفات المعدنية الموضوعة داخل الأوعية الدموية.
+- يجب عليك إخبار التقني إذا كان لديك أجهزة طبية أو إلكترونية في جسمك ، لأنها قد تتداخل مع الفحص أو قد تشكل خطرًا ، اعتمادًا على طبيعتها وقوة مغناطيس التصوير بالرنين المغناطيسي.
+- تتطلب بعض الأجهزة المزروعة فترة زمنية قصيرة بعد التنسيب (عادة ستة أسابيع) قبل أن تكون آمنة لفحوصات التصوير بالرنين المغناطيسي.
+
+*تشمل الأمثلة على سبيل المثال لا الحصر:*
+
+- صمامات القلب الاصطناعية.
+- موانئ ضخ المخدرات المزروعة.
+- جهاز إلكتروني مزروع ، بما في ذلك جهاز تنظيم ضربات القلب.
+- الأطراف الصناعية أو الأطراف المعدنية.
+- محفزات الأعصاب المزروعة.
+- دبابيس معدنية أو براغي أو صفائح أو دعامات أو دبابيس جراحية.
+- قد يتطلب المفصل الاصطناعي الذي تم وضعه مؤخرًا استخدام إجراء تصوير آخر.
+- إذا كان هناك أي سؤال عن وجودها ، يمكن إجراء الأشعة السينية للكشف عن أي أجسام معدنية وتحديدها.
+- قد يحتاج المرضى الذين قد يكون لديهم أجسام معدنية في أجزاء معينة من أجسامهم إلى إجراء أشعة سينية قبل إجراء التصوير بالرنين المغناطيسي.
+- يحتاج الآباء الذين يرافقون الأطفال إلى غرفة الفحص أيضًا إلى إزالة الأشياء المعدنية وإخطار التقني بأي أجهزة طبية أو إلكترونية قد تكون لديهم.
+- قد يحتاج الرضع والأطفال الصغار إلى التخدير أو التخدير لإكمال فحص التصوير بالرنين المغناطيسي دون الانتقال.
+
+#### Duration — مدة الفحص
+
+**English:**
+
+- Average scan time from 20 minutes to 1 hour
+
+**العربية:**
+
+- متوسط وقت المسح من 20 دقيقة إلى ساعة واحدة
+
+#### Service description — وصف الخدمة
+
+**English:**
+
+- MRI is a medical imaging technique used in radiology to form pictures of the anatomy and the physiological processes of the body.
+
+**العربية:**
+
+- التصوير بالرنين المغناطيسي هو تقنية تصوير طبي تستخدم في الأشعة لتشكيل صور للتشريح والعمليات الفسيولوجية للجسم .
+
+
+### 2.4 Ultrasound — الموجات فوق الصوتية
+
+**Modality (EN):** Ultrasound  
+**الفحص (AR):** الموجات فوق الصوتية
+
+#### Preparation guidelines — التحضيرات المطلوبة
+
+**English:**
+
+
+*Abdominal Ultrasound (Liver, Gallbladder & Kidneys)*
+
+- Avoid carbonated drinks and fatty foods for 7 to 8 hours before the examination.
+- Allowed: Water, coffee, or tea without milk. Medications may be taken as prescribed.
+- If you are taking insulin, please consult your physician before the examination.
+
+*Breast Ultrasound*
+
+- Avoid scheduling the examination during the week before your menstrual period if your breasts are sensitive. The preferred time is approximately one week after your period ends.
+- Inform your doctor or radiology technician if there is any possibility of pregnancy.
+- Avoid using deodorant, talcum powder, or lotions on the day of the examination.
+- Report any symptoms or concerns and bring any previous breast imaging studies if available.
+
+*Pelvic Ultrasound (Female)*
+
+- Drink approximately one liter of fluids about one hour before the examination and do not empty your bladder.
+- Medications may be taken as prescribed.
+
+*الموجات فوق الصوتية للحوض (ذكر)*
+
+- No special preparation is required.
+
+*Pregnancy Ultrasound*
+
+- First Trimester: Drink 3 to 4 glasses of clear fluids one hour before the examination and do not empty your bladder.
+- Second and Third Trimesters (Months 4 to 9): Drink 1 to 2 glasses of clear fluids one hour before the examination and do not empty your bladder.
+
+*Prostate Ultrasound*
+
+- Drink plenty of fluids and do not empty your bladder for two hours before the examination.
+- Use an enema 1 to 4 hours before the examination.
+- If a PSA test is required, it should be performed on a different day before the ultrasound examination.
+
+*Renal / Kidney Transplant / Testicular / Scrotal / Thyroid / Neck Ultrasound*
+
+- No special preparation is required. Medications may be taken as prescribed.
+
+*Doppler Ultrasound*
+
+- Arterial Doppler: Arrive with an empty stomach whenever possible. Do not eat or drink after midnight and avoid smoking or chewing gum. You may brush your teeth, but avoid swallowing water.
+- Venous, Carotid, Thyroid, and Renal Doppler examinations require no special preparation.
+
+*Echocardiography (Echocardiogram)*
+
+- Transthoracic Echocardiogram (TTE): No special preparation is required.
+- Transesophageal Echocardiogram (TEE): Fast for at least 6 hours before the examination. A sedative will be administered. Medications may be taken as directed.
+
+**العربية:**
+
+
+*البطن بالموجات فوق الصوتية (الكبد – المرارة – الكلى)*
+
+- تجنّب المشروبات الغازية والأطعمة الدهنية لمدة 7–8 ساعات قبل الفحص.
+- المسموح: الماء، القهوة أو الشاي بدون حليب. ويمكن تناول الأدوية.
+- إذا كنت تتناول الأنسولين، استشر طبيبك قبل الفحص.
+
+*تصوير الثدي بالموجات فوق الصوتية*
+
+- تجنّبي تحديد الموعد في الأسبوع السابق للدورة الشهرية إن كان الثدي حساسًا؛ أفضل وقت هو بعد الدورة بأسبوع.
+- أخبري طبيبك/فني الأشعة إذا كان هناك احتمال للحمل.
+- تجنّبي مزيل العرق أو بودرة التلك أو المستحضر يوم الفحص.
+- اذكري أي أعراض أو مشاكل، وأحضري صور الثدي السابقة إن وُجدت.
+
+*الموجات فوق الصوتية للحوض (أنثى)*
+
+- اشربي نحو لتر من السوائل قبل الفحص بساعة تقريبًا؛ لا تفرغي المثانة.
+- يمكن تناول الأدوية.
+
+*الموجات فوق الصوتية للحوض (ذكر)*
+
+- لا يلزم أي تحضير.
+
+*الحمل بالموجات فوق الصوتية*
+
+- الثلث الأول: اشرب/اشربي 3–4 أكواب من السوائل الصافية قبل الفحص بساعة؛ لا تفرغ/تفرغي المثانة.
+- من الرابع إلى التاسع: اشرب/اشربي 1–2 كوب من السوائل الصافية قبل الفحص بساعة؛ لا تفرغ/تفرغي المثانة.
+
+*الموجات فوق الصوتية للبروستات*
+
+- اشرب الكثير من السوائل ولا تفرغ المثانة قبل ساعتين من الفحص.
+- خُذ حقنة شرجية قبل الفحص بمدة 1–4 ساعات.
+- إذا لزم اختبار PSA، أجره في يوم آخر قبل فحص الموجات فوق الصوتية.
+
+*كلوي/زرع كلوي/خصوي/صفني/غدة درقية/رقبة*
+
+- لا يلزم أي تحضير. ويمكن تناول الأدوية.
+
+*دوبلر بالموجات فوق الصوتية*
+
+- الدوبلر الشرياني: معدة فارغة قدر الإمكان؛ لا أكل أو شرب بعد منتصف الليل، ولا تدخين أو مضغ علكة. يمكن غسل الأسنان مع تجنب بلع الماء.
+- الوريدي/السباتي/الغدة الدرقية/الكلوي: لا يلزم تحضير مسبق.
+
+*تخطيط صدى القلب*
+
+- عبر الصدر: لا حاجة لتحضير خاص.
+- عبر المريء (TEE): صوم 6 ساعات على الأقل قبل الفحص؛ سيتم إعطاء مهدئ. ويمكن تناول الأدوية.
+
+#### Duration — مدة الفحص
+
+**English:**
+
+- The average scan time is 10 to 20 minutes.
+
+**العربية:**
+
+- متوسط وقت المسح من 10 إلى 20 دقيقة
+
+#### Service description — وصف الخدمة
+
+**English:**
+
+- Medical ultrasound is a diagnostic imaging technique (and in some cases a therapeutic tool) used to create images of internal body structures such as tendons, muscles, joints, blood vessels, and internal organs.
+
+**العربية:**
+
+- الموجات فوق الصوتية الطبية هي تقنية تصوير تشخيصية (وأحيانًا تطبيق علاجي) تُستخدم لإنشاء صورة لبُنى الجسم الداخلية مثل الأوتار والعضلات والمفاصل والأوعية الدموية والأعضاء الداخلية.
+
+
+### 2.5 Mammogram — أشعة الماموجرام
+
+**Modality (EN):** Mammogram  
+**الفحص (AR):** أشعة الماموجرام
+
+#### Preparation guidelines — التحضيرات المطلوبة
+
+**English:**
+
+- Do not schedule your mammogram for the week before your period if your breasts are usually tender; the best time is one week after your period.
+- Always inform your doctor or x-ray technologist if there is any possibility that you are pregnant.
+- Do not wear deodorant, talcum powder or lotion under your arms or on your breasts on the day of the exam.
+- Describe any breast symptoms or problems to the technologist performing the exam. If possible, bring prior mammograms for comparison.
+
+**العربية:**
+
+- تجنّبي تحديد الموعد في الأسبوع السابق للدورة الشهرية إذا كان الثدي حساسًا؛ أفضل وقت هو بعد الدورة بأسبوع.
+- أخبري طبيبك أو فني الأشعة دائمًا إذا كان هناك أي احتمال لوجود حمل.
+- تجنّبي استخدام مزيل العرق أو بودرة التلك أو المستحضر تحت الإبطين أو على الثديين يوم الفحص.
+- أبلغي الفني بأي أعراض أو مشاكل بالثدي. وإذا أمكن، أحضري صور الثدي السابقة للمقارنة.
+
+#### Duration — مدة الفحص
+
+**English:**
+
+- The average scan time is 10 to 20 minutes.
+
+**العربية:**
+
+- متوسط وقت المسح من 10 إلى 20 دقيقة
+
+#### Service description — وصف الخدمة
+
+**English:**
+
+- Mammography is the process of using low-energy X-rays to examine the human breast for diagnosis and screening. The goal of mammography is the early detection of breast cancer, typically through detection of characteristic masses or microcalcifications.
+
+**العربية:**
+
+- التصوير الشعاعي للثدي هو عملية استخدام أشعة سينية منخفضة الطاقة لفحص الثدي البشري للتشخيص والفحص. الهدف من تصوير الثدي بالأشعة هو الكشف المبكر عن سرطان الثدي عادةً من خلال اكتشاف كتل مميزة أو تكلسات دقيقة.
+
+
+### 2.6 Bone Density Scan (DEXA) — قياس كثافة العظام (DEXA)
+
+**Modality (EN):** Bone Density Scan (DEXA)  
+**الفحص (AR):** قياس كثافة العظام (DEXA)
+
+#### Preparation guidelines — التحضيرات المطلوبة
+
+**English:**
+
+- Most DEXA examinations require no special preparation.
+
+**العربية:**
+
+- لا تتطلب معظم فحوصات DEXA أي تحضيرات خاصة.
+
+#### Duration — مدة الفحص
+
+**English:**
+
+- Average scan time from 15 to 30 minutes
+
+**العربية:**
+
+- متوسط وقت الفحص من 15 إلى 30 دقيقة
+
+#### Service description — وصف الخدمة
+
+**English:**
+
+- A non‑invasive test that measures bone mineral density to assess osteoporosis or fracture risk.
+
+**العربية:**
+
+- اختبار غير جراحي يقيس كثافة المعادن في العظام لتقييم خطر هشاشة العظام أو الكسور.
+
+
+### 2.7 Panorama — الأشعة السينية للأسنان (بانوراما)
+
+**Modality (EN):** Panorama  
+**الفحص (AR):** الأشعة السينية للأسنان (بانوراما)
+
+#### Preparation guidelines — التحضيرات المطلوبة
+
+**English:**
+
+- Most Panorama & Cephalometry examinations require no special preparation.
+
+**العربية:**
+
+- لا تتطلب معظم اختبارات البانوراما والرأسية تحضيرًا خاصًا.
+
+#### Duration — مدة الفحص
+
+**English:**
+
+- Average scan time from 15 to 30 minutes
+
+**العربية:**
+
+- متوسط وقت الفحص من 15 إلى 30 دقيقة
+
+#### Service description — وصف الخدمة
+
+**English:**
+
+- A two‑dimensional dental X‑ray that captures the entire mouth in a single image, including the teeth, upper and lower jaws, and surrounding structures and tissues.
+
+**العربية:**
+
+- فحص بالأشعة السينية ثنائي الأبعاد يلتقط الفم بأكمله في صورة واحدة، بما في ذلك الأسنان والفكين العلوي والسفلي والتراكيب والأنسجة المحيطة.
+
+
+### 2.8 Gamma Camera — كاميرا جاما
+
+**Modality (EN):** Gamma Camera  
+**الفحص (AR):** كاميرا جاما
+
+#### Preparation guidelines — التحضيرات المطلوبة
+
+**English:**
+
+- Women should always inform their physician or technologist if there is any possibility that they are pregnant or if they are breastfeeding.
+- Inform your physician and the technologist of any medications you are taking (including vitamins and herbal supplements), any allergies, recent illnesses or other medical conditions.
+- Jewelry and metallic accessories should be left at home if possible, or removed prior to the exam because they may interfere with the procedure.
+- Some medications or procedures may interfere with the examination ordered.
+- Avoid caffeine (including decaf) and smoking for up to 48 hours before your examination.
+
+*Hepatobiliary Nuclear Medicine*
+
+- You should not eat or drink for at least four hours before your exam.
+- You should not have tests that use barium for 48 hours before hepatobiliary imaging.
+
+*Renal Scintigraphy*
+
+- Preparation varies based on the type of scan. You may be asked to drink extra fluid or receive IV fluids.
+- You may be given a diuretic to increase urine production.
+- Bladder may need to remain empty during the scan (catheter insertion), or you may be asked to empty the bladder prior to imaging.
+- You may be asked to discontinue some medications prior to the exam.
+- Tell your physician if you are taking non‑steroidal anti‑inflammatories (NSAIDs).
+
+**العربية:**
+
+- يجب على المرأة أن تخبر طبيبها أو تقنيها دائمًا إذا كان هناك احتمال حمل أو إذا كانت ترضع طبيعيًا.
+- أبلغ طبيبك والتقني عن أي أدوية تتناولها (بما في ذلك الفيتامينات والمكملات العشبية)، وعن أي حساسية أو أمراض حديثة أو حالات طبية أخرى.
+- اترك المجوهرات والإكسسوارات المعدنية في المنزل إن أمكن، أو أزلها قبل الفحص لأنها قد تتداخل مع الإجراء.
+- في بعض الحالات قد تتداخل بعض الأدوية أو الإجراءات مع الفحص المطلوب.
+- تجنب الكافيين (حتى منزوعة الكافيين) والتدخين لمدة تصل إلى 48 ساعة قبل الفحص.
+
+*الطب النووي الكبدي (HIDA)*
+
+- يجب ألا تأكل أو تشرب لمدة أربع ساعات على الأقل قبل الفحص.
+- يجب ألا تُجري اختبارات تستخدم الباريوم لمدة 48 ساعة قبل تصوير الكبد.
+
+*التصوير الكلوي*
+
+- يمكن أن يختلف التحضير حسب نوع الفحص؛ قد يُطلب منك شرب سوائل إضافية أو تلقي سوائل وريدية.
+- قد يتم إعطاؤك مُدرًا للبول لزيادة إنتاج البول.
+- قد تحتاج المثانة لأن تظل فارغة أثناء الفحص (قسطرة)، أو قد يُطلب منك إفراغها قبل التصوير.
+- قد يُطلب منك التوقف عن بعض الأدوية قبل الفحص.
+- أخبر طبيبك إذا كنت تتناول مضادات الالتهاب غير الستيرويدية.
+
+#### Duration — مدة الفحص
+
+**English:**
+
+- Average scan time from 1 to 3 hours
+
+**العربية:**
+
+- متوسط وقت المسح من 1 إلى 3 ساعات
+
+#### Service description — وصف الخدمة
+
+**English:**
+
+- Gamma Camera also called a scintillation camera is a device used to image gamma radiation emitting radioisotopes, . a technique known as scintigraphy
+
+**العربية:**
+
+- كاميرا جاما، وتسمى أيضًا كاميرا التلألؤ ، هي جهاز يستخدم لتصوير نظائر مشعة تنبعث منها إشعاع جاما، وهي تقنية تعرف باسم الرسم اللامع.
+
+
+### 2.9 Positron Emission Tomography (PET/CT) — التصوير المقطعي البوزيتروني (PET CT)
+
+**Modality (EN):** Positron Emission Tomography (PET/CT)  
+**الفحص (AR):** التصوير المقطعي البوزيتروني (PET CT)
+
+#### Preparation guidelines — التحضيرات المطلوبة
+
+**English:**
+
+- Performing renal function tests (creatinine level) to ensure normal renal function before the CT contrast is injected, it should be up to one week before the examination.
+- Performing fasting blood glucose test (FBG) and bringing it with the patient, it should be recent of a maximum of one week prior to the examination, and FBG level should not exceed (200) mg/dl
+- It is advisable to do the examination with the following instructions, except in case of a direct request from the treating physician: last chemotherapy ≥ 2 weeks; last radiotherapy ≥ 4 weeks; needle guided biopsy ≥ 1 week; any surgical intervention ≥ 4 weeks.
+- Take the usual medication in the days before the examination.
+- Ensure that the patient’s weight is not more than 200 kg.
+- Avoid eating certain types of food (carbohydrates – smoking – coffee) and avoid excessive muscle exertion/exercise within 24 hours of the examination.
+- Complete fasting 6 hours before the examination (water only). If anesthesia is required, water is also forbidden.
+- Bring all previous radiological/laboratory investigations and medical reports (including previous PET/CT studies) for accurate comparison. Bring pathology results if any.
+- For women: ensure there is no pregnancy before the examination. Do not wear metal objects and gold jewelry such as earrings/chains.
+
+**العربية:**
+
+- عمل‏ تحليل وظائف الكلى ( كرياتينين ) وذلك للأطمئنان على صحة كلى المريض قبل حقن الصبغة على ان يكون حديث بحد أقصى أسبوع قبل عمل الفحص.
+- عمل تحليل سكر صائم و إحضاره مع المريض على ان يكون حديث بحد أقصى أسبوع وعلى أن لا تكون النسبة تزيد عن (٢٠٠) mg/dl
+- يستحسن عمل الفحص بالتعليمات الأتية إلا فى حالة طلب الطبيب المعالج وهى: أن تكون أخر جلسة علاج كيماوى منذ أسبوعين أو أكثر. أن تكون أخر جلسة علاج أشعاعى منذ أربعة أسابيع أو أكثر. أن تكون أخر عينة بالأبرة تم أخذها منذ أسبوع أو أكثر. أن تكون أخر عملية جراحية منذ أربعة أسابيع أو أكثر.
+- تناول الدواء المعتاد فى الأيام السابقة للفحص.
+- التأكد من أن وزن المريض لا يزيد عن‎200‏ كجم.
+- تجنب تناول ( النشويات – التدخين – القهوة ) و تجنب المجهود العضلى الزائد وذلك قبل الفحص بمدة ٢٤ ساعة.
+- صيام تام‎ ٦‏ ساعات قبل الفحص مع السماح بشرب مياه فقط، وإذا كانت حالة المريض تستدعي التخدير فيمنع من شرب المياه أيضًا.
+- إحضار جميع الأشعة والتحاليل والتقارير الطبية السابقة (بما في ذلك فحوصات PET CT السابقة) لعمل مقارنة دقيقة، وإحضار نتيجة الباثولوجي إن وجدت.
+- خاص بالسيدات: التأكد من عدم وجود حمل قبل الفحص، وعدم ارتداء الأشياء المعدنية والمشغولات الذهبية (الحلق – السلاسل …).
+
+#### How the scan is performed — كيفية عمل الفحص
+
+**English:**
+
+- Patients are admitted for examination with the priority of attending the center.
+- The patient or a relative is interviewed by a doctor to obtain medical history and purpose of examination.
+- A random blood glucose analysis is done at the center.
+- Radioactive substance is injected via cannula; wait in a special room for up to 90 minutes for absorption (no side effects and painless).
+- Enter the examination room for about 30 minutes; CT contrast may be injected (if applicable) and the scan is completed.
+
+**العربية:**
+
+- يتم دخول المرضى لعمل الفحص بأولوية حضورهم الى المركز.
+- يتم مقابلة المريض أو أحد أقاربه مع طبيب من المركز لأخذ التاريخ المرضي وسبب الفحص.
+- يتم عمل تحليل سكر عشوائي بالمركز.
+- يتم حقن المادة المشعة عن طريق كانيولا ثم الانتظار في غرفة مخصصة لمدة أقصاها ٩٠ دقيقة حتى يتم امتصاص المادة (بلا أعراض جانبية ودون ألم).
+- يدخل المريض غرفة الفحص لمدة حوالي ٣٠ دقيقة وقد يُحقن بصبغة الأشعة المقطعية (إذا لزم) لاستكمال الفحص.
+
+#### After the examination — بعد الانتهاء من الفحص
+
+**English:**
+
+- Please leave the center immediately after completing the examination.
+- The patient can eat and is encouraged to drink plenty of water and liquids after the examination.
+- Keep away from children under 6 years and pregnant women for at least 24 hours.
+
+**العربية:**
+
+- يرجى مغادرة المركز فورًا بعد الانتهاء من الفحص.
+- يسمح بتناول الطعام وشرب كمية كبيرة من المياه والسوائل بعد الفحص.
+- يبتعد المريض عن الأطفال أقل من ٦ سنوات والسيدات الحوامل مدة لا تقل عن ٢٤ ساعة.
+
+#### Booking and cancellation — طريقة الحجز والتنويه
+
+**English:**
+
+- Attend the imaging centre to pay the reservation deposit for the radioactive material and to bring the required previous examinations.
+- If you want to cancel the reservation or postpone the examination, you must come to the center at least 24 hours before the appointment, otherwise the reservation payment will be deducted due to the high cost of the radioactive material.
+
+**العربية:**
+
+- يتم الحضور الى المركز لسداد قيمة حجز الأشعة وإحضار التحاليل المطلوبة.
+- فى حالة الرغبة فى إلغاء الحجز أو تأجيل الفحص ليوم آخر يجب الحضور للمركز قبل الميعاد على الأقل ب ٢٤ ساعة وإلا سيتم خصم دفعة الحجز نظرًا للتكلفة العالية للمادة المشعة.
+
+#### Duration — مدة الفحص
+
+**English:**
+
+- The examination takes around 45 mins avg.
+
+**العربية:**
+
+- يستغرق الفحص متوسط 45 دقيقة
+
+#### Service description — وصف الخدمة
+
+**English:**
+
+- It is an examination performed on the entire body using a radioactive material along with CT scan to give a three-dimensional image of active areas of the body.
+
+**العربية:**
+
+- هو فحص يتم عمله على الجسم بالكامل باستخدام مادة مشعة مع الأشعة المقطعية وذلك للاعطاء صورة ثلاثية الأبعاد للمناطق النشطة بالجسم
+
+
+### 2.10 Electromyography (EMG) — رسم العضلات (EMG)
+
+**Modality (EN):** Electromyography (EMG)  
+**الفحص (AR):** رسم العضلات (EMG)
+
+#### Preparation guidelines — التحضيرات المطلوبة
+
+**English:**
+
+- Most EMG examinations require no special preparation.
+
+**العربية:**
+
+- لا تتطلب معظم فحوصات EMG تحضيرًا خاصًا.
+
+#### Duration — مدة الفحص
+
+**English:**
+
+- Average scan time from 15 to 30 minutes
+
+**العربية:**
+
+- متوسط وقت الفحص من 15 إلى 30 دقيقة
+
+#### Service description — وصف الخدمة
+
+**English:**
+
+- Electromyography (EMG) evaluates and records the electrical activity produced by skeletal muscles using an electromyograph to produce an electromyogram.
+
+**العربية:**
+
+- يُقيّم تخطيط كهربية العضلات (EMG) ويسجل النشاط الكهربائي للعضلات الهيكلية باستخدام جهاز خاص لإنتاج مخطط كهربية العضلات.
+
+
+---
+
+## Section 3 — Test-by-test preparation
+## القسم 3 — تحضيرات كل تحليل على حدة
+
+131 tests carry a specific preparation, precaution or sample-handling instruction. Tests are listed alphabetically by English name. Fasting windows and sample-transport limits may be tightened or relaxed by the laboratory performing the test.
+
+### 17-Alpha Hydroxyprogesterone in serum — ‏17- ألفا هيدروكسى بروجسيتيرون
+
+**Test (EN):** 17-Alpha Hydroxyprogesterone in serum  
+**التحليل (AR):** ‏17- ألفا هيدروكسى بروجسيتيرون
+
+**التحضيرات / الاحتياطات (العربية):** فى السيدات فى اليوم 21 من الدورة الشهرية
+
+### ACE in Serum
+
+**Test (EN):** ACE in Serum
+
+**التحضيرات / الاحتياطات (العربية):** قياس ضغط الدم
+
+### ACTH am in plasma — الهرمون المنشط للغدة الكظرية ( 9 م ) اا
+
+**Test (EN):** ACTH am in plasma  
+**التحليل (AR):** الهرمون المنشط للغدة الكظرية ( 9 م ) اا
+
+**Preparation / precautions (English):** sampling from 8 to 9 am
+
+**التحضيرات / الاحتياطات (العربية):** تؤخذ العينة بين الساعة 8 - 9 صباحًا - علاج أو جرعات كورتيزون
+
+### ACTH pm in plasma — الهرمون المنشط للغدة الكظرية ( 9 م ) اا
+
+**Test (EN):** ACTH pm in plasma  
+**التحليل (AR):** الهرمون المنشط للغدة الكظرية ( 9 م ) اا
+
+**Preparation / precautions (English):** sampling from 9-8 h p.m?
+
+**التحضيرات / الاحتياطات (العربية):** يتم اخذ العينه بين 8-9 مساءًا
+
+### Activated Partial Thromboplastine Time APTT
+
+**Test (EN):** Activated Partial Thromboplastine Time APTT
+
+**Preparation / precautions (English):** anti coagulants treatment intake (if applicable) must be stated
+
+**التحضيرات / الاحتياطات (العربية):** الرجاء الإفادة عن تناول أدوية السيولة : نوع العلاج - الجرعة - مدة التناول عند سحب العينة
+
+### Albumin — الألبومين فى المصل
+
+**Test (EN):** Albumin  
+**التحليل (AR):** الألبومين فى المصل
+
+**Additional preparation note on record:**
+
+- بدون شروط
+
+### Albumin in 24 hrs urine — الألبومين فى البول
+
+**Test (EN):** Albumin in 24 hrs urine  
+**التحليل (AR):** الألبومين فى البول
+
+**Preparation / precautions (English):** Emptying the bladder in the toilet and registration of time. Start collecting in suitable clean and dry bottle sufficient for the assembly. Continue assembling urine at the same time of registration on the next day. Preserve urine in the refrigerator until sending it to the lab.
+
+**التحضيرات / الاحتياطات (العربية):** تجميع بول 24 ساعة - إفراغ المثانة كاملة بالكامل في التواليت مع القيام بتسجيل الوقت في ذلك الحين تجميع أي بول بعد ذلك في زجاجة مناسبة نظيفة و جافة و يستمر تجميع البول إلى نفس الوقت الذي تم فيه بداية التجميع من اليوم التالي - حفظ البول في الثلاجة لحين إرساله إلى المعمل
+
+**Sample collection instruction:** -First discard morninig urine at the toilet at 8 A.M. -Collect all urine sample after that in a clean container stored in fridge till 8 A.M. next day.
+
+### Albumin/ creatinine ratio, Urine
+
+**Test (EN):** Albumin/ creatinine ratio, Urine
+
+**Preparation / precautions (English):** Random urine sample
+
+**التحضيرات / الاحتياطات (العربية):** عينه بول عشوائية
+
+### Amphetamine Screen
+
+**Test (EN):** Amphetamine Screen
+
+**التحضيرات / الاحتياطات (العربية):** يتم التأكد من شخصية العميل و الرقم القومي الخاص به
+
+### Amylase — اميليز فى المصل
+
+**Test (EN):** Amylase  
+**التحليل (AR):** اميليز فى المصل
+
+**Additional preparation note on record:**
+
+- التحليل بيتعمل صباحا فقط
+
+### Amyloid A
+
+**Test (EN):** Amyloid A
+
+**Preparation / precautions (English):** prefer doing the test in case of fever
+
+**التحضيرات / الاحتياطات (العربية):** يفضل أخذ العينه وقت ارتفاع الحراره
+
+### ANCA
+
+**Test (EN):** ANCA
+
+**التحضيرات / الاحتياطات (العربية):** معرفة - هل تم أخذ كورتيزون
+
+### ANCA (Cytoplasmic)
+
+**Test (EN):** ANCA (Cytoplasmic)
+
+**التحضيرات / الاحتياطات (العربية):** الرجاء الإفادة عن أخذ علاج كورتيزون : المدة و الجرعة عند سحب العينة
+
+### Anti Thyroglobulin Ab. — الأجسام المضادة لبروتينات للغدة الدرقية
+
+**Test (EN):** Anti Thyroglobulin Ab.  
+**التحليل (AR):** الأجسام المضادة لبروتينات للغدة الدرقية
+
+**التحضيرات / الاحتياطات (العربية):** مدة و جرعة تناول أدوية الغدة
+
+### Anti-thrombin III (AT-III)
+
+**Test (EN):** Anti-thrombin III (AT-III)
+
+**التحضيرات / الاحتياطات (العربية):** يجب معرفة هل يوجد أدويه سيوله وهل يوجد جلطات أو إجهاض متكرر
+
+### Antihuman Tissue Transglutaminase (Anti TTG) Screen IgG
+
+**Test (EN):** Antihuman Tissue Transglutaminase (Anti TTG) Screen IgG
+
+**التحضيرات / الاحتياطات (العربية):** عدم التوقف عن تناول اللبن أو القمح لقياس المعدل بدقه
+
+### Antihuman Tissue Transglutaminase (TTG) Screen IgA
+
+**Test (EN):** Antihuman Tissue Transglutaminase (TTG) Screen IgA
+
+**التحضيرات / الاحتياطات (العربية):** يجب عدم التوقف عن تناول القمح ومشتقاته حتى إنتهاء التشخيص
+
+### Bacteriological Analysis of Water — تحليل بكتيرى لعينة مياه جوفيه
+
+**Test (EN):** Bacteriological Analysis of Water  
+**التحليل (AR):** تحليل بكتيرى لعينة مياه جوفيه
+
+**Preparation / precautions (English):** in a sterile flask provided by the lab
+
+**التحضيرات / الاحتياطات (العربية):** تحتاج الى فلاسكات خاصه بالحجز من المعمل ومعرفه مكان إحضار العينه - بئر أو من حنفيه شرب عاديه
+
+### Barbiturates Screen
+
+**Test (EN):** Barbiturates Screen
+
+**Preparation / precautions (English):** urine sample
+
+**التحضيرات / الاحتياطات (العربية):** عينة بول
+
+### Benzodiazepine Screen
+
+**Test (EN):** Benzodiazepine Screen
+
+**التحضيرات / الاحتياطات (العربية):** تحليل بول
+
+### Blood Gases ( Acid Base )
+
+**Test (EN):** Blood Gases ( Acid Base )
+
+**Preparation / precautions (English):** available only at al mohandseen branch
+
+**التحضيرات / الاحتياطات (العربية):** يتم سحب العينه بفرع المهندسين فقط
+
+### C-Peptide (Fasting) in serum — مستوى سى ‏‎–‎‏ ببتيد (صائم
+
+**Test (EN):** C-Peptide (Fasting) in serum  
+**التحليل (AR):** مستوى سى ‏‎–‎‏ ببتيد (صائم
+
+**Preparation / precautions (English):** fasting for 6-8 hrs., water and routine drugs intake is allowed (excepr for insulin)
+
+**التحضيرات / الاحتياطات (العربية):** صيام 6-8 ساعات- يسمح بتناول الماء
+
+### C-Peptide after 2hr in serum — مستوى سى ‏‎–‎‏ ببتيد (فاطر)
+
+**Test (EN):** C-Peptide after 2hr in serum  
+**التحليل (AR):** مستوى سى ‏‎–‎‏ ببتيد (فاطر)
+
+**Preparation / precautions (English):** sampling after 2 hours from the start of meal ingestion, medication is allowed. Ensure that your meal is ingested wit in 10 min. at most
+
+### Calprotectin in stool , Quantitative
+
+**Test (EN):** Calprotectin in stool , Quantitative
+
+**التحضيرات / الاحتياطات (العربية):** عينه براز التوقف عن أدويه المعدة لمدة أسبوع
+
+### Cannabinoids Screen
+
+**Test (EN):** Cannabinoids Screen
+
+**Preparation / precautions (English):** random urine sample
+
+**التحضيرات / الاحتياطات (العربية):** عينة بول عشوائي
+
+### CASA
+
+**Test (EN):** CASA
+
+**Preparation / precautions (English):** Abstain from intercourse and ejaculation for 4 consecutive days before giving the sample, preferably the sample should be taken inside the laboratory in a clean and sterile container with special care of avoiding the first drop of semen, if the sample is collected at home it must reach the lab within 20 min. and be tested immediately
+
+**التحضيرات / الاحتياطات (العربية):** يشترط الإمتناع عن الجماع أو حدوث الاحتلام لمدة 4 أيام متتالية - يفضل إعطاء العينة في المعمل مع الاهتمام بوضع كل العينة بما فيها النقط الأولى من المنى في الوعاء الخاص بذلك - يتم إحضار العينة إلى المعمل في خلال 20 دقيقة إذا أحضرت العينة من المنزل
+
+### Cholesterol - Total — كولسترول كلى بالمصل
+
+**Test (EN):** Cholesterol - Total  
+**التحليل (AR):** كولسترول كلى بالمصل
+
+**Preparation / precautions (English):** 10 hrs. fasting / non-fasting are also accepted
+
+**التحضيرات / الاحتياطات (العربية):** صيام من 12-14 ساعه
+
+### Clotting Time (CT)
+
+**Test (EN):** Clotting Time (CT)
+
+**Preparation / precautions (English):** anti coagulants treatment intake (if applicable) must be stated
+
+**التحضيرات / الاحتياطات (العربية):** الرجاء الإفادة عن تناول أدوية السيولة : نوع العلاج - الجرعة - مدة التناول عند سحب العينة
+
+### CMV IgM — الأجسام اللمضادة للسيتوميجالو فيرس (ام)
+
+**Test (EN):** CMV IgM  
+**التحليل (AR):** الأجسام اللمضادة للسيتوميجالو فيرس (ام)
+
+**⚠ Source-data flag:** The source catalogue attaches a 24-hour urine collection protocol to this entry, which does not apply to a CMV IgM blood test. Treat as a data-entry error in the source. Do not serve the note below as a preparation instruction.
+
+**Additional preparation note on record:**
+
+- تجميع بول 24 ساعه ومعرفه المريض للوزن والطول (ويتم اخذ عينه دم لفحص اليوريا في الدم)
+
+### Complete Blood Picture (CBC) — صورة دم كامله
+
+**Test (EN):** Complete Blood Picture (CBC)  
+**التحليل (AR):** صورة دم كامله
+
+**التحضيرات / الاحتياطات (العربية):** الرجاء الإفادة عن أخذ علاج حديد - نقل دم عند سحب العينة
+
+### Cortisol (Random ) in serum
+
+**Test (EN):** Cortisol (Random ) in serum
+
+**التحضيرات / الاحتياطات (العربية):** عينة دم عشوائية
+
+**Sample collection instruction:** First, discard the morning urine at the toilet,Then collect all urine samples including the 2 second morning sample and put the container in the fridge during the collection
+
+### Cortisol-Am in serum
+
+**Test (EN):** Cortisol-Am in serum
+
+**Preparation / precautions (English):** sampling from 8 to 9 am
+
+**التحضيرات / الاحتياطات (العربية):** يتم أخذ العينة بين 8 - 9 صباحًا - الرجاء الإفادة اذا كان يتناول علاج الكورتيزول
+
+**⚠ Source-data flag:** The source catalogue attaches an LDL-cholesterol label here, not a preparation instruction. Treat as a data-entry error in the source. Do not serve the note below as a preparation instruction.
+
+**Additional preparation note on record:**
+
+- كلسترول منخفض الكثافه (ضار)
+
+### Cortisol-Pm in serum
+
+**Test (EN):** Cortisol-Pm in serum
+
+**Preparation / precautions (English):** sampling from 8 to 9 pm
+
+**التحضيرات / الاحتياطات (العربية):** يتم أخذ العينة بين 8 - 9 مساءًا - الرجاء الإفادة اذا كان يتناول علاج الكورتيزول
+
+### Covid - 19 Total Antibody
+
+**Test (EN):** Covid - 19 Total Antibody
+
+**Preparation / precautions (English):** blood sample
+
+### Covid-19 AG
+
+**Test (EN):** Covid-19 AG
+
+**Preparation / precautions (English):** blood sample
+
+### COVID-19 RT-PCR
+
+**Test (EN):** COVID-19 RT-PCR
+
+**Preparation / precautions (English):** nasal swab
+
+### Creatinine Clearance — استخلاص كرياتينين بالبول
+
+**Test (EN):** Creatinine Clearance  
+**التحليل (AR):** استخلاص كرياتينين بالبول
+
+**Preparation / precautions (English):** Emptying the bladder in the toilet and registration of time. Start collecting in a suitable clean and dry bottle sufficient for the assembly. Continue assembling urine to the same time of registration next day. Preserve urine in the refrigerator until sending it to the lab.
+
+**التحضيرات / الاحتياطات (العربية):** يجب تسجيل وزن و طول المريض و عدد زجاجات حجم بول 24 ساعة -سحب عينة دم من المريض لعمل التحليل بالإضافة إلى تجميع البول 24 ساعة
+
+### Cyclosporine (Sandimmune) Trough
+
+**Test (EN):** Cyclosporine (Sandimmune) Trough
+
+**التحضيرات / الاحتياطات (العربية):** يتم عمله بعد أخذ الجرعه بساعتين ومن المهم التوضيح في حالة وجود قئ ومستوى الجرعه وهل تم تغيير الجرعه قريبًا
+
+### Cytological examination — فحص انسجة
+
+**Test (EN):** Cytological examination  
+**التحليل (AR):** فحص انسجة
+
+**Preparation / precautions (English):** detailed report, sample site is needed
+
+### Depakine (valproic Acid) Peak — تحليل مستوى ديباكين (مصل)
+
+**Test (EN):** Depakine (valproic Acid) Peak  
+**التحليل (AR):** تحليل مستوى ديباكين (مصل)
+
+**التحضيرات / الاحتياطات (العربية):** يتم عمله بعد أخذ العلاج ومن المهم معرفة مدى الانتظام بالجرعه والجرعه الحاليه وهل يوجد قئ
+
+### Depakine (valproic Acid) Random
+
+**Test (EN):** Depakine (valproic Acid) Random
+
+**التحضيرات / الاحتياطات (العربية):** لا يشترط وقت ومن المهم معرفة مدى الانتظام في الجرعه وهل تم تغييرها والجرعه الحاليه وهل يوجد أى قئ
+
+### Depakine (Valproic Acid) Trough — تحليل مستوى ديباكين (مصل)
+
+**Test (EN):** Depakine (Valproic Acid) Trough  
+**التحليل (AR):** تحليل مستوى ديباكين (مصل)
+
+**التحضيرات / الاحتياطات (العربية):** يتم عمله قبل أخذ الجرعه بساعتين ومن المهم التوضيح في حالة وجود قئ ومستوى الجرعه وهل تم تغيير الجرعه قريبًا
+
+### DHEA-S ( Dehydroepiandrosterone Sulfate ) in serum
+
+**Test (EN):** DHEA-S ( Dehydroepiandrosterone Sulfate ) in serum
+
+**التحضيرات / الاحتياطات (العربية):** هل يتم تناول هرمون التستوستيرون بالنسبة للرجال
+
+### DNA by sequencer
+
+**Test (EN):** DNA by sequencer
+
+**Preparation / precautions (English):** proof of identity and birth certificate of the child must be brought and the declaration must be signed
+
+**التحضيرات / الاحتياطات (العربية):** أصل شهادة الميلاد وبطاقة الأب مع الإمضاء على التقرير من السيستم
+
+### Estimated (eGFR)
+
+**Test (EN):** Estimated (eGFR)
+
+**التحضيرات / الاحتياطات (العربية):** نحتاج الطول والوزن
+
+### Estradiol E2 in serum — هرمون استروجين
+
+**Test (EN):** Estradiol E2 in serum  
+**التحليل (AR):** هرمون استروجين
+
+**Preparation / precautions (English):** hormonal intake (if applicable) must be stated
+
+**التحضيرات / الاحتياطات (العربية):** يجب التأكيد علي تناول الهرمون : المدة و موعد آخر جرعة
+
+### Estrogen ( Er receptors ) — مستقبلات ألا ستروجين
+
+**Test (EN):** Estrogen ( Er receptors )  
+**التحليل (AR):** مستقبلات ألا ستروجين
+
+**Preparation / precautions (English):** paraffin block and full detailed report from the referring doctor
+
+**التحضيرات / الاحتياطات (العربية):** إحضار بلوكات الشمع وتقرير مفصل للحاله
+
+### Fasting Blood Glucose
+
+**Test (EN):** Fasting Blood Glucose
+
+**Preparation / precautions (English):** fasting for 6-8 hrs., water and routine drugs intake is allowed
+
+**التحضيرات / الاحتياطات (العربية):** صيام 6-8 ساعات- يسمح بتناول الماء
+
+### Ferritin — مستوى الفريتين
+
+**Test (EN):** Ferritin  
+**التحليل (AR):** مستوى الفريتين
+
+**التحضيرات / الاحتياطات (العربية):** الإفادة عن تناول علاج حديد عند سحب العينة
+
+### Folic Acid Level in serum
+
+**Test (EN):** Folic Acid Level in serum
+
+**Preparation / precautions (English):** vitamin intake (if applicable) must be stated
+
+**التحضيرات / الاحتياطات (العربية):** صيام 8 ساعات - يسمح بتناول الماء - التأكيد علي تناول أدوية تحتوي علي حمض الفوليك
+
+### Free T3 in serum — هرمون تى 3 الحر بالمصل
+
+**Test (EN):** Free T3 in serum  
+**التحليل (AR):** هرمون تى 3 الحر بالمصل
+
+**Preparation / precautions (English):** thyroid treatment intake (if applicable) must be stated
+
+**التحضيرات / الاحتياطات (العربية):** معرفة مدة و جرعة تناول أدوية الغدة
+
+### Free T4 in serum — هرمون تى 4 الحر بالمصل
+
+**Test (EN):** Free T4 in serum  
+**التحليل (AR):** هرمون تى 4 الحر بالمصل
+
+**Preparation / precautions (English):** thyroid treatment intake (if applicable) must be stated
+
+**التحضيرات / الاحتياطات (العربية):** معرفة مدة و جرعة تناول أدوية الغدة
+
+### FSH(Follicle Stimulating Hormone) in serum — هرمون أف ‏‎–‎‏ اس ‏‎–‎‏ اتش
+
+**Test (EN):** FSH(Follicle Stimulating Hormone) in serum  
+**التحليل (AR):** هرمون أف ‏‎–‎‏ اس ‏‎–‎‏ اتش
+
+**Preparation / precautions (English):** 2nd or 3rd day of menses cycle (Females)
+
+**التحضيرات / الاحتياطات (العربية):** اليوم الثاني أو الثالث في الدورة بالنسبة للسيدات
+
+### Full Toxicology panel
+
+**Test (EN):** Full Toxicology panel
+
+**Preparation / precautions (English):** urine sample
+
+**التحضيرات / الاحتياطات (العربية):** عينة بول عشوائية
+
+### Fungus Culture — مزرعة فطريات
+
+**Test (EN):** Fungus Culture  
+**التحليل (AR):** مزرعة فطريات
+
+**Preparation / precautions (English):** Nail culture - Please use your personal tools
+
+**التحضيرات / الاحتياطات (العربية):** مصدر العينة
+
+### G6PD Quantitative
+
+**Test (EN):** G6PD Quantitative
+
+**Preparation / precautions (English):** sampling from 8 to 10 am
+
+**التحضيرات / الاحتياطات (العربية):** الإفادة عن نقل دم قريبا مؤخرًا - حدوث آخر موعد لحدوث تكسير بالدم عند سحب العينة
+
+### Gamma GT
+
+**Test (EN):** Gamma GT
+
+**التحضيرات / الاحتياطات (العربية):** يرتفع احيانًا مع الحمل و تناول بعض الأدوية
+
+### GH Growth Hormone in serum ( Basal )
+
+**Test (EN):** GH Growth Hormone in serum ( Basal )
+
+**Preparation / precautions (English):** fasting 6-8 hrs.
+
+**التحضيرات / الاحتياطات (العربية):** صيام من 6-8 ساعات
+
+### Glucose 1Hour after 50 gm glucose
+
+**Test (EN):** Glucose 1Hour after 50 gm glucose
+
+**Preparation / precautions (English):** please start calculating one hour from the start of taking the glucose dose taking any medication if you need to, ensuring that your meal should be ingested within 10 min. at most and not eating again until you have submitted your blood sample
+
+**التحضيرات / الاحتياطات (العربية):** صبام من 6-8 ساعات قبل أخذ الجرعه المطلوبه
+
+### Glucose After 2 Hours
+
+**Test (EN):** Glucose After 2 Hours
+
+**Preparation / precautions (English):** please start calculating two hours from the start of your meal taking any medication if you need to, ensuring that your meal should be ingested within 10 min. at most and not eating again until you have submitted your blood sample
+
+**التحضيرات / الاحتياطات (العربية):** صيام من 6 -8 ساعات يفطر ويحسب ساعتين من بدايه تناول الطعام مع أخذ أدوية السكر بشكل طبيعي
+
+### Haemoglobin (Hb) &Haematocrit HCT — نسبة الهيموجلوبين بالدم
+
+**Test (EN):** Haemoglobin (Hb) &Haematocrit HCT  
+**التحليل (AR):** نسبة الهيموجلوبين بالدم
+
+**التحضيرات / الاحتياطات (العربية):** من المهم الإفادة - هل تم أخذ أدويه حديد أو نقل ؟ تم قبل إجراء التحليل عند سحب العينة
+
+### Haemoglobin Electrophoresis
+
+**Test (EN):** Haemoglobin Electrophoresis
+
+**التحضيرات / الاحتياطات (العربية):** يتم السؤال عن نقل دم أو أخذ أدويه بها كورتيزون
+
+### HBs Ab — الأجسام المضادة للأنتيجن (اس) الخاص ‏بفيروس التهاب كبدى (بى)
+
+**Test (EN):** HBs Ab  
+**التحليل (AR):** الأجسام المضادة للأنتيجن (اس) الخاص ‏بفيروس التهاب كبدى (بى)
+
+**التحضيرات / الاحتياطات (العربية):** الرجاء الإفادة - هل تم أخذ جرعة تطعيم للفيروس أم لا عند سحب العينة
+
+### HDL-C — كوليستيرول عالى الكثافة
+
+**Test (EN):** HDL-C  
+**التحليل (AR):** كوليستيرول عالى الكثافة
+
+**التحضيرات / الاحتياطات (العربية):** صيام 12-14 ساعة - يسمح بتناول الماء
+
+### Helicobacter Pylori Antigen In Stool (Qualitative)
+
+**Test (EN):** Helicobacter Pylori Antigen In Stool (Qualitative)
+
+**Preparation / precautions (English):** stool sample
+
+**التحضيرات / الاحتياطات (العربية):** عينة براز
+
+### Helicobacter pylori line IgG
+
+**Test (EN):** Helicobacter pylori line IgG
+
+**التحضيرات / الاحتياطات (العربية):** التوقف عن تناول أدويه المعده
+
+### Her-2-neu by SISH
+
+**Test (EN):** Her-2-neu by SISH
+
+**Preparation / precautions (English):** paraffin block and full detailed report from the referring doctor
+
+**التحضيرات / الاحتياطات (العربية):** إحضار بلوكات الشمع وتقرير مفصل للحاله
+
+### Her-2/neu IHC
+
+**Test (EN):** Her-2/neu IHC
+
+**Preparation / precautions (English):** paraffin block and full detailed report from the referring doctor
+
+**التحضيرات / الاحتياطات (العربية):** إحضار بلوكات الشمع وتقرير مفصل للحاله
+
+### HLA-B27 typing — اتش ‏‎–‎‏ ال ‏‎–‎‏ اية ‏‎–‎‏ فصيلة بى 27
+
+**Test (EN):** HLA-B27 typing  
+**التحليل (AR):** اتش ‏‎–‎‏ ال ‏‎–‎‏ اية ‏‎–‎‏ فصيلة بى 27
+
+**⚠ Source-data flag:** The source catalogue attaches sterile-cup sample handling to this entry, which does not apply to an HLA-B27 blood test. Treat as a data-entry error in the source. Do not serve the note below as a preparation instruction.
+
+**Additional preparation note on record:**
+
+- لو حضرتك هتجهز العينة في البيت تكون في كوب معقم و توصل للفرع قبل مرور ساعتين و اخر ميعاد لاستلامها قبل قفل الفرع بساعة
+
+### HOMA-IR-INDEX in serum
+
+**Test (EN):** HOMA-IR-INDEX in serum
+
+**Preparation / precautions (English):** fasting 6-8 hrs. and should not take any unsulin drugs
+
+**التحضيرات / الاحتياطات (العربية):** صيام من 6-8 ساعات وعدم أخذ انسولين قبل التحليل بشهر
+
+### IgE "Total"
+
+**Test (EN):** IgE "Total"
+
+**Additional preparation note on record:**
+
+- هتصوم من (6 - 10) ساعات و الافضل 8 ساعات .. في الصيام مسموح بشرب المياه والدواء و نمتنع عن الاكل و التدخين (الدواء المسوح به الاقراص فقط) (عند اجراء تحاليل دهون كامله مع سكر صائم يشترط الصيام 10ساعات بالظبط يمتنع فيهم عن الاكل و التدخين و يسمح فقط بالماء و الدواء)
+- هتصوم من (6 - 10) ساعات و الافضل 8 ساعات .. في الصيام مسموح بشرب المياه والدواء و نمتنع عن الاكل و التدخين (الدواء المسوح به الاقراص فقط)
+
+### Insulin (Fasting) in serum — اختبار الأنسولين صائم بالدم
+
+**Test (EN):** Insulin (Fasting) in serum  
+**التحليل (AR):** اختبار الأنسولين صائم بالدم
+
+**Preparation / precautions (English):** fasting for 6-8 hrs., water and drugs intake (except for insulin) is allowed
+
+**التحضيرات / الاحتياطات (العربية):** صيام 6-8 ساعات- يسمح بتناول الماء
+
+### Insulin after 2 hours in serum — اختبار الأنسولين فاطر
+
+**Test (EN):** Insulin after 2 hours in serum  
+**التحليل (AR):** اختبار الأنسولين فاطر
+
+**Preparation / precautions (English):** The 2 hours are counted from the start of eating. It is required to finish eating within 10 minutes at most. If the patient is taking diabetes medication, the treatment is taken. Please come to the laboratory 15 minutes before the time for the analysis
+
+**التحضيرات / الاحتياطات (العربية):** حساب ساعتين من بدء تناول الطعام - مدة الطعام لا تتجاوز 15 دقيقة
+
+### karyotyping
+
+**Test (EN):** karyotyping
+
+**Preparation / precautions (English):** Full medical report from the referring doctor is needed
+
+### Lactate in blood — حامض لاكتيت فى الدم
+
+**Test (EN):** Lactate in blood  
+**التحليل (AR):** حامض لاكتيت فى الدم
+
+**التحضيرات / الاحتياطات (العربية):** صيام من 6-8 ساعات
+
+### LDL - C — كوليسترول منخفض الكثافة
+
+**Test (EN):** LDL - C  
+**التحليل (AR):** كوليسترول منخفض الكثافة
+
+**Preparation / precautions (English):** fasting 10-12 hrs.
+
+**التحضيرات / الاحتياطات (العربية):** صيام من 12-14 ساعه
+
+### LH(Luteinizing Hormone) in serum — هرمون ليتينزينج
+
+**Test (EN):** LH(Luteinizing Hormone) in serum  
+**التحليل (AR):** هرمون ليتينزينج
+
+**Preparation / precautions (English):** 2nd or 3rd day of menses (Females)
+
+**التحضيرات / الاحتياطات (العربية):** اليوم الثاني أو الثالث في الدورة بالنسبة للسيدات
+
+### Lipid Profile(Chol,Tri,HDL,LDL)
+
+**Test (EN):** Lipid Profile(Chol,Tri,HDL,LDL)
+
+**Preparation / precautions (English):** fasting 10-12 hrs.
+
+**التحضيرات / الاحتياطات (العربية):** صيام من 12 - 14 ساعه
+
+### Lithium
+
+**Test (EN):** Lithium
+
+**التحضيرات / الاحتياطات (العربية):** يسحب بعد الجرعه بنصف ساعه
+
+### Lupus Anticoagulant Detection
+
+**Test (EN):** Lupus Anticoagulant Detection
+
+**التحضيرات / الاحتياطات (العربية):** يجب معرفة هل يوجد أدويه سيوله وهل يوجد جلطات أو إجهاض متكرر
+
+### M2-PK Quick (Schebo test)
+
+**Test (EN):** M2-PK Quick (Schebo test)
+
+**Preparation / precautions (English):** stool analysis
+
+**التحضيرات / الاحتياطات (العربية):** عينة براز
+
+### Manual Blood culture and Sensitivity — مزرعة وحساسية للدم
+
+**Test (EN):** Manual Blood culture and Sensitivity  
+**التحليل (AR):** مزرعة وحساسية للدم
+
+**Sample collection instruction:** Thoroughly clean the site of puncture with antiseptic
+
+### Microalbuminurea (Random)
+
+**Test (EN):** Microalbuminurea (Random)
+
+**التحضيرات / الاحتياطات (العربية):** بول عشوائية
+
+### Multi Drug Abuse Qualitative
+
+**Test (EN):** Multi Drug Abuse Qualitative
+
+**Preparation / precautions (English):** urine sample
+
+**التحضيرات / الاحتياطات (العربية):** عينة بول عشوائية
+
+### Occult Blood In Stool
+
+**Test (EN):** Occult Blood In Stool
+
+**Preparation / precautions (English):** abstain from eating red meat, liver, rheumatic drugs, aspirin, vitamin C, cortisone, iron supplements, laxatives and antacids for 48 hours
+
+**التحضيرات / الاحتياطات (العربية):** التوقف عن تناول اللحوم الحمراء و الكبده و الفجل و الأسبرين و الكورتيزون و الحديد و مضادات الحموضة و الملينات و الكورتيزون و فيتامين C
+
+### Parathyroid Hormone (PTH)
+
+**Test (EN):** Parathyroid Hormone (PTH)
+
+**التحضيرات / الاحتياطات (العربية):** ويجب التوضيح في حالةوجود علاج كالسيوم أو وجود مشاكل بالكلى
+
+### Pathological Examination , Large (Histopathology) — فحص أنسجة ( عينة كاملة )
+
+**Test (EN):** Pathological Examination , Large (Histopathology)  
+**التحليل (AR):** فحص أنسجة ( عينة كاملة )
+
+**Preparation / precautions (English):** biopsy on the same day of operations, site and type of mass, and full detailed report from the referring doctor
+
+**التحضيرات / الاحتياطات (العربية):** يجب إحضار العينه فى نفس اليوم و إحضار تقرير الحاله مفصل
+
+### Pathological Examination , Small (Histopathology) — فحص أنسجة ( عينة صغيرة )
+
+**Test (EN):** Pathological Examination , Small (Histopathology)  
+**التحليل (AR):** فحص أنسجة ( عينة صغيرة )
+
+**Preparation / precautions (English):** biopsy on the same day of operations, site and type of mass, and full detailed report from the referring doctor
+
+**التحضيرات / الاحتياطات (العربية):** يجب إحضار العينه فى نفس اليوم و إحضار تقرير الحاله مفصل
+
+### Progesterone ( Pr receptors ) — مستقبلات البروجيسترون
+
+**Test (EN):** Progesterone ( Pr receptors )  
+**التحليل (AR):** مستقبلات البروجيسترون
+
+**Preparation / precautions (English):** paraffin block and full detailed report from the referring doctor
+
+**التحضيرات / الاحتياطات (العربية):** إحضار بلوكات الشمع وتقرير مفصل للحاله
+
+### Progesterone in serum
+
+**Test (EN):** Progesterone in serum
+
+**Preparation / precautions (English):** 21st day of menses (Females)
+
+**التحضيرات / الاحتياطات (العربية):** اليوم ال 21 للدورة الشهرية بالنسبة للسيدات
+
+### Protein / creatinine ratio
+
+**Test (EN):** Protein / creatinine ratio
+
+**التحضيرات / الاحتياطات (العربية):** عينه بول عشوائي
+
+### Protein C
+
+**Test (EN):** Protein C
+
+**التحضيرات / الاحتياطات (العربية):** التوضيح في حالة تناول أدويه سيوله أو حدوث إجهاض أو جلطات
+
+### Protein in 24 hrs Urine — بروتين بالبول 24 ساعة
+
+**Test (EN):** Protein in 24 hrs Urine  
+**التحليل (AR):** بروتين بالبول 24 ساعة
+
+**Preparation / precautions (English):** Emptying the bladder in the toilet and registration of time. Start collecting in a suitable clean and dry bottle sufficient for the assembly. Continue assembling urine to the same time of registration next day. Preserve urine in the refrigerator until sending it to the lab.
+
+**التحضيرات / الاحتياطات (العربية):** تجميع بول 24 ساعة - إفراغ المثانة بالكامل في التواليت مع القيام بتسجيل الوقت في ذلك الحين تجميع أي بول بعد ذلك في زجاجة مناسبة نظيفة و جافة و يستمر تجميع البول إلى نفس الوقت الذي تم فيه بداية التجميع من اليوم التالي-حفظ البول في الثلاجة لحين إرساله إلى المعمل
+
+**Sample collection instruction:** -First discard morninig urine at the toilet at 8 A.M. -Collect all urine sample after that in a clean container stored in fridge till 8 A.M. next day.
+
+### Protein S — اختبار بروتين اس
+
+**Test (EN):** Protein S  
+**التحليل (AR):** اختبار بروتين اس
+
+**التحضيرات / الاحتياطات (العربية):** التوضيح في حالة تناول أدويه سيوله أو حدوث إجهاض أو جلطات
+
+### Prothrombin Time (PT)
+
+**Test (EN):** Prothrombin Time (PT)
+
+**Preparation / precautions (English):** anti coagulants treatment intake (if applicable) must be stated
+
+**التحضيرات / الاحتياطات (العربية):** الرجاء الإفادة عن تناول أدوية السيولة : نوع العلاج - الجرعة - مدة التناول عند سحب العينة
+
+### PSA (Total & Free) — بروستاتيك أنتيجين كلى و جزئى
+
+**Test (EN):** PSA (Total & Free)  
+**التحليل (AR):** بروستاتيك أنتيجين كلى و جزئى
+
+**Preparation / precautions (English):** For 10 days before the analysis, the patient is prohibited from inserting an endoscope or catheter, abstain from sexual intercourse for 48 hrs.
+
+**التحضيرات / الاحتياطات (العربية):** هل يوجد أى أدويه للبروستاتا أو عمل أى عمليات
+
+### PSA-Free — بروستاتيك أنتيجين حر
+
+**Test (EN):** PSA-Free  
+**التحليل (AR):** بروستاتيك أنتيجين حر
+
+**Preparation / precautions (English):** For 10 days before the analysis, the patient is prohibited from inserting an endoscope or catheter, abstain from sexual intercourse for 48 hrs.
+
+**التحضيرات / الاحتياطات (العربية):** يجب التوضيح في حالة وجود علاج للبروستاتا
+
+**Sample collection instruction:** Avoid prostatic examination or endocopy at least ten days before test
+
+### PSA-Total — بروستاتيك أنتيجين كلى
+
+**Test (EN):** PSA-Total  
+**التحليل (AR):** بروستاتيك أنتيجين كلى
+
+**التحضيرات / الاحتياطات (العربية):** الامتناع عن الجماع 3 أيام - عدم إجراء فحص أو سونار شرجي لمدة 3 أيام
+
+**Sample collection instruction:** Avoid prostatic examination or endocopy at least ten days before test
+
+### Pus Culture and Sensitivity (Aerobic and anaerobic) — مزرعة وحساسية للصديد
+
+**Test (EN):** Pus Culture and Sensitivity (Aerobic and anaerobic)  
+**التحليل (AR):** مزرعة وحساسية للصديد
+
+**Preparation / precautions (English):** should stop taking antibiotics before doing the test for 48 hrs
+
+**التحضيرات / الاحتياطات (العربية):** الامتناع عن أخذ المضادات الحيويه 48 ساعه وعند وجوب أخذها توضيح إسم المضاد الحيوي
+
+### Quantiferon T.B. -gold (IGRA)
+
+**Test (EN):** Quantiferon T.B. -gold (IGRA)
+
+**Additional preparation note on record:**
+
+- بدون شروط لكن يحتاج الى حجز مسبق لانه يحتاج الى انبوب معين
+
+### Reducing Sugar in Stool — السكر المختزل بالبراز
+
+**Test (EN):** Reducing Sugar in Stool  
+**التحليل (AR):** السكر المختزل بالبراز
+
+**التحضيرات / الاحتياطات (العربية):** عينه براز ومع الأطفال برجاء قلب الحفاظة وتفريغ العينه فى كوب المعمل
+
+### Semen Analysis — تحليل سائل منوى
+
+**Test (EN):** Semen Analysis  
+**التحليل (AR):** تحليل سائل منوى
+
+**Preparation / precautions (English):** It is required to abstain from sexual intercourse for 4 consecutive days. It is preferable to give the sample in the laboratory, taking care to place all the sample, including the first points of sperm, in the container for that. The sample is brought to the laboratory within 20 minutes if the sample was brought from home.
+
+**التحضيرات / الاحتياطات (العربية):** يشترط الإمتناع عن الجماع أو حدوث الاحتلام لمدة 4 أيام متتالية -يفضل إعطاء العينة في المعمل مع الإهتمام بوضع كل العينة بما فيها النقط الأولى من المنى في الوعاء الخاص بذلك- يتم إحضار العينة إلى المعمل في خلال 20 دقيقة إذا أحضرت العينة من المنزل
+
+**Sample collection instruction:** No sexual intercourse during the last 3 days
+
+### Semen Culture and Sensitivity
+
+**Test (EN):** Semen Culture and Sensitivity
+
+**Preparation / precautions (English):** antibiotic uptake is stopped 24 hrs. prior to the test
+
+**التحضيرات / الاحتياطات (العربية):** الامتناع عن أخذ المضادات الحيويه 48 ساعه وعند وجوب أخذها توضيح إسم المضاد الحيوي ويوجد فرق بين إحضار عينه السائل والبول على الأقل ثلث ساعه
+
+### Serum Iron — اختبار الحديد بالمصل
+
+**Test (EN):** Serum Iron  
+**التحليل (AR):** اختبار الحديد بالمصل
+
+**التحضيرات / الاحتياطات (العربية):** الإفادة عن أخذ أدوية حديد أو نقل دم عند سحب العينة
+
+### SGPT (ALT)
+
+**Test (EN):** SGPT (ALT)
+
+**Preparation / precautions (English):** affected by some drugs as analgesics, contraceptive pills
+
+**التحضيرات / الاحتياطات (العربية):** يرتفع احيانًا مع تناول بعض الأدوية
+
+### Sputum Culture and Sensitivity — مزرعة وحساسية للبصاق
+
+**Test (EN):** Sputum Culture and Sensitivity  
+**التحليل (AR):** مزرعة وحساسية للبصاق
+
+**Preparation / precautions (English):** fasting 6 to 8 hrs., sterile cup is provided by the lab
+
+**التحضيرات / الاحتياطات (العربية):** الامتناع عن أخذ المضادات الحيويه 48 ساعه وعند وجوب أخذها توضيح إسم المضاد الحيوي والصيام 6 ساعات يشترط فى عينه البصاق
+
+**Sample collection instruction:** Deep morning cough
+
+### Stone Analysis — تحليل حصوة
+
+**Test (EN):** Stone Analysis  
+**التحليل (AR):** تحليل حصوة
+
+**Preparation / precautions (English):** indicate site
+
+**التحضيرات / الاحتياطات (العربية):** منشأ (مكان) الحصوة
+
+### Stool Analysis
+
+**Test (EN):** Stool Analysis
+
+**Preparation / precautions (English):** samples must be received in lab cups
+
+**Sample collection instruction:** The sample is provided by the patient within 1 hour
+
+### Stools Culture and Sensitivity — مزرعة وحساسية للبراز
+
+**Test (EN):** Stools Culture and Sensitivity  
+**التحليل (AR):** مزرعة وحساسية للبراز
+
+**Preparation / precautions (English):** the sample should be in a sterile cup provided to the lab with in a maximum 2 hrs., samples enclosed in baby diapers are not accepted. It is prefered to stop antibiotics intake for 48 hrs. prior to testing
+
+**التحضيرات / الاحتياطات (العربية):** الامتناع عن تناول المضادات الحيويه 48 ساعه وعند وجوب أخذها توضيح إسم المضاد الحيوى - الإخبار عند وجود حمل وفي الأطفال يجب قلب الحفاظة قبل إحضار العينه فيه
+
+### T3 Total in serum — تحليل هرمون تى3
+
+**Test (EN):** T3 Total in serum  
+**التحليل (AR):** تحليل هرمون تى3
+
+**Preparation / precautions (English):** traetment with thyroid hormone (if any) should be stated
+
+**التحضيرات / الاحتياطات (العربية):** معرفة مدة و جرعة تناول أدوية الغدة
+
+### T4 Total in serum — تحليل هرمون تى4
+
+**Test (EN):** T4 Total in serum  
+**التحليل (AR):** تحليل هرمون تى4
+
+**Preparation / precautions (English):** traetment with thyroid hormone (if any) should be stated
+
+**التحضيرات / الاحتياطات (العربية):** معرفة مدة و جرعة تناول أدوية الغدة
+
+### Tacrolimus ( FK506 ) Trough
+
+**Test (EN):** Tacrolimus ( FK506 ) Trough
+
+**Preparation / precautions (English):** 1 hr. before drug intake
+
+**التحضيرات / الاحتياطات (العربية):** يتم عمله بعد أخذ الجرعه بساعتين ومن المهم التوضيح عند وجود قئ ومستوى الجرعه وهل تم تغيير الجرعه قريبًا
+
+### Testosterone in serum
+
+**Test (EN):** Testosterone in serum
+
+**التحضيرات / الاحتياطات (العربية):** االرجاء الإفادة عن تناول هرمون التستوستيرون بالنسبة للرجال عند سحب العينة
+
+### Throat Swab Cutlure and Sensitivity — مزرعة وحساسية لمسحة من الزور
+
+**Test (EN):** Throat Swab Cutlure and Sensitivity  
+**التحليل (AR):** مزرعة وحساسية لمسحة من الزور
+
+**Preparation / precautions (English):** fasting 6 to 8 hrs.
+
+**التحضيرات / الاحتياطات (العربية):** الامتناع عن أخذ المضادات الحيويه 48 ساعه وعند وجوب أخذها توضيح إسم المضاد الحيوي والصيام 6 ساعات
+
+### Thrombophilia Gene Screen
+
+**Test (EN):** Thrombophilia Gene Screen
+
+**التحضيرات / الاحتياطات (العربية):** الرجاء الإفادة عن وجود جلطات أو إجهاض متكرر - فى اى ادويه سيوله عند سحب العينة
+
+### TIBC — تحليل نسبة الحديد الكلية المرتبطة
+
+**Test (EN):** TIBC  
+**التحليل (AR):** تحليل نسبة الحديد الكلية المرتبطة
+
+**التحضيرات / الاحتياطات (العربية):** الإفادة عن أخذ أدوية حديد أو نقل دم عند سحب العينة
+
+### Total HCG (Quantitative)
+
+**Test (EN):** Total HCG (Quantitative)
+
+**Preparation / precautions (English):** LMP date
+
+**التحضيرات / الاحتياطات (العربية):** معرفة مدة و جرعة تناول أدوية الغدة
+
+### Toxicology panel
+
+**Test (EN):** Toxicology panel
+
+**Preparation / precautions (English):** random urine sample is needed
+
+### Tramadol qualitative
+
+**Test (EN):** Tramadol qualitative
+
+**Preparation / precautions (English):** urine sample
+
+**التحضيرات / الاحتياطات (العربية):** عينة بول
+
+### TRANSFERRIN — تحليل الترانسفيرين
+
+**Test (EN):** TRANSFERRIN  
+**التحليل (AR):** تحليل الترانسفيرين
+
+**التحضيرات / الاحتياطات (العربية):** من المهم التوضيح في حالة تناول أدويه حديد أو إجراء نقل دم
+
+### Triglyceride — دهون ثلاثية
+
+**Test (EN):** Triglyceride  
+**التحليل (AR):** دهون ثلاثية
+
+**Preparation / precautions (English):** fasting 12-14 hrs., water and drugs intake is allowed
+
+**التحضيرات / الاحتياطات (العربية):** صيام 12-14 ساعة - يسمح بتناول الماء
+
+### Troponin I — تروبونين أى
+
+**Test (EN):** Troponin I  
+**التحليل (AR):** تروبونين أى
+
+**التحضيرات / الاحتياطات (العربية):** يجب التوضيح في حالة وجود أي آلام بالصدر
+
+### TSH in serum — تحليل هرمون ( تى ‏‎–‎اس ‏‎–‎‏ اتش )
+
+**Test (EN):** TSH in serum  
+**التحليل (AR):** تحليل هرمون ( تى ‏‎–‎اس ‏‎–‎‏ اتش )
+
+**Preparation / precautions (English):** thyroid treatment intake (if applicable) must be stated
+
+**التحضيرات / الاحتياطات (العربية):** معرفة مدة و جرعة تناول أدوية الغدة
+
+### Urea breath test
+
+**Test (EN):** Urea breath test
+
+**Preparation / precautions (English):** dont take any medication for digestive system and inflammation for about one month and fasting 6 hrs. before doing the test
+
+**التحضيرات / الاحتياطات (العربية):** صيام من 6 - 8 ساعات والتوقف عن تناول أدويه المعده مدة شهر
+
+### Uric acid — حمض البوليك
+
+**Test (EN):** Uric acid  
+**التحليل (AR):** حمض البوليك
+
+**التحضيرات / الاحتياطات (العربية):** يجب معرفه هل يتم أخذ علاج أملاح أم لا
+
+### Urine Analysis — تحليل بول كامل
+
+**Test (EN):** Urine Analysis  
+**التحليل (AR):** تحليل بول كامل
+
+**Preparation / precautions (English):** Random sample, morning, mid-stream is prefered
+
+**التحضيرات / الاحتياطات (العربية):** يفضل أول عينه صباحيه أول جزء من العينه بالحمام وباقى العينه فى كوب المعمل
+
+### Urine Culture and Sensitivity — مزرعة وحساسية بالبول
+
+**Test (EN):** Urine Culture and Sensitivity  
+**التحليل (AR):** مزرعة وحساسية بالبول
+
+**Preparation / precautions (English):** hands and genitals must be washed with soap and water, first drops of urine should be avoided in the toilet and the rest should be placed in the sterlized cup it is prefered not to take any antibiotics 48 hrs. before bringing the sample, if the sample is provided from home it must be delivered to the lab within 2 hrs.
+
+**التحضيرات / الاحتياطات (العربية):** الامتناع عن تناول المضادات الحيويه 48 ساعه وعند وجوب أخذها توضيح إسم المضاد الحيوى - الإخبار عند وجود حمل - غسل الأعضاء التناسليه جيدا و أول جزء من العينة فى التواليت وباقىي العينه فى كوب الإحضار
+
+**Sample collection instruction:** Morning Sample
+
+### Vaginal Discharge Culture and sensitivity — مزرعة وحساسية لإفرازات المهبل
+
+**Test (EN):** Vaginal Discharge Culture and sensitivity  
+**التحليل (AR):** مزرعة وحساسية لإفرازات المهبل
+
+**Preparation / precautions (English):** should refrain from sexual intercourse for 2 days prior to the test, avoid washing the vagina on the day of the test, stop taking antibiotics for 48 hrs prior to the test
+
+**التحضيرات / الاحتياطات (العربية):** الامتناع عن أخذ المضادات الحيويه 48 ساعه وعند وجوب أخذها توضيح إسم المضاد الحيوي وعدم غسيل الأعضاء التناسلية قبل الذهاب لعمل المسحه
+
+### Vanillyl Mandelic Acid (VMA in 24 hrs Urine) — تحليل فى ‏‎–‎‏ ام ‏‎–‎‏ اية
+
+**Test (EN):** Vanillyl Mandelic Acid (VMA in 24 hrs Urine)  
+**التحليل (AR):** تحليل فى ‏‎–‎‏ ام ‏‎–‎‏ اية
+
+**Preparation / precautions (English):** Collecting 24-hour urine. Stop drinking tea, coffee, biscuits, vanilla, bananas, pineapples, tomatoes, and eggplant.
+
+**التحضيرات / الاحتياطات (العربية):** تجميع بول 24 ساعة كما هو مكتوب سابقا - الامتناع عن تناول الشاي، القهوة، البسكويت، الفانيليا، الموز، الاناناس، الطماطم، الباذنجان
+
+**Sample collection instruction:** First, discard the morning urine at the toilet,Then collect all urine samples including the 2 second morning sample and put the container in the fridge during the collection
+
+### Vitamin B12 (Cyanocobalamin) Level in serum
+
+**Test (EN):** Vitamin B12 (Cyanocobalamin) Level in serum
+
+**Preparation / precautions (English):** vitamin intake (if applicable) must be stated
+
+**التحضيرات / الاحتياطات (العربية):** تهي يتم تناول الفيتامينات : المدة و الجرعة
+
+### Zinc in Blood
+
+**Test (EN):** Zinc in Blood
+
+**التحضيرات / الاحتياطات (العربية):** الإفادة عن أخذ أي فيتامينات عند سحب العينة
+
+---
+
+## Appendix A — Tests with no special preparation
+## الملحق أ — تحاليل لا تتطلب تحضيرات خاصة
+
+The following 131 tests carry **no** preparation, precaution or sample instruction on record. If a patient asks about one of these, answer that no special preparation is required and suggest they confirm with the laboratory where the test is booked.
+
+التحاليل التالية ليس لها أي تحضيرات أو احتياطات خاصة مسجَّلة. إذا سأل المريض عن أحدها، وضّح أنه لا توجد تحضيرات خاصة مطلوبة، واقترح التأكيد من المعمل الذي سيُجري التحليل.
+
+- ABO Grouping
+- ADNA (ds)
+- AFP
+- AMA (M2)
+- ANA
+- ANA by IF
+- ANA titre by IF
+- ANCA (Perinuclear)
+- ASMA
+- ASOT
+- Alcohol
+- Alk.phosphatase
+- Ammonia
+- Anti -beta 2-Glycoprotein (IgG)
+- Anti -beta 2-Glycoprotein (IgM)
+- Anti C.C.P. Antibodies
+- Anti Microsomal Antibody (TPO)
+- Anti Mullerian Hormone-Adult(AMH) in serum
+- Anti SSA (Ro60) (Qualitative)
+- Anti Thyroid Peroxidase Ab
+- Anti- Thyroid Antibodies
+- Anti-Cardiolipin IgG (ACL)
+- Anti-Cardiolipin IgM (ACL)
+- B2 Microglobulin in Serum
+- BUN
+- Beta Subunit HCG (Qualitative)
+- Bicarbonate (HCO3)
+- Bilharzial Antibody
+- Bilharzial Antigen in Serum
+- Bilirubin ( T&D )
+- Bilirubin - direct
+- Bilirubin - total
+- Bleeding Time (BT)
+- Blood Grouping (ABO&Rh)
+- Blood Urea
+- Brucella Antibody (Malta)
+- Brucella IgM
+- C3
+- C4
+- CA 19-9
+- CA125
+- CA15-3
+- CEA
+- CK-MB
+- CMV IgG
+- CPK - Total
+- CRP (Qualitative)
+- CRP (Quantitative)
+- Calcium
+- Ceruloplasmin
+- Chloride
+- Coomb's Test "Direct"
+- Coomb's Test "Indirect"
+- Creatinine, serum
+- D-dimer
+- EBV IgG (VCA-IgG)
+- EBV IgM (VCA-IgM)
+- ESR
+- FMF (MEFV Gene Mutation) by PCR
+- Factor V Leiden Mutation by PCR
+- Fibrinogen Level
+- Food Print – 220 ( Food Intolerance )
+- Free Testosterone in serum
+- HAV IgG
+- HAV IgM
+- HBV DNA Quantitative by (TaqMan)
+- HBc IgM
+- HBc, total
+- HBe Ab
+- HBeAg
+- HBs Ag (Eliza)
+- HBsAg by Chemiluminescent technology
+- HCV Ab by Chemiluminescent technology
+- HCV Ab. (ELIZA)
+- HCV RNA Quantitative by PCR (TaqMan)
+- HIV Antibody (AIDS Test)
+- HSV I IgG
+- HSV I IgM
+- HSV II IgG
+- HSV II IgM
+- Haemoglobin A1C
+- Helicobacter pylori antibody
+- Helicobacter pylori antibody Titre
+- Homocysteine "Serum"
+- IMMUNOFIXATION , serum
+- IgA
+- IgE Specific ( Inhalant allergens )
+- IgE Specific ( food allergens )
+- IgG
+- IgM
+- Immunophenotyping :CD16
+- Immunophenotyping :CD4
+- Immunophenotyping :CD56
+- Interleukin-6 (IL6)
+- K+
+- LDH
+- LKM-1 antibodies
+- Lipase
+- MG
+- Na
+- Opiates Screen
+- PROCALCITONIN
+- Philadelphia chromosome by PCR ( No material) ( CML )
+- Phosphorous
+- Platelet Count
+- Prolactin in serum
+- Protein - total
+- Protein Electrophoresis in Serum
+- RF (Qualitative)
+- RF (Quantitative)
+- Random Blood Glucose
+- Reticulocytic Count
+- Rh Grouping
+- Rose-Waaler Test
+- Rubella IgG
+- Rubella IgM
+- SGOT (AST)
+- SPERM DNA FRAGMENTATION
+- Sex Hormone Binding Globulin (SHBG ) in serum
+- TPHA
+- Thyroglobulin in serum
+- Total Leucocytic Count (WBCs)
+- Toxoplasmosis IgG
+- Toxoplasmosis IgM
+- Tuberculin
+- VDRL
+- Varicella Zoster Virus (VZV) IgG
+- Varicella Zoster Virus (VZV) IgM
+- WIDAL Test
+- ionized Ca++
+- vit D 25 Hydroxy Cholecalciferol
+
+---
+
+## Appendix B — Provenance and data-quality notes
+## الملحق ب — مصدر المحتوى وملاحظات على جودتها
+
+### Provenance
+
+Compiled on 2026-09-21 from the published patient-preparation guidance of a clinical laboratory and radiology group (alborglab.com): its sample-collection precautions pages, its ten radiology service pages, and its online test catalogue, each in English and Arabic. The instructions themselves are standard pre-analytical practice and are not specific to that provider, which is why this document is written for use at any laboratory or imaging centre. Where a provider publishes its own rule — a different fasting window, a different sample-transport limit, its own booking policy — that rule takes precedence over anything here.
+
+### Entries flagged as mis-assigned in the source
+
+These carry a preparation note that does not match the test it is attached to. They are reproduced in Section 3 for traceability but must not be served to patients as instructions.
+
+- **CMV IgM** — The source catalogue attaches a 24-hour urine collection protocol to this entry, which does not apply to a CMV IgM blood test. Treat as a data-entry error in the source.
+- **Cortisol-Am in serum** — The source catalogue attaches an LDL-cholesterol label here, not a preparation instruction. Treat as a data-entry error in the source.
+- **HLA-B27 typing** — The source catalogue attaches sterile-cup sample handling to this entry, which does not apply to an HLA-B27 blood test. Treat as a data-entry error in the source.
+
+### Other known source quirks
+
+- One sub-heading inside the English Ultrasound preparation list is printed in Arabic (الموجات فوق الصوتية للحوض (ذكر) = Pelvic Ultrasound, Male).
+- The source gives fasting windows that differ slightly between its general precautions page and its individual test records (for example fasting sugar 6–8 hours versus 6–10 hours). Both are reproduced as published; prefer the Section 1 wording for general questions.
+- Radiology preparation varies by protocol and by equipment. Treat Section 2 as the common baseline and defer to the imaging centre for contrast, sedation and implant-safety decisions.
+ 
