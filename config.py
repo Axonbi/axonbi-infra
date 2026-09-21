@@ -1018,9 +1018,10 @@ CLIENT_LAB_ENTITY_NAMES: Dict[str, Dict[str, str]] = {
             "17367696-f551-4d28-bd3d-0838bc7f2180,"
             "d307741a-6c50-467a-8a12-adb8e59c5db8"
         ),
-        # See the comment on lab-alborg's own copy of this key above -
-        # empty until Radiology test-doctors are registered for real.
-        "lab_test_specialty_id_radiology": "",
+        # Radiology (الأشعة) specialtyId from the shared demo Booking API
+        # (same value as lab-alborg above). Was empty, which made every
+        # radiology search return not_configured.
+        "lab_test_specialty_id_radiology": "09996f0c-71eb-4836-9132-ee4319bcf874",
     },
 }
 
