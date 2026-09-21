@@ -1163,14 +1163,27 @@ def _looks_like_an_answer(text: str) -> bool:
     if _BARE_CODE_RE.match(stripped):
         return True
 
-    # A bare day or time, with at most one filler word in front of it
-    # ("الاثنين", "يوم الاثنين", "طب الاثنين", "الساعة 5").
+    # A message naming a real weekday, anywhere in it - short ("الاثنين",
+    # "يوم الاثنين") or a longer sentence. CONFIRMED REAL PRODUCTION
+    # FAILURE: mid an active NEW BOOKING flow that was negotiating which
+    # day to book, "بس انا قلت الخميس من الاول" ("but I said Thursday
+    # from the start") - a frustrated clarification about THIS SAME
+    # day-selection question, not a new intent - scored 0 on every
+    # deterministic cue, and the one-shot LLM classifier (no
+    # conversation history to judge it by) guessed "reschedule" instead.
+    # That pulled up a COMPLETELY UNRELATED existing booking (a
+    # different patient's, sharing this phone number) mid-conversation,
+    # and handed the turn to the reschedule flow - which has none of the
+    # lab-client "never say الدكتور" guards the active booking flow
+    # already had. A weekday name anywhere in the message, while a flow
+    # expecting a day/time answer is active, is almost always about THAT
+    # question - exactly the same "one message cannot tell the slot from
+    # the intent" reasoning this whole function already exists for.
     words = [w for w in re.split(r"\s+", normalized) if w]
-    if len(words) <= 3:
-        from tools import resolve_weekday_index
+    from tools import resolve_weekday_index
 
-        if any(resolve_weekday_index(word) is not None for word in words):
-            return True
+    if any(resolve_weekday_index(word) is not None for word in words):
+        return True
 
     return False
 
