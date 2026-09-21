@@ -998,7 +998,7 @@ CLIENT_LAB_ENTITY_NAMES: Dict[str, Dict[str, str]] = {
         # the real specialtyId once they are; until then,
         # search_lab_services(specialty="radiology") returns
         # {"status": "not_configured"} rather than guessing.
-        "lab_test_specialty_id_radiology": "",
+        "lab_test_specialty_id_radiology": "09996f0c-71eb-4836-9132-ee4319bcf874",
     },
     # Confirmed (2026-09-21) to share the exact same demo Booking API
     # account as "lab-alborg" above - same doctor ids showed up in both
