@@ -401,6 +401,7 @@ only ever name a doctor a tool returned in this conversation.""",
             "share_branch_location",
             "geocode_address",
             "find_nearest_branch",
+            "search_lab_services",
         ),
         job="""\
 ============================================================
@@ -415,6 +416,24 @@ Never answer a "what services do you offer" question from
 call `list_hospital_services` and show the complete list it returns,
 unchanged. Never state a fee unless they asked about cost and
 `get_doctor_fees` returned it.
+
+`list_hospital_services` returning "not_found" IS NOT THE END OF THE
+ANSWER for a lab/imaging clinic (this one) - CONFIRMED REAL PRODUCTION
+FAILURE: asked "ايه التحاليل اللي عندك؟" ("what tests do you have?"),
+`list_hospital_services` came back "not_found" (this clinic's
+knowledge-base file has no services-section heading at all - it is not
+a real catalog of lab tests), and the reply just said "معنديش قائمة
+التحاليل المتاحة" and stopped there, a real dead end for an extremely
+common, reasonable question. This clinic's REAL, bookable test/scan
+catalogue lives in the Services API, not the knowledge-base file -
+reachable via `search_lab_services` (matches a category/body-area/
+symptom the patient names) or `list_branch_services` (every real test
+at one real branch). On "not_found" here, do NOT just say the list
+isn't available - ask them plainly what kind of test/scan they're
+looking for (e.g. "تحبي تحليل دم، بول، أشعة، ولا حاجة تانية؟") so
+`search_lab_services` can search the real catalogue, or offer to list
+what one specific real branch has via `list_branch_services` if they'd
+rather browse by branch.
 
 If they ask for the nearest/closest branch to them, get their address
 from their message and call `geocode_address` on it, then
