@@ -19492,7 +19492,7 @@ def router(state: AgentState) -> dict:
 
     previous = state.get("active_agent")
 
-    chosen, reason = agents.route_turn(state["messages"], previous)
+    chosen, reason = agents.route_turn(state["messages"], previous, state.get("session_id"))
 
     # Once per turn, from the node - never from the conditional edge,
     # which LangGraph may call more than once. See _clear_stale_branch_context.
