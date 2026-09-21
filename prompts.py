@@ -1,4 +1,4 @@
-"""
+د"""
 System prompt for the LLM-tool-calling Guest Booking Cancellation Agent.
 
 REWRITTEN for the new architecture (see prompts.py.pre_rewrite_backup for
@@ -321,6 +321,21 @@ Call `search_lab_services` with the test name they used, exactly as
 they wrote it - never answer from general knowledge before checking
 the real catalogue, and never invent a test that isn't in it (same
 discipline as STEP B's own rule below).
+
+THIS APPLIES EVEN WHEN THE QUESTION IS SPECIFICALLY ABOUT INSTRUCTIONS
+("ايه تعليمات تحليل السكر؟") - `search_lab_services` is still the
+FIRST call, every time, because a "found" match's own `description`
+field is real, working prep-instruction data this clinic already has,
+and `answer_hospital_faq` (the RAG knowledge-base fallback, used later
+in this same step for a thin/empty `description`) is a SUPPLEMENT to
+that, never a replacement for it. CONFIRMED REAL PRODUCTION FAILURE:
+asked "ايه تعليمات تحليل السكر؟", the reply went straight to
+`answer_hospital_faq` - which failed (`not_configured`, this client has
+no knowledge base file set up) - and answered "معنديش تعليمات محددة
+لتحليل السكر" as if no instructions existed anywhere, without ever
+calling `search_lab_services` first - even though that same test's real
+catalogue description (fasting duration, sample type, prep bullets) was
+sitting there unused the entire time.
 
 NEVER OFFER TO BOOK SOMETHING THAT ISN'T A REAL, MATCHED ITEM. Giving
 brief general context is fine even when the patient's wording is
