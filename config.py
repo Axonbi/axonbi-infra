@@ -992,6 +992,25 @@ CLIENT_LAB_ENTITY_NAMES: Dict[str, Dict[str, str]] = {
             "d307741a-6c50-467a-8a12-adb8e59c5db8"
         ),
     },
+    # Confirmed (2026-09-21) to share the exact same demo Booking API
+    # account as "lab-alborg" above - same doctor ids showed up in both
+    # clients' get_doctors results (e.g. 17367696-...=تحليل سكر صائم).
+    # Mirrors lab-alborg's entry entirely for that reason. If lab-ezz is
+    # later moved to its own real account, these values will need
+    # updating to that account's own real names/ids - they will NOT
+    # carry over automatically.
+    "lab-ezz": {
+        "lab_in_place_doctor_name": "in-lab",
+        "lab_home_doctor_name": "Home",
+        "lab_home_service_branch_name": "Home Branch",
+        "lab_home_service_branch_alt_name": "فرع خدمة منزلية",
+        "lab_uses_per_test_doctors": "true",
+        "lab_test_specialty_id": "b671c879-7375-4be6-9971-0cb327bf1a7a",
+        "lab_test_doctor_ids": (
+            "17367696-f551-4d28-bd3d-0838bc7f2180,"
+            "d307741a-6c50-467a-8a12-adb8e59c5db8"
+        ),
+    },
 }
 
 LAB_IN_PLACE_DOCTOR_NAME = os.getenv("LAB_IN_PLACE_DOCTOR_NAME", "in-lab")
