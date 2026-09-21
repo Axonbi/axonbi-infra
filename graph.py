@@ -19598,6 +19598,25 @@ def _review_card_shown_immediately_before(messages: list, templates: dict) -> bo
         if isinstance(message, _HumanMessage):
             continue
         if isinstance(message, AIMessage):
+            # AN AIMESSAGE THAT ITSELF CALLS A TOOL IS NOT "A REPLY SHOWN
+            # TO THE PATIENT" - skip it regardless of whether it happens
+            # to carry incidental text alongside its tool_calls (some
+            # models attach a short aside even in tool-calling mode).
+            # CONFIRMED REAL PRODUCTION FAILURE (a third one, on the same
+            # check this function's own docstring already describes
+            # fixing twice): the AIMessage that called
+            # `confirm_booking_review` carried non-empty content, so the
+            # old `if not content.strip(): continue` never skipped past
+            # it - this function checked THAT incidental text against
+            # the confirmation sentences (an obvious mismatch), returned
+            # False immediately, and never reached the real review card
+            # further back. The result was an unbreakable loop: every
+            # "yes" re-triggered `confirm_booking_review` (already
+            # confirmed, so it succeeded again) immediately followed by
+            # a blocked `create_new_booking`, with the patient told
+            # their confirmation hadn't arrived - forever.
+            if getattr(message, "tool_calls", None):
+                continue
             if not (message.content or "").strip():
                 continue
             normalized = _normalize_for_compare(str(message.content))
