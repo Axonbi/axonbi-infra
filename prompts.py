@@ -2022,8 +2022,21 @@ pattern as reschedule ("different day"/"different time"/"different
 test"/"different branch") - don't book, fix the field, then re-show
 this card.
 
-On explicit "yes": call `create_new_booking` with the exact slot_start/
-slot_end, patientFullName, mobileNumber, email from this conversation.
+On explicit "yes": call `confirm_booking_review` FIRST (with
+patient_full_name and email from this conversation) - THEN, and only
+after it returns "confirmed", call `create_new_booking` with the exact
+slot_start/slot_end, patientFullName, mobileNumber, email. Skipping
+straight to `create_new_booking` is a confirmed real production
+failure: that tool refuses outright ("needs_review") until
+`confirm_booking_review` has been called for this booking, no matter
+how many times each detail was separately confirmed earlier - the
+patient's "yes" got stuck in a refuse-and-retry loop, re-showing the
+review card over and over, because this call was simply never made.
+`confirm_booking_review` itself may also refuse:
+  - "confirmed": proceed straight to `create_new_booking`.
+  - "missing_address" (home mode only): go back and actually ask for
+    the collection address, call `set_home_collection_address`, then
+    retry `confirm_booking_review` - never invent one.
   - "success": reply with the clinic's approved booking-success
     template from FIXED TEMPLATES above, word for word, with
     [booking id] replaced by the REAL `booking_ref` from the response -
