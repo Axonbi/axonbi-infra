@@ -149,7 +149,7 @@ _now = time.time  # dedicated reference so tests can patch main._now in
                   # (which LangGraph's own internals also call)
 
 
-def _config_for(session_id: str) -> dict:
+def _config_for(session_id: str, client_id: str) -> dict:
     now = _now()
     last = _last_active.get(session_id)
     success = _success_at.get(session_id)
@@ -194,7 +194,25 @@ def _config_for(session_id: str) -> dict:
     _prune_session_bookkeeping()
 
     generation = _generation.get(session_id, 0)
-    thread_id = f"{THREAD_ID_PREFIX}:{session_id}:{generation}" if generation else f"{THREAD_ID_PREFIX}:{session_id}"
+    # NAMESPACED BY CLIENT - CONFIRMED REAL PRODUCTION FAILURE: the same
+    # raw session_id (n8n-generated, phone-number-derived) arrived for
+    # two DIFFERENT clients in the same window. Unqualified, this
+    # thread_id is what the LangGraph checkpointer uses to load/save
+    # conversation history - so the second client's turn loaded the
+    # FIRST client's in-progress conversation (test/booking flow and
+    # all), then continued it under the wrong client's tools/config,
+    # producing failures like a lab-search tool hunting for one client's
+    # fixed doctor names inside another client's roster. client_id is
+    # never patient-supplied (it's the clinic identifier n8n attaches),
+    # so this is safe to fold into the checkpointer key without any
+    # extra validation. NOTE: this fixes the conversation-history bleed
+    # specifically; tools._BOOKING_SESSIONS above is a separate store
+    # still keyed by the raw session_id alone and is NOT yet covered by
+    # this fix (see incident notes / follow-up).
+    thread_id = (
+        f"{THREAD_ID_PREFIX}:{client_id}:{session_id}:{generation}" if generation
+        else f"{THREAD_ID_PREFIX}:{client_id}:{session_id}"
+    )
 
     # AN EXPLICIT CEILING ON GRAPH STEPS PER TURN.
     #
@@ -348,7 +366,7 @@ def send_message_with_signals(
 
     try:
         with _lock_for(session_id):
-            thread_config = _config_for(session_id)
+            thread_config = _config_for(session_id, client_id)
 
             # Snapshot the message count BEFORE this turn, so we can isolate
             # exactly which messages this turn added afterward - result["messages"]
