@@ -446,6 +446,17 @@ _CUES: Dict[str, List[Tuple[int, str]]] = {
         # clinic's own catalogue).
         (7, r"(?:ايه|إيه|ما)\s*(?:هو|هي)?\s*(?:تحليل|فحص|اشعة|أشعة)\s*\S"),
         (7, r"\bwhat\s+(?:is|are)\b[^.\n?]{0,25}\b(?:test|scan|x-?ray)\b"),
+        # SAME FAILURE, DIFFERENT WORDING: "ايه تعليمات تحليل X؟" /
+        # "تعليمات تحليل X ايه؟" - a question about a test's PROCEDURE/
+        # PREP instructions, not a request to book it. The pattern just
+        # above requires "تحليل" to follow "ايه"/"هو" directly, so it
+        # never matched this ("تعليمات" sits in between) and the bare
+        # booking "تحليل" catch-all (score 6) won instead, walking the
+        # patient through test selection and a lab/home question
+        # without ever answering what they actually asked.
+        (7, r"تعليمات\s*(?:ال)?(?:تحليل|فحص|اشعة|أشعة|إجراء)"),
+        (7, r"\b(?:instructions?|preparation|prep)\s+(?:for|of)\b[^.\n?]{0,25}"
+            r"\b(?:test|scan|x-?ray)\b"),
         # The crisis cue is CRISIS_RE above - ONE definition, shared with
         # graph.py, so a phrasing added there routes here too. Weighted 12
         # so it switches even mid-flow: a patient who says this has
