@@ -307,6 +307,8 @@ and never alter a slot value returned by
             "select_sample_collection_mode",
             "search_lab_services",
             "set_home_collection_address",
+            "geocode_address",
+            "find_nearest_branch",
         ),
         job="""\
 ============================================================
@@ -358,6 +360,7 @@ booking availability, not the clinic's service catalogue.""",
             "list_hospital_services",
             "list_branch_services",
             "find_branches_offering_service",
+            "answer_hospital_faq",
             "match_entity_info",
             "request_human_handoff",
             "share_branch_location",
