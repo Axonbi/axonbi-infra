@@ -1188,7 +1188,50 @@ def _looks_like_an_answer(text: str) -> bool:
     return False
 
 
-def route_turn(messages: List, active_agent: Optional[str] = None) -> Tuple[str, str]:
+def _home_collection_booking_in_progress(session_id: Optional[str]) -> bool:
+    """True when THIS session has an unfinished at-home sample-collection
+    booking (`select_sample_collection_mode(mode="home")` already ran,
+    but the test/branch/address steps aren't done yet - `doctor_id`
+    unset means the test-doctor isn't confirmed yet).
+
+    CONFIRMED REAL PRODUCTION FAILURE (lab-ezz, session
+    201158877175+medtown2, 2026-09-21 13:18-13:20): mid a home-collection
+    booking, "ايه التحاليل المتاحه" routed to `faq` (a reasonable read of
+    that one message on its own) - and every turn after it (choosing the
+    test, then the address) STAYED on `faq`, which has no idea a home
+    booking is in progress. `faq` ran its own generic "nearest branch"
+    flow (`geocode_address` -> `find_nearest_branch`) and offered to book
+    a physical branch - even though NB1-Q3 in the booking prompt is
+    explicit that home mode already has its branch resolved automatically
+    and must never ask about one. The address only reached
+    `set_home_collection_address` once `booking` got the turn back on a
+    later, unrelated "اه" - one full booking session's worth of
+    wrong-agent back-and-forth for what should have been a single
+    address question inside `booking` itself.
+
+    Read-only: uses the same safe non-creating lookup as
+    `_last_remembered_list_session_id` and friends elsewhere in this
+    file - never `tools._get_booking_session`, which would silently
+    create a fresh (empty) session for every routing check on every
+    turn, including ones with no booking at all."""
+
+    if not session_id:
+        return False
+
+    from tools import _BOOKING_SESSIONS
+
+    session = _BOOKING_SESSIONS.get(session_id)
+    if not session:
+        return False
+
+    return session.get("collection_mode") == "home" and not session.get("doctor_id")
+
+
+def route_turn(
+    messages: List,
+    active_agent: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> Tuple[str, str]:
     """
     Returns `(agent_name, reason)`. The reason is logged, never shown to
     the patient.
@@ -1200,6 +1243,11 @@ def route_turn(messages: List, active_agent: Optional[str] = None) -> Tuple[str,
          the assistant's own
          previous booking offer  -> switch straight to booking, even
                                     with zero textual cue of its own.
+      2b. An at-home collection
+          booking is unfinished
+          for this session       -> keep/switch to booking unless this
+                                    message is a genuinely strong,
+                                    deliberate switch elsewhere.
       3. Strong cue for someone
          other than the active
          specialist              -> switch (a deliberate change of
@@ -1227,6 +1275,20 @@ def route_turn(messages: List, active_agent: Optional[str] = None) -> Tuple[str,
 
     if active_agent != "booking" and _affirms_previous_booking_offer(messages, text):
         return "booking", "bare affirmation answering the assistant's own booking offer"
+
+    if active_agent != "booking" and _home_collection_booking_in_progress(session_id):
+        scores = score_message(text)
+        candidate, score = _best(scores)
+        # A genuinely strong, deliberate switch (e.g. "خلاص ألغيه بقى")
+        # still wins - this rule only claims turns that would otherwise
+        # be misread as a generic FAQ/medical question (an address, a
+        # test name, "معرفش") while a home booking is unfinished.
+        if not (candidate and score >= _SWITCH_THRESHOLD and candidate not in ("booking", active_agent)):
+            return "booking", (
+                "at-home collection booking in progress - address/branch/test "
+                "questions belong to booking, not whichever agent happened to "
+                "score this one message"
+            )
 
     # Picking a DOCTOR or a SPECIALTY out of a list is a BOOKING action,
     # wherever the list was shown.
