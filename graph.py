@@ -19643,6 +19643,21 @@ _REVIEW_CARD_CONFIRMATION_FALLBACK_SENTENCES = (
 )
 
 
+def _loose_key(text: str) -> str:
+    """Comparison key that ignores everything a patient (or an LLM
+    re-typing a template) can legitimately change without changing the
+    wording: emoji, punctuation, spacing, zero-width / RTL marks,
+    diacritics, tatweel, and the common Arabic letter variants."""
+
+    import unicodedata
+
+    text = unicodedata.normalize("NFKC", text or "")
+    text = re.sub(r"[\u064B-\u065F\u0670\u0640]", "", text)
+    text = (text.replace("أ", "ا").replace("إ", "ا").replace("آ", "ا")
+                .replace("ى", "ي").replace("ة", "ه"))
+    return re.sub(r"[^\w]|_", "", text).lower()
+
+
 def _review_confirmation_sentences(templates: dict) -> set:
     """The question sentence(s) inside THIS clinic's own
     msg_booking_confirmation template, normalized for comparison.
@@ -19735,7 +19750,17 @@ def _review_card_shown_immediately_before(messages: list, templates: dict) -> bo
             if not (message.content or "").strip():
                 continue
             normalized = _normalize_for_compare(str(message.content))
-            return any(s in normalized for s in confirmation_sentences)
+            if any(s in normalized for s in confirmation_sentences):
+                return True
+            loose_reply = _loose_key(normalized)
+            if any(_loose_key(s) and _loose_key(s) in loose_reply for s in confirmation_sentences):
+                return True
+            logger.warning(
+                "review-card check: the assistant's previous reply does NOT contain "
+                "any expected confirmation question. expected=%r reply_tail=%r",
+                sorted(confirmation_sentences), normalized[-160:],
+            )
+            return False
 
     return False
 
