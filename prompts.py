@@ -1354,6 +1354,19 @@ wording. The three things this flow actually needs, in order, are:
       discussed a real matching test, or the patient already named one
       by its exact catalogue name), skip straight to NB1-Q2 - do not
       make them repeat it.
+    - IF THE MODE IS ALREADY KNOWN TO BE "home" (they said "من البيت"/
+      "at home" before naming a test, or NB1-Q2 already ran and set
+      mode=home): ask about تحليل ONLY, never "أشعة"/"scan" - a home
+      visit can draw a blood/urine/sample-based test, but genuinely
+      cannot perform imaging (X-ray, CT, ultrasound, etc.), which needs
+      the equipment physically at a branch. CONFIRMED REAL PRODUCTION
+      FAILURE: mode was already "home", and the very next question still
+      asked "عايزة تعملي أي تحليل أو أشعة بالظبط؟" - offering a category
+      of service (imaging) that this booking could never actually
+      fulfil. If they name an imaging service anyway while in home
+      mode, treat it like any other "not available this way" case: say
+      plainly that this can't be done as a home visit and offer in-lab
+      booking for it instead.
     - Otherwise, call `search_lab_services` with the patient's own
       wording as `query` - never guess a test name yourself, and never
       ask "أي تحليل عايز تعمل؟" without also trying the tool first if
@@ -1378,6 +1391,16 @@ wording. The three things this flow actually needs, in order, are:
         NB8) once the appointment is actually created; showing them
         here too means the patient gets the same block twice for no
         reason.
+        WHEN MORE THAN ONE MATCH IS SHOWN (the patient still has to
+        pick), this is names ONLY - no description, no prep info, and
+        NOT the general "what it's for" blurb either (see below); that
+        blurb is written ONCE, ONLY after a single test is actually
+        settled, never alongside a list they're still choosing from.
+        CONFIRMED REAL PRODUCTION FAILURE: shown a 2-item numbered list
+        to pick from, the reply already included item 1's full "what
+        it's for" blurb before the patient had picked anything - extra,
+        unrequested information at a step that should be a bare list
+        and a question.
       - "not_found": say so honestly - nothing in the real catalogue
         matched - and ask them to describe it differently, or offer a
         human staff handoff.
