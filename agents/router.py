@@ -429,6 +429,23 @@ _CUES: Dict[str, List[Tuple[int, str]]] = {
         (7, r"(?:ادي|اديني|اعطيني|عطيني|وصفلي|اكتبلي)\w*\s*(?:\w+\s+){0,2}(?:دوا|دواء|علاج|مسكن|حبوب)"),
         (7, r"\bwhat\s+(?:should|can|do)\s+i\s+take\b"),
         (7, r"\bhow\s+(?:many|much|often)\b[^.\n?]{0,30}\b(?:painkiller|paracetamol|panadol|ibuprofen|tablet|pill|dose|mg)\w*"),
+        # "ايه هو تحليل X؟" / "ايه تحليل X؟" - a plain QUESTION about
+        # what a named test/scan IS, not a request to book it (compare
+        # the booking-intent verb patterns above, which all require
+        # "اعمل"/"احجز"/etc. attached to the noun). Weighted ABOVE
+        # booking's own bare "تحليل"/"أشعة" catch-all (score 6, no verb
+        # required at all) so an explanatory question about a test wins
+        # over it instead of falling into the booking flow's rigid
+        # search-and-fail path. CONFIRMED REAL PRODUCTION FAILURE:
+        # "ايه تحليل الغده" scored 6 for booking (the bare-noun rule)
+        # and nothing at all for medical, so it went to booking's
+        # NB1-Q1, got a flat "ما لقيتش تحليل بالاسم ده" from a strict
+        # catalogue search, and never reached STEP A0 (the medical
+        # flow's own "explain a named test" handling, including its
+        # general-knowledge fallback when the test isn't in this
+        # clinic's own catalogue).
+        (7, r"(?:ايه|إيه|ما)\s*(?:هو|هي)?\s*(?:تحليل|فحص|اشعة|أشعة)\s*\S"),
+        (7, r"\bwhat\s+(?:is|are)\b[^.\n?]{0,25}\b(?:test|scan|x-?ray)\b"),
         # The crisis cue is CRISIS_RE above - ONE definition, shared with
         # graph.py, so a phrasing added there routes here too. Weighted 12
         # so it switches even mid-flow: a patient who says this has
