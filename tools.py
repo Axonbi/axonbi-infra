@@ -10369,8 +10369,66 @@ def get_available_slots_for_booking(
             )
         items = kept
         if not items:
+            # WIDEN-AND-RETRY. CONFIRMED REAL PRODUCTION FAILURE: a day
+            # `list_available_days_for_booking` had just shown as
+            # genuinely bookable (its own wide multi-day sweep buckets
+            # every item by the LOCAL day it actually falls on,
+            # whatever nominal day the API returned it under) came back
+            # "not_found" here immediately after - this tool's own
+            # from_date/to_date window is exactly ONE calendar day wide,
+            # and the Booking API has a confirmed one-day windowing
+            # shift (a request nominally for day N returns items that
+            # land on local day N+1 once converted) - so every real,
+            # bookable item for the requested day was being fetched
+            # under an adjacent day's request and then discarded here
+            # for "not matching" a day it was never asked under. Retry
+            # once with the window widened by a day on each side, still
+            # filtering strictly to the ORIGINAL requested_day_iso
+            # afterward - this recovers the same real items the wide
+            # sweep already proved exist, without weakening the
+            # same-day guarantee above (Monday still never shows
+            # Tuesday's times).
+            try:
+                widen_from = (datetime.fromisoformat(requested_day_iso) - timedelta(days=1)).date().isoformat()
+                widen_to = (datetime.fromisoformat(requested_day_iso) + timedelta(days=1)).date().isoformat()
+            except ValueError:
+                widen_from = widen_to = None
+
+            if widen_from and widen_to:
+                logger.info(
+                    "get_available_slots_for_booking: nothing matched local day %s in the "
+                    "single-day window - widening to %sT00:00:00..%sT23:59:59 and retrying",
+                    requested_day_iso, widen_from, widen_to,
+                )
+                retry_result = api.get_doctor_schedule_slots(
+                    base_url, doctor_ids=[doctor_id], branch_ids=[branch_id],
+                    from_date=f"{widen_from}T00:00:00", to_date=f"{widen_to}T23:59:59",
+                    is_booked=False, page_size=200, language=conversation_language(state),
+                )
+                if retry_result["success"]:
+                    retry_items = (retry_result["data"] or {}).get("items", [])
+                    retry_items = [i for i in retry_items if i.get("isBooked") is not True]
+                    kept = []
+                    for item in retry_items:
+                        slot_local = to_clinic_local(item.get("slotStart"), timezone_name)
+                        if slot_local and slot_local[:10] == requested_day_iso:
+                            kept.append(item)
+                    items = kept
+                    logger.info(
+                        "get_available_slots_for_booking: widened retry found %d real item(s) "
+                        "on local day %s", len(items), requested_day_iso,
+                    )
+                else:
+                    logger.error(
+                        "get_available_slots_for_booking: widened retry API call failed: "
+                        "status_code=%s error=%s",
+                        retry_result.get("status_code"), retry_result.get("error"),
+                    )
+
+        if not items:
             logger.info(
-                "get_available_slots_for_booking: not_found - nothing on the requested local day %s",
+                "get_available_slots_for_booking: not_found - nothing on the requested local day %s "
+                "even after widening the query window",
                 requested_day_iso,
             )
             return {"status": "not_found"}
