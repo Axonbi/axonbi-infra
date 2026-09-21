@@ -1,4 +1,4 @@
-د"""
+"""
 System prompt for the LLM-tool-calling Guest Booking Cancellation Agent.
 
 REWRITTEN for the new architecture (see prompts.py.pre_rewrite_backup for
