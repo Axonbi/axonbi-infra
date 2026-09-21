@@ -1,282 +1,3939 @@
-1. معلومات عامة عن تناسق الطبية | General Overview
+- **Source:** https://ezzlab.com (all public pages, Arabic + English)
+- **Extracted on:** 2026-09-21
+- **Purpose:** reference corpus for a retrieval-augmented (RAG) FAQ assistant. Every fact is verbatim from the public website.
+- **Answering rule:** if a question is not covered here, say so and refer the caller to 15032 or WhatsApp 01200555562 rather than guessing. Do not give medical advice or interpret results — refer to the treating physician.
 
-الاسم: مركز تناسق للتأهيل والرفاه النفسي
+## Quick Reference / معلومات أساسية سريعة
 
-Name: Tanasuq Medical Center for Rehabilitation and Psychological Wellbeing
-
-الموقع الإلكتروني: https://tanasuq.med.sa
-
-تناسق الطبية هي شركة متخصصة في خدمات الصحة النفسية، وهي شريكة النجاح في مجال الصحة النفسية، والطريق لاستعادة التوازن النفسي في بيئة تجمع بين الاحترافية والثقة والتفاهم.
-
-Tanasuq Medical is a company specialized in mental health services, serving as a trusted partner on the journey to psychological balance in a professional, trustworthy, and understanding environment.
-
-2. الرؤية والرسالة والقيم | Vision, Mission & Values
-القيم | Values
-تقديم رعاية تتميز بالتعاطف والإنصات لتعزيز فعالية العلاج.
-الالتزام بأحدث الأساليب العلاجية وتصميم المرافق العلاجية.
-الالتزام بالسلامة وتوفير بيئة علاجية آمنة.
-تقديم برامج علاجية متكاملة ونهج رعاية شاملة.
-الحفاظ على سرية وخصوصية العملاء باستخدام تقنيات آمنة لحماية بياناتهم.
-الالتزام بميثاق المهنة والأخلاق.
-تدريب وتطوير الكوادر البشرية.
-الرؤية | Vision
-الريادة في مجال الصحة النفسية في المملكة العربية السعودية.
-تمكين جميع الأفراد من الوصول إلى خدمات الصحة النفسية.
-تقديم خدمات عالية الجودة من خلال التدريب والتطوير.
-تحقيق توازن مثالي بين جودة الرعاية والابتكار.
-خلق بيئة علاجية تدعم التنوع والشمولية.
-التعاون مع جميع مقدمي الرعاية الصحية لتعزيز خدمات الصحة النفسية.
-تطوير برامج متابعة ودعم طويلة الأمد.
-الرسالة | Mission
-
-نضع المريض في قلب خدماتنا واهتمامنا، من خلال تقديم حلول شاملة وتكاملية تبدأ من الرعاية المنزلية وتصل إلى الإقامة العلاجية في بيئة تتميز بأعلى معايير السلامة والأمان. نسعى لتوفير خدمات مبتكرة في مجال الصحة النفسية، مع تقديم أفضل عناصر الإقامة العصرية لضمان راحة ورفاهية عملائنا.
-
-Our mission is to place the patient at the center of our care, offering comprehensive and integrated solutions ranging from home care to therapeutic residential stays in an environment that meets the highest standards of safety and security.
-
-3. أهداف الشركة | Company Goals
-سد الاحتياج في خدمات الصحة النفسية.
-تطبيق خطط علاجية متنوعة تشمل العلاج الفردي والجماعي والاستشارات النفسية وبرامج التوعية.
-تغطية جميع جوانب الرعاية النفسية من التشخيص والتأهيل والمتابعة حتى اكتمال الخطة العلاجية.
-تحقيق أهداف رؤية المملكة 2030 من خلال رفع مستوى الوعي بالصحة النفسية.
-4. الخدمات | Services
-4.1 خدمة الطوارئ النفسية | Psychiatric Emergency Service
-
-الرابط:
-https://tanasuq.med.sa/ar/services/1
-
-رقم الطوارئ:
-+966 51251235154
-
-هدف الخدمة
-
-تقديم الدعم الفوري والاستجابة السريعة للأشخاص الذين يعانون من أزمات نفسية حادة، مثل الاضطرابات الذهانية، الاكتئاب الشديد، القلق، أو من لديهم خطر الأفكار والسلوكيات الانتحارية، لضمان سلامتهم النفسية والجسدية.
-
-ساعات العمل: الخدمة متاحة 24/7.
-
-الفئات المستهدفة
-الأشخاص الذين يعانون من أفكار انتحارية أو سلوكيات تهدد سلامتهم وسلامة من حولهم.
-الأفراد الذين يواجهون أزمات نفسية حادة.
-المرضى الذين يحتاجون إلى تقييم فوري لحالتهم النفسية.
-الإجراءات
-التقييم الفوري: يتم تقييم الحالة النفسية للمريض عند وصوله بواسطة مختصين.
-الملاحظة الدقيقة: متابعة الحالة عن كثب بواسطة فريق متخصص.
-التدخل السريع: تنفيذ خطة علاجية فورية للتخفيف من الأعراض الحادة.
-بيئة آمنة
-غرف عزل مجهزة عند الحاجة.
-بيئة علاجية آمنة وفق أعلى معايير السلامة.
-الدعم النفسي والتوجيه
-تقديم الرعاية النفسية والدعم من قبل مختصين في الصحة النفسية والاجتماعية.
-توجيه المرضى إلى برامج علاجية طويلة الأمد عند الحاجة.
-التواصل مع العائلة
-توفير المعلومات والإرشادات للعائلة حول كيفية التعامل مع الأزمات النفسية.
-
-4.2 خدمات التنويم | Inpatient/Hospitalization Services
-
-الرابط:
-https://tanasuq.med.sa/ar/services/2
-
-الغرف
-يحتوي المركز على 60 غرفة مجهزة بأعلى معايير السلامة والأمان.
-غرف مصممة لتوفير بيئة مريحة وهادئة تعزز من الاستقرار النفسي أثناء رحلة العلاج.
-غرف العزل
-تتوفر غرف عزل وفق معايير ولوائح وزارة الصحة.
-تستخدم عند الحاجة مع توفير بيئة آمنة للمريض.
-المرافق والخدمات
-مراقبة المرضى من قبل فريق طبي وتمريضي متخصص.
-الحدائق الداخلية والخارجية: مساحات خضراء مريحة تساعد على الاسترخاء وتقليل التوتر.
-النادي الرياضي: أنشطة رياضية متنوعة تساعد على تحسين الصحة النفسية والجسدية.
-منطقة العلاج بالفن: مساحة للتعبير عن المشاعر بأساليب إبداعية منهجية.
-منطقة العلاج الجماعي: جلسات علاج جماعية بإشراف مختصين.
-العلاج بالبستنة: وسيلة علاجية تعزز النمو والتعافي.
-منطقة الاسترخاء والقراءة: بيئة هادئة مع مكتبة متنوعة.
-الدعم المجتمعي وتطوير المهارات الاجتماعية: تهيئة المرضى للاندماج الصحي بعد الخروج.
-البرنامج العلاجي الشامل والمكثف
-يبدأ بتقييم شامل لحالة كل مريض.
-خطط علاجية فردية تشمل:
-العلاج النفسي.
-العلاج الاجتماعي.
-التغذية.
-الرياضة.
-العلاج الدوائي.
-دعم نفسي مستمر من فريق متخصص من الأطباء والمعالجين.
-4.3 خدمات العيادات الخارجية | Outpatient Clinic Services
-
-الرابط:
-https://tanasuq.med.sa/ar/services/3
-
-العلاج النفسي الفردي
-جلسات علاجية فردية مبنية على الأدلة.
-تشمل:
-العلاج المعرفي السلوكي (CBT).
-العلاج السلوكي الجدلي (DBT).
-العلاج التحليلي.
-العلاج المتمركز حول الحلول.
-وغيرها من الأساليب العلاجية.
-العلاج النفسي الزواجي والأسري
-جلسات استشارية للزوجين أو أفراد الأسرة.
-تركز على ديناميكيات العلاقة وتعزيز نقاط القوة.
-تهدف إلى تحسين العلاقات الأسرية وتقوية الروابط.
+- **Customer service hotline / خط خدمة العملاء:** 15032
+- **WhatsApp (results, bookings, home visits) / واتساب (النتائج والحجز والزيارات المنزلية):** 01200555562
+- **E-mail / البريد الإلكتروني:** info@ezzlab.com
+- **Website / الموقع الإلكتروني:** https://ezzlab.com
+- **Results portal (patients & doctors) / بوابة النتائج (المرضى والأطباء):** http://www.ezz-lab.com
+- **Standard working hours (all branches) / مواعيد العمل المعتادة (كل الفروع):** Every day, 8:00 AM – 12:00 AM / يومياً من 8 صباحاً حتى 12 منتصف الليل
+- **24-hour branch / الفرع الذي يعمل 24 ساعة:** Shubra El-Kheima 5 — 1 City Mall, in front of Orabi Bridge, above B-Tech / شبرا الخيمة 5 — 1 سيتي مول أمام كوبري عرابي أعلى بي تك
+- **Turnaround time / زمن ظهور النتيجة:** Results within 2 hours (every branch is a main branch, samples analysed on site) / النتائج خلال ساعتين (جميع الفروع رئيسية ويتم التحليل في نفس الفرع)
+- **Result delivery / طرق استلام النتيجة:** Free via WhatsApp, the website, or e-mail / مجاناً عبر الواتساب أو الموقع الإلكتروني أو الإيميل
+- **Founded / سنة التأسيس:** 1978, by Prof. Dr. Ezz El-Regal Khames, Professor of Medical Analysis, Faculty of Medicine, Al-Azhar University / ١٩٧٨ على يد الأستاذ الدكتور عز الرجال خميس، أستاذ التحاليل الطبية بكلية طب جامعة الأزهر
+- **Number of branches / عدد الفروع:** 52
+- **Tests offered / عدد التحاليل المتاحة:** 657
+- **Home sample collection / سحب العينات بالمنزل:** Available — request via WhatsApp with patient name, age, full address, required tests, contact number / متاحة — تطلب عبر الواتساب مع اسم المريض والسن والعنوان تفصيلاً والتحاليل المطلوبة ورقم التواصل
 
 
+## Home Page / الصفحة الرئيسية
+
+### English
+
+*Source: https://ezzlab.com/home-en/*
 
 
+**Why Ezz lab**
+
+More than forty years of experience, leadership and excellence in the field of medical analysis It was founded in 1978 by Prof. Dr. Ezz Al-Regal Khamis – Professor of Medical Analysis at the Faculty of Medicine, Al-Azhar University A distinguished elite of doctors and consultants in all branches of medical analysis in Egyptian universities We use the latest technologies and the most accurate global medical analysis devices and solutions approved by the American Food and Drug Organization (FDA) We are committed to applying all international standards of comprehensive laboratory quality within our branches We have a strong and widespread medical contracting network that covers all medical insurance umbrellas in Egypt You can receive the results of your analysis within only two hours because all our branches are main You can receive the results of your analysis for free on WhatsApp, through the website or by e-mail Possibility of taking samples from the patient’s location
 
 
+**customers service**
 
 
-العلاج النفسي الجماعي
-مجموعات علاجية موجهة يقودها معالج نفسي.
-تعزز الثقة بالنفس، والتحكم بالمشاعر، وتحسين المهارات الاجتماعية.
-التقييم النفسي الشامل
-خطوة أساسية لفهم الحالة النفسية بدقة.
-يُجرى من قبل فريق متعدد التخصصات (نفسي، عضوي، سلوكي، اجتماعي، تربوي).
-التقييم والقياس النفسي
-اختبارات ومقاييس نفسية متعددة (مقاييس الذكاء، الشخصية، وغيرها).
-تقرير شامل وخطة علاجية بناءً على النتائج.
-الاستشارات الطبية النفسية
-استشارات مع أطباء نفسيين ذوي كفاءة وخبرة.
-وصف الأدوية عند الحاجة كجزء من خطة علاجية متكاملة.
-4.4 العيادة الافتراضية | Virtual Clinic
+**01200555562**
 
-الرابط: https://tanasuq.med.sa/ar/services/6
+We offer all our services distinguished by quality, accuracy and high technical efficiency at the most economical prices
 
-تقدم الرعاية النفسية عن بُعد عبر منصات إلكترونية آمنة بأعلى مستويات الخصوصية والسرية، وبنفس المعايير المهنية للجلسات الحضورية.
 
-الخدمات المتاحة افتراضياً
-جلسات العلاج النفسي الفردي.
-الاستشارات والتقييمات النفسية.
-متابعة الخطط العلاجية.
-الاستشارات الأسرية عند الحاجة.
-الفئات المستفيدة
-الأفراد الذين يفضلون تلقي الخدمة عن بُعد.
-من يواجهون صعوبة في الوصول إلى العيادة.
-الأفراد ذوو الجداول الزمنية المزدحمة.
-الحالات التي تتطلب متابعة علاجية منتظمة.
+**Opening Hours**
 
-الحجز والاستفسار: يرجى التواصل مع المركز مباشرة.
+We work all days of the week
 
-4.5 البرامج اليومية المتخصصة | Specialized Daily Programs
+From 8.00 am to 12.00 pm
 
-الرابط: https://tanasuq.med.sa/ar/services/8
+Also, 24 hours a day, every day of the week
 
-برامج علاجية متخصصة للأفراد الذين يواجهون تحديات نفسية وانفعالية معقدة، ضمن بيئة علاجية آمنة وداعمة ومتكاملة. تعتمد على خطط علاجية مخصصة مبنية على أحدث الأساليب العلاجية المبنية على الأدلة.
+In Shubra El-Kheima branch 5
 
-الاضطرابات التي تغطيها البرامج
-إيذاء الذات.
-الأفكار والسلوكيات الانتحارية.
-الاكتئاب.
-اكتئاب ما بعد الولادة.
-اضطراب ثنائي القطب.
-القلق.
-الرهاب الاجتماعي.
-إدمان الأجهزة الإلكترونية ووسائل التواصل الاجتماعي.
-اضطراب ما بعد الصدمة.
-الوسواس القهري.
-اضطراب فرط الحركة وتشتت الانتباه.
-اضطرابات الشخصية.
-الفصام.
-اضطرابات الأكل.
-الضغوط النفسية.
-الاحتراق والإجهاد النفسي.
-البرامج المتخصصة
-1. برنامج علاج إيذاء الذات
-دعم الأفراد الذين يعانون من سلوكيات إيذاء الذات أو الأفكار الانتحارية.
-تطوير مهارات تنظيم المشاعر والتعامل مع الاندفاعية.
-يعتمد على العلاج السلوكي الجدلي والعلاج المعرفي السلوكي.
-2. برنامج التأهيل لاضطراب الفصام
-دعم الأفراد المصابين بالفصام للوصول إلى أعلى مستوى من الاستقلالية.
-يركز على الاستقرار النفسي وتنمية المهارات الحياتية والاجتماعية.
-يشمل دعم الأسرة لضمان استمرارية التحسن.
-3. برنامج علاج اكتئاب ما بعد الولادة
-دعم الأمهات خلال مرحلة ما بعد الولادة.
-جلسات علاجية فردية وجماعية.
-دعم نفسي متكامل وبناء شبكة دعم فعالة.
+1 City Mall, in front of Orabi Bridge, above B-Tech
 
-فريق العمل: أطباء نفسيون، أخصائيون نفسيون، أخصائيون اجتماعيون، تمريض نفسي.
 
-4.6 خدمات قادمة قريبًا | Coming Soon Services
-التدريب والإشراف المهني.
-المكتبة الرقمية (كتب، مواد علمية، بطاقات علاجية).
-ألعاب علاجية.
-نماذج علاجية.
-5. الفئات التي نخدمها | Who We Serve
-الأفراد: علاج ودعم نفسي.
-العائلة ومقدمو الرعاية: علاج ودعم أسري.
-المختصون: إشراف وتدريب.
-المدارس والجامعات: شراكة وتدريب.
-6. معلومات التواصل والفروع | Contact & Branch Information
-الفروع | Branches
+**Precautions**
 
-فرع المنار
-2955 شارع الشيخ عبدالرحمن بن إسحاق بن عبدالرحمن، حي المنار، الرياض 14221، المملكة العربية السعودية.
 
-فرع النزهة
-7282 أبي سفيان بن حرب، النزهة، الرياض 12473، المملكة العربية السعودية.
+**To ensure the safety of your samples and to ensure accurate test results, please adhere to these sample collection precautions and instructions.**
 
-معلومات التواصل | Contact Details
-الهاتف: +966 554072634
-البريد الإلكتروني: info@tanasuq.med.sa
-رقم الطوارئ النفسية: +966 51251235154
-نموذج التواصل: https://tanasuq.med.sa/ar/contact
-وسائل التواصل الاجتماعي | Social Media
-X (Twitter): https://x.com/Tanasuq_Med
-Instagram: https://www.instagram.com/tanasuq_med/
-LinkedIn: https://www.linkedin.com/company/tanasuk-medical/
-Snapchat: https://www.snapchat.com/@tanasuqmedical
-TikTok: https://www.tiktok.com/@tanasuqmed
-Facebook: https://www.facebook.com/tanasuqmedical
-7. الفعاليات والمؤتمرات | Events & Conferences
-ملتقى الرياض الأول للعلاج النفسي – إيذاء الذات
 
-الرابط: https://tanasuq.med.sa/ar/events/1
+**Perfect Medical Services**
 
-رابط التسجيل: https://moltaqa.tanasuq.med.sa/
 
-التاريخ
-1–2 مايو 2026 (حضوري وأونلاين)
-3 مايو 2026 (أونلاين فقط)
+**Book an Appointment**
 
-الساعات المعتمدة: 6 ساعات معتمدة من هيئة التخصصات + 18 ساعة.
+### العربية / Arabic
 
-محاور الملتقى
-فهم إيذاء الذات: الدوافع النفسية والسلوكية والتدخل المبكر.
-الصحة النفسية وإيذاء الذات.
-مراجعة أحدث الأبحاث والتوجهات العالمية في العلاج.
-أدوات التقييم النفسي لإيذاء الذات والتشخيص.
-9. سياسة الخصوصية وحماية البيانات | Privacy Policy
-البيانات التي يتم جمعها
-البيانات الشخصية (الاسم، رقم الهاتف، البريد الإلكتروني).
-البيانات الطبية.
-البيانات التقنية (IP، نوع الجهاز، المتصفح، نظام التشغيل).
-كيفية استخدام البيانات
-تقديم الخدمات الطبية وتحسين جودتها.
-التواصل بشأن المواعيد والحجوزات والاستفسارات.
-الالتزام بالمتطلبات النظامية.
-تطوير الموقع والخدمات.
-حماية البيانات
-إجراءات أمنية وتقنية وإدارية مناسبة.
-الحماية من الوصول غير المصرح به.
-مشاركة البيانات
-لا تتم مشاركة البيانات إلا عند الحاجة.
-مع الجهات الطبية المعتمدة لتقديم الخدمة.
-مع الجهات الرسمية المختصة إذا تطلب النظام ذلك.
-حقوق المستخدم
-الاطلاع على البيانات الشخصية.
-طلب تصحيح أو تحديث البيانات.
-طلب حذف البيانات ما لم يوجد سبب نظامي أو طبي للاحتفاظ بها.
-10. شروط استخدام الموقع | Terms of Use
-يهدف الموقع إلى عرض معلومات الخدمات الطبية واستقبال طلبات الحجز.
-المعلومات المتوفرة لا تغني عن الاستشارة الطبية المباشرة.
-يلتزم المستخدم بتقديم معلومات صحيحة ودقيقة عند التسجيل أو الحجز.
-يمنع نسخ أو إعادة نشر محتوى الموقع دون تصريح.
-تحتفظ تناسق بحق تعديل سياسة الخصوصية أو شروط الاستخدام في أي وقت.
-11. الشركاء | Partners
-Al Borg Diagnostics – المختبرات التشخيصية.
-Medicure for Medical Services – شركة ميديكيور للخدمات الطبية.
-12. معلومات إضافية للوكيل الذكي | Additional Agent Notes
-اللغة العربية هي اللغة الرئيسية للموقع مع توفر نسخة باللغة الإنجليزية.
-الموقع الجغرافي: الرياض، المملكة العربية السعودية، ويوجد فرعان (المنار والنزهة).
-نوع الخدمة: الصحة النفسية فقط – ليس مستشفى عامًا.
-ساعات الطوارئ: 24/7 للطوارئ النفسية.
-الحجز: https://tanasuq.med.sa/booking/doctors عبر الموقع أو التواصل المباشر.
-حقوق النشر: © 2026 تناسق. جميع الحقوق محفوظة.
+*Source: https://ezzlab.com/*
+
+
+**لماذا عز لاب**
+
+نصف قرن من الخبرة والريادة والتميز في مجال التحاليل الطبية تأسست عام ١٩٧٨ علي يد الأستاذ الدكتور عز الرجال خميس – أستاذ التحاليل الطبية بكلية طب جامعة الأزهر نخبة متميزة من الاساتذة والاستشاريين في جميع أفرع التحاليل الطبية بالجامعات المصرية نستخدم أحدث التقنيات وأدق أجهزة التحاليل والمحاليل الطبية العالمية المعتمدة من منظمة الأغذية والأدوية الأمريكية FDA ملتزمين بتطبيق كافة المعايير القياسية العالمية للجودة المعملية الشاملة داخل فروعنا لدينا شبكة تعاقدات طبية قوية ومنتشرة بتغطي كافة مظلات التأمين الطبي في مصر تقدر تستلم نتائج تحاليلك في خلال ساعتين فقط لأن جميع فروعنا رئيسية تقدر تستلم نتائج تحاليلك مجاناً علي الواتس آب أو من خلال الموقع الالكتروني او علي الإيميل إمكانية سحب العينات من أماكن تواجد المريض
+
+
+**خدمه العملاء**
+
+
+**15032**
+
+
+**01200555562**
+
+نقدم كافة خدماتنا المتميزة بالجودة والدقة والكفاءة الفنية العالية بأفضل أسعار اقتصادية
+
+
+**ساعات العمل**
+
+نعمل جميع أيام الاسبوع
+
+من الساعه 8.00 ص الى الساعه 12.00 م
+
+وايضا 24 ساعه جميع أيام الاسبوع
+
+فى فرع شبرا الخيمة 5
+
+1سيتى مول أمام كوبرى عرابى أعلى بى تك
+
+
+**الاحتياطات**
+
+
+**لضمان سلامة عيناتك ولضمان الحصول على نتائج اختبار دقيقة، يرجى الالتزام بهذه الاحتياطات والتعليمات الخاصة بجمع العينات.**
+
+
+**خدمات طبية ممتازه**
+
+
+**احجز موعد الان**
+
+
+**15032**
+
+
+**سياسات استخدام الموقع**
+
+
+## About Ezz Labs / عن معامل عز
+
+### English
+
+*Source: https://ezzlab.com/about-en/*
+
+The objectives of Ezz laboratories are to provide a high-quality medical service to participate in improving the general health of the community by providing advanced medical laboratory services using modern technologies to help in early detection of diseases to prevent their occurrence and to deal with chronic diseases, bearing in mind the speed of providing these services in a timely manner. What is required, especially critical cases, at appropriate prices so that the treating physicians, in cooperation with the lab, can obtain all the information that helps them make the appropriate and necessary decisions to treat their patients.
+
+
+**Receive the test results within two hours❗**
+
+because ! All our branches are main and equipped with the latest modern equipment
+
+The sample and analyzed in the same branch without going out and going anywhere else
+
+
+**Quality Assurance**
+
+### العربية / Arabic
+
+*Source: https://ezzlab.com/about/*
+
+تتمثل أهداف معامل عز فى تقديم خدمة طبية فائقة الجودة للمشاركة فى تحسين الصحة العامة للمجتمع من خلال توفير الخدمات الطبية المعملية المتطورة باستخدام التقنيات الحديثة للمساعدة فى الكشف المبكر عن الامراض لمنع حدوثها و للتعامل مع الامراض المزمنة, مع الوضع فى الاعتبار سرعة تقديم هذة الخدمات فى الوقت المطلوب و خاصة الحالات الحرجة بالاسعار المناسبة حتى يتمكن الاطباء المعالجين بالتعاون مع المعمل من الحصول على جميع المعلومات التى تساعدهم على اتخاذ القرارات المناسبة و اللازمة لعلاج مرضاهم.
+
+
+**❗أستلم نتائج التحاليل خلال ساعتين**
+
+لأن ! جميع فروعنا رئيسية و مجهزة بأحدث الأجهزة الحديثة بيتم اخد
+
+العينة و تحليلها فى نفس الفرع دون الخروج و التوجه لأى مكان آخر
+
+
+**ضمان الجودة**
+
+
+## Branches — Addresses, Phones & Working Hours / الفروع — العناوين والهواتف ومواعيد العمل
+
+### English
+
+*Source: https://ezzlab.com/branches-en/*
+
+**Abbasiya branch**
+
+- Address: 72 Abbasiya Street in front of Abdo Pasha metro station.
+- Phone: 24660073
+- Daily working hours: 8 am : 12 pm
+- Friday working hours: Friday : 9 am : 12 pm
+- Map: https://maps.app.goo.gl/4QmnEWtLjvQf8PKm6
+
+**Naser City 1 Branch**
+
+- Address: 10 First May buildings next to Labor University, Al-Saa'a Square, 402. Fourth floor
+- Phone: 22747538
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: Closed on Friday
+- Map: https://maps.app.goo.gl/iB7LqCXyPzKee45G6
+
+**Naser City 2 Branch**
+
+- Address: 4 Mohamed Mahdi Arafa Street, next to the Al-Tayseer Medical Center - the tenth district.
+- Phone: 24129797
+- Daily working hours: 8 am : 12 pm
+- Friday working hours: Friday : 8 am : 12 pm
+- Map: https://maps.app.goo.gl/isCwSFi39ECBbCdL7
+
+**Naser City 3 Branch**
+
+- Address: Al-Tayaran Street, next to the Health Insurance Hospital, Nasr City - the second floor
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: Closed on Friday
+- Map: https://maps.app.goo.gl/MYKco35vUGrDdeEt9
+
+**Heliopolis branch 1**
+
+- Address: 48 Othman Bin Affan Street
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: 10 am : 10 pm
+- Map: https://maps.app.goo.gl/fk7o5eWRoURRF84e9
+
+**Heliopolis branch 2**
+
+- Address: Building 1, Roxy Square. Above Roxy Cinema. Second Floor
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: 10 am : 10 pm
+- Map: https://maps.app.goo.gl/PDFwnMcoY2ucQCHN7
+
+**Bab Al Shaeria Branch**
+
+- Address: 593 Port Said Street in front of Sayed Galal Hospital.
+- Phone: 25930070
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: Friday : 9 am : 11 pm
+- Map: https://maps.app.goo.gl/2ooJ77iq75kfNM3UA
+
+**Sayyida Zeinab Branch**
+
+- Address: 345 Port Said Street in front of the reception door of Ahmed Maher Hospital.
+- Phone: 23928726
+- Daily working hours: 8 am : 12 pm
+- Friday working hours: Friday : 8 am : 11 pm
+- Map: https://maps.app.goo.gl/6Tv5V2McoeKPPofF8
+
+**Kasr Al-Ainy Branch**
+
+- Address: 35 Al-Qasr Al-Aini Street, in front of Al-Nahar Theater - first floor
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: 9 am : 11 pm
+- Map: https://maps.app.goo.gl/47MQwYQyKtxVjRcK7
+
+**Manial Branch**
+
+- Address: 70 Manial Street - Al-Basha Square - Al-Adhamiya Building
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: 10 am : 10 pm
+- Map: https://maps.app.goo.gl/48hubTHHQnRcsyjC8
+
+**Hadaek ElKobba Branch**
+
+- Address: 127 Misr & Sudan Street - Tower 2 A - above Al Hati Restaurant - second floor.
+- Phone: 24823844
+- Daily working hours: 8 am : 12 pm
+- Friday working hours: Friday : 9 am : 11 pm
+- Map: https://maps.app.goo.gl/cE4d7SipPryX7Kko6
+
+**Helmeyet El Zaitoun Branch**
+
+- Address: 99 Selim El Awal Street - First Floor
+- Daily working hours: 9 am : 12 pm
+- Friday working hours: 10 am : 10 pm
+- Map: https://maps.app.goo.gl/kwbCrxoccaenARpH8
+
+**Ain Shams branch 1**
+
+- Address: 50 El Eshreen Street - First Floor
+- Daily working hours: 8 am : 12 pm
+- Friday working hours: 10 am : 10 pm
+- Map: https://maps.app.goo.gl/Ph42Rhr1V2asBWsZ8
+
+**Ain Shams branch 2**
+
+- Address: Second floor - Building No. 288 - First of Gamal Abdel Nasser Street
+- Daily working hours: 8 am : 12 pm
+- Friday working hours: 10 am : 10 pm
+- Map: https://maps.app.goo.gl/zG4hasdSLKyKHwPK6
+
+**Helwan Branch 1**
+
+- Address: 28 Mostafa El Maraghy ​​Street in front of Magda Cinema, next to Helwan Metro Station.
+- Phone: 27840261
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: Closed on Friday
+- Map: https://www.google.com.eg/maps/place/%D9%85%D8%B9%D8%A7%D9%85%D9%84+%D8%B9%D8%B2+%D9%84%D8%A7%D8%A8%E2%80%AD/@29.8485251,31.3357377,15z/data=!4m5!3m4!1s0x0:0x622e2558ff3e55ad!8m2!3d29.8485251!4d31.3357377
+
+**Helwan Branch 2**
+
+- Address: 44 Mansour Street, Maraghi intersection - third floor, apartment 1​
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: 10 am : 10 pm
+- Map: https://maps.app.goo.gl/QzpAEQTWcoV86GNL7
+
+**Shobra Masr Branch 1**
+
+- Address: 90 Shubra Street, next to the Rawd Al-Faraj metro, above Koshary Arafa.
+- Phone: 24570430
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: 10 am : 10 pm
+- Map: https://maps.app.goo.gl/XPLfgSju5qwTTsH29
+
+**Shobra Masr Branch 2**
+
+- Address: 105 Shubra Street, above Smile Sweets - First Floor
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: 10 am : 10 pm
+- Map: https://maps.app.goo.gl/uq5LSYS1K2ym79Jq6
+
+**El Darrasa Branch**
+
+- Address: 3 Mansourieh Street in front of Al-Hussein University Hospital.
+- Phone: 25892472
+- Daily working hours: 8 am : 12 pm
+- Friday working hours: Friday : 8 am : 12 pm
+- Map: https://www.google.com.eg/maps/place/%D9%85%D8%B9%D8%A7%D9%85%D9%84+%D8%B9%D8%B2+%D9%84%D8%A7%D8%A8%E2%80%AD/@30.0484558,31.2717177,15z/data=!4m5!3m4!1s0x0:0xa4c6dccc971afe69!8m2!3d30.0484558!4d31.2717177
+
+**Mokattam Branch 1**
+
+- Address: Building No. 73, 9th Street, Upper Hill, in front of Koshary El Tahrir
+- Daily working hours: 8 am : 12 pm
+- Friday working hours: Closed on Friday
+- Map: https://www.google.com/maps/search/%D8%B9%D9%85%D8%A7%D8%B1%D9%87+%D8%B1%D9%82%D9%85+73+%D8%B4%D8%A7%D8%B1%D8%B9+9+%D8%A7%D9%84%D9%87%D8%B6%D8%A8%D8%A9+%D8%A7%D9%84%D8%B9%D9%84%D9%8A%D8%A7+%D8%A3%D9%85%D8%A7%D9%85+%D9%83%D8%B4%D8%B1%D9%89+%D8%A7%D9%84%D8%AA%D8%AD%D8%B1%D9%8A%D8%B1%E2%80%AD/@30.0125856,31.2932387,17z/data=!3m1!4b1?entry=ttu
+
+**Mokattam Branch 2**
+
+- Address: Atlas Residences - Al-Zelzal Residences, in front of Mokattam District - Block 9, second floor, Apartment 3
+- Daily working hours: 8 am : 12 pm
+- Friday working hours: 10 am : 10 pm
+- Map: https://maps.app.goo.gl/kea7EGadopRNXwv56
+
+**Dar Al Salam branch**
+
+- Address: 50 Fayoum Street - first floor next to Banque Misr
+- Daily working hours: 8 am : 12 pm
+- Friday working hours: 10 am : 10 pm
+- Map: https://www.google.com/maps/search/50+%D8%B4%D8%A7%D8%B1%D8%B9+%D8%A7%D9%84%D9%81%D9%8A%D9%88%D9%85+-+%D8%A7%D9%84%D8%AF%D9%88%D8%B1+%D8%A7%D9%84%D8%A3%D9%88%D9%84+%D8%A8%D8%AC%D9%88%D8%A7%D8%B1+%D8%A8%D9%86%D9%83+%D9%85%D8%B5%D8%B1%E2%80%AD/@29.9807179,31.2521153,17z/data=!3m1!4b1?entry=ttu
+
+**Shebeen El-Koum branch 1**
+
+- Address: Maidan Tower, Golden Tower, Sharaf Square
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: 10 am : 10 pm
+- Map: https://www.google.com/maps/search/20+%D8%B4%D8%A7%D8%B1%D8%B9+%D9%85%D8%B5%D8%AF%D9%82+%D8%A7%D9%84%D8%AF%D9%88%D8%B1+%D8%A7%D9%84%D8%A7%D9%88%D9%84+%D8%B4%D9%82%D8%A9+2%E2%80%AD/@30.0398277,31.2086744,18.5z
+
+**Shebeen El-Koum branch 2**
+
+- Address: Sharaf Square, Zahraa Tower, Fifth Floor
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: 10 am : 10 pm
+- Map: https://maps.app.goo.gl/HS1AUsNZ3fouwW9M9
+
+**Ashmoun Branch**
+
+- Address: Saad Zaghloul Street - Velfel Square - first floor
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: 10 am : 10 pm
+- Map: https://www.google.com/maps/search/20+%D8%B4%D8%A7%D8%B1%D8%B9+%D9%85%D8%B5%D8%AF%D9%82+%D8%A7%D9%84%D8%AF%D9%88%D8%B1+%D8%A7%D9%84%D8%A7%D9%88%D9%84+%D8%B4%D9%82%D8%A9+2%E2%80%AD/@30.0398277,31.2086744,18.5z
+
+**Quesna branch**
+
+- Address: Anwar Sadat Street - Roma Towers, mezzanine floor
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: 10 am : 10 pm
+- Map: https://www.google.com/maps/search/20+%D8%B4%D8%A7%D8%B1%D8%B9+%D9%85%D8%B5%D8%AF%D9%82+%D8%A7%D9%84%D8%AF%D9%88%D8%B1+%D8%A7%D9%84%D8%A7%D9%88%D9%84+%D8%B4%D9%82%D8%A9+2%E2%80%AD/@30.0398277,31.2086744,18.5z
+
+**Shobra El-Khema 1 Branch**
+
+- Address: 33 15th of May Street, next to Orabi Bridge - in front of Doctors Tower.
+- Phone: 46178244
+- Daily working hours: 8 am : 12 pm
+- Friday working hours: Friday : 8 am : 12 pm
+- Map: https://maps.app.goo.gl/F7ZqMD3AQghv15oN6
+
+**Shobra El-Khema 2 Branch**
+
+- Address: 15th of May Street in front of Abu El Hana Mosque, next to Al Horreya Specialist Hospital.
+- Phone: 42202362
+- Daily working hours: 8 am : 12 pm
+- Friday working hours: 8 am : 12 pm
+- Map: https://maps.app.goo.gl/r8mmwkGa8YGGZeHP9
+
+**Shobra El-Khema 3 Branch**
+
+- Address: The new street in front of the Ferjani market.
+- Phone: 48269151
+- Daily working hours: 8 am : 12 pm
+- Friday working hours: Friday : 8 am : 12 pm
+- Map: https://maps.app.goo.gl/eHgGc1mJv45Xh78u9
+
+**Shobra El-Khema 4 Branch**
+
+- Address: Manshiet Abdel Moneim Riad Square - Shubra El-Kheima.
+- Phone: 246062931
+- Daily working hours: 8 am : 12 pm
+- Friday working hours: 8 am : 12 pm
+- Map: https://maps.app.goo.gl/3dm7DKdkRqjWyXBYA
+
+**Shobra El-Khema 5 Branch**
+
+- Address: City Mall Tower 1-Above B-Tech - in front of Orabi Bridge.
+- Phone: 44749030
+- Daily working hours: 24 Hours
+- Friday working hours: 24 Hours
+- Map: https://www.google.com.eg/maps/place/%D9%85%D8%B9%D8%A7%D9%85%D9%84+%D8%B9%D8%B2+%D9%84%D8%A7%D8%A8%E2%80%AD/@30.1219942,31.2493859,15z/data=!4m5!3m4!1s0x0:0xb53d93ce187f709a!8m2!3d30.121996!4d31.2493771
+
+**Manti branch**
+
+- Address: Manti, Shahid Shukri Abdel Baqi Street, in front of the gas station - Manti
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: 8 am : 11 pm
+- Map: https://maps.app.goo.gl/B5wYeaCLFBQ6ZS627
+
+**Banha branch**
+
+- Address: New Banha, Farid Nada Street, Tiba Tower
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: Closed on Friday
+- Map: https://maps.app.goo.gl/NZxn6Si4ne5HAL859
+
+**Bahtim branch**
+
+- Address: 2 Al-Wahda Street, in front of Al-Tawheed and Al-Nour, first floor
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: 10 am : 10 pm
+- Map: https://www.google.com/maps/search/2+%D8%B4%D8%A7%D8%B1%D8%B9+%D8%A7%D9%84%D9%88%D8%AD%D8%AF%D8%A9+%D8%A3%D9%85%D8%A7%D9%85+%D8%A7%D9%84%D8%AA%D9%88%D8%AD%D9%8A%D8%AF+%D9%88%D8%A7%D9%84%D9%86%D9%88%D8%B1+%D8%A7%D9%84%D8%AF%D9%88%D8%B1+%D8%A7%D9%84%D8%A3%D9%88%D9%84+%D8%A8%D9%87%D8%AA%D9%8A%D9%85%E2%80%AD/@30.1385016,31.2763639,14z/data=!3m1!4b1
+
+**Shebin Al-Qanater branch**
+
+- Address: Building 61, Al-Mustafa Mall, next to Misr Parking - first floor
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: 8 am : 11 pm
+- Map: https://www.google.com/maps/search/%D8%B9%D9%85%D8%A7%D8%B1%D8%A9+61+%D9%85%D9%88%D9%84+%D8%A7%D9%84%D9%85%D8%B5%D8%B7%D9%81%D9%89+%D8%A8%D8%AC%D9%88%D8%A7%D8%B1+%D9%85%D9%88%D9%82%D9%81+%D9%85%D8%B5%D8%B1+%D8%B4%D8%A8%D9%8A%D9%86+%D8%A7%D9%84%D9%82%D9%86%D8%A7%D8%B7%D8%B1%E2%80%AD/@30.3114068,31.3331796,15z/data=!3m1!4b1?entry=ttu
+
+**Al-Qanater Al-khayria Branch**
+
+- Address: Building 9, next to the National Bank - Apartment 1 - ground floor, Nile Corniche
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: 10 am : 10 pm
+- Map: https://www.google.com/maps/search/%D8%B9%D9%85%D8%A7%D8%B1%D8%A9+9+%D8%A8%D8%AC%D9%88%D8%A7%D8%B1+%D8%A7%D9%84%D8%A8%D9%86%D9%83+%D8%A7%D9%84%D8%A3%D9%87%D9%84%D9%89+-+%D8%B4%D9%82%D8%A9+1+%D9%83%D9%88%D8%B1%D9%86%D9%8A%D8%B4+%D8%A7%D9%84%D9%86%D9%8A%D9%84%E2%80%AD/@30.067122,31.2952266,12.15z?entry=ttu
+
+**Qalyub branch**
+
+- Address: 9 Traffic Residences - Qalyub Al-Balad, near Qalyub Court - Second Floor
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: Closed on Friday
+- Map: 
+
+**Giza Branch**
+
+- Address: Misr Insurance Building, next to Al-Tawheed and Al-Noor - in front of Omar Effendi - Giza Square.
+- Phone: 35703055
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: Closed on Friday
+- Map: https://maps.app.goo.gl/44qLzKqZNn6Apsyq6
+
+**Faisal Branch 1**
+
+- Address: 323 King Faisal Street, Hassan Mohamed station, in front of KFC
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: 10 am : 10 pm
+- Map: https://maps.app.goo.gl/iJMRmbZxWUK8NMhS6
+
+**Faisal Branch 2**
+
+- Address: 2 Al-Hurriyat Street, off King Faisal Street, in front of the Faculty of Physical Education
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: Closed on Friday
+- Map: https://maps.app.goo.gl/VcSemy6UbMViHcny8
+
+**Ard Al Liwa Branch**
+
+- Address: 8 Tera El Zomor Street, next to Monginis
+- Daily working hours: 8 am : 12 pm
+- Friday working hours: 9 am : 11 pm
+- Map: https://maps.app.goo.gl/2fCAzw1aU6V5kKjt9
+
+**6th of October branch**
+
+- Address: Burai Towers - Building 2, Unit 12, next to Al-Hosari Mosque - first floor
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: 10 am : 10 pm
+- Map: https://maps.app.goo.gl/jzuU9kXVJrDPRN5Q6
+
+**Mohandessin Branch**
+
+- Address: 21 El Batal Ahmed Abdel Aziz Street - fifth floor
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: Closed on Friday
+- Map: https://maps.app.goo.gl/CbnWe8idkCgL6wzK8
+
+**Beni Suef branch 1**
+
+- Address: Port Said Street, Al-Hayat Tower, Apartment 203, second floor
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: 9 am : 11 pm
+- Map: https://www.google.com/maps/search/20+%D8%B4%D8%A7%D8%B1%D8%B9+%D9%85%D8%B5%D8%AF%D9%82+%D8%A7%D9%84%D8%AF%D9%88%D8%B1+%D8%A7%D9%84%D8%A7%D9%88%D9%84+%D8%B4%D9%82%D8%A9+2%E2%80%AD/@30.0398277,31.2086744,18.5z
+
+**Beni Suef branch 2**
+
+- Address: 3 Dr. Ali El Shafei St., next to Omar Effendi, second floor, above Restaurant 23
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: 9 am : 11 pm
+- Map: https://www.google.com/maps/search/44%D8%B4%D8%A7%D8%B1%D8%B9+%D9%85%D9%86%D8%B5%D9%88%D8%B1+%D8%AA%D9%82%D8%A7%D8%B7%D8%B9+%D8%A7%D9%84%D9%85%D8%B1%D8%A7%D8%BA%D9%8A+-%D8%A7%D9%84%D8%AF%D9%88%D8%B1+%D8%A7%D9%84%D8%AB%D8%A7%D9%84%D8%AB+%D8%B4%D9%82%D8%A9+1%E2%80%AD/@30.0358337,31.2400297,17z/data=!3m1!4b1
+
+**Beni Suef branch 3**
+
+- Address: Al-Wasiti Center - The intersection of Ahmed Orabi Street with Al Markaz Street, third floor, flat 1
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: 9 am : 11 pm
+- Map: https://www.google.com/maps/search/%D8%AA%D9%82%D8%A7%D8%B7%D8%B9+%D8%B4%D8%A7%D8%B1%D8%B9+%D8%A7%D8%AD%D9%85%D8%AF+%D8%B9%D8%B1%D8%A7%D8%A8%D9%89+%D9%85%D8%B9+%D8%B4%D8%A7%D8%B1%D8%B9+%D8%A7%D9%84%D9%85%D8%B1%D9%83%D8%B2+%D8%A7%D9%84%D8%AF%D9%88%D8%B1+%D8%A7%D9%84%D8%AB%D8%A7%D9%84%D8%AB+%D8%B4%D9%82%D8%A9+%D9%A1%E2%80%AD/@30.0675168,31.339194,12z/data=!3m1!4b1
+
+**Beni Suef branch 4**
+
+- Address: Fashion Center: National Bank Street, in front of the National Bank - Al-Yasmine Tower
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: 9 am : 11 pm
+- Map: https://www.google.com/maps/search/%D8%AA%D9%82%D8%A7%D8%B7%D8%B9+%D8%B4%D8%A7%D8%B1%D8%B9+%D8%A7%D8%AD%D9%85%D8%AF+%D8%B9%D8%B1%D8%A7%D8%A8%D9%89+%D9%85%D8%B9+%D8%B4%D8%A7%D8%B1%D8%B9+%D8%A7%D9%84%D9%85%D8%B1%D9%83%D8%B2+%D8%A7%D9%84%D8%AF%D9%88%D8%B1+%D8%A7%D9%84%D8%AB%D8%A7%D9%84%D8%AB+%D8%B4%D9%82%D8%A9+%D9%A1%E2%80%AD/@30.0675168,31.339194,12z/data=!3m1!4b1
+
+**Alexandria Branch 1**
+
+- Address: 21 Amin Fekry Street - below the Football Association
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: 10 am : 10 pm
+- Map: https://maps.app.goo.gl/odDaRGFvmzvb3Nw3A
+
+**Alexandria Branch 2**
+
+- Address: Sporting - 228 Port Said Street, next to Cairo Bank - Unit No. 2, second floor, upper floor
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: Closed on Friday
+- Map: https://www.google.com/maps/search/%D8%B3%D8%A8%D9%88%D8%B1%D8%AA%D9%86%D8%AC+-+238+%D8%B4%D8%A7%D8%B1%D8%B9+%D8%A8%D9%88%D8%B1%D8%B3%D8%B9%D9%8A%D8%AF+%D8%A8%D8%AC%D9%88%D8%A7%D8%B1+%D8%A8%D9%86%D9%83+%D8%A7%D9%84%D9%82%D8%A7%D9%87%D8%B1%D8%A9+-+%D8%A7%D9%84%D9%88%D8%AD%D8%AF%D8%A9+%D8%B1%D9%82%D9%85+2%E2%80%AD/@30.6147009,31.2758553,9z/data=!3m1!4b1?entry=ttu
+
+**Alexandria Branch 3**
+
+- Address: Sidi Bishr - 147 Gamal Abdel Nasser Street - First Floor, next to Mobil Gas Station
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: 10 am : 10 pm
+- Map: https://www.google.com/maps/search/%D8%B3%D9%8A%D8%AF%D9%89+%D8%A8%D8%B4%D8%B1+-+147+%D8%B4%D8%A7%D8%B1%D8%B9+%D8%AC%D9%85%D8%A7%D9%84+%D8%B9%D8%A8%D8%AF%D8%A7%D9%84%D9%86%D8%A7%D8%B5%D8%B1+-+%D8%A7%D9%84%D8%AF%D9%88%D8%B1+%D8%A7%D9%84%D8%A3%D9%88%D9%84+%D8%A8%D8%AC%D9%88%D8%A7%D8%B1+%D8%A8%D9%86%D8%B2%D9%8A%D9%86%D9%87+%D9%85%D9%88%D8%A8%D9%8A%D9%84%E2%80%AD/@30.6068614,29.7748054,253920m/data=!3m2!1e3!4b1?entry=ttu&g_ep=EgoyMDI2MDEyMS4wIKXMDSoASAFQAw%3D%3D
+
+**Assiut Branch 1**
+
+- Address: Station Square, in front of Assiut Train Station, Building 206, Khaled Ibn Al-Walid Street, Tower A - Second Floor
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: 10 am : 10 pm
+- Map: https://maps.app.goo.gl/cRYmF6kVizT3gqUX8
+
+**Assiut Branch 2**
+
+- Address: 12 Yousry Ragheb Street, in front of Gamal Farghaly School - First Floor
+- Daily working hours: 8 am : 11 pm
+- Friday working hours: 10 am : 10 pm
+- Map: https://maps.app.goo.gl/fHB6T6hZyfGGmPFT9
+
+### العربية / Arabic
+
+*Source: https://ezzlab.com/branches/*
+
+**فرع العباسية**
+
+- العنوان: 72 شارع العباسية أمام محطة مترو عبده باشا
+- مواعيد العمل اليومية: 8 ص:12م
+- مواعيد العمل يوم الجمعة: الجمعه : 9 ص : 12م
+- Map: https://maps.app.goo.gl/4QmnEWtLjvQf8PKm6
+
+**فرع مدينة نصر1**
+
+- العنوان: 10عمارات أول مايو بجوار الجامعة العمالية – ميدان الساعة –شقة 402 -الدور الرابع
+- مواعيد العمل اليومية: 8 ص : 11 م
+- مواعيد العمل يوم الجمعة: مغلق الجمعه
+- Map: https://maps.app.goo.gl/iB7LqCXyPzKee45G6
+
+**فرع مدينة نصر2**
+
+- العنوان: 4 شارع محمد مهدي عرفه بجوار مركز التيسير الطبي –الحي العاشر
+- مواعيد العمل اليومية: 8 ص:12م
+- مواعيد العمل يوم الجمعة: الجمعه : 8ص : 12 م
+- Map: https://maps.app.goo.gl/isCwSFi39ECBbCdL7
+
+**فرع مدينة نصر3**
+
+- العنوان: 33 شارع الطيران بجوار مستشفى التأمين الصحى مدينه نصر - الدور التانى
+- مواعيد العمل اليومية: 8 ص:11م
+- مواعيد العمل يوم الجمعة: الجمعه :مغلق
+- Map: https://maps.app.goo.gl/MYKco35vUGrDdeEt9
+
+**فرع مصر الجديدة 1**
+
+- العنوان: 48 شارع عثمان بن عفان
+- مواعيد العمل اليومية: 8ص : 11م
+- مواعيد العمل يوم الجمعة: الجمعه:10 ص:10م
+- Map: https://maps.app.goo.gl/fk7o5eWRoURRF84e9
+
+**فرع مصر الجديدة 2**
+
+- العنوان: عمارة 1 ميـــــــدان روكسي. اعلي سينما روكـــسي. الدور التـاني
+- مواعيد العمل اليومية: 8ص : 11م
+- مواعيد العمل يوم الجمعة: الجمعه:10 ص:10م
+- Map: https://maps.app.goo.gl/PDFwnMcoY2ucQCHN7
+
+**فرع باب الشعرية**
+
+- العنوان: 593 شارع بورسعيد أمام مستشفي سيد جلال
+- مواعيد العمل اليومية: 8 ص : 11 م
+- مواعيد العمل يوم الجمعة: الجمعه : 9 ص : 11 م
+- Map: https://maps.app.goo.gl/2ooJ77iq75kfNM3UA
+
+**فرع السيدة زينب**
+
+- العنوان: 345 شارع بورسعيد أمام باب إستقبال مستشفي أحمد ماهر
+- مواعيد العمل اليومية: 8 ص : 12 م
+- مواعيد العمل يوم الجمعة: الجمعه : 8ص : 11م
+- Map: https://maps.app.goo.gl/6Tv5V2McoeKPPofF8
+
+**فرع القصر العيني**
+
+- العنوان: 35شارع القصر العيني امام مسرح النهار-الدور الاول
+- مواعيد العمل اليومية: 8ص : 11م
+- مواعيد العمل يوم الجمعة: الجمعه :9ص :11ص
+- Map: https://maps.app.goo.gl/47MQwYQyKtxVjRcK7
+
+**فرع المنيل**
+
+- العنوان: 70 شارع المنيل -ميدان الباشا -عمارة الاعظمية
+- مواعيد العمل اليومية: 8 ص : 11 م
+- مواعيد العمل يوم الجمعة: الجمعه :10ص:10م
+- Map: https://maps.app.goo.gl/48hubTHHQnRcsyjC8
+
+**فرع حدائق القبة**
+
+- العنوان: 127 شارع مصر والسودان –برج 2 أ -أعلى مطعم الحاتي –الدور الثاني
+- مواعيد العمل اليومية: 8 ص : 12م
+- مواعيد العمل يوم الجمعة: الجمعه : 9 ص : 11 م
+- Map: https://maps.app.goo.gl/cE4d7SipPryX7Kko6
+
+**فرع حلمية الزيتون**
+
+- العنوان: 99 شارع سليم الاول -الدور الاول
+- مواعيد العمل اليومية: 8ص : 12م
+- مواعيد العمل يوم الجمعة: الجمعه :10ص:10م
+- Map: https://maps.app.goo.gl/kwbCrxoccaenARpH8
+
+**فرع عين شمس 1**
+
+- العنوان: 50 شارع العشرين -الدور الاول
+- مواعيد العمل اليومية: 8 ص : 12م
+- مواعيد العمل يوم الجمعة: الجمعه : 10ص:10م
+- Map: https://maps.app.goo.gl/Ph42Rhr1V2asBWsZ8
+
+**فرع عين شمس 2**
+
+- العنوان: الدور الثانى - عمارة رقم 288 - اول شارع جمال عبد الناصـر
+- مواعيد العمل اليومية: 8 ص : 12م
+- مواعيد العمل يوم الجمعة: الجمعه : 10ص:10م
+- Map: https://maps.app.goo.gl/zG4hasdSLKyKHwPK6
+
+**فرع حلوان1**
+
+- العنوان: 28 شارع مصطفي المراغي أمام سينما ماجدة بجوار محطة مترو حلوان
+- مواعيد العمل اليومية: 8 ص : 11 م
+- مواعيد العمل يوم الجمعة: مغلق الجمعه
+- Map: https://www.google.com.eg/maps/place/%D9%85%D8%B9%D8%A7%D9%85%D9%84+%D8%B9%D8%B2+%D9%84%D8%A7%D8%A8%E2%80%AD/@29.8485251,31.3357377,15z/data=!4m5!3m4!1s0x0:0x622e2558ff3e55ad!8m2!3d29.8485251!4d31.3357377
+
+**فرع حلوان 2**
+
+- العنوان: 44شارع منصور تقاطع المراغي -الدور الثالث شقة 1
+- مواعيد العمل اليومية: 8 ص : 11 م
+- مواعيد العمل يوم الجمعة: 10 ص : 10 م
+- Map: https://maps.app.goo.gl/QzpAEQTWcoV86GNL7
+
+**فرع شبرا مصر 1**
+
+- العنوان: 90شارع شبرا بجوار مترو روض الفرج أعلى كشري عرفه
+- مواعيد العمل اليومية: 8ص : 11م​
+- مواعيد العمل يوم الجمعة: الجمعه: 10ص:10م
+- Map: https://maps.app.goo.gl/XPLfgSju5qwTTsH29
+
+**فرع شبرا مصر 2**
+
+- العنوان: 105شارع شبرا أعلي حلواني سمايل -الدور الأول
+- مواعيد العمل اليومية: 8ص : 11م​
+- مواعيد العمل يوم الجمعة: الجمعه: 10ص:10م
+- Map: https://maps.app.goo.gl/uq5LSYS1K2ym79Jq6
+
+**فرع الدراسة**
+
+- العنوان: 3 شارع المنصورية أمام مستشفي الحسين الجامعي
+- مواعيد العمل اليومية: 8ص : 12م​
+- مواعيد العمل يوم الجمعة: 8ص : 12م​
+- Map: https://www.google.com.eg/maps/place/%D9%85%D8%B9%D8%A7%D9%85%D9%84+%D8%B9%D8%B2+%D9%84%D8%A7%D8%A8%E2%80%AD/@30.0484558,31.2717177,15z/data=!4m5!3m4!1s0x0:0xa4c6dccc971afe69!8m2!3d30.0484558!4d31.2717177
+
+**فرع المقطم 1**
+
+- العنوان: عماره رقم 73 شارع 9 الهضبة العليا أمام كشرى التحرير
+- مواعيد العمل اليومية: 8ص : 12م​
+- مواعيد العمل يوم الجمعة: مغلق الجمعه
+- Map: https://maps.app.goo.gl/kea7EGadopRNXwv56
+
+**فرع المقطم 2**
+
+- العنوان: مساكن أطلس - مساكن الزلزال أمام قسم المقطم - بلوك9 الدور الثانى شقه 3
+- مواعيد العمل اليومية: 8ص : 12م​
+- مواعيد العمل يوم الجمعة: 10ص : 10م​
+- Map: https://www.google.com/maps/search/%D9%85%D8%B3%D8%A7%D9%83%D9%86+%D8%A3%D8%B7%D9%84%D8%B3+-+%D9%85%D8%B3%D8%A7%D9%83%D9%86+%D8%A7%D9%84%D8%B2%D9%84%D8%B2%D8%A7%D9%84+%D8%A3%D9%85%D8%A7%D9%85+%D9%82%D8%B3%D9%85+%D8%A7%D9%84%D9%85%D9%82%D8%B7%D9%85+-+%D8%A8%D9%84%D9%88%D9%83+9+%D8%A7%D9%84%D8%AF%D9%88%D8%B1+%D8%A7%D9%84%D8%AB%D8%A7%D9%86%D9%89+%D8%B4%D9%82%D9%87+3%E2%80%AD/@30.0099566,31.3366228,16z/data=!3m1!4b1?entry=ttu
+
+**فرع دار السلام**
+
+- العنوان: 50 شارع الفيوم - الدور الأول بجوار بنك مصر
+- مواعيد العمل اليومية: 8ص : 12م​
+- مواعيد العمل يوم الجمعة: 10ص : 10م​
+- Map: https://www.google.com/maps/search/50+%D8%B4%D8%A7%D8%B1%D8%B9+%D8%A7%D9%84%D9%81%D9%8A%D9%88%D9%85+-+%D8%A7%D9%84%D8%AF%D9%88%D8%B1+%D8%A7%D9%84%D8%A3%D9%88%D9%84+%D8%A8%D8%AC%D9%88%D8%A7%D8%B1+%D8%A8%D9%86%D9%83+%D9%85%D8%B5%D8%B1%E2%80%AD/@29.9807179,31.2521153,17z/data=!3m1!4b1?entry=ttu
+
+**فرع شبين الكوم 1**
+
+- العنوان: برج الميدان البرج الذهبي ميدان شرف
+- مواعيد العمل اليومية: 8ص : 11م​
+- مواعيد العمل يوم الجمعة: الجمعه:10 ص الى 10م
+- Map: https://www.google.com/maps/search/20+%D8%B4%D8%A7%D8%B1%D8%B9+%D9%85%D8%B5%D8%AF%D9%82+%D8%A7%D9%84%D8%AF%D9%88%D8%B1+%D8%A7%D9%84%D8%A7%D9%88%D9%84+%D8%B4%D9%82%D8%A9+2%E2%80%AD/@30.0398277,31.2086744,18.5z
+
+**فرع شبين الكوم 2**
+
+- العنوان: ميدان شرف برج الزهراء الدور الخامس
+- مواعيد العمل اليومية: 8ص : 11م​
+- مواعيد العمل يوم الجمعة: الجمعه:10 ص الى 10م
+- Map: https://maps.app.goo.gl/HS1AUsNZ3fouwW9M9
+
+**فرع أشمون**
+
+- العنوان: شارع سعد زغلول-ميدان فيلفل -الدور الأول
+- مواعيد العمل اليومية: 8ص : 11م​
+- مواعيد العمل يوم الجمعة: الجمعه:10 ص الى 10م
+- Map: https://www.google.com/maps/search/20+%D8%B4%D8%A7%D8%B1%D8%B9+%D9%85%D8%B5%D8%AF%D9%82+%D8%A7%D9%84%D8%AF%D9%88%D8%B1+%D8%A7%D9%84%D8%A7%D9%88%D9%84+%D8%B4%D9%82%D8%A9+2%E2%80%AD/@30.0398277,31.2086744,18.5z
+
+**فرع قويسنا**
+
+- العنوان: شارع أنور السادات -أبراج روما دور الميزانين
+- مواعيد العمل اليومية: 8ص : 11م​
+- مواعيد العمل يوم الجمعة: الجمعه:10 ص الى 10م
+- Map: https://www.google.com/maps/search/20+%D8%B4%D8%A7%D8%B1%D8%B9+%D9%85%D8%B5%D8%AF%D9%82+%D8%A7%D9%84%D8%AF%D9%88%D8%B1+%D8%A7%D9%84%D8%A7%D9%88%D9%84+%D8%B4%D9%82%D8%A9+2%E2%80%AD/@30.0398277,31.2086744,18.5z
+
+**فرع شبرا الخيمة 1**
+
+- العنوان: 33 شارع 15 مايو بجوار كوبري عرابي -أمام برج الأطباء
+- مواعيد العمل اليومية: 8 ص : 12 م
+- مواعيد العمل يوم الجمعة: الجمعه : 8 ص : 12 م
+- Map: https://maps.app.goo.gl/F7ZqMD3AQghv15oN6
+
+**فرع شبرا الخيمة 2**
+
+- العنوان: شارع 15 مايو أمام مسجد أبو الهنا بجوار مستشفي الحرية التخصصي
+- مواعيد العمل اليومية: 8 ص : 12 م
+- مواعيد العمل يوم الجمعة: الجمعه : 8 ص : 12 م
+- Map: https://maps.app.goo.gl/r8mmwkGa8YGGZeHP9
+
+**فرع شبرا الخيمة 3**
+
+- العنوان: الشارع الجديد أمام ماركت الفرجاني
+- مواعيد العمل اليومية: 8 ص : 12 م
+- مواعيد العمل يوم الجمعة: الجمعه : 8ص : 12 م
+- Map: https://maps.app.goo.gl/eHgGc1mJv45Xh78u9
+
+**فرع شبرا الخيمة 4**
+
+- العنوان: ميدان منشية عبد المنعم رياض –شبرا الخيمة
+- مواعيد العمل اليومية: 8 ص : 12م
+- مواعيد العمل يوم الجمعة: الجمعه :8ص :12م
+- Map: https://maps.app.goo.gl/3dm7DKdkRqjWyXBYA
+
+**فرع شبرا الخيمة 5**
+
+- العنوان: برج ستي مول 1 أعلى بي تك أمام كوبري عرابي
+- مواعيد العمل اليومية: خدمه 24 ساعه
+- مواعيد العمل يوم الجمعة: خدمه 24 ساعه
+- Map: https://www.google.com.eg/maps/place/%D9%85%D8%B9%D8%A7%D9%85%D9%84+%D8%B9%D8%B2+%D9%84%D8%A7%D8%A8%E2%80%AD/@30.1219942,31.2493859,15z/data=!4m5!3m4!1s0x0:0xb53d93ce187f709a!8m2!3d30.121996!4d31.2493771
+
+**فرع منطى**
+
+- العنوان: منطي شارع الشهيد شكري عبد الباقي امام البنزينه-منطي
+- مواعيد العمل اليومية: 8 ص : 11 م
+- مواعيد العمل يوم الجمعة: الجمعه :8ص:11م
+- Map: https://maps.app.goo.gl/B5wYeaCLFBQ6ZS627
+
+**فرع بنها**
+
+- العنوان: بنها الجديدة شارع فريد ندا برج طيبة
+- مواعيد العمل اليومية: 8 ص : 11 م
+- مواعيد العمل يوم الجمعة: مغلق الجمعه
+- Map: https://maps.app.goo.gl/NZxn6Si4ne5HAL859
+
+**فرع بهتيم**
+
+- العنوان: 2 شارع الوحدة أمام التوحيد والنور الدور الأول
+- مواعيد العمل اليومية: 8 ص : 11 م
+- مواعيد العمل يوم الجمعة: الجمعه:10 ص الى 10م
+- Map: https://www.google.com/maps/search/2+%D8%B4%D8%A7%D8%B1%D8%B9+%D8%A7%D9%84%D9%88%D8%AD%D8%AF%D8%A9+%D8%A3%D9%85%D8%A7%D9%85+%D8%A7%D9%84%D8%AA%D9%88%D8%AD%D9%8A%D8%AF+%D9%88%D8%A7%D9%84%D9%86%D9%88%D8%B1+%D8%A7%D9%84%D8%AF%D9%88%D8%B1+%D8%A7%D9%84%D8%A3%D9%88%D9%84+%D8%A8%D9%87%D8%AA%D9%8A%D9%85%E2%80%AD/@30.1385016,31.2763639,14z/data=!3m1!4b1
+
+**فرع شبين القناطر**
+
+- العنوان: عمارة61 مول المصطفى بجوار موقف مصر - الدور الأول
+- مواعيد العمل اليومية: 8 ص : 11 م
+- مواعيد العمل يوم الجمعة: 8 ص : 11 م
+- Map: https://www.google.com/maps/search/%D8%B9%D9%85%D8%A7%D8%B1%D8%A9+61+%D9%85%D9%88%D9%84+%D8%A7%D9%84%D9%85%D8%B5%D8%B7%D9%81%D9%89+%D8%A8%D8%AC%D9%88%D8%A7%D8%B1+%D9%85%D9%88%D9%82%D9%81+%D9%85%D8%B5%D8%B1+%D8%B4%D8%A8%D9%8A%D9%86+%D8%A7%D9%84%D9%82%D9%86%D8%A7%D8%B7%D8%B1%E2%80%AD/@30.3114068,31.3331796,15z/data=!3m1!4b1?entry=ttu
+
+**فرع القناطر الخيرية**
+
+- العنوان: عمارة9 بجوار البنك الأهلى - شقة 1 - الدور الأرضى كورنيش النيل
+- مواعيد العمل اليومية: 8 ص : 11 م
+- مواعيد العمل يوم الجمعة: 10 ص : 10 م
+- Map: https://www.google.com/maps/search/%D8%B9%D9%85%D8%A7%D8%B1%D8%A9+9+%D8%A8%D8%AC%D9%88%D8%A7%D8%B1+%D8%A7%D9%84%D8%A8%D9%86%D9%83+%D8%A7%D9%84%D8%A3%D9%87%D9%84%D9%89+-+%D8%B4%D9%82%D8%A9+1+%D9%83%D9%88%D8%B1%D9%86%D9%8A%D8%B4+%D8%A7%D9%84%D9%86%D9%8A%D9%84%E2%80%AD/@30.067122,31.2952266,12.15z?entry=ttu
+
+**فرع قليوب**
+
+- العنوان: 9 مساكن المرور - قليوب البلد باقرب من محكمة قليوب - الدور الثانى
+- مواعيد العمل اليومية: 8 ص : 11 م
+- مواعيد العمل يوم الجمعة: مغلق الجمعه
+- Map: 
+
+**فرع الجيزة**
+
+- العنوان: ميدان الجيزة-برج النصر -الدور الثاني -شقة 12
+- مواعيد العمل اليومية: 8 ص : 11 م
+- مواعيد العمل يوم الجمعة: مغلق الجمعه
+- Map: https://maps.app.goo.gl/44qLzKqZNn6Apsyq6
+
+**فرع فيصل 1**
+
+- العنوان: 323شارع الملك فيصل محطة حسن محمد امام كنتاكي
+- مواعيد العمل اليومية: 8 ص : 11م
+- مواعيد العمل يوم الجمعة: 10ص:10م
+- Map: https://maps.app.goo.gl/iJMRmbZxWUK8NMhS6
+
+**فرع فيصل 2**
+
+- العنوان: 2 شارع الحريات متفرع من شارع الملك فيصل امام كليه التربية الرياضية
+- مواعيد العمل اليومية: 8 ص : 11 م
+- مواعيد العمل يوم الجمعة: مغلق الجمعه
+- Map: https://maps.app.goo.gl/VcSemy6UbMViHcny8
+
+**فرع أرض اللواء**
+
+- العنوان: 8شارع ترعة الزمر بجانب مونجينى -أرض اللواء -الدور الأول
+- مواعيد العمل اليومية: 8 ص : 12 م
+- مواعيد العمل يوم الجمعة: الجمعه:9ص:11م
+- Map: https://maps.app.goo.gl/2fCAzw1aU6V5kKjt9
+
+**فرع 6أكتوبر**
+
+- العنوان: أبراج برعي -عمارة2وحدة12 بجوار مسجد الحصري -الدور الأول
+- مواعيد العمل اليومية: 11ص 8 : م
+- مواعيد العمل يوم الجمعة: 10ص:10م
+- Map: https://maps.app.goo.gl/jzuU9kXVJrDPRN5Q6
+
+**فرع المهندسين**
+
+- العنوان: 21شارع البطل احمد عبد العزيز -الدور الخامس
+- مواعيد العمل اليومية: 8 ص : 11 م
+- مواعيد العمل يوم الجمعة: الجمعه :مغلق
+- Map: https://maps.app.goo.gl/CbnWe8idkCgL6wzK8
+
+**فرع بني سويف 1**
+
+- العنوان: شارع بورسعيد-برج الحياة-امام معرض شباب مصر
+- مواعيد العمل اليومية: 8 ص : 11 م
+- مواعيد العمل يوم الجمعة: 9ص:11م
+- Map: https://www.google.com/maps/search/44%D8%B4%D8%A7%D8%B1%D8%B9+%D9%85%D9%86%D8%B5%D9%88%D8%B1+%D8%AA%D9%82%D8%A7%D8%B7%D8%B9+%D8%A7%D9%84%D9%85%D8%B1%D8%A7%D8%BA%D9%8A+-%D8%A7%D9%84%D8%AF%D9%88%D8%B1+%D8%A7%D9%84%D8%AB%D8%A7%D9%84%D8%AB+%D8%B4%D9%82%D8%A9+1%E2%80%AD/@30.0358337,31.2400297,17z/data=!3m1!4b1
+
+**فرع بني سويف 2**
+
+- العنوان: ميدان المديريه- بجوار عمر أفندي-الدور الثانى- أعلى مطعم 23
+- مواعيد العمل اليومية: 8 ص : 11 م
+- مواعيد العمل يوم الجمعة: 9ص:11م
+- Map: https://www.google.com/maps/search/44%D8%B4%D8%A7%D8%B1%D8%B9+%D9%85%D9%86%D8%B5%D9%88%D8%B1+%D8%AA%D9%82%D8%A7%D8%B7%D8%B9+%D8%A7%D9%84%D9%85%D8%B1%D8%A7%D8%BA%D9%8A+-%D8%A7%D9%84%D8%AF%D9%88%D8%B1+%D8%A7%D9%84%D8%AB%D8%A7%D9%84%D8%AB+%D8%B4%D9%82%D8%A9+1%E2%80%AD/@30.0358337,31.2400297,17z/data=!3m1!4b1
+
+**فرع بنى سويف3**
+
+- العنوان: مركز الواسطى - تقاطع شارع احمد عرابى مع شارع المركز الدور الثالت شقة ١
+- مواعيد العمل اليومية: 8 ص : 11 م
+- مواعيد العمل يوم الجمعة: 9ص:11م
+- Map: https://www.google.com/maps/search/%D8%AA%D9%82%D8%A7%D8%B7%D8%B9+%D8%B4%D8%A7%D8%B1%D8%B9+%D8%A7%D8%AD%D9%85%D8%AF+%D8%B9%D8%B1%D8%A7%D8%A8%D9%89+%D9%85%D8%B9+%D8%B4%D8%A7%D8%B1%D8%B9+%D8%A7%D9%84%D9%85%D8%B1%D9%83%D8%B2+%D8%A7%D9%84%D8%AF%D9%88%D8%B1+%D8%A7%D9%84%D8%AB%D8%A7%D9%84%D8%AB+%D8%B4%D9%82%D8%A9+%D9%A1%E2%80%AD/@30.0675168,31.339194,12z/data=!3m1!4b1
+
+**فرع بني سويف 4**
+
+- العنوان: مركز الفشن :شارع البنك الأهلي امام البنك الاهلي -برج الياسمين
+- مواعيد العمل اليومية: 8 ص : 11 م
+- مواعيد العمل يوم الجمعة: 9ص:11م
+- Map: https://www.google.com/maps/search/%D8%AA%D9%82%D8%A7%D8%B7%D8%B9+%D8%B4%D8%A7%D8%B1%D8%B9+%D8%A7%D8%AD%D9%85%D8%AF+%D8%B9%D8%B1%D8%A7%D8%A8%D9%89+%D9%85%D8%B9+%D8%B4%D8%A7%D8%B1%D8%B9+%D8%A7%D9%84%D9%85%D8%B1%D9%83%D8%B2+%D8%A7%D9%84%D8%AF%D9%88%D8%B1+%D8%A7%D9%84%D8%AB%D8%A7%D9%84%D8%AB+%D8%B4%D9%82%D8%A9+%D9%A1%E2%80%AD/@30.0675168,31.339194,12z/data=!3m1!4b1
+
+**فرع اسكندرية 1**
+
+- العنوان: 21شارع امين فكري -اسفل اتحاد كرة القدم
+- مواعيد العمل اليومية: 8 ص : 11 م
+- مواعيد العمل يوم الجمعة: 10ص:10م
+- Map: https://maps.app.goo.gl/odDaRGFvmzvb3Nw3A
+
+**فرع اسكندرية 2**
+
+- العنوان: سبورتنج - 228 شارع بورسعيد بجوار بنك القاهرة - الوحدة رقم2 الدور الثانى علوى
+- مواعيد العمل اليومية: 8 ص : 11 م
+- مواعيد العمل يوم الجمعة: مغلق الجمعه
+- Map: https://www.google.com/maps/search/%D8%B3%D8%A8%D9%88%D8%B1%D8%AA%D9%86%D8%AC+-+238+%D8%B4%D8%A7%D8%B1%D8%B9+%D8%A8%D9%88%D8%B1%D8%B3%D8%B9%D9%8A%D8%AF+%D8%A8%D8%AC%D9%88%D8%A7%D8%B1+%D8%A8%D9%86%D9%83+%D8%A7%D9%84%D9%82%D8%A7%D9%87%D8%B1%D8%A9+-+%D8%A7%D9%84%D9%88%D8%AD%D8%AF%D8%A9+%D8%B1%D9%82%D9%85+2%E2%80%AD/@30.6147009,31.2758553,9z/data=!3m1!4b1?entry=ttu
+
+**فرع اسكندرية 3**
+
+- العنوان: سيدى بشر - 147 شارع جمال عبدالناصر - الدور الأول بجوار بنزينه موبيل
+- مواعيد العمل اليومية: 8 ص : 11 م
+- مواعيد العمل يوم الجمعة: 10ص:10م
+- Map: https://www.google.com/maps/search/%D8%B3%D9%8A%D8%AF%D9%89+%D8%A8%D8%B4%D8%B1+-+147+%D8%B4%D8%A7%D8%B1%D8%B9+%D8%AC%D9%85%D8%A7%D9%84+%D8%B9%D8%A8%D8%AF%D8%A7%D9%84%D9%86%D8%A7%D8%B5%D8%B1+-+%D8%A7%D9%84%D8%AF%D9%88%D8%B1+%D8%A7%D9%84%D8%A3%D9%88%D9%84+%D8%A8%D8%AC%D9%88%D8%A7%D8%B1+%D8%A8%D9%86%D8%B2%D9%8A%D9%86%D9%87+%D9%85%D9%88%D8%A8%D9%8A%D9%84%E2%80%AD/@30.6068614,29.7748054,253920m/data=!3m2!1e3!4b1?entry=ttu&g_ep=EgoyMDI2MDEyMS4wIKXMDSoASAFQAw%3D%3D
+
+**فرع أسيوط 1**
+
+- العنوان: ميدان المحطة أمام محطة قطار أسيوط عمارة 206شارع خالد بن الوليد برج أ -الدور الثاني
+- مواعيد العمل اليومية: 8 ص : 11 م
+- مواعيد العمل يوم الجمعة: 10ص:10م
+- Map: https://maps.app.goo.gl/cRYmF6kVizT3gqUX8
+
+**فرع أسيوط 2**
+
+- العنوان: 12شارع يسري راغب أمام مدرسة جمال فرغلي -الدور الأول
+- مواعيد العمل اليومية: 8 ص : 11 م
+- مواعيد العمل يوم الجمعة: 10ص:10م
+- Map: https://maps.app.goo.gl/fHB6T6hZyfGGmPFT9
+
+
+## Test Menu — Full List of Available Tests / قائمة الاختبارات — كل التحاليل المتاحة
+
+### English
+
+*Source: https://ezzlab.com/test-menu-en/*
+
+657 tests available / عدد التحاليل المتاحة 657
+
+- 1 hr glucose PP
+- 1,25 Dihydroxy Vit D
+- 100 gm OGTT(F,1,2,3)
+- 17 Ketosteroids
+- 17OH Progestrone
+- '3456789
+- 5 HIAA.
+- 5 Nucleotidase
+- 50 gm glucose test
+- 75 gm OGTT (non pregnant)(F,1/2,1,2)
+- 75 gm OGTT (pregnant)(F,1,2)
+- A/G ratio
+- ABG
+- ABG offer
+- ABO Ab Titer
+- ABO Group
+- ACE
+- ACTH(Random)
+- ACTH (AM)
+- ACTH (PM)
+- ADA
+- ADA Pericardial
+- ADH
+- AFP
+- AFP (CSF)
+- AFP (Pregnant)
+- ALT (SGPT)
+- AMA
+- AMH
+- ANA
+- ANCA-C
+- ANCA-P
+- APCA
+- ASCA IgA
+- ASCA IgG
+- ASMA
+- ASO
+- AST (SGOT)
+- ATG
+- ATPO
+- Acetone Urine random
+- Acetylcholine Receptor Antibody
+- Acetylcholinesterase Antibody
+- Activated Ptotein C - Resistance
+- Adenovirus antibody IgA
+- Adenovirus antibody IgG
+- Adenovirus antibody IgM
+- Adenovirus-DNA-PCR
+- Adrenaline
+- Albumin
+- Albumin in ( CSF )
+- Albumin random urine
+- Alcohol in Blood
+- Aldolase
+- Aldosterone
+- Alkaline Phosphatase
+- Alpha 1 antitrypsin
+- Alpha 2 macroglobulin
+- Alpha Glucosidase in semen
+- Alpha Thalassemia ( PCR )
+- Amikacin (Amikin)
+- Aminoacid Quantitative in Plasma
+- Aminoacid Quantitative in Urine
+- Ammonia
+- Amoeba Ab
+- Amphetamine
+- Amylase
+- Amylase urine
+- Amyloid A protein
+- Anal Swab
+- Androstendione
+- Anion gap serum
+- Anti CCP
+- Anti Cardio IgG
+- Anti Cardio IgM
+- Anti Centromere Ab
+- Anti DNA
+- Anti Endomysial IgA
+- Anti Endomysial IgG
+- Anti Endomysial IgM
+- Anti GAD
+- Anti GBM
+- Anti Gliadin IgA
+- Anti Gliadin IgG
+- Anti Gliadin IgM
+- Anti Insulin
+- Anti Jo 1 antibodies
+- Anti LKM
+- Anti La
+- Anti MCV
+- Anti Phospho IgG
+- Anti Phospho IgM
+- Anti RNP
+- Anti Ro
+- Anti SCL 70
+- Anti SLA
+- Anti Smith
+- Anti Sperm Semen
+- Anti Sperm Serum
+- Anti Thrombin III
+- Anti islet cell
+- Anti platelet Ab (direct)
+- Anti platelet Ab (indirect)
+- Apolipoprotein A1
+- Apolipoprotein B
+- Ascitic ADA
+- Ascitic HCT
+- Ascitic LDH
+- Ascitic Triglycerides
+- Ascitic albumin
+- Ascitic amylase
+- Ascitic chemistry
+- Ascitic chemistry & cytology
+- Ascitic cholesterol
+- Ascitic complete analysis
+- Ascitic creatinine
+- Ascitic culture
+- Ascitic cytology
+- Ascitic glucose
+- Ascitic pH
+- Ascitic protein
+- Ascitic protein/serum protein
+- Aspergillus Ab IgE
+- Aspergillus Antigen
+- Aspiration C/S
+- BK. Virus PCR in Urine
+- BK. Virus in Plasma
+- BLOOD PH
+- BT
+- BUN
+- Barbiturates
+- Bence jones protein
+- Benzodiazepine
+- Beta 2 Microglobuin (Serum)
+- Beta 2 Microglobulin (Urine)
+- Beta HCG
+- Beta2 Glycoprotein IgG
+- Beta2 Glycoprotein IgM
+- Bicarbonate
+- Bicarbonate urine 24 hours
+- Bile Acids
+- Bilharzial Ab
+- Bilharzial Ag Blood
+- Bilharzial Ag stool
+- Bilharzial Ag urine
+- Bilirubin (T&D)
+- Bilirubin Random Urine
+- Blood Culture
+- Blood Film For Filaria
+- Blood Film For Malaria
+- Blood Group(ABO/Rh)
+- Blood culture X2
+- Blood culture X3
+- Brain Natriuretic Peptide (BNP)
+- Breast Discharge Culture.
+- Bronchoaveolar Culture
+- Brucella IgG
+- Brucella IgM
+- Brucella test
+- C-Peptide 2 hr PP
+- C-Peptide Fasting
+- C-Peptide Random
+- C1 esterase inhibitor
+- C1 esterase inhibitor activity
+- C1q
+- C2.
+- C3
+- C4
+- C9
+- CA 15.3
+- CA 19.9
+- CBC
+- CBC with blood film
+- CD 11b
+- CD 16
+- CD 18
+- CD 19
+- CD 20
+- CD 23
+- CD 3
+- CD 4
+- CD 5
+- CD 56
+- CD 79a
+- CD 79b
+- CD 8
+- CD FMC7
+- CEA
+- CH 50
+- CK MB
+- CMV -DNA/PCR By Taqman Probe
+- CMV IgG
+- CMV IgM
+- CPK (CK Total)
+- CRP
+- CSF ADA
+- CSF Chemistry
+- CSF Cytology & Chemistry
+- CSF Glycine
+- CSF IgA
+- CSF IgG
+- CSF IgM
+- CSF LDH
+- CSF chloride
+- CSF complete analysis
+- CSF culture
+- CSF cytology
+- CSF glucose
+- CSF lactate
+- CSF oligoclonal band
+- CSF pH
+- CSF protein
+- CT
+- Calcitonin
+- Calcium Ionized
+- Calcium Total
+- Calcium urine 24hrs
+- Calcium/creatinine ratio
+- Calprotectin
+- Cannabinoids(THC)
+- Cardiac Enzymes(CPK,MB,LDH,GOT,TROP)
+- Catecholamine plasma
+- Catecholamines 24 hours
+- Ceruloplasmin
+- Cervical Disch C/S
+- Chlamydia Ag endocervical
+- Chlamydia Ag urethral swab
+- Chlamydia Ag urine
+- Chlamydia Pneumoniae IgA
+- Chlamydia Pneumoniae IgG
+- Chlamydia Pneumoniae IgM
+- Chlamydia Trachomatis IgA
+- Chlamydia Trachomatis IgG
+- Chlamydia Trachomatis IgM
+- Chlamydia Trachomatis PCR In Urine
+- Chloride
+- Chloride urine 24 hrs
+- Cholesterol
+- Cholesterol(Peritonial fluid)
+- Citrate urine 24 hours
+- Cocaine
+- Cold Agglutinin
+- Conjuntival Swab C/S
+- Coombs direct
+- Coombs indirect
+- Copper serum
+- Copper urine 24 hrs
+- Coproporphyrin urine 24 hours
+- Cortisol (AM)
+- Cortisol (PM)
+- Cortisol Random
+- Cortisol urine 24 h
+- Cow milk allergy
+- Coxsackie B Virus Antibody IgG (Coxsackie IgG)
+- Coxsackie B Virus Antibody IgM (Coxsackie IgM)
+- Creatinine
+- Creatinine Clearance
+- Creatinine Clearance Pediatric
+- Creatinine urine 24hrs
+- Cryoglobulin
+- Cyclosporin A
+- Cyclosporin after dose
+- Cyclosporin before dose
+- Cystatin C
+- Cystine urine 24 hours
+- D-dimer
+- DHEA
+- DHEA-S
+- DHR
+- DNA Fragmentation Test
+- DRVVT
+- Depakine
+- Depakine (after)
+- Depakine (before)
+- Diazepam (Quant.)
+- Digoxin
+- Dihydrotestosterone (DHT)
+- Direct Bilirubin
+- Dopamine
+- Double test ( PAPP-Free HCG)
+- Drain AFP
+- Drain Amylase
+- Drain Bilirubin
+- Drain CEA
+- Drain CRP
+- Drain Chemistry
+- Drain Cholesterol
+- Drain Creatinine
+- Drain Cytology
+- Drain Glucose
+- Drain LDH
+- Drain Lipase
+- Drain Protein
+- Drain Triglycerides
+- Drain pH
+- Drug screening 6
+- Drug screening7(tramadol)
+- Drug screening8(tramadol&Strox)
+- Dysmorphic RBCs
+- E1 (Estrone)
+- E3 (Estriol)
+- EBV By PCR (Early Ag.) By Taqman Probe
+- EBV IgG
+- EBV IgM
+- EBV- DNA- PCR
+- ENA
+- ESR
+- Ear Discharge C/S
+- Eosinophils In Urine
+- Epanutin
+- Epanutin (after)
+- Epanutin (before)
+- Erythropoietin
+- Estrogen
+- FBS
+- FDPs
+- FMF(PCR)
+- FSH
+- Factor XIII
+- Factor II
+- Factor II Gene-mutation
+- Factor IX
+- Factor V
+- Factor V Leiden PCR
+- Factor VII
+- Factor VIII
+- Factor X
+- Factor XI
+- Factor XII
+- Fasciola Ab
+- Ferritin
+- Fibrinogen
+- Fibro Max.
+- Fibro test
+- Filaria Ab
+- Fluid Examination
+- Folic Acid
+- Food allergy
+- Free PSA /Total PSA ratio
+- Free T3
+- Free T4
+- Free Thyroxin Index ( FTI )
+- Fructosamine
+- Fructose in Semen
+- Fungal Culture
+- G6PD
+- GGT
+- Garamycin
+- Giardia lamblia (Ag)
+- Globulin (Serum )
+- Glucose Tolerance Test (GTT)
+- Glucose urine 24 hours
+- Glucose urine random
+- Glycated Hb
+- Gram Stain
+- Growth hormone basal
+- Gum Culture
+- H. Pylori Ag
+- H. Pylori IgA
+- H. Pylori IgG
+- H. Pylori IgM
+- HAV IgG
+- HAV IgM
+- HBV Genotyping.
+- HBV PCR (Qualitative)
+- HBV PCR (Quantitative)
+- HBc IgG
+- HBc IgM
+- HBe Ab
+- HBe Ag
+- HBs Ab
+- HBs Ag
+- HCV GENOTYPING
+- HCV Ab
+- HCV PCR (Qualitative)
+- HCV PCR (Quantitative)
+- HCV in liver biopsy by (ISH)
+- HDL
+- HDV IgG
+- HDV IgM
+- HEV IgM
+- HIV (Ag+Ab)
+- HIV PCR
+- HLA B27
+- HLA B51
+- HOMA-IR
+- HPV (Human Papilloma Virus) PCR
+- HPV - PCR (Urethral)
+- HPV - PCR (Vaginal)
+- HSV I IgG
+- HSV I IgM
+- HSV I/II DNA - PCR
+- HSV II IgG
+- HSV II IgM
+- Haptoglobin
+- Hemoglobin
+- Hemoglobin Electrophoresis
+- Hepatitis E Virus Antibody IgG (HEV IgG)
+- Her-2 neu.
+- Histamine
+- Homocysteine
+- Hydatid Ab
+- IGF-1
+- IgA
+- IgE
+- IgG
+- IgG Index
+- IgG4
+- IgM
+- Immunelectrophoresis urine
+- Immunofixation serum
+- Inhalant allergy
+- Inhibin B
+- Insulin 2 hr PP
+- Insulin Curve
+- Insulin Random
+- Insulin fasting
+- Intrinsic Factor blocking Antibody
+- Iron
+- Iron Profile
+- JAK 2 PCR.
+- KOH Examination
+- Kappa serum
+- LDH
+- LDL
+- LE Cells
+- LH
+- Lactate
+- Lactoferrin stool
+- Lambda serum
+- Lead (blood)
+- Leishmania film
+- Leucocytic Count (Total&Diff)
+- Levetiracetam
+- Lipase
+- Lipase urine
+- Lipid Profile
+- Lithium (Li)
+- Lupus Anticoagulant
+- MTHFR PCR
+- Magnesium
+- Malaria Ab IgG
+- Measles Virus Antibody IgG (Measles IgG)
+- Measles Virus Antibody IgM (Measles IgM)
+- Metabolic Screening
+- Metanephrines urine 24 hours
+- Microalbuminuria
+- Mono-spot Test
+- Morphine(Opiate)
+- Mumps Virus Antibodies IgM (Mumps IgM)
+- Mumps Virus Antibody IgG (Mumps IgG)
+- NIPT
+- Nasal swab C/S
+- Noradrenaline
+- Occult Blood Nipple
+- Occult Blood Stool
+- Osmolality serum
+- Osmolality urine 24hrs
+- Osmolality urine random
+- Osmotic Fragility
+- Osteocalcin
+- Oxalate urine 24 hrs
+- Oxalate/creatinine ratio
+- PAP smear
+- PAP smear x2
+- PAP smear x3
+- الاسبوع PAPP-A10
+- الاسبوع PAPP-A 11
+- الاسبوع PAPP-A 12
+- الاسبوع PAPP-A 13
+- الاسبوع PAPP-A 8
+- الاسبوع PAPP-A 9
+- PATHOLOGY REPORT (small)
+- PIVKA
+- PPS
+- PRP
+- PSA (Total & Free)
+- PSA free
+- PSA total
+- PT
+- PTH
+- PTT
+- Parvovirus B19 Antibody IgG (Parvo B19 IgG)
+- Parvovirus B19 Antibody IgM (Parvo B19 IgM)
+- Pathlogy XL
+- Pathology XXL
+- Pathology large
+- Pathology medium
+- Paul bunnel test
+- Pericardial Fluid Examination C/S
+- Phenobarbital
+- Phosphorous
+- Phosphorus urine 24hrs
+- Plasma Potassium (Plasma K)
+- Platelet Count
+- Pleural ADA
+- Pleural HCT
+- Pleural LDH
+- Pleural Triglycerides
+- Pleural albumin
+- Pleural amylase
+- Pleural chemistry
+- Pleural chemistry & cytology
+- Pleural cholesterol
+- Pleural complete analysis
+- Pleural creatinine
+- Pleural culture
+- Pleural cytology
+- Pleural glucose
+- Pleural pH
+- Pleural protein
+- Post Coital Test
+- Potassium
+- Potassium urine 24 hrs
+- Pregnancy Serum
+- Pregnancy Urine
+- Procalcitonin
+- Progesterone
+- Prolactin
+- Prostatic C/S
+- Prostatic Secretion Examination
+- Protein C
+- Protein Electrophoresis
+- Protein S
+- Protein urine 24hrs
+- Protein/Creatinine Ratio
+- Prothrombin Gene PCR
+- Pus C/S
+- Pyruvate
+- Quantiferon Gold TB
+- RBS
+- RF
+- RH Ab Titre
+- RPR
+- Reducing Stool
+- Reducing Urine
+- Renin
+- Reticulocytes
+- Rh group
+- Rose Waaler
+- Rota virus stool
+- Rubella IgG
+- Rubella IgM
+- SAAG
+- SHBG
+- SLE antibodies
+- Schebo Test
+- Semen C/S
+- Semen Examination
+- Semen Processing Profile
+- Serotonin in Blood
+- Serotonin in Urine 24 hours
+- Sick Cell Test
+- Sodium
+- Sodium urine 24hrs
+- Specific Gravity 24 urine
+- Specific Gravity Random urine
+- Sputum C/S
+- Sputum Culture For AFB (TB)
+- Stone
+- Stone calculus
+- Stool C/S
+- Stool Analysis
+- Strox (Voodoo)
+- Synovial Cytology&chemistry
+- Synovial Fluid C/S
+- Synovial chemistry
+- Synovial complete analysis
+- Synovial crystals
+- Synovial cytology
+- T.B. antibody
+- T3 Uptake
+- TB CULTURE
+- TB PCR Blood
+- TB PCR Sputum
+- TB PCR Urine
+- TBG
+- TIBC
+- TLC
+- TORCH(IgG)
+- TORCH(IgM)
+- TOXOPLASMA PCR
+- TPHA
+- TPIT
+- TSH
+- TSH Receptor Antibody
+- TTG IgA
+- TTG IgG
+- Tacrolimus
+- Tacrolimus (after)
+- Tacrolimus (before)
+- Tegretol
+- Tegretol (after)
+- Tegretol (before)
+- Testosterone Free
+- Testosterone Total
+- Theophylline
+- Throat Swab C/S
+- Thrombin Time (TT)
+- Thrombophilia screen profile
+- Thyroglobulin.
+- Thyroid Antibodies
+- Thyroid Free
+- Thyroid Total
+- Total 4
+- Total Bilirubin
+- Total Protein
+- Total T3
+- Total leucocytic count
+- Toxoplasma IgG
+- Toxoplasma IgM
+- Tramadol
+- Transferrin Concentration
+- Transferrin Saturation
+- Triglycerides
+- Triple test
+- Troponin I
+- Tryptase
+- Urea
+- Urethral Smear for Gonorrhea
+- Urethral Smear for Trichomoniasis
+- Urethral discharge C/S
+- Uric acid
+- Uric acid urine 24hrs
+- Urine Analysis
+- Urine C/S
+- VBG
+- VDRL
+- VLDL
+- VMA 24 hours
+- VWF
+- VWF activity
+- VWF antigen
+- Vaginal Swab C/S
+- Varicella Zoster Virus Antibody IgG (Varicella Zoster IgG)
+- Varicella Zoster Virus Antibody IgM (Varicella Zoster IgM)
+- Vitamin B 12
+- Vitamin B 6
+- Vitamin D 1,25
+- Vitamin D3
+- WBCs Total & Differntial
+- Wasserman test
+- Widal test
+- Wound C/S
+- ZN 1 sample
+- ZN 2 sample
+- ZN 3 sample
+- Zinc
+- Zinc urine 24hrs
+- eGFR(female)
+- eGFR(male)
+- liver function tests
+- pH stool
+- pH urine 24 hours
+- renal function
+- semen with cd
+- special check up
+
+### العربية / Arabic
+
+*Source: https://ezzlab.com/test-menu/*
+
+657 tests available / عدد التحاليل المتاحة 657
+
+- 1 hr glucose PP
+- 1,25 Dihydroxy Vit D
+- 100 gm OGTT(F,1,2,3)
+- 17 Ketosteroids
+- 17OH Progestrone
+- '3456789
+- 5 HIAA.
+- 5 Nucleotidase
+- 50 gm glucose test
+- 75 gm OGTT (non pregnant)(F,1/2,1,2)
+- 75 gm OGTT (pregnant)(F,1,2)
+- A/G ratio
+- ABG
+- ABG offer
+- ABO Ab Titer
+- ABO Group
+- ACE
+- ACTH(Random)
+- ACTH (AM)
+- ACTH (PM)
+- ADA
+- ADA Pericardial
+- ADH
+- AFP
+- AFP (CSF)
+- AFP (Pregnant)
+- ALT (SGPT)
+- AMA
+- AMH
+- ANA
+- ANCA-C
+- ANCA-P
+- APCA
+- ASCA IgA
+- ASCA IgG
+- ASMA
+- ASO
+- AST (SGOT)
+- ATG
+- ATPO
+- Acetone Urine random
+- Acetylcholine Receptor Antibody
+- Acetylcholinesterase Antibody
+- Activated Ptotein C - Resistance
+- Adenovirus antibody IgA
+- Adenovirus antibody IgG
+- Adenovirus antibody IgM
+- Adenovirus-DNA-PCR
+- Adrenaline
+- Albumin
+- Albumin in ( CSF )
+- Albumin random urine
+- Alcohol in Blood
+- Aldolase
+- Aldosterone
+- Alkaline Phosphatase
+- Alpha 1 antitrypsin
+- Alpha 2 macroglobulin
+- Alpha Glucosidase in semen
+- Alpha Thalassemia ( PCR )
+- Amikacin (Amikin)
+- Aminoacid Quantitative in Plasma
+- Aminoacid Quantitative in Urine
+- Ammonia
+- Amoeba Ab
+- Amphetamine
+- Amylase
+- Amylase urine
+- Amyloid A protein
+- Anal Swab
+- Androstendione
+- Anion gap serum
+- Anti CCP
+- Anti Cardio IgG
+- Anti Cardio IgM
+- Anti Centromere Ab
+- Anti DNA
+- Anti Endomysial IgA
+- Anti Endomysial IgG
+- Anti Endomysial IgM
+- Anti GAD
+- Anti GBM
+- Anti Gliadin IgA
+- Anti Gliadin IgG
+- Anti Gliadin IgM
+- Anti Insulin
+- Anti Jo 1 antibodies
+- Anti LKM
+- Anti La
+- Anti MCV
+- Anti Phospho IgG
+- Anti Phospho IgM
+- Anti RNP
+- Anti Ro
+- Anti SCL 70
+- Anti SLA
+- Anti Smith
+- Anti Sperm Semen
+- Anti Sperm Serum
+- Anti Thrombin III
+- Anti islet cell
+- Anti platelet Ab (direct)
+- Anti platelet Ab (indirect)
+- Apolipoprotein A1
+- Apolipoprotein B
+- Ascitic ADA
+- Ascitic HCT
+- Ascitic LDH
+- Ascitic Triglycerides
+- Ascitic albumin
+- Ascitic amylase
+- Ascitic chemistry
+- Ascitic chemistry & cytology
+- Ascitic cholesterol
+- Ascitic complete analysis
+- Ascitic creatinine
+- Ascitic culture
+- Ascitic cytology
+- Ascitic glucose
+- Ascitic pH
+- Ascitic protein
+- Ascitic protein/serum protein
+- Aspergillus Ab IgE
+- Aspergillus Antigen
+- Aspiration C/S
+- BK. Virus PCR in Urine
+- BK. Virus in Plasma
+- BLOOD PH
+- BT
+- BUN
+- Barbiturates
+- Bence jones protein
+- Benzodiazepine
+- Beta 2 Microglobuin (Serum)
+- Beta 2 Microglobulin (Urine)
+- Beta HCG
+- Beta2 Glycoprotein IgG
+- Beta2 Glycoprotein IgM
+- Bicarbonate
+- Bicarbonate urine 24 hours
+- Bile Acids
+- Bilharzial Ab
+- Bilharzial Ag Blood
+- Bilharzial Ag stool
+- Bilharzial Ag urine
+- Bilirubin (T&D)
+- Bilirubin Random Urine
+- Blood Culture
+- Blood Film For Filaria
+- Blood Film For Malaria
+- Blood Group(ABO/Rh)
+- Blood culture X2
+- Blood culture X3
+- Brain Natriuretic Peptide (BNP)
+- Breast Discharge Culture.
+- Bronchoaveolar Culture
+- Brucella IgG
+- Brucella IgM
+- Brucella test
+- C-Peptide 2 hr PP
+- C-Peptide Fasting
+- C-Peptide Random
+- C1 esterase inhibitor
+- C1 esterase inhibitor activity
+- C1q
+- C2.
+- C3
+- C4
+- C9
+- CA 15.3
+- CA 19.9
+- CBC
+- CBC with blood film
+- CD 11b
+- CD 16
+- CD 18
+- CD 19
+- CD 20
+- CD 23
+- CD 3
+- CD 4
+- CD 5
+- CD 56
+- CD 79a
+- CD 79b
+- CD 8
+- CD FMC7
+- CEA
+- CH 50
+- CK MB
+- CMV -DNA/PCR By Taqman Probe
+- CMV IgG
+- CMV IgM
+- CPK (CK Total)
+- CRP
+- CSF ADA
+- CSF Chemistry
+- CSF Cytology & Chemistry
+- CSF Glycine
+- CSF IgA
+- CSF IgG
+- CSF IgM
+- CSF LDH
+- CSF chloride
+- CSF complete analysis
+- CSF culture
+- CSF cytology
+- CSF glucose
+- CSF lactate
+- CSF oligoclonal band
+- CSF pH
+- CSF protein
+- CT
+- Calcitonin
+- Calcium Ionized
+- Calcium Total
+- Calcium urine 24hrs
+- Calcium/creatinine ratio
+- Calprotectin
+- Cannabinoids(THC)
+- Cardiac Enzymes(CPK,MB,LDH,GOT,TROP)
+- Catecholamine plasma
+- Catecholamines 24 hours
+- Ceruloplasmin
+- Cervical Disch C/S
+- Chlamydia Ag endocervical
+- Chlamydia Ag urethral swab
+- Chlamydia Ag urine
+- Chlamydia Pneumoniae IgA
+- Chlamydia Pneumoniae IgG
+- Chlamydia Pneumoniae IgM
+- Chlamydia Trachomatis IgA
+- Chlamydia Trachomatis IgG
+- Chlamydia Trachomatis IgM
+- Chlamydia Trachomatis PCR In Urine
+- Chloride
+- Chloride urine 24 hrs
+- Cholesterol
+- Cholesterol(Peritonial fluid)
+- Citrate urine 24 hours
+- Cocaine
+- Cold Agglutinin
+- Conjuntival Swab C/S
+- Coombs direct
+- Coombs indirect
+- Copper serum
+- Copper urine 24 hrs
+- Coproporphyrin urine 24 hours
+- Cortisol (AM)
+- Cortisol (PM)
+- Cortisol Random
+- Cortisol urine 24 h
+- Cow milk allergy
+- Coxsackie B Virus Antibody IgG (Coxsackie IgG)
+- Coxsackie B Virus Antibody IgM (Coxsackie IgM)
+- Creatinine
+- Creatinine Clearance
+- Creatinine Clearance Pediatric
+- Creatinine urine 24hrs
+- Cryoglobulin
+- Cyclosporin A
+- Cyclosporin after dose
+- Cyclosporin before dose
+- Cystatin C
+- Cystine urine 24 hours
+- D-dimer
+- DHEA
+- DHEA-S
+- DHR
+- DNA Fragmentation Test
+- DRVVT
+- Depakine
+- Depakine (after)
+- Depakine (before)
+- Diazepam (Quant.)
+- Digoxin
+- Dihydrotestosterone (DHT)
+- Direct Bilirubin
+- Dopamine
+- Double test ( PAPP-Free HCG)
+- Drain AFP
+- Drain Amylase
+- Drain Bilirubin
+- Drain CEA
+- Drain CRP
+- Drain Chemistry
+- Drain Cholesterol
+- Drain Creatinine
+- Drain Cytology
+- Drain Glucose
+- Drain LDH
+- Drain Lipase
+- Drain Protein
+- Drain Triglycerides
+- Drain pH
+- Drug screening 6
+- Drug screening7(tramadol)
+- Drug screening8(tramadol&Strox)
+- Dysmorphic RBCs
+- E1 (Estrone)
+- E3 (Estriol)
+- EBV By PCR (Early Ag.) By Taqman Probe
+- EBV IgG
+- EBV IgM
+- EBV- DNA- PCR
+- ENA
+- ESR
+- Ear Discharge C/S
+- Eosinophils In Urine
+- Epanutin
+- Epanutin (after)
+- Epanutin (before)
+- Erythropoietin
+- Estrogen
+- FBS
+- FDPs
+- FMF(PCR)
+- FSH
+- Factor XIII
+- Factor II
+- Factor II Gene-mutation
+- Factor IX
+- Factor V
+- Factor V Leiden PCR
+- Factor VII
+- Factor VIII
+- Factor X
+- Factor XI
+- Factor XII
+- Fasciola Ab
+- Ferritin
+- Fibrinogen
+- Fibro Max.
+- Fibro test
+- Filaria Ab
+- Fluid Examination
+- Folic Acid
+- Food allergy
+- Free PSA /Total PSA ratio
+- Free T3
+- Free T4
+- Free Thyroxin Index ( FTI )
+- Fructosamine
+- Fructose in Semen
+- Fungal Culture
+- G6PD
+- GGT
+- Garamycin
+- Giardia lamblia (Ag)
+- Globulin (Serum )
+- Glucose Tolerance Test (GTT)
+- Glucose urine 24 hours
+- Glucose urine random
+- Glycated Hb
+- Gram Stain
+- Growth hormone basal
+- Gum Culture
+- H. Pylori Ag
+- H. Pylori IgA
+- H. Pylori IgG
+- H. Pylori IgM
+- HAV IgG
+- HAV IgM
+- HBV Genotyping.
+- HBV PCR (Qualitative)
+- HBV PCR (Quantitative)
+- HBc IgG
+- HBc IgM
+- HBe Ab
+- HBe Ag
+- HBs Ab
+- HBs Ag
+- HCV GENOTYPING
+- HCV Ab
+- HCV PCR (Qualitative)
+- HCV PCR (Quantitative)
+- HCV in liver biopsy by (ISH)
+- HDL
+- HDV IgG
+- HDV IgM
+- HEV IgM
+- HIV (Ag+Ab)
+- HIV PCR
+- HLA B27
+- HLA B51
+- HOMA-IR
+- HPV (Human Papilloma Virus) PCR
+- HPV - PCR (Urethral)
+- HPV - PCR (Vaginal)
+- HSV I IgG
+- HSV I IgM
+- HSV I/II DNA - PCR
+- HSV II IgG
+- HSV II IgM
+- Haptoglobin
+- Hemoglobin
+- Hemoglobin Electrophoresis
+- Hepatitis E Virus Antibody IgG (HEV IgG)
+- Her-2 neu.
+- Histamine
+- Homocysteine
+- Hydatid Ab
+- IGF-1
+- IgA
+- IgE
+- IgG
+- IgG Index
+- IgG4
+- IgM
+- Immunelectrophoresis urine
+- Immunofixation serum
+- Inhalant allergy
+- Inhibin B
+- Insulin 2 hr PP
+- Insulin Curve
+- Insulin Random
+- Insulin fasting
+- Intrinsic Factor blocking Antibody
+- Iron
+- Iron Profile
+- JAK 2 PCR.
+- KOH Examination
+- Kappa serum
+- LDH
+- LDL
+- LE Cells
+- LH
+- Lactate
+- Lactoferrin stool
+- Lambda serum
+- Lead (blood)
+- Leishmania film
+- Leucocytic Count (Total&Diff)
+- Levetiracetam
+- Lipase
+- Lipase urine
+- Lipid Profile
+- Lithium (Li)
+- Lupus Anticoagulant
+- MTHFR PCR
+- Magnesium
+- Malaria Ab IgG
+- Measles Virus Antibody IgG (Measles IgG)
+- Measles Virus Antibody IgM (Measles IgM)
+- Metabolic Screening
+- Metanephrines urine 24 hours
+- Microalbuminuria
+- Mono-spot Test
+- Morphine(Opiate)
+- Mumps Virus Antibodies IgM (Mumps IgM)
+- Mumps Virus Antibody IgG (Mumps IgG)
+- NIPT
+- Nasal swab C/S
+- Noradrenaline
+- Occult Blood Nipple
+- Occult Blood Stool
+- Osmolality serum
+- Osmolality urine 24hrs
+- Osmolality urine random
+- Osmotic Fragility
+- Osteocalcin
+- Oxalate urine 24 hrs
+- Oxalate/creatinine ratio
+- PAP smear
+- PAP smear x2
+- PAP smear x3
+- الاسبوع PAPP-A10
+- الاسبوع PAPP-A 11
+- الاسبوع PAPP-A 12
+- الاسبوع PAPP-A 13
+- الاسبوع PAPP-A 8
+- الاسبوع PAPP-A 9
+- PATHOLOGY REPORT (small)
+- PIVKA
+- PPS
+- PRP
+- PSA (Total & Free)
+- PSA free
+- PSA total
+- PT
+- PTH
+- PTT
+- Parvovirus B19 Antibody IgG (Parvo B19 IgG)
+- Parvovirus B19 Antibody IgM (Parvo B19 IgM)
+- Pathlogy XL
+- Pathology XXL
+- Pathology large
+- Pathology medium
+- Paul bunnel test
+- Pericardial Fluid Examination C/S
+- Phenobarbital
+- Phosphorous
+- Phosphorus urine 24hrs
+- Plasma Potassium (Plasma K)
+- Platelet Count
+- Pleural ADA
+- Pleural HCT
+- Pleural LDH
+- Pleural Triglycerides
+- Pleural albumin
+- Pleural amylase
+- Pleural chemistry
+- Pleural chemistry & cytology
+- Pleural cholesterol
+- Pleural complete analysis
+- Pleural creatinine
+- Pleural culture
+- Pleural cytology
+- Pleural glucose
+- Pleural pH
+- Pleural protein
+- Post Coital Test
+- Potassium
+- Potassium urine 24 hrs
+- Pregnancy Serum
+- Pregnancy Urine
+- Procalcitonin
+- Progesterone
+- Prolactin
+- Prostatic C/S
+- Prostatic Secretion Examination
+- Protein C
+- Protein Electrophoresis
+- Protein S
+- Protein urine 24hrs
+- Protein/Creatinine Ratio
+- Prothrombin Gene PCR
+- Pus C/S
+- Pyruvate
+- Quantiferon Gold TB
+- RBS
+- RF
+- RH Ab Titre
+- RPR
+- Reducing Stool
+- Reducing Urine
+- Renin
+- Reticulocytes
+- Rh group
+- Rose Waaler
+- Rota virus stool
+- Rubella IgG
+- Rubella IgM
+- SAAG
+- SHBG
+- SLE antibodies
+- Schebo Test
+- Semen C/S
+- Semen Examination
+- Semen Processing Profile
+- Serotonin in Blood
+- Serotonin in Urine 24 hours
+- Sick Cell Test
+- Sodium
+- Sodium urine 24hrs
+- Specific Gravity 24 urine
+- Specific Gravity Random urine
+- Sputum C/S
+- Sputum Culture For AFB (TB)
+- Stone
+- Stone calculus
+- Stool C/S
+- Stool Analysis
+- Strox (Voodoo)
+- Synovial Cytology&chemistry
+- Synovial Fluid C/S
+- Synovial chemistry
+- Synovial complete analysis
+- Synovial crystals
+- Synovial cytology
+- T.B. antibody
+- T3 Uptake
+- TB CULTURE
+- TB PCR Blood
+- TB PCR Sputum
+- TB PCR Urine
+- TBG
+- TIBC
+- TLC
+- TORCH(IgG)
+- TORCH(IgM)
+- TOXOPLASMA PCR
+- TPHA
+- TPIT
+- TSH
+- TSH Receptor Antibody
+- TTG IgA
+- TTG IgG
+- Tacrolimus
+- Tacrolimus (after)
+- Tacrolimus (before)
+- Tegretol
+- Tegretol (after)
+- Tegretol (before)
+- Testosterone Free
+- Testosterone Total
+- Theophylline
+- Throat Swab C/S
+- Thrombin Time (TT)
+- Thrombophilia screen profile
+- Thyroglobulin.
+- Thyroid Antibodies
+- Thyroid Free
+- Thyroid Total
+- Total 4
+- Total Bilirubin
+- Total Protein
+- Total T3
+- Total leucocytic count
+- Toxoplasma IgG
+- Toxoplasma IgM
+- Tramadol
+- Transferrin Concentration
+- Transferrin Saturation
+- Triglycerides
+- Triple test
+- Troponin I
+- Tryptase
+- Urea
+- Urethral Smear for Gonorrhea
+- Urethral Smear for Trichomoniasis
+- Urethral discharge C/S
+- Uric acid
+- Uric acid urine 24hrs
+- Urine Analysis
+- Urine C/S
+- VBG
+- VDRL
+- VLDL
+- VMA 24 hours
+- VWF
+- VWF activity
+- VWF antigen
+- Vaginal Swab C/S
+- Varicella Zoster Virus Antibody IgG (Varicella Zoster IgG)
+- Varicella Zoster Virus Antibody IgM (Varicella Zoster IgM)
+- Vitamin B 12
+- Vitamin B 6
+- Vitamin D 1,25
+- Vitamin D3
+- WBCs Total & Differntial
+- Wasserman test
+- Widal test
+- Wound C/S
+- ZN 1 sample
+- ZN 2 sample
+- ZN 3 sample
+- Zinc
+- Zinc urine 24hrs
+- eGFR(female)
+- eGFR(male)
+- liver function tests
+- pH stool
+- pH urine 24 hours
+- renal function
+- semen with cd
+- special check up
+
+
+## Test Results / نتائج التحاليل
+
+### English
+
+*Source: https://ezzlab.com/test-result-en/*
+
+
+**Receive test results**
+
+Now will receive your test results through 👉 Whatsapp service 01200555562
+
+And also through our website dedicated to results and doctors http://www.ezz-lab.com
+
+### العربية / Arabic
+
+*Source: https://ezzlab.com/test-result/*
+
+
+**أستلام نتائج التحاليل**
+
+الآن أستلم نتيجة التحاليل الخاص بك عن طريق خدمة الواتساب 01200555562 👈
+
+و أيضا عن طريق موقعنا المخصص للنتائج و الأطباء http://www.ezz-lab.com
+
+
+## Home Visit / Home Sample Collection / الزيارة المنزلية / سحب العينات بالمنزل
+
+### English
+
+*Source: https://ezzlab.com/home-visit-en/*
+
+
+**Booking home visits**
+
+To request a home visit, please send the following information:
+
+1- Name of the patient:
+
+2- Age of the patient:
+
+3- Detailed address:
+
+4- Required tests:
+
+5- Mobile number to contact:
+
+Via the lab’s WhatsApp
+
+### العربية / Arabic
+
+*Source: https://ezzlab.com/home-visit/*
+
+
+**حجز الزيارات المنزليه**
+
+لطلب زيارة منزلية يرجى ارسال البيانات التالية: 1- اسم المريض: 2- سن المريض: 3- العنوان تفصيلا: 4- التحاليل المطلوبة: 5- رقم موبايل للتواصل: عبر الواتس اب الخاص بالمعمل
+
+
+## Pre-Testing Precautions & Preparation / احتياطات ما قبل التحليل والتحضير
+
+### English
+
+*Source: https://ezzlab.com/pre-testing-precautions-en/*
+
+
+**Fasting blood sugar**
+
+- صيام من 6 الي 10 ساعات
+
+
+**Post prandial**
+
+- صيام ساعتين من انتهاء الاكل
+- ( يتم اخذ جرعة العلاج ان وجدت ومسموح بزيادة وقت الصيام بحد اقصي 20 دقيقه )
+
+
+**Glucose tolerance curve 100gm pregnant**
+
+- صيام من 6 الي 10 ساعات وسحب عينة سكر صايم ثم يتم اخذ 100 جم جلوكوز ويتم السحب من وقت شرب المحلول بساعه واتنين وتلاته
+
+
+**Glucose tolerance curve 75gm pregnant**
+
+- صيام من 6 الي 10 ساعات وسحب عينة سكر صايم ثم يتم اخذ 75 جم جلوكوز ويتم السحب من وقت شرب المحلول بساعه وساعتين
+
+
+**Glucose tolerance curve 75gm non pregnant**
+
+- صيام من 6 الي 10 ساعات وسحب عينة سكر صايم ثم يتم اخذ 75 جم جلوكوز ويتم السحب من وقت شرب المحلول بنصف ساعه و ساعه وساعتين
+
+
+**Challenge test (50gm glucose)**
+
+- لا يشترط الصيام
+- يتم شرب 50 جم جلوكوز ثم السحب بعدها بساعه
+
+
+**Lipid profile**
+
+- صيام 10 ساعات فيما ازيد
+
+
+**CA19.9**
+
+- صيام 6 ساعات فيما ازيد
+
+
+**Iron,TIBC**
+
+- يشترط الامتناع عن ادوية الحديد مالايقل عن 48 ساعه
+- عدم نقل دم
+
+
+**Hb electrophoresis,G6PD**
+
+- عدم نقل دم
+
+
+**PSA**
+
+- يشترط 10 ايام عن اخر مساج او اخر منظار علي البروستاتا
+
+
+**Semen analysis**
+
+- 1) الامتناع عن الجماع او خروج السائل المنوي لمده من 3-7 ايام
+- 2) عدم استخدام المياه او الصابون او أي مواد مطهره
+- 3) يتم وضع العينه كامله في كوب معقم مخصص لها
+- 4) عند احضار العينه من المنزل يجب الا يمر عليها اكثر من ربع ساعه
+- – فقط الامتناع عن المضاد الحيوي 48 ساعه
+- وعدم استخدام المياه او الصابون او أي مواد مطهره
+
+
+**Urine analysis**
+
+- 1) يفضل اول عينه صباحيه
+- 2) عند احضار العينه من المنزل لايمر عليها اكثر من ساعتين
+- 3) خاص بالسيدات : العينه لا تصلح في وقت وجود الحيض الا بمعرفة الطبيب المعالج
+- – شروط تحليل البول
+- 1) يفضل اول عينه صباحيه
+- 2) يشترط الامتناع عن المضادات الحيويه ما لا يقل عن 48 ساعه
+- 3) يتم التطهير اولا بالماء والصابون جيدا ثم التخلص من اول نقطة بول ثم تجميع باقي العينه في كوب معقم
+
+
+**MTP 24Hrs**
+
+- عينة تجميع بول بدون اضافة اي مواد
+
+
+**Creatinine clearance**
+
+- عينة تجميع بول + عينة serum
+
+
+**VMA,Catecholamines,Metanephrines**
+
+- 1) الامتناع عن الكافيين لمدة 24 ساعه عالاقل مثل ( الشاي , القهوه , الكاكاو , المشروبات الغازيه )
+- 2) يتم التجميع علي 10 مل Conc HCL
+- 3) كيفية التجميع
+- يتم الاستغناء عن اول عينه صباحيه ثم يجمع كل العينات من بعدها حتي اليوم التالي صباحا في نفس المعاد وتؤخذ عينة الصباح من ضمن التجميع
+
+
+**Occult blood in stool**
+
+- الامتناع لمده لاتقل عن 48 ساعه عن اكل اللحوم الحمراء مثل ( الكبده , الكفته وهكذا ) و الخضروات واخذ ادوية الحديد , الفيتامينات , الملينات
+
+
+**FSH,LH**
+
+- يسحب في اليوم الثاني او الثالث للحيض
+
+
+**E2**
+
+- يسحب في اليوم الثاني او الثالث للحيض فيما عدا حالات متابعة التبويض
+
+
+**Progesterone**
+
+- يسحب في اليوم ال 21 للحيض
+
+
+**Cortisol,ACTH(Am,Pm)**
+
+- يشترط ميعاد السحب ثابت في الصباحي والمسائي مسموح من (8-12) ويفضل في الساعه 9 صباحا ومساءا
+
+
+**Depakine,Tegretol,Epanutin**
+
+- 1) يتم السحب قبل الجرعه مباشرة او بعد الجرعه من 4-6 ساعات حسب طلب الطبيب
+- 2) يشترط عدم حدوث قيء او اسهال لمدة 48 ساعه
+
+
+**Microalbuminurea**
+
+- يشترط عينة بول صباحيه
+- مسموح بها حتي 12 ظهرا
+
+### العربية / Arabic
+
+*Source: https://ezzlab.com/pre-testing-precautions/*
+
+
+**تحليل سكر صائم**
+
+- صيام من 6 الي 10 ساعات
+
+
+**تحليل سكر فاطر**
+
+- صيام ساعتين من انتهاء الاكل
+- ( يتم اخذ جرعة العلاج ان وجدت ومسموح بزيادة وقت الصيام بحد اقصي 20 دقيقه )
+
+
+**تحليل منحنى تحمل الجلوكوز 100 جرام حامل**
+
+- صيام من 6 الي 10 ساعات وسحب عينة سكر صايم ثم يتم اخذ 100 جم جلوكوز ويتم السحب من وقت شرب المحلول بساعه واتنين وتلاته
+
+
+**تحليل منحنى تحمل الجلوكوز 75 جرام حامل**
+
+- صيام من 6 الي 10 ساعات وسحب عينة سكر صايم ثم يتم اخذ 75 جم جلوكوز ويتم السحب من وقت شرب المحلول بساعه وساعتين
+
+
+**تحليل منحنى تحمل الجلوكوز 75 جرام غير حامل**
+
+- صيام من 6 الي 10 ساعات وسحب عينة سكر صايم ثم يتم اخذ 75 جم جلوكوز ويتم السحب من وقت شرب المحلول بنصف ساعه و ساعه وساعتين
+
+
+**اختبار التحدي (50 جم جلوكوز)**
+
+- لا يشترط الصيام
+- يتم شرب 50 جم جلوكوز ثم السحب بعدها بساعه
+
+
+**اختبار مستوى الدهون**
+
+- صيام 10 ساعات فيما ازيد
+
+
+**اختبار CA19.9**
+
+- صيام 6 ساعات فيما ازيد
+
+
+**اختبار Iron,TIBC**
+
+- يشترط الامتناع عن ادوية الحديد مالايقل عن 48 ساعه
+- عدم نقل دم
+
+
+**اختبار الهيموجلوبين الكهربائي ، G6PD**
+
+- عدم نقل دم لمدة 48ساعة
+
+
+**اختبار PSA**
+
+- يشترط 10 ايام عن اخر مساج او اخر منظار علي البروستاتا او قسطرة
+
+
+**تحليل السائل المنوي**
+
+- 1) الامتناع عن الجماع او خروج السائل المنوي لمده من 3-7 ايام
+- 2) عدم استخدام المياه او الصابون او أي مواد مطهره
+- 3) يتم وضع العينه كامله في كوب معقم مخصص لها
+- 4) عند احضار العينه من المنزل يجب الا يمر عليها اكثر من ربع ساعه
+
+
+**تحليل بول**
+
+- 1) يفضل اول عينه صباحيه
+- 2) عند احضار العينه من المنزل لايمر عليها اكثر من ساعتين
+- 3) خاص بالسيدات : العينه لا تصلح في وقت وجود الحيض الا بمعرفة الطبيب المعالج
+- – شروط تحليل البول
+- 1) يفضل اول عينه صباحيه
+- 2) يشترط الامتناع عن المضادات الحيويه ما لا يقل عن 48 ساعه
+- 3) يتم التطهير اولا بالماء والصابون جيدا ثم التخلص من اول نقطة بول ثم تجميع باقي العينه في كوب معقم
+
+
+**تحليل MTP 24Hrs**
+
+- عينة تجميع بول بدون اضافة اي مواد
+- تجميع بول24 ساعه
+- كيفية التجميع :
+- يتم الاستغناء عن اول عينه صباحيه ثم يجمع كل العينات من بعدها حتي اليوم التالي صباحا في نفس المعاد وتؤخذ عينة الصباح من ضمن التجميع
+
+
+**تنقية الدم من الكرياتنين**
+
+- عينة تجميع بول + عينة serum
+
+
+**اختبار VMA ، Catecholamines ، Metanephrines**
+
+- 1) الامتناع عن الكافيين لمدة 24 ساعه عالاقل مثل ( الشاي , القهوه , الكاكاو , المشروبات الغازيه )
+- 2) يتم التجميع علي 10 مل Conc HCL
+- 3) كيفية التجميع
+- يتم الاستغناء عن اول عينه صباحيه ثم يجمع كل العينات من بعدها حتي اليوم التالي صباحا في نفس المعاد وتؤخذ عينة الصباح من ضمن التجميع
+
+
+**تحليل الدم في البراز**
+
+- الامتناع لمده لاتقل عن 48 ساعه عن اكل اللحوم الحمراء مثل ( الكبده , الكفته وهكذا ) و الخضروات واخذ ادوية الحديد , الفيتامينات , الملينات
+
+
+**اختبار FSH ، LH**
+
+- يسحب في اليوم الثاني او الثالث للحيض
+
+
+**اختبار E2**
+
+- يسحب في اليوم الثاني او الثالث للحيض فيما عدا حالات متابعة التبويض
+
+
+**اختبار البروجسترون**
+
+- يسحب في اليوم ال 21 للحيض
+
+
+**تحليل الكورتيزول ، ACTH (Am ، Pm)**
+
+- يشترط ميعاد السحب ثابت في الصباحي والمسائي مسموح من (8-12) ويفضل في الساعه 9 صباحا ومساءا
+
+
+**تحليل Depakine ، Tegretol ، Epanutin**
+
+- 1) يتم السحب قبل الجرعه مباشرة او بعد الجرعه من 4-6 ساعات حسب طلب الطبيب
+- 2) يشترط عدم حدوث قيء او اسهال لمدة 48 ساعه
+
+
+**تحليل البول الزلالي الدقيق**
+
+- يشترط عينة بول صباحيه
+- مسموح بها حتي 12 ظهرا
+
+
+## Diagnostic Profiles / الباقات التشخيصية
+
+### English
+
+*Source: https://ezzlab.com/diagnostic-profile-en/*
+
+### العربية / Arabic
+
+*Source: https://ezzlab.com/diagnostic-profile/*
+
+
+## Offers & Contracts / العروض والتعاقدات
+
+### English
+
+*Source: https://ezzlab.com/contracts-en/*
+
+
+**Offers and Contracts**
+
+Special rates for contracts
+
+Extending the contract to the families of the workers
+
+Possibility of taking samples inside your workplace
+
+Contracting pre-employment tests and periodic examinations, and sending the results to the company by e-mail
+
+Submit a monthly report explaining the details of the employees’ analyzes and their entitlements
+
+
+**Business predecessor**
+
+
+**Qalyubia Trade Syndicate**
+
+
+**Agricultural Professions Syndicate**
+
+
+**General Union of Petroleum Workers**
+
+
+**Syndicate of Teaching Professions**
+
+
+**Syndicate lawyers**
+
+
+**Engineers Syndicate**
+
+
+**Syndicate of Applicants**
+
+
+**Journalists Syndicate**
+
+
+**Doctors Syndicate**
+
+
+**General Syndicate for Management and Integrated Services**
+
+
+**The General Union of Public Utilities Workers**
+
+
+**Syndicate of Social Professions**
+
+
+**Nursing Syndicate**
+
+
+**Optical Syndicate**
+
+### العربية / Arabic
+
+*Source: https://ezzlab.com/contracts/*
+
+اسعار خاصة للتعاقدات
+
+مـد التعاقد إلى أسـر العـامـلين
+
+امكانية اخذ العينات داخل مقر عمـلـكـم
+
+التعاقد على اختبارات ما قبل التوظيـف والكشف الدوري وارسال النتائج للشركة عن طريق البريد الاكتروني
+
+تقديم تقرير شهري موضحا به تفاصيل تحاليل العاملين ومستحقاتهم
+
+
+**سابقه الاعمال**
+
+
+**نقابه تجاريين الجيزه**
+
+
+**نقابه التجاريين القليوبيه**
+
+
+**نقابه المهن الزراعيه**
+
+
+**النقابه العامه للعاملين بالبترول**
+
+
+**نقابه المهن التعليميه**
+
+
+**نقابه المحاميين**
+
+
+**نقابه المهندسين**
+
+
+**نقابه التطبيقيين**
+
+
+**نقابه الصحفيين**
+
+
+**نقابه الاطباء**
+
+
+**النقابه العامه للاداره والخدمات المتكامله**
+
+
+**النقابه العامه للعاملين بالمرافق العامه**
+
+
+**نقابه المهن الاجتماعيه**
+
+
+**نقابه التمريض**
+
+
+**نقابه البصريين**
+
+
+## Careers / الوظائف
+
+### English
+
+*Source: https://ezzlab.com/careers-en/*
+
+
+**Welcome to Join Us**
+
+
+**Explore Our Jobs**
+
+### العربية / Arabic
+
+*Source: https://ezzlab.com/careers/*
+
+
+**يسعدنا انضمامكم لنا**
+
+
+**اكتشف الوظائف المتاحه**
+
+
+## Contact Us / اتصل بنا
+
+### English
+
+*Source: https://ezzlab.com/contact-en/*
+
+
+**Our Location**
+
+We are located in many locations and we are happy to serve you anywhere
+
+
+**work hours**
+
+We work all days of the week
+
+From 8.00 am to 12.00 pm
+
+Also, 24 hours a day, every day of the week
+
+In Shubra El-Kheima branch 5
+
+1 City Mall, in front of Orabi Bridge, above B-Tech
+
+
+**Calling Us**
+
+Whatsapp service: 01200555562
+
+info@ezzlab.com: E-mail
+
+### العربية / Arabic
+
+*Source: https://ezzlab.com/contact/*
+
+
+**موقعنا**
+
+نحن موجودون في العديد من المواقع ويسعدنا خدمتك في أي مكان
+
+
+**ساعات العمل**
+
+نعمل جميع أيام الاسبوع
+
+من الساعه 8.00 ص الى الساعه 12.00 م
+
+وأيضا 24 ساعه جميع أيام الاسبوع
+
+فى فرع شبرا الخيمة 5
+
+1سيتى مول أمام كوبرى عرابى أعلى بى تك
+
+
+**الاتصال**
+
+خدمة الواتساب: 01200555562
+
+info@ezzlab.com: البريد الالكترونى
+
+
+## COVID-19 Screening Profile / باقة فحص كوفيد-19
+
+### English
+
+*Source: https://ezzlab.com/covid-19-screening-profile/*
+
+Respiratory System Profile
+
+* صورة دم كاملة
+
+* CBC
+
+* معامل الالتهاب
+
+* CRP
+
+* مخزون الحديد
+
+* Ferritin
+
+* أحد إنزيمات الكبد
+
+* SGPT
+
+* تحليل التهاب الجهاز التنفسى
+
+* LDH
+
+* تقييم احتمالية حدوث جلطات
+
+* (D-Dimer (Quantitative
+
+* سرعة الترسيب
+
+* ESR
+
+* تحليل لتقييم شدة الالتهاب
+
+* Interleukin 6
+
+
+**Leave a Comment Cancel Reply**
+
+| * صورة دم كاملة | * CBC |
+| * معامل الالتهاب | * CRP |
+| * مخزون الحديد | * Ferritin |
+| * أحد إنزيمات الكبد | * SGPT |
+| * تحليل التهاب الجهاز التنفسى | * LDH |
+| * تقييم احتمالية حدوث جلطات | * (D-Dimer (Quantitative |
+| * سرعة الترسيب | * ESR |
+| * تحليل لتقييم شدة الالتهاب | * Interleukin 6 |
+
+
+## Picture Library / مكتبة الصور
+
+### العربية / Arabic
+
+*Source: https://ezzlab.com/مكتبه-الصور/*
+
+
+**احتفال معامل عزلاب بمرور 45 عاما 1978 -2023**
+
+
+**تكريم معامل عزلاب للموظفين المتميزين**
+
+
+**ملتقى اليوم التوظيفى**
+
+
+**إفطار عز لاب فى رمضان**
+
+
+## Video Library / مكتبة الفيديو
+
+### العربية / Arabic
+
+*Source: https://ezzlab.com/مكتبه-الفيديو/*
+
+
+**احتفال معامل عز لاب بمرور 45 عاما 1978-2023**
+
+
+**معامل عز لاب....صحتك عز**
+
+
+**أطمن على صحتك**
+
+
+**جميع أنواع مسحات الكورونا**
+
+
+## Privacy Policy / سياسة الخصوصية
+
+### English
+
+*Source: https://ezzlab.com/privacy-policy/*
+
+We at EzzLab value your privacy and are committed to protecting your personal data.
+
+Information Collection: We collect personal information such as name, contact details, and medical data necessary to provide testing services.
+
+Use of Information: Your data is used strictly for processing test requests, delivering results, and improving our services.
+
+Confidentiality: All medical records are kept strictly confidential and shared only with authorized personnel or as required by law.
+
+Data Security: We implement appropriate security measures to protect your data against unauthorized access or misuse.
+
+User Rights: You may request access, correction, or deletion of your personal data by contacting us at [ support@ezzlab.com ]
+
+تحدث معنا
+
+
+## Delivery & Shipment Policy / سياسة التسليم والشحن
+
+### English
+
+*Source: https://ezzlab.com/delivery-and-shipment-policy/*
+
+Home Visit Services:
+
+If you request a home visit, an appointment time will be scheduled after your booking confirmation. Our staff will visit you within the agreed timeframe.
+
+Test Results Delivery:
+
+Test results are primarily delivered electronically to your registered email or account. If physical copies are requested, delivery will be arranged to your provided address within [ 5 business days].
+
+Shipping Costs:
+
+Any shipping charges (if applicable) will be displayed at checkout.
+
+Delays:
+
+While we aim to deliver results on time, unforeseen circumstances (medical emergencies, courier delays, etc.) may cause delays. We will notify you promptly if that happens.
+
+تحدث معنا
+
+
+## Refund & Cancellation Policy / سياسة الاسترجاع والإلغاء
+
+### English
+
+*Source: https://ezzlab.com/refund-and-cancellation-policy/*
+
+Service Cancellation:
+
+You may cancel a test request before the sample collection or home visit appointment. Refunds will be processed within [ 5 working days].
+
+Non-Refundable Cases:
+
+Once samples are collected or testing has started, payments are non-refundable.
+
+Service Delays:
+
+If we are unable to provide the service as promised, you are entitled to a full or partial refund depending on the situation.
+
+How to Request a Refund:
+
+Contact us at [ support@ezzlab.com ] with your order ID and payment details.
+
+تحدث معنا
+
+
+## Health Test Packages (Articles) / باقات التحاليل الصحية (مقالات)
+
+### Periodic Check-up Packages for Women / مجموعات الكشف الدورى للسيدات
+
+*Source: https://ezzlab.com/مجموعات-الكشف-الدورى-للسيدات/*
+
+يرجى اختيار مجموعة الفحص الانسب لحضرتك أو التواصل مع أحد اطبائنا على رقم 01200555562 لمزيد من التفسير الطبى و المساعدة فى اختيار الانسب.
+
+1-الفحص الطبى الشامل للسيدات
+
+1-Female General Check Up
+
+*صورة دم كاملة
+
+*Complete Blood Picture (CBC)
+
+*تحليل سيولة الدم
+
+*Prothrombin Time and Conc. & Homocysteine
+
+*تحليل سكر صائم
+
+*Fasting Plasma glucose
+
+*تحليل سكر فاطر
+
+*Plasma Glucose 2hrs PP
+
+*تحليل سكر تراكمى
+
+*Glycated Haemoglobin (HbA1c)
+
+*مجموعة الكوليسترول و الدهون الثلاثية
+
+*Chol./HDL/LDL/TGs/Apo A1/Apo B.
+
+*مجموعة الغدة الدرقية
+
+*T3 Total & Free, T4 Total & Free & TSH
+
+*سرعة الترسيب
+
+*Erythrocyte Sedimentation Rate (ESR)
+
+*تحليل الروماتويد
+
+*Anti CCP Abs
+
+*تحاليل التهاب العضلات
+
+*CK (Total) & LDH
+
+*تحاليل للكشف عن الامراض المناعية
+
+*ANA – AntiDNA
+
+*تحليل كامل للبول
+
+*Urine Analysis
+
+*تحليل كامل للبراز
+
+*Stool Examination
+
+*تحليل جرثومة المعدة بالبراز
+
+*H. pylori Ag In Stool
+
+**مجموعة وظائف الكبد
+
+*مستوى الصفراء بالدم
+
+*Bilirubin Total & Direct
+
+*إنزيمات الكبد
+
+*SGPT, SGOT, Gamma GT, Alk. Phosphatase
+
+*مستوى الزلال و البروتينات
+
+*Total Protein, Serum Albumin, A/G Ratio
+
+**مجموعة الفيروسات الكبدية
+
+*فيروس أ
+
+*HAV antibodies IgM & IgG
+
+*فيروس ب
+
+*HBc Antibodies Total & IgM, HBs Antigen
+
+*فيروس سى
+
+*HCV Antibody 3rd Generation
+
+**مجموعة وظائف الكلى
+
+*مستوى البولينا
+
+*Serum Urea
+
+*مستوى الكرياتنين
+
+*Serum Creatinine
+
+*املاح النقرص بالدم
+
+*Serum Uric Acid
+
+*تحليل زلال فى البول
+
+*Microalbumin Random sample(Alb-Creat Ratio)
+
+**مستوى الاملاح و الفيتامينات بالدم
+
+*الماغنسيوم
+
+*Serum Magnesium.
+
+*الكالسيوم
+
+*Total and Ionized Calcium
+
+*الصوديوم و البوتاسيوم
+
+*Serum Sodium and Potassium
+
+*الفسفور
+
+*Serum Phosphorus
+
+*الزنك
+
+*Zinc In Blood.
+
+*تحاليل دراسة الحديد
+
+*Iron Level, Ferritin & TIBC
+
+*فيتامين د
+
+*25(OH) Vitamin D
+
+**مجموعة دلالات الأورام
+
+*دلالات اورام الثدى
+
+*Tumor Marker: CA 15-3
+
+*دلالات اورام المبيض
+
+*Tumor Marker: CA 125
+
+*دلالات اورام القولون
+
+*Tumor Marker: CA 19.9
+
+*دلالات اورام عامة
+
+*Carcinoembryonic Antigen (CEA)
+
+*دلالات اورام الكبد
+
+*α-Feto Protein
+
+*دلالات اورام لبعض انواع سرطان الدم
+
+*β2 Microglobulin
+
+*تحليل الدم الخفى بالبراز
+
+*Occult Blood In Stool
+
+*Schebo Test
+
+2-مجموعة الفحص الطبى الكبير
+
+2-Fem ale Large Check Up
+
+*صورة دم كاملة
+
+*تحليل سيولة الدم
+
+*Prothrombin Time and Conc.
+
+*تحليل سكر فاطر
+
+*تحليل سكر تراكمى
+
+*Cholesterol/HDL/LDL/Triglycerides
+
+*Free T3, Free T4 & TSH
+
+*سرعة الترسيب
+
+*تحليل كامل للبول
+
+*Urine Analysis
+
+*تحليل كامل للبراز
+
+*Stool Examination
+
+*H. pylori Ag In Stool.
+
+*انزيمات الكبد
+
+*SGPT, SGOT, Gamma GT & Alk. Phosphatase
+
+*فيروس بى
+
+*HBc Antibodies Total, HBs Antigen
+
+*فيروس سى
+
+**مجموعة وظائف كلى
+
+*مستوى البولينا
+
+*Serum Urea
+
+*مستوى الكرياتنين
+
+*Serum Creatinine
+
+*املاح النقرص بالدم
+
+*Serum Uric Acid
+
+*تحاليل الكالسيوم
+
+*فيتامين د
+
+*25(OH) Vitamin D
+
+*دلالات اورام الثدى
+
+*Tumor Marker: CA 19-9
+
+*دلالات اورام عامة
+
+3-مجموعة الفحص الطبى المتوسط
+
+3-Female Medium Check Up
+
+*صورة دم كاملة
+
+*تحليل سيولة الدم
+
+*تحليل سكر صائم
+
+*تحليل سكر تراكمى
+
+*سرعة الترسيب
+
+*تحليل كامل للبول
+
+*Urine Analysis
+
+*تحليل كامل للبراز
+
+*Stool Examination
+
+*انزيمات الكبد
+
+*SGPT, SGOT & Gamma GT
+
+*Serum Albumin
+
+*فيروس بى
+
+*HBs Antigen
+
+*فيروس سى
+
+**مجموعة وظائف كلى
+
+*مستوى البولينا
+
+*Serum Urea
+
+*مستوى الكرياتنين
+
+*Serum Creatinine
+
+*املاح النقرص بالدم
+
+*Serum Uric Acid
+
+*تحاليل الكالسيوم
+
+*دلالات اورام الثدى
+
+*دلالات اورام عامة
+
+4-مجموعة الفحص الطبى الصغير
+
+4-Male Small Check Up Profile
+
+*صورة دم كاملة
+
+*تحليل سكر صائم
+
+*تحليل الغدة الدرقية
+
+*TSH
+
+*سرعة الترسيب
+
+*تحليل كامل للبول
+
+*Urine Analysis
+
+*أحد انزيمات الكبد
+
+*SGPT (ALT)
+
+*مستوى الكرياتنين لتقييم كفاءة الكلى
+
+*Serum Creatinine
+
+*أملاح النقرص بالدم
+
+*Serum Uric Acid
+
+*فيروس بى
+
+*HBs Antigen
+
+*فيروس سى
+
+
+**Leave a Comment Cancel Reply**
+
+### Periodic Check-up Packages for Men / مجموعات الكشف الدورى للرجال
+
+*Source: https://ezzlab.com/مجموعات-الكشف-الدورى-للرجال/*
+
+يرجى اختيار مجموعة الفحص الانسب لحضرتك أو التواصل مع أحد اطبائنا على رقم 01200555562 لمزيد من التفسير الطبى و المساعدة فى اختيار الانسب
+
+ا 1-الفحص الطبى الشامل للرجال
+
+*صورة دم كاملة
+
+*Complete Blood Picture (CBC)
+
+*تحليل سيولة الدم
+
+*Prothrombin Time and Conc. & Homocysteine
+
+*تحليل سكر صائم
+
+*Fasting Plasma glucose
+
+*تحليل سكر فاطر
+
+*Plasma Glucose 2hrs PP
+
+*تحليل سكر تراكمى
+
+*Glycated Haemoglobin (HbA1c)
+
+*مجموعة الكوليسترول و الدهون الثلاثية
+
+*Chol./HDL/LDL/TGs/Apo A1/Apo B.
+
+*مجموعة الغدة الدرقية
+
+*T3 Total & Free, T4 Total & Free & TSH
+
+*سرعة الترسيب
+
+*Erythrocyte Sedimentation Rate (ESR)
+
+*تحليل الروماتويد
+
+*Anti CCP Abs
+
+*تحاليل التهاب العضلات
+
+*CK (Total) & LDH
+
+*تحاليل للكشف عن الامراض المناعية
+
+*ANA – AntiDNA
+
+*تحليل كامل للبول
+
+*Urine Analysis
+
+*تحليل كامل للبراز
+
+*Stool Examination
+
+*تحليل جرثومة المعدة بالبراز
+
+*H. pylori Ag In Stool.
+
+**مجموعة وظائف الكبد
+
+*مستوى الصفراء بالدم
+
+*Bilirubin Total & Direct
+
+*إنزيمات الكبد
+
+*SGPT, SGOT, Gamma GT, Alk. Phosphatase
+
+*مستوى الزلال و البروتينات
+
+*Total Protein, Serum Albumin, A/G Ratio
+
+**مجموعة الفيروسات الكبدية
+
+*فيروس أ
+
+*HAV antibodies IgM & IgG
+
+*فيروس ب
+
+*HBc Antibodies Total & IgM, HBs Antigen
+
+*فيروس سى
+
+*HCV Antibody 3rd Generation
+
+**مجموعة وظائف الكلى
+
+*مستوى البولينا
+
+*Serum Urea
+
+*مستوى الكرياتنين
+
+*Serum Creatinine
+
+*أملاح النقرص بالدم
+
+*Serum Uric Acid
+
+*تحليل زلال فى البول
+
+*Microalbumin Random sample(Alb-Creat Ratio)
+
+**مستوى الاملاح و الفيتامينات بالدم
+
+*الماغنسيوم
+
+*Serum Magnesium.
+
+*الكالسيوم
+
+*Total and Ionized Calcium
+
+*الصوديوم و البوتاسيوم
+
+*Serum Sodium and Potassium
+
+*الفسفور
+
+*Serum Phosphorus
+
+*الزنك
+
+*Zinc In Blood.
+
+*تحاليل دراسة الحديد
+
+*Iron Level, Ferritin & TIBC
+
+*فيتامين د
+
+*25(OH) Vitamin D
+
+**مجموعة دلالات الأورام
+
+*دلالات اورام البروستاتا
+
+*PSA ( Total – Free )
+
+*دلالات اورام القولون
+
+*Tumor Marker: CA 19.9
+
+*دلالات اورام عامة
+
+*CEA
+
+*دلالات اورام الكبد
+
+*α-Feto Protein
+
+*دلالات اورام لبعض انواع سرطان الدم
+
+*β2 Microglobulin
+
+*تحليل الدم الخفى بالبراز
+
+*Occult Blood In Stool
+
+*Schebo Test
+
+2-مجموعة الفحص الطبى الكبير
+
+2-Male Large Check Up Profile
+
+*صورة دم كاملة
+
+*تحليل سيولة الدم
+
+*Prothrombin Time and Conc.
+
+*تحليل سكر صائم
+
+*تحليل سكر تراكمى
+
+*Cholesterol/HDL/LDL/Triglycerides
+
+*Free T3, Free T4 & TSH
+
+*سرعة الترسيب
+
+*Erythrocyte Sedimentation Rate (ESR)..
+
+*تحليل كامل للبول
+
+*Urine Analysis
+
+*تحليل كامل للبراز
+
+*Stool Examination
+
+*إنزيمات الكبد
+
+*SGPT, SGOT, Gamma GT & Alk. Phosphatase
+
+*فيروس بى
+
+*HBc Antibodies Total, HBs Antigen
+
+*فيروس سى
+
+*مستوى البولينا
+
+*Serum Urea
+
+*مستوى الكرياتنين
+
+*Serum Creatinine
+
+*أملاح النقرص بالدم
+
+*Serum Uric Acid
+
+*الكالسيوم
+
+*فيتامين د
+
+*25(OH) Vitamin D
+
+*دلالات اورام عامة
+
+*CEA
+
+3-مجموعة الفحص الطبى المتوسط
+
+3-Male Medium Check Up Profile
+
+*صورة دم كاملة
+
+*تحليل سيولة الدم
+
+*تحليل سكر صائم
+
+*تحليل سكر تراكمى
+
+*سرعة الترسيب
+
+*تحليل كامل للبول
+
+*Urine Analysis
+
+*تحليل كامل للبراز
+
+*Stool Examination
+
+*انزيمات الكبد
+
+*SGPT, SGOT & Gamma GT
+
+*Serum Albumin
+
+*فيروس بى
+
+*HBs Antigen
+
+*فيروس سى
+
+**مجموعة وظائف كلى
+
+*مستوى البولينا
+
+*Serum Urea
+
+*مستوى الكرياتنين
+
+*Serum Creatinine
+
+*أملاح النقرص بالدم
+
+*Serum Uric Acid
+
+*تحاليل الكالسيوم
+
+*دلالات اورام عامة
+
+*CEA
+
+4-مجموعة الفحص الطبى الصغير
+
+4-Male Small Check Up Profile
+
+*صورة دم كاملة
+
+*تحليل سكر صائم
+
+*تحليل الغدة الدرقية
+
+*TSH
+
+*سرعة الترسيب
+
+*تحليل كامل للبول
+
+*Urine Analysis
+
+*أحد انزيمات الكبد
+
+*SGPT (ALT)
+
+*مستوى الكرياتنين لتقييم كفاءة الكلى
+
+*Serum Creatinine
+
+*أملاح النقرص بالدم
+
+*Serum Uric Acid
+
+*فيروس بى
+
+*HBs Antigen
+
+*فيروس سى
+
+
+**Leave a Comment Cancel Reply**
+
+### Pre-Marital Tests / تحاليل ما قبل الزواج
+
+*Source: https://ezzlab.com/تحاليل-ما-قبل-الزواج/*
+
+تحاليل ما قبل الزواج للرجال
+
+*تحليل سكر عشوائى
+
+*Random Blood Sugar
+
+*صورة دم كاملة
+
+*CBC
+
+*أحد إنزيمات الكبد
+
+*ALT
+
+*مستوى الكرياتنين لتقييم كفاءة الكلى
+
+*Creatinine
+
+*الفيروسات الكبدية بى و سى
+
+*HBs Ag & HCV Ab
+
+*تحليل الايدز
+
+*HIV Ab
+
+*تحليل لمرض الزهرى
+
+*VDRL
+
+*اختبار السائل المنوى
+
+*Semen Examination
+
+*فصل كهربى للهيموجلوبين لتشخيص الانيميا الوراثية
+
+*HB Electrophoresis
+
+تحاليل ما قبل الزواج للأناث
+
+*تحليل سكر عشوائى
+
+*Random Blood Sugar
+
+*صورة دم كاملة
+
+*CBC
+
+*أحد إنزيمات الكبد
+
+*ALT
+
+*Creatinine
+
+*HBs Ag & HCV Ab
+
+*تحليل الايدز
+
+*HIV Ab
+
+*تحليل لمرض الزهرى
+
+*VDRL
+
+*تحليل للكشف عن الانيميا الوراثية
+
+*HB Electrophoresis
+
+*هرمونات متابعة التبويض
+
+*FSH – LH – PRL
+
+*فصيلة الدم و معامل Rh
+
+*Blood Group & Rh Factor
+
+
+**Leave a Comment Cancel Reply**
+
+### Tests for Chronic Headache Causes / تحاليل لمعرفة اسباب الصداع المزمن
+
+*Source: https://ezzlab.com/تحاليل-لمعرفة-اسباب-الصداع-المزمن/*
+
+*صورة دم كاملة
+
+*CBC
+
+*تحليل سكر عشوائى
+
+*Random Blood Sugar
+
+*تحليل سكر تراكمى
+
+*HBA1c
+
+*أحد إنزيمات الكبد
+
+*ALT
+
+*مستوى الكرياتنين لتقييم كفاءة الكلى
+
+*Creatinine
+
+*تحاليل الغدة الدرقية
+
+*TSH – Free T3 – Free T4
+
+*فيتامين د
+
+*Vitamin D
+
+*مخزون الحديد
+
+*Ferritin
+
+
+**Leave a Comment Cancel Reply**
+
+### Post-Infection / Post-Vaccination Tests / تحاليل ما بعد الاصابة او التطعيم بفيروس كورونا
+
+*Source: https://ezzlab.com/تحاليل-ما-بعد-الاصابة-او-التطعيم-بفيرو/*
+
+*صورة دم كاملة
+
+* CBC
+
+*سكر عشوائي
+
+*Plasma Glucose (Random)
+
+*انزيمات الكبد
+
+* SGPT (ALT)
+
+* SGOT (AST)
+
+*وظائف الكلى
+
+*Serum urea
+
+*Serum Creatinine
+
+*سيولة الدم
+
+* Prothrombin Time and Concentration
+
+*تقييم احتمالية حدوث جلطات
+
+* D-Dimer (Quantitative)
+
+*معامل الالتهاب
+
+*CRP
+
+
+**Leave a Comment Cancel Reply**
+
+### Tests for Diabetes Complications Follow-up / تحاليل لمتابعة مضاعفات مرض السكر
+
+*Source: https://ezzlab.com/تحاليل-لمتابعة-مضاعفات-مرض-السكر/*
+
+*ا لسكر التراكمي
+
+* HBA1C
+
+* مجموعة الكوليسترول والدهون
+
+* Cholest./HDL/LDL/Triglycerides.
+
+* تحليل الزلال فى البول
+
+* Microalbumin Random sample(Alb-Creat Ratio)
+
+
+**Leave a Comment Cancel Reply**
+
+### Periodic Check-up for Children / الفحص الدورى للأطفال
+
+*Source: https://ezzlab.com/الفحص-الدورى-للأطفال/*
+
+*صورة دم كاملة
+
+*Complete Blood Picture (CBC)
+
+*سرعة ترسيب
+
+*Erythrocyte Sedimentation Rate (ESR)
+
+*تحليل معامل الالتهاب
+
+*C-Reactive Protein Titre
+
+*أحد انزيمات الكبد
+
+*SGPT (ALT)
+
+*تحاليل الصفراء بالدم
+
+*Bilirubin Total & Direct
+
+*مستوى الكرياتنين كمؤشر لكفاءة الكلى
+
+*Serum Creatinine
+
+*تحليل سكر عشوائى
+
+*Plasma Glucose (Random)
+
+*تحليل براز كامل
+
+*Stool Examination
+
+*تحليل بول كامل
+
+*Urine Analysis
+
+*تحليل الحمى الروماتزمية
+
+*ASOT ( Latex)
+
+
+**Leave a Comment Cancel Reply**
+
+### Newborn Tests / تحاليل الاطفال حديثى الولادة
+
+*Source: https://ezzlab.com/تحاليل-الاطفال-حديثى-الولادة/*
+
+*صورة دم كاملة
+
+*Complete Blood Picture (CBC)
+
+*تحاليل الغدة الدرقية
+
+*T3, T4, TSH
+
+*تحاليل الصفراء بالدم
+
+*Bilirubin (Total & Direct)
+
+*تحليل معامل الالتهاب
+
+*C-Reactive Protein (CRP) Titre
+
+*مؤشر تكسير كرات الدم
+
+*Reticulocyte Count
+
+: تحاليل إضافية
+
+*تحاليل للكشف عن مشاكل التمثيل الغذائى
+
+*PhenylKetonuria
+
+*Galactosemia
+
+*Metabloic Screening
+
+*تحليل للكشف عن انيميا الفول
+
+*G6PD
+
+
+**Leave a Comment Cancel Reply**
+
+### Key Tumour Marker Tests for Men / أهم تحاليل دلالات الاورام للرجال
+
+*Source: https://ezzlab.com/أهم-تحاليل-دلالات-الاورام-للرجال/*
+
+*دلالات اورام البروستاتا
+
+*PSA (total – Free )
+
+*دلالات اورام القولون
+
+*Tumor Marker: CA 19.9
+
+*دلالات اورام عامة
+
+*CEA
+
+*دلالات اورام الكبد
+
+*α-Feto Protein
+
+*دلالات اورام الغدة الدرقية
+
+*Thyroglobulin Level
+
+*دلالات اورام لبعض انواع سرطان الدم
+
+*β2 Microglobulin – LDH
+
+*صورة دم كاملة مع عد نوعى لكريات الدم
+
+*CBC
+
+*سرعة الترسيب
+
+*ESR
+
+
+**Leave a Comment Cancel Reply**
+
+
+## Coverage Notes / ملاحظات التغطية
+
+Every public page on ezzlab.com was crawled. The pages below were deliberately excluded, with the reason for each — they would otherwise cause the assistant to answer with placeholder or contradictory information.
+
+- **https://ezzlab.com/doctors/** — Unused theme demo content (fictitious non-Egyptian doctors and US phone numbers). Excluded to prevent the agent answering with fake staff details.
+- **https://ezzlab.com/departments/** — Unused theme demo content (Lorem ipsum placeholder text).
+- **https://ezzlab.com/testimonials/** — Unused theme demo content (placeholder testimonials with fictitious names).
+- **https://ezzlab.com/home-test/** — Near-duplicate of the Arabic home page; its only difference is an outdated '40 years' claim that contradicts the current 'half a century' wording. Excluded to avoid a conflicting answer.
+- **https://ezzlab.com/diagnostic-profile/ , /diagnostic-profile-en/** — Page exists but has no body content on the live site — only the title. The actual profiles live in the article section of this document.
+- **https://ezzlab.com/education-training-center/** — Empty post — no content published.
+- **https://ezzlab.com/shop/ , /cart/ , /checkout/ , /my-account/** — Empty WooCommerce stubs — no products published.
+- **https://ezzlab.com/sitemap/ , /thanks/ , /g/** — Navigation and utility pages with no informational content.
+- **Picture & video libraries** — Media galleries — the pages carry images/videos only, no extractable text.
