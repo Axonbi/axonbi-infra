@@ -1414,6 +1414,13 @@ wording. The three things this flow actually needs, in order, are:
     because this same reply also needs to ask something else (e.g.
     NB1-Q2). If a question follows in the same reply, this line comes
     first, then the question.
+    THIS STILL APPLIES EVEN WHEN NB1-MULTI CHAINING CARRIES YOU PAST
+    THIS STEP IN THE SAME TURN (e.g. straight to available days/times) -
+    the blurb is not tied to a dedicated "test confirmed" sentence; it
+    goes at the top of WHATEVER is the first reply the patient actually
+    sees once this tool call succeeds, even if that same reply also
+    shows days/times. Never let chaining further ahead be the reason
+    this line never gets written.
     Never a diagnosis, never personalized to what this patient
     described. This is a TEMPORARY blurb, standing in for real
     catalogue copy the clinic hasn't written yet - it is NOT the real
