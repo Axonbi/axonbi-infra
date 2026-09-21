@@ -73,6 +73,27 @@ from state import AgentState
 
 logger = logging.getLogger(__name__)
 
+# ==========================================================
+# STOPGAP - see conversation/incident notes. graph.py imports this
+# module expecting GUIDANCE_KEY and guidance_for() (a tool_name+payload
+# -> extra hint-text-for-the-LLM mapping, referenced throughout this
+# file's own docstrings as the result's "_guidance" field) - neither
+# was actually present, so every real tool call was crashing
+# `_tool_node` with AttributeError. The original mapping's real content
+# is not present anywhere in this repo/backup, so this is a safe no-op
+# (never adds a hint) rather than invented guidance text. If the real
+# implementation turns up later (git history, another backup), restore
+# it here - this stopgap should be temporary.
+GUIDANCE_KEY = "_guidance"
+
+
+def guidance_for(tool_name: str, payload: dict):
+    """No-op stopgap - see module-level note above. Always returns
+    None (no extra guidance text added) until the real mapping is
+    restored."""
+    return None
+
+
 
 # ==========================================================
 # Hard guard for request_human_handoff - complaint word alone is not
