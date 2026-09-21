@@ -1525,13 +1525,19 @@ def _lab_test_doctor_ids(state: AgentState) -> Optional[frozenset]:
     return ids or None
 
 
-def _lab_test_specialty_id(state: AgentState) -> Optional[str]:
+def _lab_test_specialty_id(state: AgentState, specialty: str = "laboratory") -> Optional[str]:
     """PRIMARY filter for the per-test-doctors model (see
     `_lab_uses_per_test_doctors`) - the specialtyId real test-doctors
     are registered under, configured per client. Preferred over
     `_lab_test_doctor_ids` whenever set: a newly registered test-doctor
     under this same specialty is picked up automatically, with no
     per-test config edit needed - the id whitelist needs one every time.
+
+    `specialty`: "laboratory" (default, reads `_lab_test_specialty_id`)
+    or "radiology" (reads the SEPARATE `_lab_test_specialty_id_radiology`
+    key - see config.CLIENT_LAB_ENTITY_NAMES). The two are never mixed:
+    an unset Radiology id must never silently fall back to the
+    Laboratory one, or Radiology searches would return lab tests.
 
     Requires every OTHER real doctor in this tenant (unrelated
     specialists sharing the same Booking API account) to be tagged a
@@ -1541,9 +1547,12 @@ def _lab_test_specialty_id(state: AgentState) -> Optional[str]:
     search results list.
 
     Returns None (not "") when unset, so callers can fall back to
-    `_lab_test_doctor_ids` cleanly."""
+    `_lab_test_doctor_ids` cleanly (laboratory only - there is no id
+    whitelist fallback for radiology)."""
 
-    return (state.get("templates") or {}).get("_lab_test_specialty_id") or None
+    templates = state.get("templates") or {}
+    key = "_lab_test_specialty_id_radiology" if specialty == "radiology" else "_lab_test_specialty_id"
+    return templates.get(key) or None
 
 
 # ==========================================================
@@ -11629,10 +11638,14 @@ def find_nearest_branch(
 # doctor resolution
 # ==========================================================
 
+LAB_SERVICES_LIST_CAP = 20
+
+
 @tool
 def search_lab_services(
     state: Annotated[AgentState, InjectedState],
-    query: str,
+    query: Optional[str] = None,
+    specialty: str = "laboratory",
 ) -> dict:
     """Find real, bookable lab/imaging services matching what the
     patient described - even in colloquial Arabic, or when the
@@ -11644,6 +11657,22 @@ def search_lab_services(
     Call this INSTEAD OF guessing whenever the patient names a category,
     symptom, or body part rather than a service's exact catalogue name.
     Pass their own wording as `query`, unchanged.
+
+    `query` is OPTIONAL. Leave it empty when the patient asked for the
+    FULL list with nothing to narrow by (e.g. "قولي التحاليل الي
+    عندكم" / "what tests do you have") - this returns every real,
+    published test/scan for `specialty`, most clinic-relevant first, up
+    to `LAB_SERVICES_LIST_CAP` items, instead of running a semantic
+    search. If more than the cap exist, `"truncated": true` is set on
+    the result - tell the patient there are more and ask them to narrow
+    down, rather than silently dropping the rest.
+
+    `specialty`: "laboratory" (default) or "radiology" - these are
+    SEPARATE catalogues (see `_lab_test_specialty_id`) and are never
+    mixed. Use "radiology" only when the patient is specifically asking
+    about أشعة/scans. If Radiology is not configured for this client yet
+    this returns {"status": "not_configured"} - tell the patient that
+    service isn't available yet rather than treating it as an error.
 
     Searches ONLY real, bookable entries for this clinic - never the
     whole Booking API tenant's catalogue, which may hold other clinics'/
@@ -11719,9 +11748,13 @@ def search_lab_services(
         # specialtyName="Laboratory") - never searchable/offerable as
         # a lab test just because nothing narrower was configured.
         # PRIMARY: specialtyId (no per-test config edit needed).
-        # FALLBACK: the explicit id whitelist, only if specialty unset.
-        specialty_id = _lab_test_specialty_id(state)
-        test_doctor_ids = _lab_test_doctor_ids(state)
+        # FALLBACK: the explicit id whitelist - LABORATORY ONLY, since
+        # there is no separate radiology id whitelist configured
+        # anywhere (see _lab_test_doctor_ids's docstring); a radiology
+        # search with no specialty_id must fail closed, never fall back
+        # to the laboratory whitelist.
+        specialty_id = _lab_test_specialty_id(state, specialty)
+        test_doctor_ids = _lab_test_doctor_ids(state) if specialty == "laboratory" else None
 
         if specialty_id:
             all_doctors = [d for d in all_doctors_raw if d.get("specialtyId") == specialty_id]
@@ -11729,17 +11762,18 @@ def search_lab_services(
             all_doctors = [d for d in all_doctors_raw if d.get("id") in test_doctor_ids]
         else:
             logger.error(
-                "search_lab_services (per-test-doctors): neither lab_test_specialty_id "
-                "nor lab_test_doctor_ids configured for client_id=%s - refusing to "
-                "search every real doctor in the tenant", state.get("client_id"),
+                "search_lab_services (per-test-doctors): no specialty id configured for "
+                "specialty=%r (client_id=%s) - refusing to search every real doctor in "
+                "the tenant", specialty, state.get("client_id"),
             )
             return {"status": "not_configured"}
 
         if not all_doctors:
             logger.info(
                 "search_lab_services (per-test-doctors): the configured filter "
-                "(specialty_id=%r, %d whitelisted id(s)) matched no published+"
-                "scheduled doctor right now", specialty_id, len(test_doctor_ids or ()),
+                "(specialty=%r, specialty_id=%r, %d whitelisted id(s)) matched no "
+                "published+scheduled doctor right now",
+                specialty, specialty_id, len(test_doctor_ids or ()),
             )
             return {"status": "not_found"}
 
@@ -11781,15 +11815,24 @@ def search_lab_services(
         if not items:
             return {"status": "not_found"}
 
-        matches = rag.search_items(items, query)
-        if not matches:
-            return {"status": "not_found"}
-
-        services = [item for item, _score in matches]
+        truncated = False
+        if query:
+            matches = rag.search_items(items, query)
+            if not matches:
+                return {"status": "not_found"}
+            services = [item for item, _score in matches]
+        else:
+            # No query - the patient asked for the FULL list. Return
+            # every real, published test as-is (document/catalogue
+            # order), capped so a single WhatsApp reply stays readable;
+            # never invent or reorder beyond what the API returned.
+            services = items[:LAB_SERVICES_LIST_CAP]
+            truncated = len(items) > LAB_SERVICES_LIST_CAP
 
         logger.info(
-            "search_lab_services (per-test-doctors): query=%r -> %d/%d real test(s) matched",
-            query, len(services), len(items),
+            "search_lab_services (per-test-doctors): specialty=%r query=%r -> %d/%d real "
+            "test(s) returned (truncated=%s)",
+            specialty, query, len(services), len(items), truncated,
         )
 
         # TAGGED DISTINCTLY FROM "service" ON PURPOSE. These items carry
@@ -11812,9 +11855,23 @@ def search_lab_services(
             if item.get("id") and item.get("description"):
                 descriptions[item["id"]] = item["description"]
 
-        return {"status": "found", "services": services}
+        result = {"status": "found", "services": services}
+        if truncated:
+            result["truncated"] = True
+        return result
 
     # ORIGINAL FIXED-SENTINEL-DOCTOR MODEL (default) below - unchanged.
+    if not query:
+        # This model has no "list everything" support - it isn't used by
+        # any client with a radiology/full-list flow today. Fail closed
+        # rather than silently returning an empty/wrong list.
+        logger.warning(
+            "search_lab_services: empty query requested but client_id=%s uses the "
+            "fixed-sentinel-doctor model, which doesn't support full-catalogue "
+            "listing", state.get("client_id"),
+        )
+        return {"status": "not_configured"}
+
     in_place_name = _lab_in_place_doctor_name(state)
     home_name = _lab_home_doctor_name(state)
     fixed_doctor_ids = [
