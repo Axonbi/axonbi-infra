@@ -11006,6 +11006,45 @@ def _honest_unstaffed_reply(draft: str, messages: list,
     return rebuilt
 
 
+_HOME_COLLECTION_ADDRESS_QUESTION = {
+    "ar": "من فضلك أعطيني عنوانك بالتفصيل (الشارع والمنطقة ورقم العمارة/الدور لو موجود) عشان فريق السحب المنزلي يوصلك.",
+    "en": "Please send me your full address (street, area, building/floor if any) so the home-collection team can reach you.",
+}
+
+
+def _honest_home_address_question(
+    description: Optional[str], state: AgentState, target_language: Optional[str],
+) -> Optional[str]:
+    """Rebuild a twice-flagged fake-home-address draft into the ONE
+    thing that is actually missing - a real question for the address -
+    instead of falling to the fully generic staff-handoff message. Same
+    "can the truth be built in code?" pattern as `_honest_unstaffed_reply`
+    / `_honest_branch_list_reply`.
+
+    CONFIRMED REAL PRODUCTION FAILURE (session 201158877175+medtown2,
+    2026-09-21): `_reply_shows_fake_home_address` correctly caught the
+    review card twice in the same turn (it never leaked a fake address
+    to the patient - the SAFETY check did its job), but the model's own
+    two rewrite attempts did not recover into asking the real question -
+    one re-showed the same fake address, the other asked for an
+    unrelated phone/booking reference - so a fully valid, completed
+    booking (test + slot + name all real and locked) died into "حابب
+    أحولك لموظف؟" over a single missing field this code can ask for
+    directly, with no model call needed to get it right.
+
+    Returns None when `description` isn't this exact check, leaving the
+    caller's existing fallback chain untouched."""
+
+    if description != (
+        "reply's review card filled the collection-address line with the "
+        "collection mode itself instead of a real address the patient gave"
+    ):
+        return None
+
+    is_english = (target_language or "").strip().lower().startswith("en")
+    return _HOME_COLLECTION_ADDRESS_QUESTION["en" if is_english else "ar"]
+
+
 def _honest_branch_list_reply(
     description: Optional[str], state: AgentState, target_language: Optional[str],
 ) -> Optional[str]:
@@ -19001,6 +19040,8 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                         description, state, target_language,
                     ) or _honest_day_list_reply(
                         description, state, target_language,
+                    ) or _honest_home_address_question(
+                        description, state, target_language,
                     ) or _honest_unstaffed_reply(
                         normalized, state["messages"],
                         state.get("templates") or {}, target_language,
@@ -19101,6 +19142,8 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                             description, state, target_language,
                         ) or _honest_day_list_reply(
                             description, state, target_language,
+                        ) or _honest_home_address_question(
+                            description, state, target_language,
                         ) or _honest_unstaffed_reply(
                             normalized, state["messages"],
                             state.get("templates") or {}, target_language,
@@ -19176,6 +19219,8 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                     rebuilt = _honest_branch_list_reply(
                         description, state, target_language,
                     ) or _honest_day_list_reply(
+                        description, state, target_language,
+                    ) or _honest_home_address_question(
                         description, state, target_language,
                     ) or _honest_unstaffed_reply(
                         normalized, state["messages"],
