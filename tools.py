@@ -9505,29 +9505,30 @@ def set_home_collection_address(
     state: Annotated[AgentState, InjectedState],
     address: str,
 ) -> dict:
-    """HOME MODE ONLY. Call this the moment the patient gives the real
-    address where the sample should be collected (STEP NB6's dedicated
-    address question) - pass exactly what they wrote, never paraphrased
-    or invented. This is what `confirm_booking_review` checks for a
-    home-mode booking: without this call, review confirmation refuses
-    with `missing_address` instead of proceeding.
+    """Call the moment the patient gives a real address:
+    - HOME MODE: the address where the sample should be collected
+      (STEP NB6's dedicated question). `confirm_booking_review` refuses
+      with `missing_address` for a home booking until this is called.
+    - IN_LAB MODE: the address they gave to find their nearest branch
+      (STEP NB1-Q3) - optional, only when they used that shortcut.
 
-    This value is never sent to the Booking API (no field there takes
-    it) - it exists purely so it's on record for the collection team
-    and shows up on the review card. Calling this again overwrites the
-    previous address (e.g. if the patient corrects it).
+    Pass exactly what they wrote, never paraphrased or invented. Never
+    sent to the Booking API (no field takes it) - it's on record purely
+    for the review card / collection team. Calling this again overwrites
+    the previous address.
 
-    Returns {"status": "saved"} / {"status": "not_home_mode"} (nothing
-    to save - this booking isn't a home-collection one)."""
+    Returns {"status": "saved"} / {"status": "no_collection_mode"} (call
+    `select_sample_collection_mode` first)."""
 
     session_id = state.get("session_id")
     session = _get_booking_session(session_id)
-    if session.get("collection_mode") != "home":
-        return {"status": "not_home_mode"}
+    if session.get("collection_mode") not in ("home", "in_lab"):
+        return {"status": "no_collection_mode"}
     address = (address or "").strip()
     session["collection_address"] = address
     logger.info(
-        "set_home_collection_address: session_id=%s address=%r", session_id, address,
+        "set_home_collection_address: session_id=%s mode=%s address=%r",
+        session_id, session.get("collection_mode"), address,
     )
     return {"status": "saved"}
 
