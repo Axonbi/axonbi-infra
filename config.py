@@ -991,6 +991,14 @@ CLIENT_LAB_ENTITY_NAMES: Dict[str, Dict[str, str]] = {
             "17367696-f551-4d28-bd3d-0838bc7f2180,"
             "d307741a-6c50-467a-8a12-adb8e59c5db8"
         ),
+        # SECONDARY specialty filter, same role as lab_test_specialty_id
+        # above but for Radiology (أشعة) test-doctors instead of Laboratory
+        # ones. Left empty on purpose - Radiology test-doctors are not
+        # registered under this tenant yet (2026-09-21). Fill this in with
+        # the real specialtyId once they are; until then,
+        # search_lab_services(specialty="radiology") returns
+        # {"status": "not_configured"} rather than guessing.
+        "lab_test_specialty_id_radiology": "",
     },
     # Confirmed (2026-09-21) to share the exact same demo Booking API
     # account as "lab-alborg" above - same doctor ids showed up in both
@@ -1010,6 +1018,9 @@ CLIENT_LAB_ENTITY_NAMES: Dict[str, Dict[str, str]] = {
             "17367696-f551-4d28-bd3d-0838bc7f2180,"
             "d307741a-6c50-467a-8a12-adb8e59c5db8"
         ),
+        # See the comment on lab-alborg's own copy of this key above -
+        # empty until Radiology test-doctors are registered for real.
+        "lab_test_specialty_id_radiology": "",
     },
 }
 
@@ -1315,6 +1326,17 @@ def get_messages(client_id: str, dialect: Optional[str] = None, client_row_overr
     merged["_lab_test_specialty_id"] = (
         client_row.get("lab_test_specialty_id")
         or _lab_overrides.get("lab_test_specialty_id")
+        or ""
+    )
+    # SECONDARY specialty filter - same role as _lab_test_specialty_id
+    # above but for Radiology (أشعة) test-doctors. See the comment on
+    # CLIENT_LAB_ENTITY_NAMES's own "lab_test_specialty_id_radiology" -
+    # empty/unset means Radiology tests are not searchable yet for this
+    # client, and callers must fail closed (not_configured), never fall
+    # back to the Laboratory specialty id.
+    merged["_lab_test_specialty_id_radiology"] = (
+        client_row.get("lab_test_specialty_id_radiology")
+        or _lab_overrides.get("lab_test_specialty_id_radiology")
         or ""
     )
     merged["_phone_example"] = client_row.get("phone_example")
