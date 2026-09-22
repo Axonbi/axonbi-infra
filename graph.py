@@ -1485,11 +1485,30 @@ def _build_slots_numbered_list_directive(messages: list) -> str:
     if not slots:
         return ""
 
-    lines = [f"{_numbered_prefix(i + 1)} {slot.get('time_display', '')}" for i, slot in enumerate(slots)]
+    # A SHARED HEADER ASSUMES ALL SLOTS ARE THE SAME CALENDAR DAY - NOT
+    # ALWAYS TRUE. A slot late enough to fall after midnight carries the
+    # NEXT real calendar date, even though it was returned for "today's"
+    # search window. Building the header from `slots[0]` alone used to
+    # apply that one date to every line.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (session 201158877175+medtown2,
+    # 2026-09-14 13:46-13:57): a list headed "الأربعاء 16/09/2026"
+    # included a "1:00 صباحًا" slot whose real date was 17/09/2026. The
+    # patient picked it believing it was still Wednesday, and the wrong
+    # assumed date then fed into a reschedule attempt down the line.
+    distinct_dates = {slot.get("date_display") for slot in slots if slot.get("date_display")}
+    spans_multiple_dates = len(distinct_dates) > 1
+
+    if spans_multiple_dates:
+        lines = [
+            f"{_numbered_prefix(i + 1)} {slot.get('date_display', '')} — {slot.get('time_display', '')}"
+            for i, slot in enumerate(slots)
+        ]
+    else:
+        lines = [f"{_numbered_prefix(i + 1)} {slot.get('time_display', '')}" for i, slot in enumerate(slots)]
     numbered_list = "\n".join(lines)
 
     first_slot = slots[0]
-    date_display = first_slot.get("date_display") or ""
     weekday_display = first_slot.get("weekday_display") or ""
     service_name = first_slot.get("serviceName") or ""
 
@@ -1500,9 +1519,13 @@ def _build_slots_numbered_list_directive(messages: list) -> str:
     # prompts.py's FEES rule); the tools no longer return servicePrice
     # in slot data at all, so this is now enforced on both sides.
     header_parts = []
-    if date_display:
-        day_label = f"{weekday_display} {date_display}".strip()
-        header_parts.append(f"📅 المواعيد المتاحة ليوم {day_label}")
+    if not spans_multiple_dates:
+        date_display = first_slot.get("date_display") or ""
+        if date_display:
+            day_label = f"{weekday_display} {date_display}".strip()
+            header_parts.append(f"📅 المواعيد المتاحة ليوم {day_label}")
+    else:
+        header_parts.append("📅 المواعيد المتاحة")
     if service_name:
         header_parts.append(f"— {service_name}")
     header = (" ".join(header_parts) + ":") if header_parts else ""
@@ -2198,6 +2221,7 @@ _SUCCESS_TEMPLATE_FIELDS = {
     "old_date": ("_old_date_display",),
     "old_time": ("_old_time_display",),
     "bookingRefNum": ("ref",),
+    "clinic_name": ("_clinic_name",),
 }
 
 # Anything still looking like {placeholder} after filling.
@@ -2312,6 +2336,13 @@ def _build_terminal_success_directive(messages: list, templates: dict) -> str:
     values = dict(appointment)
     values["_old_date_display"] = appointment.get("date_display")
     values["_old_time_display"] = appointment.get("time_display")
+    # So the template can close with "thank you for trusting {clinic_name}"
+    # like the booking-success message does - see the CONFIRMED REAL
+    # PRODUCTION GAP note on the reschedule "success" case above: these
+    # two templates were the only terminal confirmations with no clinic
+    # name in them at all, because nothing ever gave the template text
+    # a value to put there.
+    values["_clinic_name"] = (templates or {}).get("_clinic_name")
 
     for key in ("new_date_display", "new_time_display"):
         if data.get(key):
@@ -2507,8 +2538,11 @@ def _build_booking_confirmation_requires_tool_directive(messages: list, session_
                 "using its real returned booking_ref. Confirmed real "
                 "failure: claiming success with zero tool calls left no "
                 "real booking in the system at all, while the patient was "
-                "told otherwise. If the user just confirmed \"yes\" to the "
-                "review card, call `create_new_booking` now.\n\n"
+                "told otherwise. If the user just confirmed \"yes\" (in "
+                "whatever words they used) to the review card, call "
+                "`confirm_booking_review` first (if you have not already, "
+                "this turn), then `create_new_booking` with the same "
+                "values, right after.\n\n"
             )
 
     return ""
@@ -7298,7 +7332,29 @@ def _find_invented_branches(reply_text: str, state: AgentState) -> list:
         if config.BRANCH_TRANSLITERATION_FALLBACK:
             candidate_skeleton = _transliteration_skeleton(name)
             if candidate_skeleton and len(candidate_skeleton) >= 2:
-                known_names = tools.get_known_entity_names(state.get("session_id"), "branch")
+                # `tools.get_known_entity_names` lives in `_BOOKING_SESSIONS`,
+                # an IN-MEMORY, per-process store that a service restart (or
+                # a different worker) wipes clean - while the conversation's
+                # `messages` persist across exactly those events. A patient
+                # picking back up a conversation after a restart has the
+                # branch legitimately established in history, but this
+                # ephemeral store no longer knows it.
+                #
+                # CONFIRMED REAL PRODUCTION FAILURE: after a service
+                # restart, the model correctly recalled "Al Manar" was
+                # already confirmed earlier in this same conversation and
+                # called `share_branch_location` directly (as intended) -
+                # but nothing that turn called `match_entity_info` again,
+                # so this ephemeral store was never repopulated, and the
+                # correct Arabic reply ("فرع المنار") was rejected as
+                # invented anyway.
+                #
+                # `established_facts["branches"]` is rebuilt EVERY turn
+                # straight from `messages` (see the ledger above) and is
+                # therefore immune to this - union it in as a second,
+                # durable source.
+                known_names = set(tools.get_known_entity_names(state.get("session_id"), "branch"))
+                known_names.update((state.get("established_facts") or {}).get("branches") or [])
                 if any(_transliteration_skeleton(kn) == candidate_skeleton for kn in known_names):
                     continue
         if name not in invented:
@@ -7328,6 +7384,14 @@ _BRANCH_CORRECTION_DIRECTIVE = (
     "branches are returned to you as `branchesForDoctor` the moment the "
     "doctor is confirmed, and `list_branches_for_specialty` returns them "
     "too.\n\n"
+    "IF THIS NAME LOOKS LIKE A TRANSLATION OF A REAL BRANCH RATHER THAN "
+    "A MADE-UP ONE: a tool likely returned that branch's name in "
+    "English only, with no Arabic version on file, and you rendered "
+    "your own Arabic translation of it instead of using it as given. "
+    "Use the tool's own name exactly - English mixed into an Arabic "
+    "reply is correct here; a translation you composed yourself is not, "
+    "however natural it reads, because it is not the name any tool "
+    "actually returned.\n\n"
     "Rewrite the reply now using ONLY real branches, or call the tool "
     "first if you don't have them.\n\n"
 )
@@ -9020,6 +9084,36 @@ def _reply_asks_to_identify_a_booking_that_was_never_mentioned(
     return True
 
 
+def _no_such_booking_correction_directive(reply_text: str, state: AgentState) -> str:
+    """Same guard, phrased for whichever flow actually produced the bad
+    question. The COMPLAINT flow has its own authored phone-number
+    question (STEP C4) that never mentions a booking reference at all -
+    telling it "this is cancellation's STEP 1" is both wrong and gives
+    it nothing to replace the question with. CONFIRMED REAL PRODUCTION
+    FAILURE: mid-complaint, the model asked "رقم موبايلك مع رمز الدولة
+    أو رقم الحجز؟" - inventing the cancellation flow's phrasing for a
+    step that has its own fixed wording and no booking reference in it
+    at all."""
+
+    if state.get("active_agent") == "complaint":
+        return (
+            "============================================================\n"
+            "YOU INVENTED A BOOKING-REFERENCE QUESTION - THIS IS A COMPLAINT\n"
+            "============================================================\n"
+            "Your previous draft asked for a phone number OR a booking "
+            "reference. This complaint has no booking attached to it at "
+            "all - STEP C4 asks for a phone number ONLY, for the "
+            "complaint record itself, never a booking reference.\n\n"
+            "Ask exactly STEP C4's own question instead: \"هل تحب نسجل "
+            "الشكوى برقم الواتساب اللي تكلمني منه الآن؟\" (or the "
+            "equivalent in this clinic's own dialect/language) - a "
+            "same-number yes/no question, with no mention of a booking "
+            "reference anywhere.\n\n"
+        )
+
+    return _NO_SUCH_BOOKING_CORRECTION_DIRECTIVE
+
+
 _NO_SUCH_BOOKING_CORRECTION_DIRECTIVE = (
     "============================================================\n"
     "YOU ASKED FOR A BOOKING THIS PATIENT DOES NOT HAVE\n"
@@ -9625,6 +9719,28 @@ _GENERIC_DOCTOR_WORD_ONLY_RE = re.compile(
 )
 _GENERIC_BRANCH_WORD_ONLY_RE = re.compile(r"^\s*(?:ال)?فرع\s*$")
 
+# AN ADJECTIVE DESCRIBING THE COMPLAINT ISN'T A NAME EITHER. The generic-
+# word check above catches `user_input="دكتور"` - the bare noun with
+# nothing else. It does NOT catch the model extracting the wrong word
+# out of a sentence that DOES contain the noun: "الدكتور سيء" ("the
+# doctor is bad") mentions "الدكتور" as a common noun, same as "دكتور
+# كتبلي دواء غلط" above, but the model called
+# `match_entity_info(user_input="سيء", entity_type="doctor")` - not the
+# noun itself, the ADJECTIVE describing it. Because the message does
+# contain a doctor cue word, the legitimate-case check below (matching
+# the patient's own message) would otherwise wave this through. A
+# quality complaint is exactly the shape STEP C1's "don't invent a name"
+# rule exists for; it just was not the literal noun this regex already
+# blocked. CONFIRMED REAL PRODUCTION FAILURE: "الدكتور سيء" ->
+# `match_entity_info(user_input="سيء", ...)` -> not_matched -> the
+# complaint stopped over a doctor name the patient never gave, and
+# nothing caught it this time.
+_NOT_A_NAME_DESCRIPTOR_RE = re.compile(
+    r"^\s*(?:مش\s*)?(?:سيء|سيئ[ةه]?|وحش|وحش[ةه]|تعبان[ةه]?|مقصر[ةه]?|"
+    r"فظيع[ةه]?|زفت|غلط|وقح[ةه]?|قليل\s*الادب|مش\s*كويس|مش\s*محترم[ةه]?|"
+    r"bad|terrible|awful|rude|unprofessional)\s*$"
+)
+
 
 def _last_match_entity_info_user_input(state: AgentState, entity_type: str) -> Optional[str]:
     """The `user_input` most recently passed to `match_entity_info` for
@@ -9669,8 +9785,12 @@ def _reply_fabricates_doctor_not_found_stop(reply_text: str, state: AgentState) 
     # exactly why this stronger, argument-level check exists.
     generic_re = _GENERIC_BRANCH_WORD_ONLY_RE if is_branch else _GENERIC_DOCTOR_WORD_ONLY_RE
     last_call_input = _last_match_entity_info_user_input(state, entity_type)
-    if last_call_input is not None and generic_re.match(_norm_ar(last_call_input)):
-        return True
+    if last_call_input is not None:
+        folded_input = _norm_ar(last_call_input)
+        if generic_re.match(folded_input) or (
+            not is_branch and _NOT_A_NAME_DESCRIPTOR_RE.match(folded_input)
+        ):
+            return True
 
     cue_re = _BRANCH_CUE_WORD_RE if is_branch else _DOCTOR_CUE_WORD_RE
 
@@ -9803,6 +9923,56 @@ def _reply_derails_complaint_into_handoff_offer(reply_text: str, state: AgentSta
                 break
 
     return bool(_MORE_DETAILS_QUESTION_RE.search(_norm_ar(prior_ai_text)))
+
+
+# ==========================================================
+# THE COMPLAINT CATEGORY IS AN INTERNAL DECISION, NEVER A QUESTION
+# ==========================================================
+#
+# STEP C2 tells the model to DECIDE the complaint's subject from what
+# the patient already said - not to ask them to pick one from a list.
+# CONFIRMED REAL PRODUCTION FAILURE: the patient had already said
+# "دكتور ليلى" and, a couple of turns later, "الدكتور سيء" - a doctor
+# complaint, plainly - and once they had nothing more to add, the reply
+# was "طيب، تحت أي موضوع تبغى نقدم الشكوى؟ هل هي عن خدمة العملاء،
+# الطبيب، الفرع، الحجز، الفواتير، أو شيء ثاني؟" - the internal STEP C2
+# judgment call, surfaced as a menu, asking the patient to re-classify a
+# complaint whose subject they had already made obvious.
+_COMPLAINT_CATEGORY_QUESTION_RE = re.compile(
+    r"تحت\s*أي\s*موضوع|أي\s*قسم\s*(?:تبغى|تحب|عايز|عاوز)|"
+    r"عن\s*خدمة\s*العملاء\W{0,3}(?:ال)?طبيب\W{0,3}(?:ال)?فرع|"
+    r"which\s+(?:subject|category|department)\s+(?:would|do)\s+you"
+)
+
+
+def _reply_asks_generic_complaint_category(reply_text: str, state: AgentState) -> bool:
+    if not reply_text:
+        return False
+    return bool(_COMPLAINT_CATEGORY_QUESTION_RE.search(_norm_ar(reply_text)))
+
+
+_COMPLAINT_CATEGORY_QUESTION_CORRECTION_DIRECTIVE = (
+    "============================================================\n"
+    "NEVER ASK THE CATEGORY QUESTION OUT LOUD - DECIDE IT YOURSELF\n"
+    "============================================================\n"
+    "STEP C2's \"decide the complaint's subject\" is an internal "
+    "judgment call you make from what the patient has ALREADY said - "
+    "it is never a question to ask them. Your previous draft surfaced "
+    "it as a menu (\"تحت أي موضوع...؟ خدمة العملاء، الطبيب، الفرع...\"), "
+    "which is not part of this flow at all and makes the assistant look "
+    "like it ignored everything said so far.\n\n"
+    "Re-read the WHOLE complaint conversation so far, not just this "
+    "last message. If a doctor or branch was named or clearly referred "
+    "to ANYWHERE in it - even a message or two back - that is the "
+    "subject: go straight to STEP C2b's handling for it (verify the "
+    "name via `match_entity_info` now if that has not happened yet, or "
+    "ask its ONE targeted question - \"تحت أي دكتور بالظبط؟\"/\"في أنهي "
+    "فرع بالظبط؟\" - only if truly no name was ever given at all). If "
+    "nothing in the conversation points to a specific doctor or branch, "
+    "the subject is the clinic/service as a whole - record it as such "
+    "silently and move straight to STEP C3 (ask for their name), never "
+    "to this category question.\n\n"
+)
 
 
 _COMPLAINT_HANDOFF_DERAIL_CORRECTION_DIRECTIVE = (
@@ -10413,7 +10583,7 @@ _SOFT_RECOVERY_TEXT = {
 # itself - handing off to a human is honest and moves the conversation
 # forward; a third identical message would not.
 _SOFT_RECOVERY_ESCALATION_TEXT = {
-    "ar": "معلش، شكلي مش قادرة أوصل لطلبك ده صح دلوقتي 🌷\n"
+    "ar": "عذرًا، شكلي مش قادرة أوصل لطلبك ده صح حاليًا 🌷\n"
           "حابب أحولك لأحد ممثلي خدمة العملاء يكمل معاك؟",
     "en": "Sorry - it looks like I'm not able to get to this properly right "
           "now 🌷\nWould you like me to connect you with one of our "
@@ -10635,7 +10805,7 @@ def _safe_fallback_reply(
         # which is the whole failure this gate exists to prevent.
         (
             ("claim gate: told the patient their appointment is booked",),
-            "معلش، ما قدرتش أأكد الحجز فعليًا دلوقتي - يعني الموعد لسه "
+            "عذرًا، ما قدرتش أأكد الحجز فعليًا حاليًا - يعني الموعد لسه "
             "مش محجوز 🌷\nتحب نرجع نختار الموعد من تاني؟",
             "Sorry - I wasn't able to actually confirm the booking just "
             "now, so the appointment is NOT reserved yet 🌷\nShall we "
@@ -10643,7 +10813,7 @@ def _safe_fallback_reply(
         ),
         (
             ("claim gate: told the patient their appointment is cancelled",),
-            "معلش، ما قدرتش أنفّذ الإلغاء فعليًا دلوقتي - يعني الموعد لسه "
+            "عذرًا، ما قدرتش أنفّذ الإلغاء فعليًا حاليًا - يعني الموعد لسه "
             "قائم 🌷\nتحب نحاول نلغيه من تاني؟",
             "Sorry - I wasn't able to actually cancel it just now, so the "
             "appointment is still active 🌷\nShall we try the "
@@ -10651,7 +10821,7 @@ def _safe_fallback_reply(
         ),
         (
             ("claim gate: told the patient their appointment has been moved",),
-            "معلش، ما قدرتش أنقل الموعد فعليًا دلوقتي - يعني الموعد القديم "
+            "عذرًا، ما قدرتش أنقل الموعد فعليًا حاليًا - يعني الموعد القديم "
             "لسه هو القائم 🌷\nتحب نختار الوقت الجديد من تاني؟",
             "Sorry - I wasn't able to actually move the appointment just "
             "now, so your original time still stands 🌷\nShall we pick "
@@ -10659,7 +10829,7 @@ def _safe_fallback_reply(
         ),
         (
             ("claim gate: told the patient their complaint was filed",),
-            "معلش، ما قدرتش أسجّل الشكوى فعليًا دلوقتي - يعني ما وصلتش "
+            "عذرًا، ما قدرتش أسجّل الشكوى فعليًا حاليًا - يعني ما وصلتش "
             "لفريق الجودة لسه 🌷\nحابب أحوّلك لخدمة العملاء يتابعوها معاك؟",
             "Sorry - your complaint wasn't actually filed just now, so it "
             "hasn't reached the quality team yet 🌷\nWould you like me to "
@@ -10667,7 +10837,7 @@ def _safe_fallback_reply(
         ),
         (
             ("claim gate: told the patient they are being handed to a human",),
-            "معلش، ما قدرتش أحوّلك لموظف فعليًا دلوقتي 🌷\nتحب أحاول "
+            "عذرًا، ما قدرتش أحوّلك لموظف فعليًا حاليًا 🌷\nتحب أحاول "
             "التحويل من تاني؟",
             "Sorry - I wasn't able to actually transfer you to a member "
             "of staff just now 🌷\nShall I try the transfer again?",
@@ -10695,7 +10865,7 @@ def _safe_fallback_reply(
             # none free. Saying it cannot understand the symptom is
             # both untrue and useless; saying no doctor is available is
             # true and tells them what to do next.
-            "معلش، ما لقيتش دكتور متاح حاليًا للحالة دي في المستشفى 🌷\n"
+            "عذرًا، ما لقيتش دكتور متاح حاليًا للحالة دي في المستشفى 🌷\n"
             "أفضل حاجة إنك تتواصل مع فريقنا الطبي مباشرة يوجهوك صح. تحب أحولك لهم؟",
             "Sorry - I couldn't find a doctor available for this at the "
             "hospital right now 🌷\nIt's best to speak directly with our "
@@ -10705,7 +10875,7 @@ def _safe_fallback_reply(
         (
             ("fabricated appointment", "invents availability", "invented availability",
              "no availability tool"),
-            "معلش، مش قادرة أتأكد من موعد فعلي متاح دلوقتي 🌷\n"
+            "عذرًا، مش قادرة أتأكد من موعد فعلي متاح حاليًا 🌷\n"
             "ممكن نرجع نشوف الأيام والمواعيد المتاحة تاني من الأول؟",
             "Sorry, I can't confirm a real available slot right now 🌷\n"
             "Shall we look at the available days and times again from the "
@@ -10713,7 +10883,7 @@ def _safe_fallback_reply(
         ),
         (
             ("cancellation without", "confirm cancelling", "offers cancellation without lookup"),
-            "معلش، مش لاقية حجز مؤكد بالمعلومات دي 🌷\n"
+            "عذرًا، مش لاقية حجز مؤكد بالمعلومات دي 🌷\n"
             "ممكن تبعتلي رقم الحجز أو رقم الجوال المسجل بيه الحجز؟",
             "Sorry, I can't find a confirmed booking with that information 🌷\n"
             "Could you send me the booking reference or the phone number "
@@ -10721,7 +10891,7 @@ def _safe_fallback_reply(
         ),
         (
             ("complaint was filed", "fabricates complaint submission"),
-            "معلش، مش قادرة أأكد تسجيل الشكوى فعلياً دلوقتي 🌷\n"
+            "عذرًا، مش قادرة أأكد تسجيل الشكوى فعلياً حاليًا 🌷\n"
             "حابب أحولك لفريق خدمة العملاء يتابعوها معاك مباشرة؟",
             "Sorry, I can't confirm your complaint was actually filed yet "
             "🌷\nWould you like me to connect you with our customer "
@@ -10729,7 +10899,7 @@ def _safe_fallback_reply(
         ),
         (
             ("branch had nothing available", "denies a branch", "branch denial"),
-            "معلش، حصل لبس عندي في معلومة الفرع 🌷\n"
+            "عذرًا، حصل لبس عندي في معلومة الفرع 🌷\n"
             "ممكن تأكدلي اسم الفرع تاني؟",
             "Sorry, I mixed up the branch information 🌷\n"
             "Could you confirm the branch name again?",
@@ -10743,7 +10913,7 @@ def _safe_fallback_reply(
             # they need is a clear next step, not a third attempt at
             # the same question.
             ("generic out-of-scope service menu",),
-            "معلش، حابة أفهم طلبك صح بس مش قادرة دلوقتي 🌷\n"
+            "عذرًا، حابة أفهم طلبك صح بس مش قادرة حاليًا 🌷\n"
             "حابب أحولك لفريقنا يساعدك مباشرة؟",
             "Sorry, I want to make sure I understand your request "
             "correctly but I'm not able to right now 🌷\nWould you like "
@@ -11518,7 +11688,105 @@ _ANSWERED_OUR_QUESTION_CORRECTION_DIRECTIVE = (
     "clinic does not do, answer THAT in one warm sentence and then "
     "return to the question you had asked - do not reset them to the "
     "menu.\n\n"
+    "IF THEIR MESSAGE HAS NOTHING TO DO WITH HEALTHCARE AT ALL (a "
+    "celebrity, a concert, an unrelated purchase - zero plausible "
+    "connection to anything this clinic does): a brief, PLAIN sentence "
+    "saying you can only help with clinic-related things is completely "
+    "fine to say, and is not itself the problem. The problem is "
+    "STOPPING there. That one sentence is not allowed to be your ENTIRE "
+    "reply - it must be followed, in the SAME message, by the exact "
+    "pending question repeated below, so the flow you were already in "
+    "is not lost. Do not reprint the full canned service-menu paragraph "
+    "either way; a short, natural decline is enough.\n\n"
 )
+
+
+def _extract_pending_question(last_ai: str) -> str:
+    """The question the assistant's own previous message was actually
+    asking, if it ends on one - shared by the correction directive
+    (which restates it for the model) and the deterministic rebuild
+    below (which restates it without a model call at all).
+
+    NOT ANCHORED WITH \\s*$ - a trailing emoji or decoration after the
+    question mark ("...اليوم؟ 😊") made an earlier, anchored version of
+    this match nothing at all. Allowing anything after the "؟"/"?"
+    still finds the actual question and simply ignores what follows."""
+
+    match = re.search(r"([^.\n]*[؟?])[^\n]*$", (last_ai or "").strip())
+    return match.group(1).strip() if match else ""
+
+
+def _honest_answered_our_question_reply(
+    messages: list, templates: dict, target_language: Optional[str], description: str,
+) -> Optional[str]:
+    """Rebuild a rejected out-of-scope reply as the reply it should have
+    been - THIS CLINIC'S OWN STANDARD REFUSAL, unchanged, followed by
+    the pending question restated - without spending a second model
+    call on it.
+
+    THE REFUSAL ITSELF WAS NEVER THE PROBLEM. For a message with
+    genuinely nothing to do with the clinic, the standard "أنا لطيفة،
+    مختصة بـ..." refusal (`_build_out_of_scope_block`, the same fixed
+    text used everywhere else in this file) is exactly the right thing
+    to say - that is why `_is_scope_refusal` treats it as a legitimate
+    reply shape and this whole check only exists for the ONE thing it
+    was missing: ending on it and dropping the question that was still
+    open. Do not invent different wording here; use the clinic's own
+    fixed block, and only add the pending question after it.
+
+    WHY THIS IS BUILT IN CODE RATHER THAN ASKED FOR AGAIN. The
+    correction directive already tells the model to do exactly this and
+    gives it the question verbatim (see
+    `_answered_our_question_correction_directive`) - but a model that
+    produced the (otherwise correct) refusal once and got rejected for
+    dropping the question has already shown it doesn't know how to add
+    it back, and asking a second time risks the identical answer for
+    the identical reason. Everything needed is already known in code:
+    the refusal text is fixed, and the pending question is sitting in
+    the assistant's own last message.
+
+    Returns None when this isn't the check that failed (leaves the
+    caller's existing fallback behaviour untouched) or when there's no
+    pending question to return to."""
+
+    if "out-of-scope service menu" not in description:
+        return None
+
+    pending_question = _extract_pending_question(_last_ai_reply_text(messages) or "")
+    if not pending_question:
+        return None
+
+    refusal = _build_out_of_scope_block(templates, target_language or "ar")
+    return f"{refusal}\n{pending_question}"
+
+
+def _answered_our_question_correction_directive(reply_text: str, state: AgentState) -> str:
+    """Same base directive, plus the actual pending question - verbatim,
+    not left for the model to recall - so a genuinely off-topic message
+    still gets a short decline THAT ENDS BY RETURNING TO IT, rather than
+    the model falling back to the one thing it knows is safe: repeating
+    the canned menu that keeps getting rejected. CONFIRMED REAL FAILURE:
+    without the question restated here, a plainly out-of-scope message
+    ("احجزيلي حفلة مع [مطرب]") got the same rejected canned menu twice
+    in a row and fell through to the generic technical-error fallback -
+    there was nothing else in the directive telling the model what to
+    say once it stopped saying that."""
+
+    messages = state.get("messages") or []
+    last_ai = _last_ai_reply_text(messages) or ""
+
+    pending_question = _extract_pending_question(last_ai)
+
+    if not pending_question:
+        return _ANSWERED_OUR_QUESTION_CORRECTION_DIRECTIVE
+
+    return (
+        _ANSWERED_OUR_QUESTION_CORRECTION_DIRECTIVE
+        + "THE QUESTION YOU HAD JUST ASKED, WORD FOR WORD - end your "
+        "rewritten reply with exactly this (translated/adapted only if "
+        "the patient is writing a different language), so the flow is "
+        f"not lost:\n\"{pending_question}\"\n\n"
+    )
 
 
 def _message_is_about_health(messages: list) -> bool:
@@ -12108,6 +12376,28 @@ _LEDGER_ENTITY_TOOLS = {
     "services": ("list_hospital_services", "list_branch_services"),
 }
 
+# `list_branch_services` is registered under BOTH "branches" and
+# "services" above (its own payload names a branch AND lists that
+# branch's services). `_collect_strings` walks a payload at ANY depth
+# for any "name"-keyed value with no notion of which part belongs to
+# which bucket - so without scoping, EVERY service name gets swept
+# into the "branches" ledger too (and vice versa).
+#
+# CONFIRMED IN PRODUCTION: `established_facts.branches` ended up
+# containing full service-name strings ("برنامج علاج نفسي نهاري...")
+# alongside real branch names, right before a location request that
+# should have succeeded instead got rejected by a verifier reading
+# that corrupted ledger and fell back to the generic hand-off message.
+#
+# Maps (tool_name, bucket) -> the sub-key of its payload that actually
+# belongs to that bucket, so extraction only looks there. A tool with
+# no entry here (the common case) is untouched - `scoped_data` falls
+# back to the whole payload, exactly as before.
+_LEDGER_SCOPED_SUBKEY = {
+    ("list_branch_services", "branches"): "branch",
+    ("list_branch_services", "services"): "services",
+}
+
 # These two serve several entity types from one tool, so which bucket a
 # result belongs in is read from the ORIGINAL call's `entity_type`
 # argument rather than guessed from the payload.
@@ -12269,9 +12559,11 @@ def build_evidence_ledger(messages: list) -> dict:
                     # tool is telling us these people do NOT match the
                     # specialty that was asked for.
                     target = "doctors_other_specialty"
-                _collect_strings(data, _LEDGER_NAME_KEYS, raw[target])
+                scope_key = _LEDGER_SCOPED_SUBKEY.get((name, bucket))
+                scoped_data = data.get(scope_key) if scope_key else data
+                _collect_strings(scoped_data, _LEDGER_NAME_KEYS, raw[target])
                 if _is_current_turn:
-                    _collect_strings(data, _LEDGER_NAME_KEYS, current[target])
+                    _collect_strings(scoped_data, _LEDGER_NAME_KEYS, current[target])
 
         if name in _LEDGER_ENTITY_DISPATCH_TOOLS:
             entity_type = _entity_type_argument(messages, msg)
@@ -13109,6 +13401,19 @@ _REPLY_VERIFIERS = (
         "the patient agreed to proceed on the channel number the service already has",
     ),
     (
+        # UNGATED BY AGENT AND BY FLOW - this is not specific to
+        # identity/OTP, it is the general "did I just say this exact
+        # thing to the patient a moment ago, unprompted?" question. See
+        # `_reply_repeats_last_ai_message_verbatim` for the confirmed
+        # production case (a repeated phone-verification request) this
+        # was written for.
+        lambda reply, state, agent_name: _reply_repeats_last_ai_message_verbatim(reply, state),
+        lambda reply, state: _REPEATED_REPLY_CORRECTION_DIRECTIVE,
+        "reply is verbatim-identical (after Arabic-aware normalization) to the "
+        "agent's own immediately preceding message, with no patient message "
+        "between them",
+    ),
+    (
         # UNGATED BY FLOW, GATED BY CAPABILITY. The same question was
         # produced from the NEW BOOKING flow (STEP NB6) and can just as
         # easily come out of cancel/reschedule STEP 2 - the OTP rules
@@ -13193,7 +13498,7 @@ _REPLY_VERIFIERS = (
         lambda reply, state, agent_name: (
             _reply_scope_refuses_an_answer_to_our_own_question(reply, state)
         ),
-        lambda reply, state: _ANSWERED_OUR_QUESTION_CORRECTION_DIRECTIVE,
+        lambda reply, state: _answered_our_question_correction_directive(reply, state),
         "reply answered the patient's response to our own question with the generic "
         "out-of-scope service menu",
     ),
@@ -13206,7 +13511,7 @@ _REPLY_VERIFIERS = (
         lambda reply, state, agent_name: (
             _reply_asks_to_identify_a_booking_that_was_never_mentioned(reply, state)
         ),
-        lambda reply, state: _NO_SUCH_BOOKING_CORRECTION_DIRECTIVE,
+        lambda reply, state: _no_such_booking_correction_directive(reply, state),
         "reply asked for a phone number or booking reference to identify an existing "
         "booking, but this patient has never mentioned having one and no tool has "
         "looked one up",
@@ -13286,6 +13591,15 @@ _REPLY_VERIFIERS = (
         lambda reply, state: _DOCTOR_NOT_FOUND_STOP_CORRECTION_DIRECTIVE,
         "reply stopped the complaint over a doctor/branch name that the patient "
         "never actually gave",
+    ),
+    (
+        lambda reply, state, agent_name: (
+            agent_name == "complaint"
+            and _reply_asks_generic_complaint_category(reply, state)
+        ),
+        lambda reply, state: _COMPLAINT_CATEGORY_QUESTION_CORRECTION_DIRECTIVE,
+        "reply surfaced STEP C2's internal subject decision as a category "
+        "question to the patient instead of deciding it from what they already said",
     ),
     (
         lambda reply, state, agent_name: _reply_derails_complaint_into_handoff_offer(reply, state),
@@ -13410,6 +13724,56 @@ _ABANDONED_BOOKING_RESET_DIRECTIVE = (
     "including after the patient explicitly asked to look across the "
     "whole hospital.\n\n"
 )
+
+
+def _build_complaint_subject_directive(messages: list) -> str:
+    """Proactively tells the complaint agent what STEP C2's subject
+    already is, computed deterministically from the conversation so far
+    - rather than leaving the model to notice this itself, or relying
+    on a text-pattern check to catch it only after it gets this wrong.
+
+    This is the SAME pattern already used for locked slots and
+    abandoned bookings: compute the fact in code, hand it to the model
+    as a stated fact, before it drafts anything - prevention instead of
+    after-the-fact correction. `_reply_asks_generic_complaint_category`
+    (a check on the OUTPUT text) still exists as a safety net for
+    whatever this misses, but is no longer the primary defense."""
+
+    if not messages:
+        return ""
+
+    doctor_cue = False
+    branch_cue = False
+    for msg in messages:
+        if getattr(msg, "type", None) != "human":
+            continue
+        text = _norm_ar(str(getattr(msg, "content", "") or ""))
+        if _DOCTOR_CUE_WORD_RE.search(text):
+            doctor_cue = True
+        if _BRANCH_CUE_WORD_RE.search(text):
+            branch_cue = True
+
+    if not doctor_cue and not branch_cue:
+        return ""
+
+    if doctor_cue and not branch_cue:
+        subject = "a DOCTOR"
+    elif branch_cue and not doctor_cue:
+        subject = "a BRANCH"
+    else:
+        subject = "a doctor and/or a branch"
+
+    return (
+        "============================================================\n"
+        "THIS COMPLAINT'S SUBJECT IS ALREADY ESTABLISHED - DO NOT ASK\n"
+        "============================================================\n"
+        f"The patient has already mentioned {subject} somewhere in this "
+        "complaint. STEP C2's subject decision is already made for you "
+        "from that - never ask a general \"which category is this "
+        "complaint about?\" question (customer service / doctor / "
+        "branch / booking / billing / other). Go straight to STEP C2b's "
+        "handling for the subject already established above.\n\n"
+    )
 
 
 def _build_abandoned_booking_directive(messages: list, session_id: str) -> str:
@@ -15116,7 +15480,22 @@ def _build_scope_directive(templates: dict, language: str = "ar") -> str:
 _NAME_REJECTION_RE = re.compile(
     r"اسمين\s*علي\s*الاقل|اسمين\s*على\s*الأقل|"
     r"(?:ال)?اسم\s*(?:ال)?اول\s*و\s*(?:اسم\s*)?(?:ال)?عائله|"
-    r"at\s+least\s+two\s+names|first\s+(?:name\s+)?and\s+(?:the\s+)?(?:family|last)\s+name"
+    r"at\s+least\s+two\s+names|first\s+(?:name\s+)?and\s+(?:the\s+)?(?:family|last)\s+name|"
+    # A GENERIC RE-ASK, NOT JUST THE EXPLICIT TWO-PART WORDING.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE: the patient sent "نهي محمود" -
+    # a real two-part name - and the reply was simply "من فضلك أعطني
+    # اسمك الكامل لإتمام الحجز" (please give me your full name). That
+    # sentence never says "two parts" or "family name", so the patterns
+    # above never matched it, `_reply_wrongly_rejects_full_name` never
+    # fired, and the patient was asked the exact same question THREE
+    # times in a row with no way to ever satisfy it - a name was never
+    # going to look different the fourth time either. Any request for
+    # "the full name" / "اسمك الكامل" is covered here too; the
+    # surrounding function only calls this a violation when a valid
+    # 2+-part name was already the patient's last real answer, so this
+    # broader match cannot mis-fire on a genuine first-time ask.
+    r"اسم(?:ك|ها|ه)?\s*(?:ال)?كامل|(?:ال)?اسم\s*بالكامل|full\s+name"
 )
 
 # A name PART: two or more letters, Arabic or Latin. Deliberately not a
@@ -15466,7 +15845,12 @@ _SUMMARY_OR_CONFIRMATION_CUE_RE = re.compile(
 # A bare yes. The patient agreeing to a yes/no question the assistant
 # itself asked.
 _BARE_AFFIRMATION_RE = re.compile(
-    r"^\s*(?:اه|ايه|أيوه|ايوه|ايوا|نعم|تمام|اوك|أوك|ok|okay|yes|yep|sure|"
+    # Each Arabic stem allows trailing letter elongation (اه/اها/اهاا،
+    # ايوه/ايوووه...) - CONFIRMED REAL PRODUCTION FAILURE: "اهاا" is one
+    # informal spelling away from "اها", which this regex already
+    # matched, and was missed entirely because the list only ever held
+    # exact words, never variants of them.
+    r"^\s*(?:اه+ا*|ايه+|أيوه+|ايوه+|ايوا+|نعم|تمام|اوك+|أوك+|ok(?:ay)?|yes|yep|sure|"
     r"اكمل|كمل|اه\s*اكمل|ماشي|حاضر|طبعا|أكيد|اكيد)"
     r"\s*[.!؟?،,]*\s*$",
     re.IGNORECASE,
@@ -16728,6 +17112,54 @@ _PATIENT_NAME_PICKER_CUE_RE = re.compile(
 )
 
 
+def _classify_bare_affirmation_with_llm(text: str) -> Optional[bool]:
+    """Fallback for the one call site (`_reply_asks_for_a_phone_already_known`)
+    where missing an affirmative reply `_BARE_AFFIRMATION_RE` doesn't
+    recognise means a patient's "yes" gets silently treated as if they
+    never answered, and they're asked for a number they already gave.
+
+    Only reached for a SHORT, digit-free reply that the regex above did
+    not match - i.e. one that MIGHT be a "yes" spelled/worded in a way
+    the fixed word list hasn't caught up with, not routine conversation.
+    A regex word list can never be complete; asking a model "is this a
+    yes?" generalises to any dialect spelling instead of waiting for the
+    next one to fail in production and be added by hand.
+
+    Uses `_router_llm` - the same fast-failing, temperature=0, no-retry
+    binding the router uses (see its own comment above) - because a
+    slow or wrong answer here must never hold up the turn. Any failure,
+    timeout, or answer that isn't a clean yes/no returns None, and the
+    caller then behaves exactly as it did before this fallback existed
+    (no correction fires) - this can only ADD coverage, never remove
+    the regex's own matches."""
+
+    try:
+        from langchain_core.messages import HumanMessage as _HumanMessage5
+
+        prompt = (
+            "A hospital WhatsApp assistant asked the patient a plain "
+            "yes/no question. Does the patient's message below mean "
+            "\"yes\"? Reply with exactly one word: YES, NO, or UNCLEAR.\n\n"
+            f"Patient's message: {text[:200]!r}"
+        )
+        answer = _router_llm.invoke([_HumanMessage5(content=prompt)])
+        choice = str(getattr(answer, "content", "")).strip().upper()
+
+        if choice.startswith("YES"):
+            return True
+        if choice.startswith("NO"):
+            return False
+
+    except Exception as exc:
+        logger.warning(
+            "_classify_bare_affirmation_with_llm: classification failed "
+            "(%s: %s) - treating as unclear, no correction will fire",
+            type(exc).__name__, exc,
+        )
+
+    return None
+
+
 def _reply_asks_for_a_phone_already_known(reply_text: str, state: AgentState) -> bool:
     """True when the reply asks the patient for their phone number (or a
     booking reference in its place) immediately after they agreed to
@@ -16768,9 +17200,84 @@ def _reply_asks_for_a_phone_already_known(reply_text: str, state: AgentState) ->
             continue
         content = getattr(msg, "content", "")
         text = content if isinstance(content, str) else str(content)
-        return bool(_BARE_AFFIRMATION_RE.match(_norm_ar(text)))
+
+        if _BARE_AFFIRMATION_RE.match(_norm_ar(text)):
+            return True
+
+        # Short, no digits (so it isn't itself a phone/reference number,
+        # which is a real answer, not a "yes") and not matched by the
+        # regex above - genuinely ambiguous, not routine text. Ask the
+        # fast-failing router model rather than silently treating an
+        # unrecognised "yes" as if it were a "no".
+        stripped = text.strip()
+        if stripped and len(stripped) <= 12 and not re.search(r"\d", stripped):
+            classified = _classify_bare_affirmation_with_llm(stripped)
+            if classified is not None:
+                return classified
+
+        return False
 
     return False
+
+
+def _reply_repeats_last_ai_message_verbatim(reply_text: str, state: AgentState) -> bool:
+    """True when the drafted reply is, after Arabic-aware normalization,
+    the SAME text as the last message this agent actually sent - with no
+    patient message in between the two.
+
+    CONFIRMED REAL PRODUCTION FAILURE (session 1_-122323..., identity
+    verification step, 2026-09-22): "من فضلك أرسل رقم الجوال مع رمز
+    الدولة" went out twice in a row with nothing from the patient between
+    them - most likely a re-executed node in the booking flow's
+    verification step. Nothing in this file checks for that shape of
+    repeat: every other check here reads what the reply SAYS against the
+    conversation's facts; none of them ask "did I just send this exact
+    sentence already, unprompted?".
+
+    Deliberately narrow, the same way `_reply_asks_for_a_phone_already_known`
+    is: a patient who repeats their OWN ambiguous message a second time is a
+    completely different situation (the agent answering it again, even
+    identically, may be correct), so this only fires when there is no
+    HumanMessage between the two AI turns at all - i.e. the assistant
+    would be talking to itself."""
+
+    if not reply_text:
+        return False
+
+    normalized_reply = _norm_ar(reply_text)
+    if not normalized_reply:
+        return False
+
+    from langchain_core.messages import HumanMessage as _HumanMessage
+
+    for msg in reversed(state.get("messages", []) or []):
+        if isinstance(msg, _HumanMessage):
+            # A patient message sits between the two AI turns - this is
+            # not the back-to-back repeat this check is narrowly for.
+            return False
+
+        if isinstance(msg, AIMessage):
+            content = getattr(msg, "content", "")
+            last_text = content if isinstance(content, str) else str(content)
+            return bool(last_text) and _norm_ar(last_text) == normalized_reply
+
+    return False
+
+
+_REPEATED_REPLY_CORRECTION_DIRECTIVE = (
+    "============================================================\n"
+    "YOU ALREADY SENT THIS EXACT MESSAGE - DO NOT SEND IT AGAIN\n"
+    "============================================================\n"
+    "Your previous message to the patient was this exact text, and "
+    "nothing from the patient came in between. Sending it again teaches "
+    "them nothing new and reads as the system being stuck.\n\n"
+    "Look at what actually needs to happen next: if you are still "
+    "waiting on information from the patient, do not repeat the same "
+    "question - rephrase it more simply, or check whether the "
+    "information you are asking for is already available elsewhere in "
+    "this conversation. If a tool call should have run and did not, "
+    "call it now instead of asking the patient again.\n\n"
+)
 
 
 _PHONE_ALREADY_KNOWN_CORRECTION_DIRECTIVE = (
@@ -16838,6 +17345,56 @@ def _build_selected_slot_directive(session_id: str) -> str:
     service_suffix = f" — {service_name}" if service_name else ""
 
     return _SELECTED_SLOT_DIRECTIVE.format(
+        date_display=slot.get("date_display") or "",
+        weekday_display=slot.get("weekday_display") or "",
+        time_display=slot.get("time_display") or "",
+        service_suffix=service_suffix,
+    )
+
+
+_SELECTED_RESCHEDULE_SLOT_DIRECTIVE = (
+    "============================================================\n"
+    "THE NEW APPOINTMENT TIME IS ALREADY LOCKED IN - DO NOT RETYPE IT\n"
+    "============================================================\n"
+    "`select_reschedule_slot` has already resolved and saved the new "
+    "time for this reschedule. It is:\n"
+    "    {date_display} {weekday_display} — {time_display}"
+    "{service_suffix}\n\n"
+    "Use these exact values for `reschedule_appointment`'s "
+    "`new_time_from`/`new_time_to` - never recompute or retype them from "
+    "the date/time you showed the patient. A slot that falls after "
+    "midnight displays under the date it was searched for, not its own "
+    "real calendar date; only the locked values here are safe to send "
+    "to the booking API.\n\n"
+    "CONFIRMED REAL PRODUCTION FAILURE: a patient picked a late-night "
+    "slot, and the model retyped the displayed date/time as the new "
+    "appointment time - which was actually the NEXT calendar day. The "
+    "booking API was updated to the wrong instant, and retrying "
+    "(\"حاول تاني\") repeated the identical wrong write every time. This "
+    "reminder exists so the locked-in values are read from here, every "
+    "turn, for exactly as long as this reschedule is in progress.\n\n"
+)
+
+
+def _build_selected_reschedule_slot_directive(session_id: str) -> str:
+    """Fires whenever this reschedule has a locked-in new time
+    (`select_reschedule_slot` succeeded) and the reschedule has not yet
+    completed - keeps the exact chosen new time in front of the model on
+    every turn. The reschedule counterpart of `_build_selected_slot_directive`."""
+
+    if not session_id:
+        return ""
+
+    session = tools._BOOKING_SESSIONS.get(session_id) or {}
+    slot = session.get("selected_reschedule_slot")
+
+    if not slot:
+        return ""
+
+    service_name = (slot.get("serviceName") or "").strip()
+    service_suffix = f" — {service_name}" if service_name else ""
+
+    return _SELECTED_RESCHEDULE_SLOT_DIRECTIVE.format(
         date_display=slot.get("date_display") or "",
         weekday_display=slot.get("weekday_display") or "",
         time_display=slot.get("time_display") or "",
@@ -17637,6 +18194,19 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                 state["messages"], state.get("session_id"),
             )
 
+    # PROACTIVE, NOT REACTIVE: tells the complaint agent what STEP C2's
+    # subject already is, computed in code from the conversation so far,
+    # BEFORE it drafts a reply - the same pattern as the locked-slot and
+    # abandoned-booking directives above, applied to the complaint flow.
+    # `_reply_asks_generic_complaint_category` (a text-pattern check on
+    # the OUTPUT) still exists as a safety net for whatever this misses,
+    # but the fact computed here is meant to make that check fire far
+    # less often: a model told the subject outright has nothing left to
+    # guess, and nothing to ask the patient to re-classify.
+    complaint_subject_directive = (
+        _build_complaint_subject_directive(state["messages"]) if agent_name == "complaint" else ""
+    )
+
     bare_entity_directive = _build_bare_entity_answer_directive(state["messages"])
     branches_info_directive = _build_branches_info_directive(state["messages"])
     bare_doctor_directive = _build_bare_doctor_answer_directive(state["messages"])
@@ -17731,6 +18301,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         state["messages"], agent_name,
     )
     selected_slot_directive = _build_selected_slot_directive(state.get("session_id"))
+    selected_reschedule_slot_directive = _build_selected_reschedule_slot_directive(state.get("session_id"))
 
     # The scoped prompt for whoever owns this turn. Rebuilt per turn for
     # the same reason load_config rebuilds: a prompts.py/CSV edit must
@@ -17807,12 +18378,14 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         + services_directive + how_to_book_directive
         + slots_directive + available_days_directive
         + resolved_day_directive + entity_list_directive
-        + abandoned_booking_directive + bare_entity_directive
+        + abandoned_booking_directive + complaint_subject_directive
+        + bare_entity_directive
         + branches_info_directive
         + bare_doctor_directive + single_doctor_directive
         + show_all_doctors_directive
         + doctor_branches_directive + branch_question_directive
         + review_phone_directive + selected_slot_directive
+        + selected_reschedule_slot_directive
         + otp_required_directive
         + specialty_unresolved_directive + unstaffed_specialty_directive
         + new_booking_number_directive
@@ -18317,29 +18890,12 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                         continue
                     logger.error(
                         "agent[%s]: SAFETY check '%s' gets no rewrite (attempted=%s, "
-                        "corrections_used=%d/%d) - sending the safe fallback rather "
-                        "than a reply that asserts something no tool result "
-                        "supports.",
+                        "corrections_used=%d/%d) - keeping the reply as-is (safe-fallback "
+                        "substitution disabled per explicit instruction).",
                         agent_name, description,
                         description in attempted_checks, corrections_used,
                         _MAX_VERIFIER_CORRECTIONS,
                     )
-                    # BEFORE THE FALLBACK: CAN THE TRUTH BE BUILT?
-                    #
-                    # A rejected medical draft is usually wrong in one
-                    # sentence and right in all the others. When
-                    # `list_specialties` has already named the
-                    # department as unstaffed this turn, the honest
-                    # reply is fully determined - keep the advice,
-                    # replace the claim. See `_honest_unstaffed_reply`.
-                    rebuilt = _honest_unstaffed_reply(
-                        normalized, state["messages"],
-                        state.get("templates") or {}, target_language,
-                    )
-                    normalized = rebuilt or _safe_fallback_reply(
-                        state, target_language, description,
-                    )
-                    used_safe_fallback = True
                     continue
 
                 attempted_checks.add(description)
@@ -18418,24 +18974,20 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                             )
                             break
 
+                        # PER EXPLICIT INSTRUCTION: the safe-fallback
+                        # substitution is disabled project-wide - a
+                        # verifier firing (even a genuine SAFETY one) no
+                        # longer replaces the model's own reply with the
+                        # generic hand-off text. Same treatment as the
+                        # FLOW branch above: log it so it is still
+                        # visible in the logs, and let the draft through
+                        # rather than looping further.
                         logger.error(
                             "agent[%s]: SAFETY verifier '%s' exhausted its %d tool "
-                            "retries - sending the safe fallback rather than a reply that "
-                            "still asserts something no tool result supports.",
+                            "retries - sending the reply as-is (safe-fallback substitution "
+                            "disabled per explicit instruction) rather than looping further.",
                             agent_name, description, _MAX_VERIFIER_TOOL_RETRIES,
                         )
-                        # BEFORE THE FALLBACK: CAN THE TRUTH BE BUILT?
-                        # See `_honest_unstaffed_reply` - a rejected
-                        # medical draft is usually wrong in one sentence
-                        # and right in all the others.
-                        rebuilt = _honest_unstaffed_reply(
-                            normalized, state["messages"],
-                            state.get("templates") or {}, target_language,
-                        )
-                        normalized = rebuilt or _safe_fallback_reply(
-                            state, target_language, description,
-                        )
-                        used_safe_fallback = True
                         break
 
                     updates["messages"] = [_tag_author(retry, agent_name)]
@@ -18473,41 +19025,22 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                         )
                         continue
 
-                    # ZERO-TOLERANCE FALLBACK, for SAFETY checks only.
-                    #
-                    # Before this existed, failing the SAME check twice
-                    # still ended with the original, already-flagged reply
-                    # going out unmodified. CONFIRMED REAL PRODUCTION
-                    # FAILURE: the branch-name verifier logged this exact
-                    # "STILL failed after correction" error and the patient
-                    # was sent the flagged reply anyway five seconds later.
-                    #
-                    # A safety verifier firing twice means the model cannot
-                    # stop asserting something no tool supports. A generic
-                    # "try again" is a much better outcome than a
-                    # confidently wrong claim the patient may act on.
+                    # PER EXPLICIT INSTRUCTION: the safe-fallback
+                    # substitution is disabled project-wide. A SAFETY
+                    # check failing twice used to replace the reply with
+                    # the generic hand-off text ("عذرًا، شكلي مش قادرة
+                    # أوصل لطلبك ده صح حاليًا..."); that substitution was
+                    # also firing on replies that were actually correct
+                    # (e.g. a real branch/doctor the verifier's own
+                    # known-name store just hadn't been told about yet).
+                    # Treated identically to the FLOW branch above now:
+                    # log it for visibility, keep the reply, move on.
                     logger.error(
                         "agent[%s]: reply STILL failed the same check after correction (%s) - "
-                        "replacing with the safe fallback message rather than sending the "
-                        "twice-flagged reply",
+                        "keeping the reply as-is (safe-fallback substitution disabled per "
+                        "explicit instruction) rather than replacing it with the hand-off text",
                         agent_name, description,
                     )
-                    # BEFORE THE FALLBACK: CAN THE TRUTH BE BUILT?
-                    #
-                    # A rejected medical draft is usually wrong in one
-                    # sentence and right in all the others. When
-                    # `list_specialties` has already named the
-                    # department as unstaffed this turn, the honest
-                    # reply is fully determined - keep the advice,
-                    # replace the claim. See `_honest_unstaffed_reply`.
-                    rebuilt = _honest_unstaffed_reply(
-                        normalized, state["messages"],
-                        state.get("templates") or {}, target_language,
-                    )
-                    normalized = rebuilt or _safe_fallback_reply(
-                        state, target_language, description,
-                    )
-                    used_safe_fallback = True
                     continue
 
                 logger.info("agent[%s]: corrected on retry (%s)", agent_name, description)
@@ -18820,6 +19353,7 @@ def router(state: AgentState) -> dict:
     # Once per turn, from the node - never from the conditional edge,
     # which LangGraph may call more than once. See _clear_stale_branch_context.
     _clear_stale_branch_context(chosen, state.get("session_id"))
+    _clear_abandoned_booking_context(chosen, previous, reason, state.get("session_id"))
 
     if chosen != previous:
         logger.info(
@@ -18837,6 +19371,83 @@ def router(state: AgentState) -> dict:
         "routing_reason": reason,
         "previous_agent": previous,
     }
+
+
+def _clear_abandoned_booking_context(chosen: Optional[str], previous: Optional[str], reason: Optional[str], session_id: Optional[str]) -> None:
+    """Deterministically drops a stale doctor/specialty from a booking
+    attempt the patient has clearly walked away from, the moment the
+    router hands the turn to `booking` from a DIFFERENT specialist.
+
+    `_build_abandoned_booking_directive` already tells the model to
+    treat this state as abandoned - but only as a TEXT INSTRUCTION,
+    which depends on the model reading and obeying it every single
+    turn. It does not reliably: `_reply_reasks_specialty_already_established`
+    runs independently and defends ANY specialty_ids/known_doctor_names
+    it finds on file as still relevant, with no way to tell a stale one
+    from a fresh one. The two checks fighting each other - one saying
+    "forget it", the other saying "don't ask again" - is what let a
+    specialty from an abandoned appointment attempt (one that had
+    already failed on a double-booking) silently drive a booking for a
+    completely unrelated service the patient had only just been reading
+    about in FAQ: never asked which doctor for THIS service, the flow
+    jumped straight to confirming a WhatsApp number for an appointment
+    that did not exist yet.
+
+    Deleting the keys outright removes the disagreement at its root:
+    once this fires, there is nothing stale left on file for the other
+    check to defend, and the booking flow starts genuinely fresh from
+    whatever this turn's own conversation actually establishes.
+
+    Same narrow trigger as `_build_abandoned_booking_directive`: a
+    booking-relevant field is on file AND this turn switched agents
+    (not a continuation) - a detour that stays inside `booking` the
+    whole time (`previous == "booking"`) never reaches here, and
+    neither does the ordinary medical -> booking handoff, which never
+    populates these session fields until real booking tools run.
+
+    EXCEPTION - A BARE "YES" CONTINUING THE SAME BOOKING IS NOT AN
+    ABANDONMENT, EVEN THOUGH IT SWITCHES AGENTS. `route_turn` itself
+    already recognises this exact case - see its own reason string,
+    "bare affirmation answering the assistant's own booking offer" -
+    for a patient who said "اه" to the booking flow's own offer while a
+    DIFFERENT specialist (e.g. reschedule) happened to own the
+    immediately preceding turn. Clearing doctor_id/branch_id here would
+    delete the very appointment being confirmed, not an abandoned one.
+
+    CONFIRMED REAL PRODUCTION FAILURE this exception fixes: doctor and
+    branch were confirmed, the patient declined a day ("مش مناسب السبت
+    دا"), one turn got briefly misrouted to `reschedule`, the patient
+    said "اه" to the alternative day offered, routing correctly came
+    back to `booking` on that bare affirmation - and this function
+    wiped doctor_id/branch_id anyway because `previous != "booking"`.
+    With no doctor/branch left on file, the model could not legitimately
+    re-verify availability and invented contradicting claims instead -
+    "no clinic on Wednesday" for a doctor whose own justfetched schedule
+    said otherwise, then "no Saturday slots" for a time slot the same
+    conversation had already returned moments earlier."""
+
+    if chosen != "booking" or not previous or previous == "booking" or not session_id:
+        return
+
+    if reason == "bare affirmation answering the assistant's own booking offer":
+        return
+
+    session = tools._BOOKING_SESSIONS.get(session_id)
+    if not session:
+        return
+
+    stale_keys = ("doctor_id", "branch_id", "specialty_ids", "known_doctor_names", "selected_slot")
+    present = [key for key in stale_keys if session.get(key)]
+    if not present:
+        return
+
+    logger.info(
+        "router: clearing stale booking context on %s -> booking "
+        "(session_id=%s, keys=%s)",
+        previous, session_id, present,
+    )
+    for key in stale_keys:
+        session.pop(key, None)
 
 
 def route_to_specialist(state: AgentState) -> str:
@@ -18983,12 +19594,70 @@ def _review_card_shown_immediately_before(messages: list, templates: dict) -> bo
     return False
 
 
+def _review_card_shown_anywhere(messages: list, templates: dict) -> bool:
+    """True if this clinic's approved review-card confirmation question
+    has been sent to the patient AT ANY POINT in this conversation -
+    unlike `_review_card_shown_immediately_before`, this does NOT stop
+    at a ToolMessage boundary.
+
+    Exists for exactly one caller: deciding whether `confirm_booking_review`
+    being present in the SAME tool-call batch as `create_new_booking` is
+    trustworthy. A real card shown a turn earlier legitimately has a
+    HumanMessage (the patient's "yes") between it and this batch, which
+    `_review_card_shown_immediately_before` already handles - but nothing
+    stops the model from also having crossed an intervening ToolMessage
+    (e.g. an earlier `confirm_booking_review` call in a prior round of
+    the SAME turn), so this version does not give up at the first one it
+    meets. `confirm_booking_review` itself is the primary place this is
+    enforced (see `tools._review_card_was_shown`) - this is a second,
+    independent check at the graph level, not a replacement for it."""
+
+    confirmation_sentences = _review_confirmation_sentences(templates)
+    if not confirmation_sentences:
+        return False
+
+    for message in reversed(messages):
+        if not isinstance(message, AIMessage):
+            continue
+        content = getattr(message, "content", "")
+        text = content if isinstance(content, str) else str(content or "")
+        if not text.strip():
+            continue
+        normalized = _normalize_for_compare(text)
+        if any(s in normalized for s in confirmation_sentences):
+            return True
+
+    return False
+
+
 def _blocked_create_new_booking_tool_calls(state: AgentState) -> list:
     """`create_new_booking` tool_call dicts (from the last AIMessage)
     that must NOT be executed because no review card was shown to the
     patient first. Returns [] when the last message has no tool calls,
     or none of them are `create_new_booking`, or the review card check
-    passes."""
+    passes.
+
+    A call passes if EITHER of two independent signals says the review
+    was confirmed:
+      - the session's own `review_shown` flag, set by
+        `confirm_booking_review` - the authoritative signal, since that
+        tool exists exactly to record this happening (and does so
+        regardless of the exact wording - "اه", "تمام", "yes", "ok" -
+        the patient used, because it's the model's own judgment that
+        the patient agreed, not a keyword match); or
+      - the immediately-preceding assistant text still being the review
+        card (the original text-based check), kept as a fallback for a
+        model that (incorrectly) calls `create_new_booking` directly
+        without going through `confirm_booking_review` first.
+
+    FIX for a CONFIRMED PRODUCTION FAILURE: the text-based check alone
+    stops looking the moment it crosses a ToolMessage boundary - and
+    `confirm_booking_review`'s OWN result is exactly such a boundary.
+    Following the intended flow (show review -> confirm_booking_review
+    -> create_new_booking) therefore always failed this check on its
+    own, blocking every correctly-confirmed booking with
+    `missing_review_confirmation`, looping, and ending in the generic
+    soft-recovery fallback instead of ever creating the booking."""
 
     messages = state.get("messages") or []
     if not messages:
@@ -19001,6 +19670,45 @@ def _blocked_create_new_booking_tool_calls(state: AgentState) -> list:
         return []
 
     templates = state.get("templates") or {}
+
+    # confirm_booking_review is being called in THIS SAME TURN, alongside
+    # create_new_booking. Its effect (session["review_shown"] = True) has
+    # not run yet at this point - this whole check happens BEFORE any
+    # tool in the batch executes - so the stored session flag still
+    # being stale here is not, by itself, evidence the review was
+    # skipped. BUT confirm_booking_review's mere PRESENCE in the batch
+    # is not evidence the review was genuinely shown either - only that
+    # the model BELIEVES it was. Require the same real-content proof
+    # `_review_card_shown_immediately_before` looks for below, just
+    # without stopping at a ToolMessage boundary, since a real card
+    # shown a turn or more earlier can legitimately have a ToolMessage
+    # sitting between it and now.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE this refinement closes: a plain
+    # "لا" declining the OPTIONAL EMAIL question - never a review card -
+    # was followed by confirm_booking_review + create_new_booking called
+    # together. An earlier version of this function bypassed the block
+    # on confirm_booking_review's presence alone, and the booking went
+    # through with the patient never having seen a review card at all.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE the broader check still fixes: a
+    # patient said "اه" to a fully correct, complete review card. The
+    # model (correctly) called confirm_booking_review + create_new_booking
+    # together. Requiring only the STALE session flag here would have
+    # blocked this legitimate case too - the real-content scan below
+    # finds the genuine card regardless of which turn it was shown in.
+    if any(tc.get("name") == "confirm_booking_review" for tc in tool_calls):
+        if _review_card_shown_anywhere(messages, templates):
+            return []
+        # confirm_booking_review is present, but no real review card is
+        # anywhere on file - fall through to the ordinary checks below,
+        # which correctly block this as missing_review_confirmation.
+
+    session_id = state.get("session_id")
+    session = tools._BOOKING_SESSIONS.get(session_id) if session_id else None
+    if session and session.get("review_shown"):
+        return []
+
     if _review_card_shown_immediately_before(messages, templates):
         return []
 
@@ -19042,6 +19750,27 @@ def _tool_node(state: AgentState, config: RunnableConfig) -> dict:
     trailing the JSON; an extra key is invisible to every one of them.
     A payload that isn't a dict, or a tool with nothing to say about
     this status, is passed through completely untouched."""
+
+    # Guarantee confirm_booking_review's session-state effect
+    # (review_shown = True) is visible to create_new_booking's OWN
+    # internal gate in tools.py when both are called in the same turn.
+    # ToolNode does not promise to execute same-batch tool_calls in the
+    # model's own listed order, and create_new_booking reads
+    # session["review_shown"] live at call time - so if it happened to
+    # run before confirm_booking_review, it would see the stale value
+    # and refuse with "needs_review" even though the patient had just
+    # said yes to a correct review card. Reordering here removes that
+    # race entirely: whatever order the model listed them in,
+    # confirm_booking_review always executes first.
+    last_message = state["messages"][-1] if state.get("messages") else None
+    _tc = list(getattr(last_message, "tool_calls", None) or [])
+    if (any(t.get("name") == "confirm_booking_review" for t in _tc)
+            and any(t.get("name") == "create_new_booking" for t in _tc)):
+        _reordered = sorted(
+            _tc, key=lambda t: 0 if t.get("name") == "confirm_booking_review" else 1
+        )
+        _patched = last_message.model_copy(update={"tool_calls": _reordered})
+        state = {**state, "messages": state["messages"][:-1] + [_patched]}
 
     blocked_calls = _blocked_create_new_booking_tool_calls(state)
 
