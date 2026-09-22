@@ -9647,6 +9647,203 @@ _HOME_MODE_BRANCH_CORRECTION_DIRECTIVE = (
     "never going to a branch in the first place.\n\n"
 )
 
+_REVIEW_CARD_FIELD_LABELS_RE = re.compile(
+    r"🧪\s*التحليل\s*[:：]|👤\s*الاسم\s*[:：]"
+)
+
+
+def _reply_is_review_card_with_wrong_confirmation(reply_text: str, state: AgentState) -> bool:
+    """True when a reply looks like STEP NB7's review card (carries the
+    test/name labeled fields) AND ends with a question, but that
+    question does NOT match any sentence from THIS clinic's own
+    configured `msg_booking_confirmation` template (or the generic
+    fallback, when no template is configured).
+
+    WHY THIS EXISTS, SEPARATELY FROM THE ADDRESS-SPECIFIC CHECKS ABOVE:
+    those two only ever fire when the address/branch line itself is
+    wrong; neither one catches a review card whose FIELDS are all
+    correct but whose CLOSING QUESTION is a paraphrase of the clinic's
+    template rather than the template itself. CONFIRMED REAL PRODUCTION
+    FAILURE (session 201001255864+medtown2, 2026-09-22): a review card
+    with every field correct (address, test, date, time, name, phone,
+    email) closed with "هل كل البيانات دي صحيحة وتحب تأكد الحجز؟" -
+    a fluent paraphrase of this clinic's actual configured wording
+    ("البيانات دي كلها صح؟ تحب نأكد الحجز؟"), differing in wording and
+    even verb form ("تأكد" vs "نأكد"). The patient replied "نعم", and
+    `_review_card_shown_immediately_before` correctly rejected it on
+    the very next turn - the card the patient had just confirmed did
+    not literally contain any sentence from the clinic's own template -
+    restarting the same confirm-then-block cycle one step later, for
+    the second time in this same session. Catching this the moment the
+    card is FIRST drafted (rather than one full round-trip later, after
+    the patient has already replied) avoids the wasted turn entirely.
+
+    Scoped to reject only when the reply's own closing question-bearing
+    line is a REAL MISMATCH - i.e. it contains a question mark, the
+    reply otherwise looks like a genuine review card, and no expected
+    sentence appears in it at all."""
+
+    if not reply_text:
+        return False
+
+    if not _REVIEW_CARD_FIELD_LABELS_RE.search(reply_text):
+        return False
+
+    lines = reply_text.splitlines()
+    question_line = None
+    for line in reversed(lines):
+        if any(mark in line for mark in _QUESTION_MARKS):
+            question_line = line
+            break
+
+    if question_line is None:
+        return False
+
+    templates = state.get("templates") or {}
+    expected_sentences = _review_confirmation_sentences(templates)
+    normalized_line = _normalize_for_compare(question_line)
+
+    if any(sentence in normalized_line for sentence in expected_sentences):
+        return False
+
+    return True
+
+
+_WRONG_CONFIRMATION_QUESTION_CORRECTION_DIRECTIVE = (
+    "============================================================\n"
+    "YOUR REVIEW CARD'S CLOSING QUESTION ISN'T THIS CLINIC'S OWN WORDING\n"
+    "============================================================\n"
+    "Your review card's fields all look right, but the closing "
+    "question is your own paraphrase, not this clinic's actual "
+    "configured confirmation wording. A fluent paraphrase is not "
+    "acceptable here - the exact template text is what the code checks "
+    "for before it will create the booking, so any other phrasing gets "
+    "the patient's \"yes\" rejected on the very next turn.\n\n"
+    "Rewrite ONLY the closing question line, word for word from this "
+    "clinic's own msg_booking_confirmation template (see FIXED "
+    "TEMPLATES in your instructions) - never rephrase it, shorten it, "
+    "or write it from memory. Keep every other line of the card exactly "
+    "as it was.\n\n"
+    "CONFIRMED REAL PRODUCTION FAILURE: a review card with every field "
+    "correct closed with \"هل كل البيانات دي صحيحة وتحب تأكد الحجز؟\" - "
+    "a paraphrase of this clinic's real template (\"البيانات دي كلها "
+    "صح؟ تحب نأكد الحجز؟\"), differing even in verb form (\"تأكد\" vs "
+    "\"نأكد\"). The patient said \"نعم\", and the booking was blocked on "
+    "the next turn because the confirmed reply did not literally "
+    "contain the template's own words - the same confirm-then-block "
+    "cycle repeating for the second time in one session.\n\n"
+)
+
+_PREP_INSTRUCTIONS_LEAD_IN_RE = re.compile(
+    r"يرجى\s*الالتزام\s*بالتعليمات\s*التالية\s*قبل\s*الفحص\s*[:：]"
+)
+
+
+def _reply_shows_general_blurb_instead_of_prep_instructions(
+    reply_text: str, state: AgentState,
+) -> bool:
+    """True when a reply carries STEP NB7's mandatory prep-instructions
+    lead-in line ("يرجى الالتزام بالتعليمات التالية قبل الفحص:") but the
+    text that actually follows it is NOT the real, cached instructions
+    for the confirmed test - i.e. it looks like the general "what this
+    test is for" blurb (NB1-Q1's own line) reused in the one place the
+    prompt explicitly says never to reuse it.
+
+    CONFIRMED REAL PRODUCTION FAILURE (session 201158877175+medtown2,
+    2026-09-22): the review card showed "يرجى الالتزام بالتعليمات
+    التالية قبل الفحص:" followed by "تحليل سكر صائم بيدي صورة عامة عن
+    مستوى السكر في الدم بعد صيام لفترة، وبيساعد في تشخيص مرض السكري أو
+    متابعة حالته." - the general NB1-Q1 blurb, not the real prep
+    instructions ("يشترط الصيام من 6-8 ساعات (يسمح بشرب الماء)") that
+    `search_lab_services` had already returned and cached for this
+    exact test earlier in the same conversation. This is precisely the
+    substitution prompts.py's own STEP NB7 text already calls out as a
+    confirmed failure ("the general blurb... never substitutes for
+    them") - documented in words and still occurred, so it is enforced
+    here in code.
+
+    Only fires when this session actually has a real cached
+    description to compare against (`session["lab_service_descriptions"]`,
+    keyed by the confirmed test's own id) - if nothing is cached yet,
+    there is nothing to verify the line against and this stays silent,
+    leaving that gap to whatever else in the flow would normally catch
+    a missing real value."""
+
+    if not reply_text:
+        return False
+
+    match = _PREP_INSTRUCTIONS_LEAD_IN_RE.search(reply_text)
+    if not match:
+        return False
+
+    session_id = state.get("session_id")
+    session = tools._BOOKING_SESSIONS.get(session_id) or {}
+    test_id = session.get("doctor_id")
+    if not test_id:
+        return False
+
+    real_description = (session.get("lab_service_descriptions") or {}).get(test_id)
+    if not real_description:
+        # Nothing cached to check against - not this checker's call to make.
+        return False
+
+    # The text after the lead-in line, up to the next blank line or the
+    # closing confirmation question, is what should contain the real
+    # instructions.
+    after = reply_text[match.end():]
+    # Stop at a blank line or the closing question, whichever comes first.
+    cutoff = len(after)
+    blank_line_match = re.search(r"\n\s*\n", after)
+    if blank_line_match:
+        cutoff = min(cutoff, blank_line_match.start())
+    question_match = re.search(r"[؟?]", after)
+    if question_match:
+        cutoff = min(cutoff, question_match.end())
+    shown_text = after[:cutoff].strip()
+
+    if not shown_text:
+        return True  # the lead-in line with nothing real after it is its own failure
+
+    def _loose(text: str) -> str:
+        return re.sub(r"[\s\u064B-\u065F\u0670\u0640.،,؟?!]+", "", text or "").lower()
+
+    # A genuine match: the real description's own words appear
+    # (substring overlap survives light paraphrasing/reformatting far
+    # better than exact equality would, without accepting a totally
+    # unrelated blurb).
+    if _loose(real_description) and _loose(real_description) in _loose(shown_text):
+        return False
+    if _loose(shown_text) and _loose(shown_text) in _loose(real_description):
+        return False
+
+    return True
+
+
+_GENERAL_BLURB_INSTEAD_OF_PREP_CORRECTION_DIRECTIVE = (
+    "============================================================\n"
+    "THAT'S THE GENERAL BLURB, NOT THE REAL PREP INSTRUCTIONS\n"
+    "============================================================\n"
+    "Your reply's \"يرجى الالتزام بالتعليمات التالية قبل الفحص:\" line "
+    "is followed by the general \"what this test is for\" blurb (the "
+    "same one already shown once at NB1-Q1) - not the REAL prep/fasting "
+    "instructions this clinic's own catalogue has for this exact test. "
+    "These are two different, unrelated pieces of text; the general "
+    "blurb never substitutes for the real instructions, no matter how "
+    "many times it was already said earlier in this conversation.\n\n"
+    "Replace the text after that line with the real instructions from "
+    "the `description` field `search_lab_services` returned for this "
+    "test earlier this conversation - word for word, in full. Never "
+    "invent, shorten, or paraphrase them, and never reuse the general "
+    "blurb here.\n\n"
+    "CONFIRMED REAL PRODUCTION FAILURE: for \"تحليل سكر صائم\", the "
+    "lead-in line was followed by \"تحليل سكر صائم بيدي صورة عامة عن "
+    "مستوى السكر في الدم بعد صيام لفترة، وبيساعد في تشخيص مرض السكري أو "
+    "متابعة حالته\" (the general blurb) instead of the real, already-"
+    "cached instructions (\"يشترط الصيام من 6-8 ساعات، يسمح بشرب "
+    "الماء\") - a patient reading this card for what to do before their "
+    "test would learn nothing about fasting hours at all.\n\n"
+)
+
 _HOME_ADDRESS_LABEL_RE = re.compile(
     r"عنوان\s*الاستلام\s*[:：]\s*(.*)"
 )
@@ -14252,6 +14449,18 @@ _REPLY_VERIFIERS = (
         lambda reply, state: _HOME_MODE_BRANCH_CORRECTION_DIRECTIVE,
         "reply's review card showed a branch line for a home-collection booking, "
         "which has no branch the patient should ever see",
+    ),
+    (
+        lambda reply, state, agent_name: _reply_is_review_card_with_wrong_confirmation(reply, state),
+        lambda reply, state: _WRONG_CONFIRMATION_QUESTION_CORRECTION_DIRECTIVE,
+        "reply's review card closed with a paraphrased confirmation question instead "
+        "of this clinic's own configured msg_booking_confirmation wording",
+    ),
+    (
+        lambda reply, state, agent_name: _reply_shows_general_blurb_instead_of_prep_instructions(reply, state),
+        lambda reply, state: _GENERAL_BLURB_INSTEAD_OF_PREP_CORRECTION_DIRECTIVE,
+        "reply's prep-instructions lead-in line was followed by the general "
+        "what-this-test-is-for blurb instead of the real, cached prep instructions",
     ),
     (
         lambda reply, state, agent_name: _reply_labels_a_doctor_for_lab_client(reply, state),
