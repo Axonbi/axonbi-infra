@@ -13414,6 +13414,18 @@ _REPLY_VERIFIERS = (
         "between them",
     ),
     (
+        # SAFETY (default) is correct here, not FLOW: this is not "the
+        # right facts, wrong question" - it is the booking never
+        # happening at all despite explicit patient consent, which is
+        # exactly the outcome the zero-tolerance fallback exists for.
+        lambda reply, state, agent_name: _reply_reshows_review_card_after_explicit_yes(reply, state),
+        lambda reply, state: _REVIEW_RESHOWN_AFTER_YES_CORRECTION_DIRECTIVE,
+        "reply re-showed the booking review card after the patient's own last "
+        "message already gave a bare, explicit yes to that same card - "
+        "confirm_booking_review/create_new_booking should have been called "
+        "instead",
+    ),
+    (
         # UNGATED BY FLOW, GATED BY CAPABILITY. The same question was
         # produced from the NEW BOOKING flow (STEP NB6) and can just as
         # easily come out of cancel/reschedule STEP 2 - the OTP rules
@@ -17277,6 +17289,99 @@ _REPEATED_REPLY_CORRECTION_DIRECTIVE = (
     "information you are asking for is already available elsewhere in "
     "this conversation. If a tool call should have run and did not, "
     "call it now instead of asking the patient again.\n\n"
+)
+
+
+def _reply_reshows_review_card_after_explicit_yes(reply_text: str, state: AgentState) -> bool:
+    """True when the LAST thing this agent sent was the booking review
+    card (branch/doctor/date/time/name/phone, ending in "هل جميع
+    البيانات صحيحة..."), the patient's very next message was a bare,
+    unambiguous "yes" to it, and the newly drafted reply is - again -
+    that same review card, instead of a call to
+    `confirm_booking_review`/`create_new_booking`.
+
+    CONFIRMED REAL PRODUCTION FAILURE (session
+    201000625084-DEMO1223=23, 2026-09-22 ~14:19): the patient answered
+    "اه" to a fully correct, complete review card (branch النزهة, د.
+    احمد عبدالرحمن, 2026-09-29 3:40 مساءً, فاطمه ناصر). The reply that
+    came back was the IDENTICAL review card a second time, instead of
+    STEP NB7's own documented instruction ("On explicit 'yes': call
+    `create_new_booking`"). No booking was ever created - the patient
+    never got a booking reference, only the same question again.
+
+    Deliberately narrow, same shape as `_reply_asks_for_a_phone_already_known`
+    and `_reply_repeats_last_ai_message_verbatim`: requires the patient's
+    own last message to be a BARE affirmation (see `_BARE_AFFIRMATION_RE`)
+    with nothing else in it, so a patient who instead corrects a detail
+    ("لا، الوقت غلط") is completely unaffected - re-showing the card after
+    a correction is the correct STEP-BACK behaviour STEP NB7 itself asks
+    for, not this failure."""
+
+    if not reply_text:
+        return False
+
+    templates = state.get("templates") or {}
+    confirmation_sentences = _review_confirmation_sentences(templates)
+    if not confirmation_sentences:
+        return False
+
+    normalized_reply = _normalize_for_compare(reply_text)
+    if not any(s in normalized_reply for s in confirmation_sentences):
+        # This draft isn't the review card at all - nothing to flag.
+        return False
+
+    from langchain_core.messages import HumanMessage as _HumanMessage
+
+    messages = state.get("messages") or []
+    saw_bare_yes = False
+
+    for msg in reversed(messages):
+        if isinstance(msg, _HumanMessage):
+            content = getattr(msg, "content", "")
+            text = content if isinstance(content, str) else str(content)
+            saw_bare_yes = bool(_BARE_AFFIRMATION_RE.match(_norm_ar(text)))
+            break
+
+    if not saw_bare_yes:
+        return False
+
+    # The patient's bare yes must have actually answered THIS card - i.e.
+    # the agent's own message immediately before that yes was the review
+    # card, not some unrelated question the patient happened to answer
+    # "اه" to.
+    for msg in reversed(messages):
+        if isinstance(msg, _HumanMessage):
+            continue
+        if isinstance(msg, AIMessage):
+            content = getattr(msg, "content", "")
+            prior_text = content if isinstance(content, str) else str(content)
+            if not prior_text.strip():
+                return False
+            normalized_prior = _normalize_for_compare(prior_text)
+            return any(s in normalized_prior for s in confirmation_sentences)
+        return False
+
+    return False
+
+
+_REVIEW_RESHOWN_AFTER_YES_CORRECTION_DIRECTIVE = (
+    "============================================================\n"
+    "THE PATIENT ALREADY SAID YES TO THIS CARD - CONFIRM, DON'T RE-ASK\n"
+    "============================================================\n"
+    "Your last message was the booking review card, and the patient's "
+    "very next message was a plain yes to it. Showing the same card "
+    "again means they answered a question and got the same question "
+    "back - no booking has been created and they have no reference "
+    "number.\n\n"
+    "Do not reply with the review card again. Call "
+    "`confirm_booking_review` with the same patient_full_name/email "
+    "already shown on the card, then call `create_new_booking` "
+    "immediately after, in this same turn, with the exact slot_start/"
+    "slot_end/patient_full_name/mobile_number/email from the card. "
+    "Only fall back to re-showing the card if `create_new_booking` "
+    "itself returns a status that says to (slot_unavailable, "
+    "missing_patient_name, etc.) - never simply because the patient "
+    "already said yes once.\n\n"
 )
 
 
