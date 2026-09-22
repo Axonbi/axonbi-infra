@@ -287,12 +287,50 @@ RESULT_GUIDANCE: dict = {
     },
 
     # ------------------------------------------------------------------
+    "confirm_booking_review": {
+        "card_not_shown":
+            "This was refused - `review_shown` was NOT set, and "
+            "`patient_full_name` was NOT confirmed. No consolidated "
+            "review card (branch, doctor, date, time, name, phone, "
+            "email if given, ending in its own confirmation question) "
+            "has actually been sent to the patient anywhere in this "
+            "conversation yet - whatever made you believe one had "
+            "already been agreed to (a vague earlier question, an "
+            "unrelated 'yes'/'لا') does not count.\n\n"
+            "Show the review now, in exactly this shape (translate the "
+            "labels if the conversation is in English; omit the email "
+            "line entirely if none was given):\n\n"
+            "يرجى مراجعة بيانات الحجز:\n"
+            "🏥 الفرع: {branch}\n"
+            "👨‍⚕️ الطبيب: {doctor}\n"
+            "📅 التاريخ: {weekday} {date}\n"
+            "🕐 الوقت: {time}\n"
+            "👤 الاسم: {patient_full_name}\n"
+            "📱 الجوال: {mobile_number}\n"
+            "📧 البريد الإلكتروني: {email}\n\n"
+            "✅ هل جميع البيانات صحيحة وتود تأكيد الحجز؟\n\n"
+            "End your turn there. Only once the patient's NEXT message "
+            "actually agrees TO THAT CARD, call `confirm_booking_review` "
+            "again.",
+    },
+
+    # ------------------------------------------------------------------
     "create_new_booking": {
         "needs_review":
             "You have not shown the patient a CONSOLIDATED review of "
             "every detail together yet - each field being confirmed "
             "separately earlier in the conversation does not satisfy "
-            "this. Show exactly this, filling in the real values "
+            "this.\n\n"
+            "FIRST check: did the patient's OWN most recent message "
+            "already say yes to this exact same review - same branch, "
+            "doctor, date, time, name and phone? If so, do NOT show the "
+            "card again and do NOT end your turn - they already "
+            "answered it. Call `confirm_booking_review` right now with "
+            "these values, then call this tool again immediately, in "
+            "this same turn, with the same values.\n\n"
+            "Otherwise (this is genuinely the first time reaching this "
+            "review, or something changed since it was last shown), "
+            "show exactly this, filling in the real values "
             "(translate the labels if the conversation is in English; "
             "omit the email line entirely if none was given):\n\n"
             "يرجى مراجعة بيانات الحجز:\n"
