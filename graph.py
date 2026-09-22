@@ -11218,12 +11218,16 @@ _HOME_COLLECTION_ADDRESS_QUESTION = {
 
 def _honest_home_address_question(
     description: Optional[str], state: AgentState, target_language: Optional[str],
+    flagged_reply: str = "",
 ) -> Optional[str]:
-    """Rebuild a twice-flagged fake-home-address draft into the ONE
-    thing that is actually missing - a real question for the address -
-    instead of falling to the fully generic staff-handoff message. Same
-    "can the truth be built in code?" pattern as `_honest_unstaffed_reply`
-    / `_honest_branch_list_reply`.
+    """Rebuild a twice-flagged fake-home-address draft into either (a)
+    the SAME card with the label fixed AND the confirmation question
+    corrected to THIS clinic's own configured wording, when the real
+    address is already sitting in the draft under the wrong label, or
+    (b) the ONE thing actually missing - a real question for the
+    address - when no real address is on record at all. Same "can the
+    truth be built in code?" pattern as `_honest_unstaffed_reply` /
+    `_honest_branch_list_reply`.
 
     CONFIRMED REAL PRODUCTION FAILURE (session 201158877175+medtown2,
     2026-09-21): `_reply_shows_fake_home_address` correctly caught the
@@ -11236,8 +11240,39 @@ def _honest_home_address_question(
     أحولك لموظف؟" over a single missing field this code can ask for
     directly, with no model call needed to get it right.
 
-    Returns None when `description` isn't this exact check, leaving the
-    caller's existing fallback chain untouched."""
+    CONFIRMED REAL PRODUCTION FAILURE, DIFFERENT SHAPE (same session,
+    2026-09-22, one hour later): the patient HAD already given a real
+    address ("45 فيصل الدور الاول شقه 5"), `set_home_collection_address`
+    had already saved it - but the draft showed it under "🏥 الفرع:"
+    (the branch label) instead of "📍 عنوان الاستلام:". The sibling
+    branch-line check correctly caught the wrong label twice, and this
+    fallback - unaware the real address was RIGHT THERE in the flagged
+    text - fell through to asking the patient for their address AGAIN,
+    a question they had already fully and correctly answered minutes
+    earlier. Re-asking a settled question is its own failure, not a
+    safe default - this function now checks the flagged draft for the
+    real address before ever falling back to a fresh question.
+
+    CONFIRMED REAL PRODUCTION FAILURE, A THIRD SHAPE (same session,
+    minutes later): the label-fix above worked correctly and the
+    rebuilt card went out with the real address under the right label -
+    but the model's OWN draft had closed with a generic confirmation
+    question ("هل جميع البيانات صحيحة وتود تأكيد الحجز؟") instead of
+    THIS clinic's actually configured msg_booking_confirmation wording
+    ("البيانات دي كلها صح؟ تحب نأكد الحجز؟"), and this function's
+    earlier version left that line untouched since it only ever fixed
+    the address line. The patient replied "yes" to the corrected card,
+    and `_review_card_shown_immediately_before` correctly rejected it on
+    the very next turn - the reply the patient had just answered did
+    not actually contain any sentence from THIS clinic's own template,
+    so `create_new_booking` was blocked again, restarting the same
+    cycle one step later. Never trust the flagged draft's own closing
+    question - always rebuild it from `templates`'s real configured
+    text, the same source `_review_card_shown_immediately_before`
+    itself checks against.
+
+    Returns None when `description` isn't one of these two checks,
+    leaving the caller's existing fallback chain untouched."""
 
     if description not in (
         "reply's review card filled the collection-address line with the "
@@ -11247,8 +11282,88 @@ def _honest_home_address_question(
     ):
         return None
 
+    session_id = state.get("session_id")
+    session = tools._BOOKING_SESSIONS.get(session_id) or {}
+    real_address = (session.get("collection_address") or "").strip()
+
+    if real_address and flagged_reply:
+        # THE REAL ADDRESS MAY ALREADY BE SITTING IN THE DRAFT, JUST
+        # UNDER THE WRONG LABEL - fix the label in code rather than
+        # re-asking a question this session already has a real answer
+        # to. Replace whichever wrong label line carries the address
+        # with the correct "📍 عنوان الاستلام:" line, leaving every
+        # other line of the card untouched EXCEPT the closing
+        # confirmation question, which gets rebuilt from this clinic's
+        # own template below regardless of what the draft already had.
+        lines = flagged_reply.splitlines()
+        rebuilt_lines = []
+        replaced = False
+        for line in lines:
+            if not replaced and real_address in line and (
+                "الفرع" in line or "عنوان الاستلام" in line or "branch" in line.lower()
+            ):
+                rebuilt_lines.append(f"📍 عنوان الاستلام: {real_address}")
+                replaced = True
+            else:
+                rebuilt_lines.append(line)
+
+        if replaced:
+            templates = state.get("templates") or {}
+            rebuilt_lines = _replace_confirmation_question_with_template(
+                rebuilt_lines, templates,
+            )
+            logger.info(
+                "agent: the real home address was already in the flagged draft under "
+                "the wrong label - fixed the label in code, and rebuilt the closing "
+                "confirmation question from this clinic's own template, instead of "
+                "re-asking a question the patient already answered (session_id=%s)",
+                session_id,
+            )
+            return "\n".join(rebuilt_lines)
+
     is_english = (target_language or "").strip().lower().startswith("en")
     return _HOME_COLLECTION_ADDRESS_QUESTION["en" if is_english else "ar"]
+
+
+def _replace_confirmation_question_with_template(lines: list, templates: dict) -> list:
+    """Replace whatever confirmation-question text sits at the end of
+    a review-card reply (already split into lines) with THIS clinic's
+    own configured msg_booking_confirmation question text - never trust
+    the model's own closing line, which may drift to a generic phrasing
+    that does not match what `_review_card_shown_immediately_before`
+    actually checks for on the next turn.
+
+    Finds the LAST line containing any question mark and replaces it
+    with the clinic's real template question(s); if no such line
+    exists, appends the template question as a new final line. Falls
+    back to the same fallback sentences `_review_confirmation_sentences`
+    itself uses when this clinic never configured its own template."""
+
+    value = (templates or {}).get(_REVIEW_CARD_TEMPLATE_KEY)
+    question_text = None
+
+    if value and isinstance(value, str):
+        question_lines = [
+            s for s in _split_sentences(value.replace("\r", "\n"))
+            if any(mark in s for mark in _QUESTION_MARKS)
+        ]
+        if question_lines:
+            question_text = " ".join(question_lines).strip()
+
+    if not question_text:
+        question_text = " ".join(_REVIEW_CARD_CONFIRMATION_FALLBACK_SENTENCES)
+
+    result = list(lines)
+    for index in range(len(result) - 1, -1, -1):
+        if any(mark in result[index] for mark in _QUESTION_MARKS):
+            result[index] = question_text
+            return result
+
+    # No existing question line found at all - append it as its own line.
+    if result and result[-1].strip():
+        result.append("")
+    result.append(question_text)
+    return result
 
 
 def _honest_branch_list_reply(
@@ -19374,6 +19489,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                         description, state, target_language,
                     ) or _honest_home_address_question(
                         description, state, target_language,
+                        normalized,
                     ) or _honest_unstaffed_reply(
                         normalized, state["messages"],
                         state.get("templates") or {}, target_language,
@@ -19476,6 +19592,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                             description, state, target_language,
                         ) or _honest_home_address_question(
                             description, state, target_language,
+                            normalized,
                         ) or _honest_unstaffed_reply(
                             normalized, state["messages"],
                             state.get("templates") or {}, target_language,
@@ -19554,6 +19671,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                         description, state, target_language,
                     ) or _honest_home_address_question(
                         description, state, target_language,
+                        normalized,
                     ) or _honest_unstaffed_reply(
                         normalized, state["messages"],
                         state.get("templates") or {}, target_language,
