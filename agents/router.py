@@ -957,7 +957,21 @@ _ASKED_SPECIALTY_OR_DOCTOR_RE = re.compile(
     r"(?:بال|في\s*ال)?معمل[^.\n؟?]{0,20}(?:ولا|او)[^.\n؟?]{0,20}(?:بيت|منزل)|"
     r"(?:بيت|منزل)[^.\n؟?]{0,20}(?:ولا|او)[^.\n؟?]{0,20}معمل|"
     r"in.?lab[^.\n?]{0,25}(?:or|prefer)[^.\n?]{0,25}home|"
-    r"home[^.\n?]{0,25}(?:or|prefer)[^.\n?]{0,25}in.?lab"
+    r"home[^.\n?]{0,25}(?:or|prefer)[^.\n?]{0,25}in.?lab|"
+    # NB1-Q1's OWN "WHICH TEST?" QUESTION - the lab/imaging clinic has
+    # no doctor/specialty concept at all (see the NEW BOOKING FLOW's
+    # own NB1 in prompts.py), so its actual opening question asks which
+    # TEST the patient wants, not which doctor or specialty. CONFIRMED
+    # REAL PRODUCTION FAILURE: `booking` asked "عايزة تعملي أي تحليل
+    # معين أو تحبي أساعدك تختاري؟", the patient answered "سكر" (the
+    # test name), and because this regex had no pattern for that
+    # question's wording, `_answers_booking_entry_question` returned
+    # False and the reply fell through to the generic classifier, which
+    # read a bare test name as a `medical` question and tore the turn
+    # away from the booking flow that had just asked it.
+    r"(?:اي|أي|انهي|أنهي)\s*(?:تحليل|تحاليل|فحص|اشعه|أشعة)[^.\n؟?]{0,30}؟|"
+    r"(?:تحليل|فحص|اشعه|أشعة)\s*(?:معين|محدد)[^.\n؟?]{0,30}؟|"
+    r"which\s+test[^.\n?]{0,30}\?"
 )
 
 _CRISIS_OVERRIDE_RE = CRISIS_RE
