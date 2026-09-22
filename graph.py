@@ -3850,7 +3850,18 @@ _ASKED_SPECIALTY_OR_DOCTOR_RE = re.compile(
     r"(?:بال|في\s*ال)?معمل[^.\n؟?]{0,20}(?:ولا|او)[^.\n؟?]{0,20}(?:بيت|منزل)|"
     r"(?:بيت|منزل)[^.\n؟?]{0,20}(?:ولا|او)[^.\n؟?]{0,20}معمل|"
     r"in.?lab[^.\n?]{0,25}(?:or|prefer)[^.\n?]{0,25}home|"
-    r"home[^.\n?]{0,25}(?:or|prefer)[^.\n?]{0,25}in.?lab"
+    r"home[^.\n?]{0,25}(?:or|prefer)[^.\n?]{0,25}in.?lab|"
+    # NB1-Q1's OWN "WHICH TEST?" QUESTION - kept in step with
+    # agents/router._ASKED_SPECIALTY_OR_DOCTOR_RE's identical addition.
+    # CONFIRMED REAL PRODUCTION FAILURE: `booking` asked "عايزة تعملي
+    # أي تحليل معين أو تحبي أساعدك تختاري؟", the patient answered
+    # "سكر" (the test name), and because neither copy of this regex had
+    # a pattern for that question's wording, the reply fell through to
+    # the generic classifier, which read a bare test name as a
+    # `medical` question and tore the turn away from `booking`.
+    r"(?:اي|أي|انهي|أنهي)\s*(?:تحليل|تحاليل|فحص|اشعه|أشعة)[^.\n؟?]{0,30}؟|"
+    r"(?:تحليل|فحص|اشعه|أشعة)\s*(?:معين|محدد)[^.\n؟?]{0,30}؟|"
+    r"which\s+test[^.\n?]{0,30}\?"
 )
 
 
@@ -9565,8 +9576,80 @@ _DAY_DENIAL_CORRECTION_DIRECTIVE = (
     "actually returned."
 )
 
+_HOME_MODE_BRANCH_LINE_RE = re.compile(
+    r"🏥\s*الفرع\s*[:：]|(?<![\w\u0600-\u06FF])الفرع\s*[:：]|\bbranch\s*[:：]",
+    re.IGNORECASE,
+)
+
+
+def _reply_shows_branch_for_home_booking(reply_text: str, state: AgentState) -> bool:
+    """True when a review card shows a "🏥 الفرع" (branch) line at all
+    while THIS booking session's collection_mode is "home" - home-mode
+    collection has no real branch concept the patient should ever see
+    (see NB1-Q3: "home mode already has its branch resolved
+    automatically... say nothing about it"), so this line is always
+    wrong here, whatever it's filled with.
+
+    THIS IS THE SIBLING CHECK TO `_reply_shows_fake_home_address`, NOT
+    A REPLACEMENT FOR IT - that check catches the address line being
+    filled with the collection MODE ("من المنزل"); this one catches the
+    different, second failure mode: swapping to a BRANCH label/value
+    entirely, which is a different line, a different label, and a
+    fabricated value with no tool call behind it at all.
+
+    CONFIRMED REAL PRODUCTION FAILURE: `_reply_shows_fake_home_address`
+    correctly caught "📍 عنوان الاستلام: من المنزل" on the first draft.
+    The retry that followed did not add a real address question - it
+    replaced the whole line with "🏥 الفرع: حدائق الاهرام", a branch
+    name that was never resolved by any branch-lookup tool in this
+    home-mode session (`find_branches_offering_service`,
+    `match_entity_for_booking`, `geocode_address`/`find_nearest_branch`
+    - none of them ran). Nothing checked for THIS shape of wrong
+    answer, so the retry loop treated the second draft as fixed and
+    sent a review card the home-collection team could not act on
+    either - just with a different, equally unusable line."""
+
+    if not reply_text:
+        return False
+
+    if not _HOME_MODE_BRANCH_LINE_RE.search(reply_text):
+        return False
+
+    session_id = state.get("session_id")
+    session = tools._BOOKING_SESSIONS.get(session_id) or {}
+
+    return session.get("collection_mode") == "home"
+
+
+_HOME_MODE_BRANCH_CORRECTION_DIRECTIVE = (
+    "============================================================\n"
+    "THIS IS A HOME-COLLECTION BOOKING - DROP THE BRANCH LINE\n"
+    "============================================================\n"
+    "Your draft's review card shows a \"🏥 الفرع\" (branch) line - but "
+    "this session's collection mode is HOME, not in-lab. Home-mode "
+    "collection has no branch the patient should ever see (its branch "
+    "is resolved automatically, internally, and is never shown or "
+    "asked about). A branch name on this card is not a smaller version "
+    "of the mistake you're fixing - it's a different wrong answer to "
+    "the same missing piece of information: the patient's real home "
+    "address.\n\n"
+    "Drop the review card for now. Ask them a separate, focused "
+    "question for their real collection address (street, building, "
+    "area - enough for someone to actually find them), wait for their "
+    "answer, and only then show the review card again with "
+    "\"📍 عنوان الاستلام: [their own words]\" - never a branch name, "
+    "never the mode name, never anything they did not actually say.\n\n"
+    "CONFIRMED REAL PRODUCTION FAILURE: the first draft wrongly showed "
+    "\"📍 عنوان الاستلام: من المنزل\" (the mode, not an address) - "
+    "correctly caught - and the very next draft replaced it with "
+    "\"🏥 الفرع: حدائق الاهرام\", a branch name invented with no "
+    "branch-lookup tool call behind it at all, for a booking that was "
+    "never going to a branch in the first place.\n\n"
+)
+
 _FAKE_HOME_ADDRESS_RE = re.compile(
     r"عنوان\s*الاستلام\s*[:：]\s*[\[\(\"'\u201c\u2018]*\s*"
+
     r"(?:من\s*المنزل|في\s*المنزل|بالمنزل|بالبيت|من\s*البيت|في\s*البيت|at\s*home|home)\b",
     re.IGNORECASE,
 )
@@ -11108,9 +11191,11 @@ def _honest_home_address_question(
     Returns None when `description` isn't this exact check, leaving the
     caller's existing fallback chain untouched."""
 
-    if description != (
+    if description not in (
         "reply's review card filled the collection-address line with the "
-        "collection mode itself instead of a real address the patient gave"
+        "collection mode itself instead of a real address the patient gave",
+        "reply's review card showed a branch line for a home-collection booking, "
+        "which has no branch the patient should ever see",
     ):
         return None
 
@@ -13798,6 +13883,16 @@ _REPLY_VERIFIERS = (
     ),
     (
         lambda reply, state, agent_name: (
+            agent_name in ("booking", "concierge", "faq")
+            and _reply_reasks_collection_mode_already_set(reply, state)
+        ),
+        lambda reply, state: _MODE_ALREADY_SET_CORRECTION_DIRECTIVE,
+        "new-booking reply asked NB1-Q2's in-lab-or-home collection-mode question "
+        "again, even though select_sample_collection_mode already succeeded for "
+        "this session",
+    ),
+    (
+        lambda reply, state, agent_name: (
             (agent_name in ("booking", "concierge", "faq") or _in_medical_guidance_handoff(state))
             and _reply_skips_same_number_question_when_ready(reply, state)
         ),
@@ -13988,6 +14083,12 @@ _REPLY_VERIFIERS = (
         lambda reply, state: _FAKE_HOME_ADDRESS_CORRECTION_DIRECTIVE,
         "reply's review card filled the collection-address line with the "
         "collection mode itself instead of a real address the patient gave",
+    ),
+    (
+        lambda reply, state, agent_name: _reply_shows_branch_for_home_booking(reply, state),
+        lambda reply, state: _HOME_MODE_BRANCH_CORRECTION_DIRECTIVE,
+        "reply's review card showed a branch line for a home-collection booking, "
+        "which has no branch the patient should ever see",
     ),
     (
         lambda reply, state, agent_name: _reply_labels_a_doctor_for_lab_client(reply, state),
@@ -17175,6 +17276,82 @@ def _reply_asks_same_number_before_booking_ready(reply_text: str, state: AgentSt
         return False
 
     return True
+
+
+_MODE_QUESTION_RE = re.compile(
+    # WIDER GAP THAN THE ORIGINAL _ASKED_SPECIALTY_OR_DOCTOR_RE PATTERN
+    # THIS IS COPIED FROM (which uses {0,20}) - CONFIRMED REAL
+    # PRODUCTION MISS: the actual re-asked question, "...في المعمل ولا
+    # تحبي حد ياخد العينة من عندك في البيت؟", has 42 characters between
+    # "معمل" and "بيت" (the natural phrasing wraps the second option in
+    # a full clause - "تحبي حد ياخد العينة من عندك في" - rather than
+    # naming it bare), which the tighter {0,20} gap missed entirely.
+    # Kept deliberately generous ({0,80}) since this checker's only job
+    # is recognising the QUESTION SHAPE to block a repeat ask, not
+    # precisely bounding a short phrase the way the entry-question
+    # ROUTING regex needs to.
+    r"(?:بال|في\s*ال)?معمل[^.\n؟?]{0,80}(?:ولا|او)[^.\n؟?]{0,80}(?:بيت|منزل)|"
+    r"(?:بيت|منزل)[^.\n؟?]{0,80}(?:ولا|او)[^.\n؟?]{0,80}معمل|"
+    r"in.?lab[^.\n?]{0,80}(?:or|prefer)[^.\n?]{0,80}home|"
+    r"home[^.\n?]{0,80}(?:or|prefer)[^.\n?]{0,80}in.?lab"
+)
+
+
+def _reply_reasks_collection_mode_already_set(reply_text: str, state: AgentState) -> bool:
+    """True when a NEW BOOKING reply asks NB1-Q2's "في المعمل ولا من
+    البيت؟" collection-mode question, but `select_sample_collection_mode`
+    has ALREADY succeeded for this session - i.e. the question was
+    already answered and already acted on, and is being asked again.
+
+    THIS EXACT FAILURE IS ALREADY DOCUMENTED IN WORDS, TWICE, IN
+    prompts.py's OWN NB1-Q2 - and it has now been observed a second
+    time regardless, which is why it gets a code-level check here
+    rather than relying on the prompt alone a third time. CONFIRMED
+    REAL PRODUCTION FAILURE: the patient opened with "عاوزه احجز سحب
+    عينه من البيت", `select_sample_collection_mode(mode="home")`
+    succeeded immediately (collection_mode="home" on record from the
+    very first turn), the test was chosen several turns later through
+    an unrelated router detour, and the reply that settled the test
+    still asked "حابب تعملي التحليل ده في المعمل ولا تحبي حد ياخد
+    العينة من عندك في البيت؟" - re-litigating a decision that was
+    already made and already acted on turns earlier."""
+
+    if not reply_text:
+        return False
+
+    folded = _norm_ar(reply_text)
+
+    if not _MODE_QUESTION_RE.search(folded):
+        return False
+
+    session_id = state.get("session_id")
+    session = tools._BOOKING_SESSIONS.get(session_id) or {}
+
+    return session.get("collection_mode") in ("home", "in_lab")
+
+
+_MODE_ALREADY_SET_CORRECTION_DIRECTIVE = (
+    "============================================================\n"
+    "COLLECTION MODE IS ALREADY SET - DO NOT ASK AGAIN\n"
+    "============================================================\n"
+    "Your previous draft asked whether to do this in the lab or at "
+    "home - but `select_sample_collection_mode` already succeeded for "
+    "this session earlier in this same conversation. The patient "
+    "already answered this and it has already been acted on.\n\n"
+    "Rewrite this reply WITHOUT that question. Say nothing about "
+    "collection mode at all - simply carry on from wherever the flow "
+    "actually is (confirming the test, asking about a branch for "
+    "in_lab, or moving straight to available days for home mode), "
+    "using the mode already on record.\n\n"
+    "CONFIRMED REAL PRODUCTION FAILURE: \"عاوزه احجز سحب عينه من "
+    "البيت\" set collection_mode=\"home\" immediately, and several "
+    "turns later - right after the test was finally settled - the "
+    "reply asked \"في المعمل ولا من البيت؟\" again, as if the earlier "
+    "answer had never happened. Never let a detour elsewhere in the "
+    "conversation (a router handoff, a different flow, several turns "
+    "passing) be a reason to re-ask a question this session already "
+    "has a real, recorded answer to.\n\n"
+)
 
 
 _PREMATURE_SAME_NUMBER_CORRECTION_DIRECTIVE = (
