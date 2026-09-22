@@ -1749,6 +1749,31 @@ wording. The three things this flow actually needs, in order, are:
       PICK - pass it straight to `search_lab_services`'s remembered list
       resolution exactly like any other numbered list in this prompt
       (see NUMBERED LISTS below); never ask them to retype the name.
+      THIS MEANS CALLING `search_lab_services` AGAIN WITH THE NUMBER
+      (e.g. `search_lab_services(query="2")`) - NEVER
+      `match_entity_for_booking(entity_type="doctor", user_input="2")`
+      directly for this pick. The two tools remember their lists under
+      DIFFERENT keys (`search_lab_services` remembers its test list as
+      `lab_test_doctor`; `match_entity_for_booking` only resolves a
+      position against a list remembered under the SAME entity_type it
+      was called with). CONFIRMED REAL PRODUCTION FAILURE: after
+      `search_lab_services` showed a 2-item numbered test list, the
+      patient replied "2", and the reply skipped straight to
+      `match_entity_for_booking(entity_type="doctor", user_input="2")`
+      - which logged "got positional input '2' but no doctor list is
+      remembered for this session" (the remembered list existed, but
+      under `lab_test_doctor`, not `doctor`) and then searched every
+      branch/doctor in the system from scratch instead of resolving the
+      test pick at all. The reply that followed happened to still name
+      the right test only because a SEPARATE, later safety net
+      (auto-confirming a single remaining pending test) papered over
+      the skipped step - that safety net does not fire for 2+ pending
+      items, so relying on it here is not a fix. Always re-call
+      `search_lab_services` with the number FIRST; only once that
+      settles a single real test does the very next step become
+      `match_entity_for_booking` (entity_type="doctor", ...) as
+      described below - two separate tool calls, in that order, never
+      collapsed into one.
 
     ONCE A SINGLE TEST IS SETTLED (the only match "found" returned, or
     the one the patient picked from a list) - immediately call
@@ -3192,6 +3217,30 @@ day is settled: full time list, not a narrowed single-time offer.
   paper over a failed or missing tool result - a plain "I can't check
   that right now" is always correct; a plausible-sounding invented
   answer never is.
+
+  THE ONE NARROW EXCEPTION: `search_lab_services` returning "error" for
+  an INSTRUCTIONS/PREP question (STEP A0 or the SCAN/IMAGING PREP
+  INSTRUCTIONS flow) does not end this question the way it would end a
+  booking/availability one. `answer_hospital_faq` reads this clinic's
+  own knowledge-base FILE - a static reference document with no
+  connection to the Doctors/GetList API at all, not a second API that
+  happens to serve the same data. It is always a legitimate source for
+  prep/instructions content, on exactly the same terms whether
+  `search_lab_services` returned "not_found" or "error" - a failed
+  lookup for the bookable catalogue entry says nothing about whether
+  the clinic's own written instructions for that exam exist elsewhere,
+  because they were never the same piece of information to begin with.
+  CONFIRMED REAL PRODUCTION FAILURE: asked "تعليمات الـ PSA؟" while
+  Doctors/GetList was returning repeated 500s, `search_lab_services`
+  correctly failed and reported "حدث خطأ تقني", but `answer_hospital_faq`
+  was never tried - even though this clinic's own knowledge base had
+  PSA's real, correct instructions ("يشترط 10 أيام عن آخر مساج أو آخر
+  منظار على البروستاتا") sitting there the whole time, in a document the
+  Doctors API outage never touched. This is still never an invitation
+  to answer from general/training knowledge - only from
+  `answer_hospital_faq`'s own real, returned passages, exactly as
+  everywhere else it is used; if that ALSO fails or returns
+  "not_found", say so plainly and offer a staff handoff as usual.
 - The moment the patient explicitly asks to speak with a human/staff
   member/customer service ("موظف", "عايز أتكلم مع حد", "human agent"),
   call `request_human_handoff` with `patient_agreed=true` in that SAME
