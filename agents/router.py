@@ -704,7 +704,16 @@ _BARE_AFFIRMATION_RE = re.compile(
 # sentences.
 _PREVIOUS_REPLY_OFFERED_BOOKING_RE = re.compile(
     r"(?:تحجز|أحجز|احجز|نحجز)\w*[^.\n؟?]{0,20}?عند|"
-    r"نكمل\s*الحجز|تحب\w*\s*تحجز|حاب\w*\s*تحجز|"
+    r"نكمل\s*الحجز|"
+    # THE GAP BEFORE THE حجز-ROOT WORD IS THE SAME FIX AS ABOVE, APPLIED
+    # HERE TOO. The old "تحب\w*\s*تحجز" required the verb glued directly
+    # onto "تحب" with nothing but whitespace between - so "تحب أساعدك
+    # بحجز موعد لهذه الخدمة؟" (a perfectly natural FAQ-agent offer)
+    # never matched at all. CONFIRMED REAL PRODUCTION FAILURE: the
+    # patient said "اه" to exactly that offer, stayed on FAQ (which has
+    # no booking tools), and the reply jumped to STEP NB6's WhatsApp
+    # confirmation before any doctor or slot had ever been chosen.
+    r"(?:تحب|حاب)\w*[^.\n؟?]{0,20}?(?:تحجز|أحجز|احجز|بحجز|الحجز)|"
     r"تبغى\s*أحجز|تبي\s*أحجز|ابدأ\s*الحجز|أبدأ\s*بالحجز"
 )
 
