@@ -9647,28 +9647,76 @@ _HOME_MODE_BRANCH_CORRECTION_DIRECTIVE = (
     "never going to a branch in the first place.\n\n"
 )
 
-_FAKE_HOME_ADDRESS_RE = re.compile(
-    r"عنوان\s*الاستلام\s*[:：]\s*[\[\(\"'\u201c\u2018]*\s*"
-
-    r"(?:من\s*المنزل|في\s*المنزل|بالمنزل|بالبيت|من\s*البيت|في\s*البيت|at\s*home|home)\b",
-    re.IGNORECASE,
+_HOME_ADDRESS_LABEL_RE = re.compile(
+    r"عنوان\s*الاستلام\s*[:：]\s*(.*)"
 )
 
 
 def _reply_shows_fake_home_address(reply_text: str, state: AgentState) -> bool:
     """True when a review card's "عنوان الاستلام" (collection address)
-    line is filled with the COLLECTION MODE itself ("من المنزل"/"at
-    home") rather than a real address the patient actually gave.
+    line does not carry a real address the patient actually gave -
+    checked against this session's own `collection_address` (set only
+    by `set_home_collection_address`, with the patient's own words),
+    not by pattern-matching the wrong text itself.
 
-    CONFIRMED REAL PRODUCTION FAILURE, TWICE, DESPITE PROMPT GUIDANCE
-    BOTH TIMES: the address question was never asked, and the review
-    card still showed "📍 عنوان الاستلام: من المنزل" as if that were an
-    answer - the collection team has no idea where to actually go. A
-    prompt-only fix did not hold, so this is enforced here instead."""
+    WHY REGEX-ONLY KEPT FAILING: three separate confirmed production
+    failures, each a DIFFERENT wording of the same underlying problem,
+    each slipping past whatever the previous regex covered - "من
+    المنزل", then "في البيت", then finally the bare word "منزل" with no
+    preposition at all, which no prefix-based alternation was ever
+    going to fully enumerate. Chasing wording is an unwinnable game;
+    what actually matters is whether a REAL address is on record for
+    this session, and that is a fact this code can check directly
+    instead of guessing at the model's next placeholder phrasing.
+
+    THE CHECK: if this session's `collection_mode` is "home" and the
+    review card shows the "عنوان الاستلام" line at all, the line's
+    value must match `session["collection_address"]` (set only by
+    `set_home_collection_address`, so it is always the patient's own
+    words when present) - closely enough to allow for cosmetic
+    reformatting (brackets, a trailing period) but not for an entirely
+    different, invented value. If `collection_address` was never set
+    for this session, ANY value on this line is fabricated - there is
+    nothing real it could have come from."""
 
     if not reply_text:
         return False
-    return bool(_FAKE_HOME_ADDRESS_RE.search(_norm_ar(reply_text)))
+
+    match = _HOME_ADDRESS_LABEL_RE.search(reply_text)
+    if not match:
+        return False
+
+    session_id = state.get("session_id")
+    session = tools._BOOKING_SESSIONS.get(session_id) or {}
+
+    if session.get("collection_mode") != "home":
+        return False
+
+    shown_value = match.group(1).strip()
+    # Cut at the first newline - only this one line's value matters.
+    shown_value = shown_value.splitlines()[0].strip() if shown_value else shown_value
+
+    real_address = (session.get("collection_address") or "").strip()
+
+    if not real_address:
+        # Nothing real is on record at all - any non-empty value here
+        # is fabricated, whatever it says.
+        return bool(shown_value)
+
+    # A real address IS on record - the shown value must actually be
+    # it (allowing cosmetic wrapping/punctuation), not some other text
+    # that happens to also appear on this line.
+    def _loose(text: str) -> str:
+        return re.sub(r"[\s\[\]\(\)\"'\u201c\u201d\u2018\u2019.،,]+", "", text).lower()
+
+    if _loose(shown_value) == _loose(real_address):
+        return False
+
+    # Anything else on this line - whether it's one of the known
+    # mode-word placeholders ("منزل", "في البيت", ...) or something
+    # else entirely - does not match the real address on record, so
+    # it is not the patient's actual answer.
+    return True
 
 
 _FAKE_HOME_ADDRESS_CORRECTION_DIRECTIVE = (
