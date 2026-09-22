@@ -1649,9 +1649,28 @@ def _patient_asked_to_cancel(state: AgentState) -> bool:
 
     Reads only HumanMessages, on purpose: what the assistant asked
     cannot establish this - see the incident note above, where the
-    assistant's own invented question was the whole problem."""
+    assistant's own invented question was the whole problem.
 
-    for msg in state.get("messages") or []:
+    Only looks at HumanMessages sent AFTER the most recent successful
+    create_new_booking/reschedule_appointment in this conversation - see
+    the 2026-09-22 incident note above (booking for Dr. Omar cancelled
+    seconds after being made), where a cancel-flavored phrase spoken
+    earlier in the SAME conversation, about a DIFFERENT prior booking,
+    was read as consent to destroy the brand-new one."""
+
+    messages = state.get("messages") or []
+
+    start_index = 0
+    for i, msg in enumerate(messages):
+        if getattr(msg, "type", None) != "tool":
+            continue
+        if getattr(msg, "name", None) not in ("create_new_booking", "reschedule_appointment"):
+            continue
+        data = _parse_tool_payload(msg)
+        if isinstance(data, dict) and data.get("status") == "success":
+            start_index = i + 1  # only what the patient said AFTER this booking counts
+
+    for msg in messages[start_index:]:
         if getattr(msg, "type", None) != "human":
             continue
         content = getattr(msg, "content", "")
@@ -1848,6 +1867,18 @@ def _selected_slot(state: AgentState) -> Optional[dict]:
     if not session_id:
         return None
     slot = (_BOOKING_SESSIONS.get(session_id) or {}).get("selected_slot")
+    return slot if isinstance(slot, dict) else None
+
+
+def _selected_reschedule_slot(state: AgentState) -> Optional[dict]:
+    """The slot `select_reschedule_slot` locked for this reschedule, or
+    None. The reschedule counterpart of `_selected_slot` - written only
+    by the tool that establishes it, read by `reschedule_appointment`."""
+
+    session_id = state.get("session_id")
+    if not session_id:
+        return None
+    slot = (_BOOKING_SESSIONS.get(session_id) or {}).get("selected_reschedule_slot")
     return slot if isinstance(slot, dict) else None
 
 
@@ -2161,6 +2192,32 @@ def _remember_list(state: AgentState, entity_type: str, items: list) -> None:
         "_remember_list: session_id=%s entity_type=%s count=%d",
         session_id, entity_type, len(items),
     )
+
+
+def _remember_branch_name(state: AgentState, name: Optional[str]) -> None:
+    """Folds a single branch name into the session's permanent
+    known-branch memory, for tools that resolve or confirm ONE branch
+    without ever returning a roster - so `_remember_list`'s
+    entity_type="branch" path (the only other writer of this bucket)
+    never runs for them.
+
+    Without this, graph.py's invented-branch guard (`_find_invented_branches`)
+    can only see the name via raw message-history substring scanning,
+    which conversation-history compaction silently erases over time -
+    see `_remember_list`'s own docstring for the confirmed production
+    failure that exact pattern already caused once, for a tool that DID
+    return a roster. `share_branch_location` and `list_branch_services`
+    are the same class of gap for a tool that resolves or confirms a
+    SINGLE branch: a patient legitimately told a branch's address or
+    services many turns ago, in a part of the conversation compaction
+    has since shortened, gets that same real branch name rejected as
+    invented the next time it comes up."""
+
+    session_id = state.get("session_id")
+    if not session_id or not name:
+        return
+    session = _get_booking_session(session_id)
+    session.setdefault("known_branch_names", set()).add(str(name))
 
 
 def get_known_entity_names(session_id: Optional[str], entity_type: str) -> set:
@@ -4034,6 +4091,11 @@ def find_available_doctors(
         branch_ids = [matched_branch["id"]]
         session["branch_id"] = matched_branch["id"]
         session["branch_display_name"] = _arabic_preferred_name(matched_branch)
+        # Same class of gap as get_doctor_schedule_for_booking /
+        # match_entity_info: without this, a reply that correctly
+        # names this branch has no known-branch record to be checked
+        # against, and graph.py's invented-branch guard rejects it.
+        _remember_branch_name(state, session["branch_display_name"])
         logger.info("find_available_doctors: confirmed branch_id=%s (%s) from branch_name=%r", matched_branch["id"], session["branch_display_name"], branch_name)
 
     elif all_branches:
@@ -4992,6 +5054,133 @@ def get_available_reschedule_slots(
 
 
 @tool
+def select_reschedule_slot(state: Annotated[AgentState, InjectedState], user_input: str) -> dict:
+    """For an EXISTING BOOKING being moved: resolve the patient's reply
+    to ONE exact slot from the list `get_available_reschedule_slots` just
+    showed, and LOCK IT IN - call this instead of matching the slot
+    yourself from memory or retyping its ISO value.
+
+    `user_input`: their raw reply - a bare number ("2", "٢") or the time
+    in their own words ("11:00", "11 الصبح", "الساعة 5", "5 مساءً"). Pass
+    it unchanged.
+
+    Once this resolves a slot it is saved on the reschedule session and
+    `reschedule_appointment` reads the exact slotStart/slotEnd from here
+    - never from what you type. This mirrors `select_appointment_slot`,
+    which the new-booking flow already relies on for the identical
+    reason: a slot late enough to fall after midnight displays as a
+    "morning" time under the date header of the day it was searched for,
+    not its own real calendar date - retyping the ISO value from that
+    single shared header has written a real appointment a full day off.
+    See `_reschedule_slot_from_remembered`'s docstring for the confirmed
+    production trace this replaces.
+
+    Each status below carries its own handling instruction with the
+    result itself (the `_guidance` field) - read that when it arrives.
+
+    Returns one of:
+    {"status": "selected", "slot": {"slotStart", "slotEnd", "date_display",
+     "weekday_display", "time_display", "serviceName"}}
+    {"status": "no_list_shown"}
+    {"status": "out_of_range", "list_size": N}
+    {"status": "ambiguous_time", "candidates": [slot, ...]}
+    {"status": "not_matched"}"""
+
+    session_id = state.get("session_id")
+    session = _get_booking_session(session_id)
+    last_list = session.get("last_list")
+
+    if not last_list or last_list.get("entity_type") != "slot":
+        logger.warning(
+            "select_reschedule_slot: no slot list is remembered for session_id=%s",
+            session_id,
+        )
+        return {"status": "no_list_shown"}
+
+    slots = last_list.get("items") or []
+
+    wanted_time = _parse_clock_time(user_input)
+    position = _extract_selection_number(user_input)
+
+    if position is not None:
+        if not (1 <= position <= len(slots)):
+            # A NUMBER PAST THE END OF THE LIST MAY BE AN HOUR - same
+            # reasoning as `select_appointment_slot`.
+            by_time = _slots_at_clock_time(slots, wanted_time) if wanted_time else []
+            if len(by_time) == 1:
+                logger.info(
+                    "select_reschedule_slot: %r is past the end of the %d-slot "
+                    "list - reading it as a time instead, which matches exactly "
+                    "one slot (%s)",
+                    user_input, len(slots), by_time[0].get("time_display"),
+                )
+                chosen = by_time[0]
+            else:
+                logger.warning(
+                    "select_reschedule_slot: position %d out of range for %d "
+                    "remembered slot(s)",
+                    position, len(slots),
+                )
+                return {"status": "out_of_range", "list_size": len(slots)}
+        else:
+            chosen = slots[position - 1]
+    else:
+        # Not a number - match the TIME they typed against each
+        # remembered slot's real start time.
+        chosen = None
+
+        if wanted_time:
+            by_time = _slots_at_clock_time(slots, wanted_time)
+
+            if len(by_time) == 1:
+                chosen = by_time[0]
+            elif len(by_time) > 1:
+                logger.info(
+                    "select_reschedule_slot: %r matches %d slots (%s) - asking "
+                    "rather than guessing which half of the day they meant",
+                    user_input, len(by_time),
+                    [slot.get("time_display") for slot in by_time],
+                )
+                return {
+                    "status": "ambiguous_time",
+                    "candidates": [dict(slot) for slot in by_time],
+                }
+
+        if chosen is None:
+            # Last resort: the display string itself, for a reply that
+            # quotes it back verbatim in a form the clock parser did not
+            # recognise.
+            folded_input = _normalize_arabic((user_input or "").strip())
+            for slot in slots:
+                folded_time = _normalize_arabic(str(slot.get("time_display") or ""))
+                if folded_time and (folded_time in folded_input or folded_input in folded_time):
+                    chosen = slot
+                    break
+
+        if chosen is None:
+            logger.info(
+                "select_reschedule_slot: %r matched no remembered slot by "
+                "position or time (session_id=%s)",
+                user_input, session_id,
+            )
+            return {"status": "not_matched"}
+
+    # LOCKED IN. This is the one place `reschedule_appointment` reads the
+    # chosen time from - never the model's own recollection of the
+    # conversation. See graph._build_selected_reschedule_slot_directive,
+    # which reinforces these exact values in the prompt for as long as
+    # this reschedule is in progress.
+    session["selected_reschedule_slot"] = dict(chosen)
+
+    logger.info(
+        "select_reschedule_slot: session_id=%s locked in slotStart=%s (%s %s)",
+        session_id, chosen.get("slotStart"), chosen.get("date_display"), chosen.get("time_display"),
+    )
+
+    return {"status": "selected", "slot": chosen}
+
+
+@tool
 def reschedule_appointment(
     state: Annotated[AgentState, InjectedState],
     booking_id: str,
@@ -5002,14 +5191,19 @@ def reschedule_appointment(
     booking's own "id" field (a GUID) from a FRESH `lookup_appointment`
     or `check_booking_status` call in THIS conversation - never invent
     or reuse an old value from memory. `new_time_from`/`new_time_to` must
-    be the EXACT slotStart/slotEnd values from `get_available_reschedule_slots`
-    - never modify or recompute them yourself.
+    come from `select_reschedule_slot` - call that FIRST with the
+    patient's raw pick, right after `get_available_reschedule_slots`;
+    this tool uses that lock's own slotStart/slotEnd rather than trusting
+    whatever you pass, so pass its values here, never a recomputed one.
 
     Each status below carries its own handling instruction with the result
     itself (the `_guidance` field) - read that when it arrives.
 
-    Returns one of: {"status": "success"},
-    {"status": "not_looked_up"}, or {"status": "error"}."""
+    Returns one of: {"status": "success"}, {"status": "not_looked_up"},
+    {"status": "slot_not_locked"} (call `select_reschedule_slot` first),
+    {"status": "slot_unavailable"} (re-verified against live availability
+    and it's gone - show the patient a fresh slot list, don't retry the
+    same time), or {"status": "error"}."""
 
     # NOTE: confirmed directly from the user's own curl - GuestBookings/Update
     # lives on the SAME port as Doctors/Specialties (1302), NOT the regular
@@ -5042,36 +5236,151 @@ def reschedule_appointment(
 
     booking_id = resolved["booking_id"]
 
-    # THE SLOT THE PATIENT PICKED WINS OVER THE ONE THE MODEL TYPED.
+    # THE LOCKED SLOT WINS OVER ANYTHING THE MODEL TYPED.
     #
-    # The same rule `create_new_booking` applies to `slot_start`, for
-    # the same reason and with the same consequence when it is missing -
-    # except that here the wrong value is not refused by a
-    # re-verification, it is WRITTEN. See
-    # `_reschedule_slot_from_remembered` for the production trace.
-    remembered = _reschedule_slot_from_remembered(state, new_time_from)
-    if remembered and remembered.get("slotStart"):
-        if not _same_instant(new_time_from, remembered.get("slotStart")):
+    # Same pattern `create_new_booking` already trusts via `_selected_slot`
+    # / `select_appointment_slot`. `select_reschedule_slot` stores the
+    # tool's own slotStart/slotEnd verbatim, so nothing downstream depends
+    # on the model re-deriving either from a display string.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (session 201158877175+medtown2,
+    # 2026-09-14 13:57-13:58): a list headed "الأربعاء 16/09/2026" showed
+    # a 1:00 صباحًا slot that was really the NEXT calendar day. Before
+    # this lock existed, the model echoed the header's date back as
+    # new_time_from, which matched neither this slot's slotStart nor its
+    # _localStart, so the old fallback below wrote that value to the live
+    # booking API exactly as typed - moving the appointment to the wrong
+    # instant. Retrying ("حاول تاني") reran the identical wrong write
+    # every time, because nothing had ever locked the actual slot.
+    locked_slot = _selected_reschedule_slot(state)
+    if locked_slot and locked_slot.get("slotStart"):
+        if not _same_instant(new_time_from, locked_slot.get("slotStart")):
             logger.warning(
-                "reschedule_appointment: new_time_from=%r is that slot's DISPLAY "
-                "time, not the value the booking API takes (%s) - writing the "
-                "slot the patient actually picked (session_id=%s)",
-                new_time_from, remembered.get("slotStart"), state.get("session_id"),
+                "reschedule_appointment: new_time_from=%r is not the slot this "
+                "session locked in via select_reschedule_slot (%s) - "
+                "rescheduling to the patient's own choice instead "
+                "(session_id=%s)",
+                new_time_from, locked_slot.get("slotStart"), state.get("session_id"),
             )
-        new_time_from = remembered["slotStart"]
-        if remembered.get("slotEnd"):
-            new_time_to = remembered["slotEnd"]
-    elif new_time_from:
-        # Nothing to check against - either no list was shown this
-        # conversation or the model named a time that is in none of it.
-        # Say so; do NOT block, because a legitimate reschedule can
-        # reach here (a slot list from a tool this flow did not remember,
-        # a resumed thread) and refusing would be a new way to fail.
+        new_time_from = locked_slot["slotStart"]
+        if locked_slot.get("slotEnd"):
+            new_time_to = locked_slot["slotEnd"]
+    else:
+        # FALLBACK for a flow that never called `select_reschedule_slot`
+        # (e.g. an in-flight thread checkpointed before this tool
+        # existed). Try the previous best-effort match against the
+        # remembered list, and - unlike before - REFUSE rather than
+        # writing an unverified time to a live booking when neither
+        # source can vouch for it. See `_reschedule_slot_from_remembered`
+        # for why matching either the wire or display value is still
+        # deliberate here.
+        remembered = _reschedule_slot_from_remembered(state, new_time_from)
+        if remembered and remembered.get("slotStart"):
+            if not _same_instant(new_time_from, remembered.get("slotStart")):
+                logger.warning(
+                    "reschedule_appointment: new_time_from=%r is that slot's "
+                    "DISPLAY time, not the value the booking API takes (%s) - "
+                    "writing the slot the patient actually picked "
+                    "(session_id=%s)",
+                    new_time_from, remembered.get("slotStart"), state.get("session_id"),
+                )
+            new_time_from = remembered["slotStart"]
+            if remembered.get("slotEnd"):
+                new_time_to = remembered["slotEnd"]
+        elif new_time_from:
+            logger.error(
+                "reschedule_appointment: refusing to write new_time_from=%r - "
+                "it matches no locked or remembered slot for session_id=%s "
+                "(was select_reschedule_slot ever called?)",
+                new_time_from, state.get("session_id"),
+            )
+            return {"status": "slot_not_locked"}
+
+    # RE-VERIFY AGAINST LIVE AVAILABILITY, IMMEDIATELY BEFORE WRITING.
+    #
+    # `create_new_booking` has always done this - confirm the exact
+    # instant is still an open, unbooked slot for this doctor right now,
+    # not just "the one the patient picked earlier in this
+    # conversation" - because someone else may have taken it since, or
+    # (as happened here) an upstream bug may hand this tool a time that
+    # was never a real slot to begin with. This tool never had the same
+    # check: nothing between a locked-in time and the live booking API
+    # confirms the time is real, so a wrong instant reaches the API
+    # exactly as given and the API itself does not appear to reject it
+    # either. Both matter independently; this closes our side of it.
+    doctor_id = None
+    for record in _looked_up_bookings(state):
+        if str(record.get("id") or "").strip() == booking_id:
+            doctor_id = record.get("doctorId")
+            break
+
+    if not doctor_id:
         logger.warning(
-            "reschedule_appointment: new_time_from=%r matches no slot this "
-            "conversation showed - writing it as given (session_id=%s)",
-            new_time_from, state.get("session_id"),
+            "reschedule_appointment: no doctorId on file for booking_id=%s - "
+            "proceeding without re-verifying live availability (session_id=%s)",
+            booking_id, state.get("session_id"),
         )
+    elif new_time_from:
+        try:
+            requested_start_dt = datetime.fromisoformat(new_time_from)
+            day_start = requested_start_dt.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+            day_end = requested_start_dt.replace(hour=23, minute=59, second=59, microsecond=0).isoformat()
+        except ValueError:
+            logger.warning(
+                "reschedule_appointment: unparsable new_time_from=%r - skipping "
+                "re-verification (session_id=%s)",
+                new_time_from, state.get("session_id"),
+            )
+            requested_start_dt = None
+
+        if requested_start_dt is not None:
+            slots_result = api.get_doctor_schedule_slots(
+                base_url, doctor_ids=[doctor_id],
+                from_date=day_start, to_date=day_end, is_booked=False, page_size=200,
+             language=conversation_language(state),)
+
+            if not slots_result["success"]:
+                logger.error(
+                    "reschedule_appointment: re-verification API call failed: "
+                    "status_code=%s error=%s",
+                    slots_result.get("status_code"), slots_result.get("error"),
+                )
+                return _api_error(slots_result)
+
+            # Same explicit-instant comparison as `create_new_booking`'s
+            # re-verification, for the same reason: `new_time_from` is
+            # naive wire format, so a naive `.timestamp()` would assume
+            # the PROCESS's own timezone rather than UTC.
+            if requested_start_dt.tzinfo is None:
+                requested_start_dt = requested_start_dt.replace(tzinfo=timezone.utc)
+            requested_ms = requested_start_dt.timestamp()
+
+            raw_items = (slots_result["data"] or {}).get("items", [])
+            logger.info(
+                "reschedule_appointment: re-verification doctor_id=%s day_range=[%s, %s] "
+                "requested_new_time_from=%s api_returned=%d",
+                doctor_id, day_start, day_end, new_time_from, len(raw_items),
+            )
+
+            matched_slot = None
+            for item in raw_items:
+                if item.get("isBooked"):
+                    continue
+                try:
+                    item_ms = datetime.fromisoformat(item["slotStart"].replace("Z", "+00:00")).timestamp()
+                except (ValueError, KeyError, AttributeError):
+                    continue
+                if abs(item_ms - requested_ms) < 1:  # same instant
+                    matched_slot = item
+                    break
+
+            if not matched_slot:
+                logger.warning(
+                    "reschedule_appointment: requested new_time_from=%s not found or "
+                    "already booked (doctor_id=%s). Raw slotStarts returned: %s",
+                    new_time_from, doctor_id, [i.get("slotStart") for i in raw_items][:20],
+                )
+                return {"status": "slot_unavailable"}
 
     result = api.reschedule_booking(base_url, booking_id, new_time_from, new_time_to)
 
@@ -5284,6 +5593,13 @@ def list_branch_services(
         services.append({"id": item.get("id"), "name": name, "description": description})
 
     branch_info = {"id": branch_id, "name": branch_display}
+
+    # See `_remember_branch_name`'s docstring: this tool confirms ONE
+    # branch and never returns a roster, so nothing else registers this
+    # name in the permanent known-branch memory the invented-branch
+    # guard relies on once older turns get compacted out of the raw
+    # message history.
+    _remember_branch_name(state, branch_display)
 
     logger.info(
         "list_branch_services: branch_id=%s (%s) -> %d published service(s)",
@@ -5821,6 +6137,27 @@ def _note_info_branch_availability(state, branch_row: dict) -> None:
     session["info_branch_id"] = branch_row.get("id")
     session["info_branch_name"] = name
 
+    # FOLD INTO THE PERMANENT KNOWN-NAME MEMORY, SEPARATE FROM
+    # `last_list` (see `_remember_list`'s own docstring for why that
+    # store must never be overwritten by anything but an actual list
+    # shown to the patient). A SINGLE matched branch (this path) never
+    # called `_remember_list` at all, so graph.py's invented-branch
+    # guard (`get_known_entity_names`) never learned this name existed.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE: `match_entity_info` matched
+    # "Al Manar" (score 1.0) this very turn, the reply correctly named
+    # it in Arabic ("فرع المنار") per the dialect instructions, and the
+    # guard rejected it as an invented branch anyway - because its
+    # transliteration fallback checks `get_known_entity_names`, which
+    # had never been told about this branch since only LIST-mode
+    # results reached `_remember_list`. Two turns in a row where the
+    # patient explicitly asked for this branch's location both ended in
+    # the generic hand-off fallback instead of a real answer.
+    known_bucket = session.setdefault("known_branch_names", set())
+    for value in (branch_row.get("name"), branch_row.get("altName"), name):
+        if value:
+            known_bucket.add(str(value))
+
     if branch_row.get("hasAvailableDoctors") is False:
         session["info_branch_no_doctors"] = name
         logger.info(
@@ -5970,20 +6307,36 @@ def match_entity_info(
         return {"status": "not_configured"}
 
     if entity_type == "doctor":
-        # `has_service_schedule` DEFAULTS TO TRUE ON THE API WRAPPER
-        # ITSELF (see api.get_doctors) - so this call, despite passing
-        # no filters of its own, was silently asking the API to exclude
-        # any doctor with no schedule on file at all, even though this
-        # function's entire purpose is a plain "does this doctor
-        # exist?" information lookup, not a bookability check.
+        # `has_published_service`/`has_service_schedule` DEFAULT TO TRUE
+        # ON THE API WRAPPER ITSELF (see api.get_doctors) - so this
+        # call, despite passing no filters of its own, was silently
+        # asking the API to exclude any doctor with no published
+        # service or no schedule on file, even though this function's
+        # entire purpose is a plain "does this doctor exist?"
+        # information lookup, not a bookability check.
         #
         # CONFIRMED REAL PRODUCTION FAILURE (tenant): a doctor the
         # clinic confirmed is real, active, and simply has no schedule
         # added yet ("عمر المديفر") could not be found here at all -
         # not a fuzzy-matching problem, since the API never returned
-        # him in the first place for this call to match against.
+        # him in the first place for this call to match against. A
+        # real doctor whose service wasn't marked "published"
+        # ("د. ليلى الحربي") failed the identical way for the sibling
+        # filter, in the COMPLAINT flow specifically - stopping the
+        # complaint entirely over a name that was never actually wrong.
+        #
+        # PASS None, NOT False, FOR BOTH. These are literal equality
+        # filters on the API side, not an on/off switch - `False` asks
+        # for doctors where the field is exactly False (a real, usually
+        # much SMALLER subset), not the unfiltered roster. CONFIRMED
+        # REAL REGRESSION: passing `False` for both at once (an
+        # intersection of two rare conditions) cut a roster of 7 down
+        # to 3 - the opposite of the intended fix. `None` omits the
+        # field from the request entirely, which is what "no opinion
+        # on this filter" actually requires.
         result = api.get_doctors(
-            base_url, page_size=200, has_service_schedule=False,
+            base_url, page_size=200,
+            has_service_schedule=None, has_published_service=None,
             language=conversation_language(state),
         )
         name_keys = ["formatedName", "altName", "name"]
@@ -6154,6 +6507,7 @@ def match_entity_info(
         # booked at.
         if entity_type == "branch":
             _note_info_branch_availability(state, shaped_pos)
+            _remember_branch_name(state, _arabic_preferred_name(shaped_pos) or shaped_pos.get("name"))
 
         return {"status": "matched", "item": shaped_pos}
 
@@ -6304,6 +6658,7 @@ def match_entity_info(
         if entity_type == "branch":
             # Same reason as the positional-pick path above.
             _note_info_branch_availability(state, matched_item)
+            _remember_branch_name(state, _arabic_preferred_name(matched_item) or matched_item.get("name"))
         elif entity_type == "doctor" and matched_item.get("id"):
             # See `_doctor_active_branch_names`'s own docstring for the
             # confirmed production failure this closes - only fetched
@@ -6313,6 +6668,18 @@ def match_entity_info(
             matched_item["branches"] = _doctor_active_branch_names(
                 state, base_url, matched_item["id"],
             )
+            # WITHOUT THIS, THE NAMES JUST ATTACHED ABOVE ARE INVISIBLE
+            # TO graph.py's invented-branch guard (`_find_invented_branches`):
+            # `_remember_list`/`_remember_branch_name` are the only writers
+            # of the known-branch store it checks, and neither was ever
+            # called on this path. CONFIRMED REAL PRODUCTION FAILURE: the
+            # medical agent correctly named a doctor's real, active branch
+            # ("فرع النزهة", sourced from this very field) and the reply
+            # was rejected as inventing a branch - twice, replacing a
+            # correct answer with the generic fallback and an unwanted
+            # human handoff.
+            for _branch_name in matched_item["branches"]:
+                _remember_branch_name(state, _branch_name)
         return {"status": "matched", "item": matched_item}
 
     ambiguous_candidates = [shape_fn(i) for i in match_result["items"]]
@@ -6986,18 +7353,21 @@ def match_entity_for_booking(
                     "was empty" if not narrowed else "has no match", user_input,
                 )
                 widen_started = time.monotonic()
-                # `has_service_schedule` DEFAULTS TO TRUE on the API
-                # wrapper itself - left alone here, this widen step
-                # would still exclude a real, active doctor who simply
-                # has no schedule on file, exactly defeating its own
-                # purpose ("they may be real but fully booked... widen
-                # once before concluding 'no such doctor'"). A doctor
-                # found this way and then confirmed will correctly get
-                # "not_found" from the schedule lookup right after -
-                # see that tool's own guidance for how that is phrased.
+                # `has_service_schedule` IS A LITERAL EQUALITY FILTER ON
+                # THE API SIDE, NOT AN ON/OFF SWITCH - passing `False`
+                # asks for doctors where that field is exactly False (no
+                # schedule at all), which is a real, usually much
+                # SMALLER subset, not the unfiltered roster this widen
+                # step actually wants ("they may be real but simply not
+                # matched under the narrower search - widen once before
+                # concluding 'no such doctor'", not "only look at
+                # doctors who have no schedule"). `None` omits the field
+                # from the request entirely - see api.get_doctors's own
+                # docstring for the confirmed regression this exact
+                # mistake caused elsewhere (`match_entity_info`).
                 result = api.get_doctors(
                     base_url, branch_ids=branch_filter, page_size=50,
-                    has_service_schedule=False,
+                    has_service_schedule=None,
                     language=conversation_language(state),
                 )
                 logger.info(
@@ -7419,6 +7789,15 @@ def match_entity_for_booking(
         if entity_type == "branch":
             # Named by the patient - their choice, not an inference.
             session["branch_auto_resolved"] = False
+            # Same class of gap as get_doctor_schedule_for_booking /
+            # match_entity_info / find_available_doctors /
+            # resolve_available_day / list_available_days_for_booking:
+            # a fuzzy name-match here never went through _remember_list
+            # (that only runs for the list/ambiguous branches above), so
+            # without this the branch is invisible to graph.py's
+            # invented-branch guard even though the patient just named
+            # it themselves.
+            _remember_branch_name(state, session[f"{entity_type}_display_name"])
 
     response = {"matched": True, "needsConfirmation": needs_confirmation, "item": shaped}
 
@@ -7893,6 +8272,11 @@ def resolve_available_day(
                         match = next((b for b in (branches_result["data"] or {}).get("items", []) if b.get("id") == branch_id), None)
                         if match:
                             session["branch_display_name"] = _arabic_preferred_name(match)
+                            # Same class of gap as get_doctor_schedule_for_booking /
+                            # match_entity_info / find_available_doctors: an
+                            # auto-resolved branch name must be remembered or
+                            # a correct reply naming it gets flagged as invented.
+                            _remember_branch_name(state, session["branch_display_name"])
                 except Exception:
                     logger.exception("resolve_available_day: failed to enrich auto-resolved branch name")
         else:
@@ -8596,6 +8980,11 @@ def list_available_days_for_booking(
                     except Exception:
                         logger.exception("list_available_days_for_booking: failed to enrich auto-confirmed branch name")
                     session["branch_display_name"] = display_name
+                # Same class of gap as get_doctor_schedule_for_booking /
+                # match_entity_info / find_available_doctors /
+                # resolve_available_day: register the name so a reply
+                # naming this branch isn't rejected as invented.
+                _remember_branch_name(state, session.get("branch_display_name"))
                 logger.info(
                     "list_available_days_for_booking: auto-confirmed single branch_id=%s (%s) for doctor_id=%s",
                     branch_id, session.get("branch_display_name"), doctor_id,
@@ -8884,6 +9273,69 @@ def list_available_days_for_booking(
     }
 
 
+_REVIEW_CARD_QUESTION_FALLBACKS = (
+    "is everything correct - shall i confirm the booking",
+    "هل جميع البيانات صحيحه وتود تاكيد الحجز",
+)
+
+
+def _review_card_was_shown(state: AgentState) -> bool:
+    """True only if the clinic's own consolidated review-card
+    confirmation QUESTION has actually been sent to the patient at some
+    point in this conversation - scanned across every assistant
+    message, not just the immediately preceding one, since
+    `confirm_booking_review` can legitimately be called a turn (or a
+    tool-call batch) after the card itself was shown.
+
+    THIS IS THE ONLY THING THAT MAY SET `review_shown = True`.
+    `confirm_booking_review` used to trust the model's own judgment
+    unconditionally - "regardless of the exact wording the patient
+    used, because it's the model's own judgment that the patient
+    agreed" - which sounds reasonable but has no way to tell a real
+    "the patient agreed to the actual card" from a model that merely
+    BELIEVES a review happened.
+
+    CONFIRMED REAL PRODUCTION FAILURE this exists to prevent:
+    `create_new_booking`'s own "needs_review" guidance tells the model
+    that if the patient's last message already agreed to "this exact
+    same review", it may call `confirm_booking_review` immediately
+    without re-printing the card - a legitimate shortcut for the case
+    where the card really was shown a turn earlier. A model can
+    misapply that shortcut when it was NOT shown. In one real case, a
+    plain "لا" declining the OPTIONAL EMAIL question was treated as if
+    it had confirmed a review card that had never once been sent, and
+    `confirm_booking_review` set `review_shown = True` on that
+    strength alone - a real, irreversible booking went through with
+    the patient never having seen branch/doctor/date/time/name/phone
+    together in one place."""
+
+    templates = state.get("templates") or {}
+    template_value = templates.get("msg_booking_confirmation")
+
+    needles = []
+    if template_value and isinstance(template_value, str):
+        for line in template_value.replace("\r", "\n").split("\n"):
+            if "؟" in line or "?" in line:
+                needles.append(_normalize_arabic(line))
+    if not needles:
+        needles = [_normalize_arabic(s) for s in _REVIEW_CARD_QUESTION_FALLBACKS]
+    needles = [n for n in needles if n]
+    if not needles:
+        return False
+
+    for msg in reversed(state.get("messages") or []):
+        if getattr(msg, "type", None) != "ai":
+            continue
+        content = getattr(msg, "content", "")
+        text = content if isinstance(content, str) else str(content or "")
+        if not text.strip():
+            continue
+        if any(needle in _normalize_arabic(text) for needle in needles):
+            return True
+
+    return False
+
+
 @tool
 def confirm_booking_review(
     state: Annotated[AgentState, InjectedState],
@@ -8919,11 +9371,26 @@ def confirm_booking_review(
     confirm.
 
     Returns {"status": "confirmed"} - proceed straight to
-    `create_new_booking` with the same values. There is no other
-    status; a missing session simply means nothing has been confirmed
-    yet."""
+    `create_new_booking` with the same values.
+    Returns {"status": "card_not_shown"} if the consolidated review
+    card above has not actually been sent to the patient yet anywhere
+    in this conversation - show it first (the exact shape above), end
+    your turn, and only call this again once the patient's NEXT
+    message actually agrees to THAT card."""
 
     session_id = state.get("session_id")
+
+    if not _review_card_was_shown(state):
+        logger.warning(
+            "confirm_booking_review: refusing for session_id=%s - no "
+            "consolidated review card (branch/doctor/date/time/name/"
+            "phone together, ending in its own confirmation question) "
+            "has actually been sent to the patient yet in this "
+            "conversation - patient_full_name=%r was NOT confirmed.",
+            session_id, patient_full_name,
+        )
+        return {"status": "card_not_shown"}
+
     session = _get_booking_session(session_id)
     session["review_shown"] = True
     logger.info(
@@ -9018,8 +9485,22 @@ def create_new_booking(
                 slot_start, locked_slot.get("slotStart"), session_id,
             )
             slot_start = locked_slot["slotStart"]
-            if locked_slot.get("slotEnd"):
-                slot_end = locked_slot["slotEnd"]
+        # The locked slot's own slotEnd always wins, independent of
+        # whether slot_start needed correcting above - slot_end is
+        # never something the model derives correctly on its own (see
+        # this tool's docstring: these values must be EXACT, never
+        # recomputed), and a slot_start that already matches by instant
+        # (just reformatted, e.g. with a +03:00 offset instead of the
+        # naive wire value) is no guarantee slot_end does too.
+        #
+        # CONFIRMED REAL PRODUCTION FAILURE: slot_start matched the
+        # locked slot by instant (so the branch above never fired), but
+        # the model's own slot_end argument was wrong, producing
+        # bookingTimeTo <= bookingTimeFrom - the real API rejected it
+        # with "Booking Time To Must Be Greater Than Time From" after
+        # the patient had already confirmed the review twice.
+        if locked_slot.get("slotEnd"):
+            slot_end = locked_slot["slotEnd"]
 
     # SERVER-SIDE ENFORCEMENT, NOT JUST A PROMPT RULE. STEP NB6 already
     # instructs asking for the patient's full name (at least two parts)
@@ -9451,6 +9932,20 @@ def get_doctor_schedule_for_booking(
                     session.get("branch_display_name"), only_branch_id,
                 )
             logger.info("get_doctor_schedule_for_booking: auto-confirmed single branch_id=%s (%s) for doctor_id=%s", only_branch_id, session.get("branch_display_name"), doctor_id)
+            # Without this, graph.py's invented-branch guard
+            # (`_find_invented_branches`) has no record that this name
+            # is real: `_remember_list` is never called here (this path
+            # confirms a single branch, it doesn't show a roster), so
+            # `get_known_entity_names(session_id, "branch")` stays
+            # empty. CONFIRMED REAL PRODUCTION FAILURE: the reply
+            # correctly translated a doctor's real, auto-confirmed
+            # English-only branch name ("Al Nozha") to Arabic ("فرع
+            # النزهة"), and the guard rejected it as invented - twice,
+            # replacing the correct reply with the generic fallback and
+            # a needless human handoff. Same fix as
+            # `share_branch_location`/`list_branch_services` already
+            # apply for the same reason - see `_remember_branch_name`.
+            _remember_branch_name(state, session.get("branch_display_name"))
 
     doctor_display_name = session.get("doctor_display_name")
     branch_display_name = session.get("branch_display_name")
@@ -10439,6 +10934,20 @@ _LOCATION_REQUEST_CUE_RE = re.compile(
 )
 
 
+_LOCATION_INTENT_LOOKBACK = 6  # messages; bounds how far back we'll search
+
+_BARE_PICK_RE = re.compile(r"^[\s\d\u0660-\u0669#\u061F]{1,4}$")
+
+
+def _bare_disambiguation_reply(text: str) -> bool:
+    """True for a short positional pick ("2", "٢", "رقم 2") - as
+    opposed to a real, substantial message that starts a new topic."""
+    stripped = (text or "").strip()
+    if not stripped:
+        return False
+    return len(stripped) <= 2 or bool(_BARE_PICK_RE.match(stripped))
+
+
 @tool
 def share_branch_location(
     state: Annotated[AgentState, InjectedState],
@@ -10451,10 +10960,21 @@ def share_branch_location(
     1. The patient explicitly asked for the branch's location, address,
        or how to get there (not just named the branch, and not just
        had it confirmed/selected as part of booking or anything else).
-    2. `match_entity_info` (entity_type="branch") has ACTUALLY matched a
-       real branch and you are telling the patient its address this
-       turn - never call this with a branch name you have not just
-       confirmed exists via that tool, and never guess or invent one.
+    2. The branch is a REAL, CONFIRMED one - either `match_entity_info`
+       (entity_type="branch") actually matched it THIS turn, or it was
+       already confirmed by that same tool earlier in this
+       conversation (e.g. it's the branch you already gave the address
+       for a moment ago) - never call this with a branch name that was
+       never confirmed by `match_entity_info` at some point in this
+       conversation, and never guess or invent one.
+
+    IMPORTANT: an ALREADY-KNOWN branch is not a reason to skip this
+    tool. "What's Al Manar's location?" asked a second time, about a
+    branch you already resolved earlier, is STILL an explicit location
+    request THIS turn and still requires calling this tool with that
+    same confirmed branch_name - answering from memory without calling
+    it means no map pin is ever sent, even though you correctly know
+    the address.
 
     Simply mentioning, confirming, or picking a branch (e.g. during the
     booking flow, or the patient just typing a branch's name with no
@@ -10499,7 +11019,47 @@ def share_branch_location(
             latest_text = content if isinstance(content, str) else str(content or "")
             break
 
-    if not _LOCATION_REQUEST_CUE_RE.search(latest_text):
+    location_asked = bool(_LOCATION_REQUEST_CUE_RE.search(latest_text))
+
+    # A bare disambiguation reply ("2", "منار") answering some
+    # in-between question doesn't repeat the location wording itself -
+    # and the assistant's OWN disambiguation question doesn't always
+    # either (it may reword it around "services" or the branch name
+    # instead of "location"). Walk back through the exchange, skipping
+    # over short/bare human picks and the assistant's own in-between
+    # questions, until reaching the message that actually carries the
+    # topic - bounded, so this can never reach into an unrelated older
+    # part of the conversation.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURES, same session: (1) patient
+    # asked "ابعت لوكيشن فرع المنار", got "تحب أرسل لك لوكيشن أي فرع
+    # منهم؟", replied "2" - no map pin sent, this check only looked at
+    # "2". (2) same request, but the disambiguation question that turn
+    # was reworded to "تحب أعرفك على خدمات أحد الفروع؟" with no location
+    # wording at all - looking back only ONE message still missed the
+    # original location ask two exchanges earlier.
+    if not location_asked:
+        history = (state.get("messages") or [])[:-1]
+        for msg in reversed(history[-_LOCATION_INTENT_LOOKBACK:]):
+            msg_type = getattr(msg, "type", None)
+            content = getattr(msg, "content", "")
+            text = content if isinstance(content, str) else str(content or "")
+
+            if msg_type == "human":
+                if _LOCATION_REQUEST_CUE_RE.search(text):
+                    location_asked = True
+                    break
+                if _bare_disambiguation_reply(text):
+                    continue  # a short pick ("2") - keep looking further back
+                break  # a real, different, substantial message - not this topic
+            elif msg_type == "ai" and text.strip():
+                if _LOCATION_REQUEST_CUE_RE.search(text):
+                    location_asked = True
+                    break
+                continue  # the assistant's own in-between question - keep looking
+            # tool messages etc. - skip past, don't count as a boundary
+
+    if not location_asked:
         logger.warning(
             "share_branch_location: REFUSED for client_id=%s session_id=%s branch_name=%r - "
             "the patient's latest message %r does not actually ask for a location/address, "
@@ -10512,6 +11072,12 @@ def share_branch_location(
         "share_branch_location: session_id=%s client_id=%s branch_name=%r",
         state.get("session_id"), state.get("client_id"), branch_name,
     )
+    # See `_remember_branch_name`'s docstring: this tool confirms ONE
+    # branch by name and never returns a roster, so nothing else
+    # registers it in the permanent known-branch memory the
+    # invented-branch guard relies on once older turns get compacted
+    # out of the raw message history.
+    _remember_branch_name(state, branch_name)
     return {"status": "location_requested", "branch_name": branch_name}
 
 
@@ -10529,6 +11095,7 @@ ALL_TOOLS = [
     get_next_weekday_date,
     get_doctor_schedule,
     get_available_reschedule_slots,
+    select_reschedule_slot,
     reschedule_appointment,
     answer_hospital_faq,
     list_hospital_services,
@@ -10542,6 +11109,7 @@ ALL_TOOLS = [
     resolve_available_day,
     list_available_days_for_booking,
     create_new_booking,
+    confirm_booking_review,
     get_doctor_schedule_for_booking,
     get_available_slots_for_booking,
     select_appointment_slot,
