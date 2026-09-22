@@ -14049,7 +14049,7 @@ _REPLY_VERIFIERS = (
             agent_name in ("booking", "concierge", "faq")
             and _reply_reasks_collection_mode_already_set(reply, state)
         ),
-        lambda reply, state: _MODE_ALREADY_SET_CORRECTION_DIRECTIVE,
+        lambda reply, state: _build_mode_already_set_correction_directive(state),
         "new-booking reply asked NB1-Q2's in-lab-or-home collection-mode question "
         "again, even though select_sample_collection_mode already succeeded for "
         "this session",
@@ -17493,28 +17493,80 @@ def _reply_reasks_collection_mode_already_set(reply_text: str, state: AgentState
     return session.get("collection_mode") in ("home", "in_lab")
 
 
-_MODE_ALREADY_SET_CORRECTION_DIRECTIVE = (
-    "============================================================\n"
-    "COLLECTION MODE IS ALREADY SET - DO NOT ASK AGAIN\n"
-    "============================================================\n"
-    "Your previous draft asked whether to do this in the lab or at "
-    "home - but `select_sample_collection_mode` already succeeded for "
-    "this session earlier in this same conversation. The patient "
-    "already answered this and it has already been acted on.\n\n"
-    "Rewrite this reply WITHOUT that question. Say nothing about "
-    "collection mode at all - simply carry on from wherever the flow "
-    "actually is (confirming the test, asking about a branch for "
-    "in_lab, or moving straight to available days for home mode), "
-    "using the mode already on record.\n\n"
-    "CONFIRMED REAL PRODUCTION FAILURE: \"عاوزه احجز سحب عينه من "
-    "البيت\" set collection_mode=\"home\" immediately, and several "
-    "turns later - right after the test was finally settled - the "
-    "reply asked \"في المعمل ولا من البيت؟\" again, as if the earlier "
-    "answer had never happened. Never let a detour elsewhere in the "
-    "conversation (a router handoff, a different flow, several turns "
-    "passing) be a reason to re-ask a question this session already "
-    "has a real, recorded answer to.\n\n"
-)
+def _build_mode_already_set_correction_directive(state: AgentState) -> str:
+    """Session-aware correction for `_reply_reasks_collection_mode_already_set`.
+
+    CONFIRMED REAL PRODUCTION FAILURE (session 201158877175+medtown2,
+    2026-09-22): the earlier version of this directive listed BOTH
+    branches of what to do next ("asking about a branch for in_lab, or
+    moving straight to available days for home mode") without saying
+    which one applied to THIS session - so the model, mid-correction,
+    picked the wrong one: for a session whose collection_mode was
+    genuinely "home", the corrected reply asked "حابب تختاري فرع
+    المعمل..." (STEP NB1-Q3, the in_lab-only branch question), which
+    home mode must never ask at all. Listing options generically and
+    trusting the model to also re-derive which one applies, in the same
+    breath as a correction, repeated the exact class of failure this
+    directive exists to fix. This version reads `collection_mode`
+    directly from the session and states only the ONE path that
+    actually applies - no branch for the model to get wrong."""
+
+    session_id = state.get("session_id")
+    session = tools._BOOKING_SESSIONS.get(session_id) or {}
+    mode = session.get("collection_mode")
+
+    if mode == "home":
+        next_step = (
+            "THIS SESSION IS HOME MODE. Do NOT ask about a branch at all - home mode "
+            "never shows or asks about one (NB1-Q3 is for in_lab only). Move straight "
+            "to available days for home-collection: call "
+            "`list_available_days_for_booking` now (if not already called this turn) "
+            "and show its real dates, labeled \"المواعيد المتاحة لسحب العينة من "
+            "المنزل\", then ask which day - all in this same reply, immediately after "
+            "confirming the test."
+        )
+    elif mode == "in_lab":
+        next_step = (
+            "THIS SESSION IS IN-LAB MODE. Ask STEP NB1-Q3's branch question (show the "
+            "real branches offering this test, plus the nearest-branch-by-address "
+            "shortcut) - never re-ask the in-lab-or-home question itself."
+        )
+    else:
+        next_step = (
+            "This session's collection_mode could not be read as \"home\" or "
+            "\"in_lab\" - do not guess; call `select_sample_collection_mode` again "
+            "with whatever the patient most recently said about location, then "
+            "continue from there."
+        )
+
+    return (
+        "============================================================\n"
+        "COLLECTION MODE IS ALREADY SET - DO NOT ASK AGAIN\n"
+        "============================================================\n"
+        "Your previous draft asked whether to do this in the lab or at "
+        "home - but `select_sample_collection_mode` already succeeded for "
+        "this session earlier in this same conversation. The patient "
+        "already answered this and it has already been acted on.\n\n"
+        "Rewrite this reply WITHOUT that question. Say nothing about "
+        "collection mode at all.\n\n"
+        f"{next_step}\n\n"
+        "CONFIRMED REAL PRODUCTION FAILURE: \"عاوزه احجز سحب عينه من "
+        "البيت\" set collection_mode=\"home\" immediately, and several "
+        "turns later - right after the test was finally settled - the "
+        "reply asked \"في المعمل ولا من البيت؟\" again, as if the earlier "
+        "answer had never happened. Never let a detour elsewhere in the "
+        "conversation (a router handoff, a different flow, several turns "
+        "passing) be a reason to re-ask a question this session already "
+        "has a real, recorded answer to.\n\n"
+        "CONFIRMED REAL PRODUCTION FAILURE, A SECOND SHAPE: the SAME "
+        "session (collection_mode=\"home\") was correctly told not to "
+        "re-ask the mode question, and the correction still asked "
+        "\"حابب تختاري فرع المعمل اللي تحبي تعملي فيه التحليل؟\" - the "
+        "in_lab-only branch question - for a booking that was never "
+        "going to a branch. Fixing the re-ask is not enough; the very "
+        "next step must match the mode actually on record, never the "
+        "other mode's own next step.\n\n"
+    )
 
 
 _PREMATURE_SAME_NUMBER_CORRECTION_DIRECTIVE = (
