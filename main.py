@@ -63,6 +63,69 @@ def _lock_for(session_id: str) -> threading.Lock:
 
 
 # ==========================================================
+# Short-window duplicate-message guard
+# ==========================================================
+#
+# CONFIRMED REAL PRODUCTION FAILURE (session 201000625084-DEMO1223=23,
+# 2026-09-22 ~14:19): the patient answered "اه" to the booking review
+# card once. n8n called this project's /chat endpoint twice for that
+# one "اه" - two separate, sequential HTTP requests (not a race the
+# lock above would catch), each carrying the identical session_id and
+# message. Each call was indistinguishable from a genuinely new "اه"
+# from the patient, so each independently re-ran the turn from
+# scratch and re-drafted the same review card. The patient saw the
+# card, replied once, and got the card back a second time instead of
+# a confirmation - not because anything in the booking logic looped,
+# but because this project has no memory that the message it just
+# processed is one it has already seen.
+#
+# THIS DOES NOT REPLACE FIXING IT IN n8n. The docstring above already
+# says webhook-level dedup (keyed by the platform's own message "mid")
+# belongs there, and that remains the right place to stop a genuine
+# double-delivery before it ever reaches this service. This is a
+# second, narrower layer directly in front of the graph: if the exact
+# same (session_id, message) pair arrives again within a few seconds,
+# treat it as the same event and return the reply already computed for
+# it, rather than asking the LLM to decide all over again what a
+# message it has already acted on should now cause.
+#
+# DELIBERATELY NARROW. Keyed on the RAW message text, not just
+# session_id + a time window - a patient legitimately repeating
+# themselves ("اه" answered twice on purpose, moments apart, because
+# the first reply was slow to arrive) is a real message and must reach
+# the graph normally. Only an EXACT repeat of text this session's very
+# last processed message counts; anything else always proceeds.
+_DUPLICATE_MESSAGE_WINDOW_SECONDS = 10
+
+_last_processed: Dict[str, tuple] = {}  # session_id -> (message, reply_dict, processed_at)
+
+
+def _cached_duplicate_reply(session_id: str, message: str) -> "Dict | None":
+    """The previous turn's full result dict if `message` is an exact repeat
+    of the last message THIS session actually finished processing, within
+    the duplicate window - else None, meaning: proceed normally."""
+
+    entry = _last_processed.get(session_id)
+    if entry is None:
+        return None
+
+    last_message, last_result, processed_at = entry
+    if last_message != message:
+        return None
+    if (_now() - processed_at) > _DUPLICATE_MESSAGE_WINDOW_SECONDS:
+        return None
+
+    logger.warning(
+        "session_id=%s: exact duplicate of the message this session just "
+        "processed %.1fs ago (%r) - returning the same reply instead of "
+        "re-running the turn. Likely a repeated webhook delivery from the "
+        "channel/n8n side; see the note above _last_processed.",
+        session_id, _now() - processed_at, message,
+    )
+    return last_result
+
+
+# ==========================================================
 # Bounded bookkeeping
 # ==========================================================
 #
@@ -104,6 +167,7 @@ def _prune_session_bookkeeping() -> None:
         _last_active.pop(session_id, None)
         _success_at.pop(session_id, None)
         _generation.pop(session_id, None)
+        _last_processed.pop(session_id, None)
         with _session_locks_guard:
             lock = _session_locks.get(session_id)
             # Never discard a lock some thread is currently holding -
@@ -348,6 +412,10 @@ def send_message_with_signals(
 
     try:
         with _lock_for(session_id):
+            cached = _cached_duplicate_reply(session_id, message)
+            if cached is not None:
+                return cached
+
             thread_config = _config_for(session_id)
 
             # Snapshot the message count BEFORE this turn, so we can isolate
@@ -499,6 +567,14 @@ def send_message_with_signals(
             signals = _turn_signals(new_messages_this_turn)
             if signals["escalate"] or signals["location"]:
                 logger.info("session_id=%s: turn signals=%s", session_id, signals)
+
+            # Record what THIS session's most recent message actually
+            # produced, so an exact repeat of it arriving again shortly
+            # after (see `_cached_duplicate_reply` above) returns this
+            # same result instead of re-running the turn. Written only
+            # once the reply is known good - a turn that raised never
+            # reaches this line, so nothing is cached for it.
+            _last_processed[session_id] = (message, {"reply": reply, **signals}, _now())
 
     finally:
         # Whatever happened above, the turn is over: cancel any interim
