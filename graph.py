@@ -7602,20 +7602,93 @@ _CLINICAL_THRESHOLD_RE = re.compile(
 )
 
 
-def _reply_states_clinical_threshold(reply_text: str, state: AgentState) -> bool:
-    """True when a medical reply states a numeric clinical threshold.
+def _reply_cites_number_from_faq_passages(reply_text: str, state: AgentState) -> bool:
+    """True when EVERY numeric clinical-threshold match in `reply_text`
+    also appears in a passage `answer_hospital_faq` actually returned
+    this conversation - i.e. the number is real, cited knowledge-base
+    content, not the model's own invention.
 
-    No tool in this project returns clinical guidance, so any such
-    number is, by construction, the model's own - which is exactly what
-    makes it unsafe. The correction asks for the same advice expressed
-    without inventing a figure ("لو الوجع استمر أو زاد" instead of "لو
-    استمر أكتر من ٣ أيام"), which loses nothing the clinic authorised
-    and removes the part it did not."""
+    WHY THIS EXISTS: `_reply_states_clinical_threshold` below was
+    written under the assumption that "no tool in this project returns
+    clinical guidance, so any such number is the model's own." That
+    assumption broke the moment the SCAN/IMAGING PREP INSTRUCTIONS flow
+    (prompts.py) was added: `answer_hospital_faq` now legitimately
+    returns real numbers straight from this clinic's own knowledge base
+    - fasting hours ("6 ساعات"), exam duration ("10 الى 20 دقيقة"), and
+    similar. CONFIRMED REAL PRODUCTION FAILURE: a reply correctly
+    quoting the KB's own "يجب الصوم لمدة 6 ساعات على الأقل" for a TEE
+    echocardiogram was flagged as an invented clinical threshold, forced
+    into a correction pass that stripped it down, and the corrected
+    reply lost most of the ultrasound category list along with it -
+    the guardrail's false positive was the actual cause of the
+    STEP 3/4 picklist appearing incomplete, not the picklist logic
+    itself.
+
+    Scoped deliberately narrow: this only clears a number that is
+    ACTUALLY PRESENT in an `answer_hospital_faq` passage this turn -
+    not "an answer_hospital_faq call happened somewhere," and not any
+    other tool. A number with no matching passage text still gets
+    flagged exactly as before."""
 
     if not reply_text:
         return False
 
-    return bool(_CLINICAL_THRESHOLD_RE.search(_norm_ar(reply_text)))
+    numbers_in_reply = set(re.findall(r"\d+(?:[.,]\d+)?", reply_text))
+    if not numbers_in_reply:
+        return True  # nothing numeric to justify - not this guard's concern either way
+
+    passages_text = []
+    for msg in (state.get("messages") or []):
+        if getattr(msg, "type", None) != "tool":
+            continue
+        if getattr(msg, "name", None) != "answer_hospital_faq":
+            continue
+        data = parse_tool_content(msg)
+        if not data:
+            continue
+        for passage in (data.get("passages") or []):
+            if isinstance(passage, str):
+                passages_text.append(passage)
+
+    if not passages_text:
+        return False
+
+    combined = "\n".join(passages_text)
+    numbers_in_passages = set(re.findall(r"\d+(?:[.,]\d+)?", combined))
+
+    return numbers_in_reply.issubset(numbers_in_passages)
+
+
+def _reply_states_clinical_threshold(reply_text: str, state: AgentState) -> bool:
+    """True when a medical reply states a numeric clinical threshold
+    that is NOT backed by a real `answer_hospital_faq` passage.
+
+    Most numbers this guard sees have no tool behind them at all, so
+    they are, by construction, the model's own - which is exactly what
+    makes them unsafe. The correction asks for the same advice expressed
+    without inventing a figure ("لو الوجع استمر أو زاد" instead of "لو
+    استمر أكتر من ٣ أيام"), which loses nothing the clinic authorised
+    and removes the part it did not.
+
+    THE ONE EXCEPTION: the SCAN/IMAGING PREP INSTRUCTIONS flow
+    legitimately surfaces real numbers from this clinic's own knowledge
+    base via `answer_hospital_faq` (fasting hours, exam duration, and
+    similar) - see `_reply_cites_number_from_faq_passages` immediately
+    above for why treating those as invented was itself a confirmed
+    production failure. A flagged number that is actually present in
+    this turn's `answer_hospital_faq` passages is real, cited clinic
+    content, not a fabrication, and must not trigger this correction."""
+
+    if not reply_text:
+        return False
+
+    if not _CLINICAL_THRESHOLD_RE.search(_norm_ar(reply_text)):
+        return False
+
+    if _reply_cites_number_from_faq_passages(reply_text, state):
+        return False
+
+    return True
 
 
 _CLINICAL_THRESHOLD_CORRECTION_DIRECTIVE = (
@@ -17077,6 +17150,27 @@ def _reply_asks_same_number_before_booking_ready(reply_text: str, state: AgentSt
     doctor_ready = bool(session.get("doctor_id"))
     slot_ready = bool(session.get("selected_slot"))
 
+    # FOR in_lab MODE, A REAL BRANCH MUST ALSO BE ON RECORD - doctor_id
+    # alone is not enough. CONFIRMED REAL PRODUCTION FAILURE: the test
+    # was already known (doctor_id set, from the MEDICAL GUIDANCE FLOW
+    # having resolved it earlier), `select_sample_collection_mode`
+    # correctly set collection_mode="in_lab" but explicitly left
+    # branch_id unset ("doctor resolved later, once the test is
+    # chosen" - by that tool's own design, it never resolves a branch),
+    # and NB1-Q3 (show the branch list / ask for an address) was
+    # skipped entirely: the very next reply asked "نكمل الحجز على نفس
+    # رقم الواتساب ده؟" - STEP NB6's phone question - with no branch at
+    # all behind the booking, and the reply immediately after THAT
+    # skipped straight to asking about a day, never once naming or
+    # confirming a branch. `create_new_booking` itself already refuses
+    # to book without a real branch_id (see its own "missing_branch"
+    # status) - this check enforces the same requirement earlier, at
+    # the point the phone question is asked, so the patient is never
+    # walked through phone/day/time only to fail at the very last tool
+    # call for a branch nobody ever confirmed.
+    if session.get("collection_mode") == "in_lab" and not session.get("branch_id"):
+        return True
+
     if doctor_ready and slot_ready:
         return False
 
@@ -17120,6 +17214,19 @@ _PREMATURE_SAME_NUMBER_CORRECTION_DIRECTIVE = (
     "write the doctor's full name, which they had already given twice. "
     "Correcting a premature phone question must never cost the patient "
     "information they already provided.\n\n"
+    "CONFIRMED REAL PRODUCTION FAILURE (lab/imaging clinic, in_lab "
+    "mode): the test was already known (an earlier MEDICAL GUIDANCE "
+    "FLOW reply had resolved it), `select_sample_collection_mode` set "
+    "mode=\"in_lab\" but explicitly left no branch resolved - and the "
+    "reply still asked \"نكمل الحجز على نفس رقم الواتساب ده؟\" as if "
+    "the booking were ready, then skipped straight to asking about a "
+    "day with no branch ever named or confirmed. FOR THIS ARCHITECTURE "
+    "(no real doctor/specialty concept - see the lab/imaging booking "
+    "flow's own NB1-Q3), a known test is not enough on its own: go back "
+    "to NB1-Q3 and show the real branch list (or take an address for "
+    "the nearest-branch shortcut) before anything else, exactly as if "
+    "no test had been chosen at all - never let an already-known test "
+    "stand in for a still-missing branch.\n\n"
 )
 
 
