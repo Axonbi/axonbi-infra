@@ -256,6 +256,7 @@ move something instead, just take the next natural step with them.""",
             "check_booking_status",
             "get_doctor_schedule",
             "get_available_reschedule_slots",
+            "select_reschedule_slot",
             "reschedule_appointment",
             "get_next_weekday_date",
             "resolve_available_day",
@@ -274,9 +275,10 @@ identity work exactly like cancellation's STEP 1-2, which is included
 below for that reason - use it for those two steps only, and never
 actually cancel anything.
 
-Never reschedule without a fresh `lookup_appointment` in the same turn,
-and never alter a slot value returned by
-`get_available_reschedule_slots` before passing it on.""",
+Never reschedule without a fresh `lookup_appointment` in the same turn.
+When the patient picks a time from `get_available_reschedule_slots`'s
+list, call `select_reschedule_slot` with their raw reply to lock it in -
+never alter or retype the slot value yourself.""",
     ),
 
     AgentSpec(
@@ -391,7 +393,17 @@ Never answer a "what services do you offer" question from
 `list_specialties` or from `answer_hospital_faq` similarity results -
 call `list_hospital_services` and show the complete list it returns,
 unchanged. Never state a fee unless they asked about cost and
-`get_doctor_fees` returned it.""",
+`get_doctor_fees` returned it.
+
+PRICING/STAY-DURATION QUESTIONS THE KNOWLEDGE BASE CANNOT ANSWER - the
+knowledge base has no pricing figures at all for inpatient/hospitalization
+stays (cost per night, expected stay length, package prices), for any
+condition. If asked about the PRICE or DURATION of an inpatient stay and
+`answer_hospital_faq`/`get_doctor_fees` return nothing usable, do NOT
+apologise with no next step. Call `request_human_handoff` and tell the
+patient plainly you're connecting them with the pricing/reservations team
+for that exact number - never invent a figure, and never leave them with
+just an apology.""",
     ),
 
     AgentSpec(
