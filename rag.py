@@ -39,7 +39,23 @@ _embeddings_model: Optional[OpenAIEmbeddings] = None
 
 CHUNK_SIZE_CHARS = 800
 CHUNK_OVERLAP_CHARS = 150
-DEFAULT_TOP_K = 4
+# Raised from 4: some knowledge-base sections genuinely span many
+# chunks - e.g. this clinic's own Ultrasound prep-instructions section
+# is ~4,800 chars, roughly 7 chunks at this chunk size - and a caller
+# asking a general question about that one exam legitimately needs
+# every category's chunk back in the same call, not just whichever
+# handful scored highest. CONFIRMED REAL PRODUCTION FAILURE: asked a
+# general "تعليمات الموجات فوق الصوتية" question, only the
+# echocardiogram sub-category's chunk(s) came back (whatever scored
+# highest against a generic query) - abdominal, breast, pelvic,
+# pregnancy, prostate, renal, and Doppler were silently absent from the
+# passages entirely, so the reply correctly reported only what it was
+# given, but what it was given covered a small fraction of a 9-category
+# real section. RELEVANCE_FLOOR (below) still filters every candidate
+# before it is returned, so raising this does not let through anything
+# that scored too low to be relevant - it only lets more genuinely
+# relevant chunks through when a section is this large.
+DEFAULT_TOP_K = 8
 
 # Cache: file_path -> (mtime, [(chunk_text, embedding_vector), ...])
 _CACHE: dict = {}
