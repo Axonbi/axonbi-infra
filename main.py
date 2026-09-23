@@ -64,6 +64,11 @@ _last_answered: Dict[str, tuple] = {}
 _answered_ids: Dict[tuple, tuple] = {}
 
 
+def _is_soft_recovery(reply: Optional[str]) -> bool:
+    text = (reply or "").strip()
+    return bool(text) and text in (soft_recovery_reply("ar").strip(), soft_recovery_reply("en").strip())
+
+
 def _duplicate_result(session_id: str, message: str, message_id: Optional[str],
                       arrived_at: float) -> Optional[Dict]:
     if message_id:
@@ -72,6 +77,12 @@ def _duplicate_result(session_id: str, message: str, message_id: Optional[str],
             return dict(hit[0])
         return None
     last = _last_answered.get(session_id)
+    # A repeat after the soft-recovery reply is the patient retrying, not
+    # a double delivery - replaying the failure told them nothing
+    # (session 201158877175-DEMO1223=23, 2026-09-23 21:56:32: "3" re-sent
+    # 8s after "لم أتمكن من فهم طلبك" got the same line back).
+    if last and _is_soft_recovery(last[2].get("reply")):
+        return None
     # An exact repeat of the last message this session answered, arriving
     # while it was still being answered or within the window after - see
     # the 2026-09-22 incident note below (n8n posted one "اه" twice, the
