@@ -120,11 +120,14 @@ _RULE_SCOPE: Tuple[Tuple[str, FrozenSet[str]], ...] = (
     ("NEVER answer a question about ONE specific day with a different day",
      _SCHEDULING),
     ("NEVER show more upcoming days than", _SCHEDULING),
+    ("NEVER ask whether the patient wants to pick a day themselves OR have",
+     _SCHEDULING),
 
     # --- doctor selection --------------------------------------------
     ("NEVER say a doctor or branch is", _SCHEDULING),
     ("NEVER accept, confirm, or proceed with a doctor name the user typed",
      _NEW_BOOKING | {"faq"}),
+    ("NEVER treat a test as \"chosen\" for booking purposes", _NEW_BOOKING),
     ("Once a doctor has been chosen, NEVER offer to list doctors again",
      _NEW_BOOKING),
 
