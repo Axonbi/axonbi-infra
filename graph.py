@@ -964,6 +964,87 @@ def _deterministic_slot_lock(state: AgentState, agent_name: str):
     return _forge_tool_pair("select_appointment_slot", {"user_input": text}, payload)
 
 
+def _deterministic_service_pick(state: AgentState, agent_name: str):
+    """When the patient's message is a BARE NUMBER answering the
+    service list `list_branch_services` just showed, resolve it in
+    code via `find_available_doctors(service_name=<their text>)`
+    rather than leaving that resolution to the model's own tool-
+    calling judgement.
+
+    SAME SHAPE AS `_deterministic_slot_lock` ABOVE, ONE STEP EARLIER:
+    `tools._resolve_service_for_booking` already resolves a bare
+    number correctly by POSITION against `session["last_list"]` when
+    `entity_type == "service"` - the gap was that nothing called it
+    deterministically on a bare-number turn, so the turn went to the
+    model instead, which tried to read the number as a doctor's name.
+
+    CONFIRMED REAL PRODUCTION FAILURE (tenant): `list_branch_services`
+    showed a 9-item numbered service list; the patient replied "1",
+    then "اختار 1", then "1" again - every time the reply was "معنديش
+    دكتور اسمه 1 في المعمل" (no doctor named 1), because the model
+    treated the bare number as a doctor-name search instead of a
+    positional service pick.
+
+    NARROWLY SCOPED, DELIBERATELY - same reasoning as
+    `_deterministic_slot_lock`. Only fires for a bare number against a
+    remembered SERVICE list; a named service ("فحص النظر") still goes
+    to the model exactly as before, since that path already works.
+    Calls the real `find_available_doctors` tool (not a new one), so
+    the service gets resolved into `session["service_id"]` AND the
+    matching doctors come back in the same hop - exactly what the
+    model would have done next anyway had it read the number
+    correctly."""
+
+    if not config.DETERMINISTIC_SERVICE_PICK:
+        return None
+
+    if agent_name not in ("booking", "medical"):
+        return None
+
+    session_id = state.get("session_id")
+    session = tools._get_booking_session(session_id)
+    last_list = session.get("last_list") or {}
+    if last_list.get("entity_type") != "service":
+        return None
+
+    messages = state.get("messages") or []
+    index = _latest_human_index(messages)
+    if index < 0:
+        return None
+
+    content = getattr(messages[index], "content", "")
+    text = (content if isinstance(content, str) else str(content)).strip()
+
+    if not _POSITIONAL_ANSWER_RE.match(text):
+        return None  # a named service still goes to the model, as before
+
+    try:
+        payload = tools.find_available_doctors.func(state, service_name=text)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "_deterministic_service_pick: find_available_doctors raised for "
+            "session_id=%s - handing the turn to the model", session_id,
+            exc_info=True,
+        )
+        return None
+
+    if not isinstance(payload, dict) or payload.get("status") == "service_not_matched":
+        # out-of-range position, or anything else - the model's own
+        # path sees the same result if it calls the tool itself.
+        logger.info(
+            "_deterministic_service_pick: declined (status=%r) - the model "
+            "takes this turn",
+            (payload or {}).get("status") if isinstance(payload, dict) else None,
+        )
+        return None
+
+    logger.info(
+        "_deterministic_service_pick: resolved service pick in code for "
+        "session_id=%s (user_input=%r)", session_id, text,
+    )
+    return _forge_tool_pair("find_available_doctors", {"service_name": text}, payload)
+
+
 def _deterministic_doctor_schedule_lookup(state: AgentState, agent_name: str) -> list:
     """Once a doctor is confirmed BY NAME via `match_entity_for_booking`
     THIS TURN, fetch their schedule AND their real bookable days in code
@@ -2170,6 +2251,36 @@ def _arabic_time_12h(iso_string: str) -> str:
     return f"{hour12}:00 {period}" if minute == 0 else f"{hour12}:{minute:02d} {period}"
 
 
+def _fill_service_description(template_text: str, description: str) -> str:
+    """Substitute the clinic template's service-description placeholder
+    with the real description carried forward from `create_new_booking`
+    (`prep_instructions` - the booked service's own `description` field
+    from the Services catalogue, cached at the moment the patient chose
+    it - see `search_lab_services` / `list_branch_services`).
+
+    Same acceptance-of-variants approach as `_fill_booking_ref`: a
+    clinic edits these templates by hand, so accept the obvious
+    spellings rather than silently shipping a literal
+    `[service_description]` to a patient - CONFIRMED about to happen
+    otherwise, with no substitution code anywhere for this placeholder.
+
+    An EMPTY description clears just the placeholder TOKEN, leaving the
+    rest of the line (and any header line above it the clinic wrote,
+    e.g. "برجاء الالتزام بالتعليمات التالية:") untouched - this
+    function only fills in the one value it owns, the same restraint
+    `_fill_booking_ref` already has. Deleting a line the clinic
+    authored is a template-design decision for THEM to make in their
+    own config, not something to guess at here."""
+
+    placeholders = ("[service_description]", "[serviceDescription]", "[service description]")
+    description = (description or "").strip()
+
+    filled = template_text
+    for placeholder in placeholders:
+        filled = filled.replace(placeholder, description)
+    return filled
+
+
 def _fill_booking_ref(template_text: str, booking_ref: str) -> str:
     """Substitute the clinic template's booking-number placeholder with
     the real reference.
@@ -2469,6 +2580,9 @@ def _build_booking_success_display_directive(messages: list, templates: dict) ->
         if success_body.startswith("✅"):
             success_body = success_body[1:].lstrip()
         success_body = _fill_booking_ref(success_body, booking_ref)
+        success_body = _fill_service_description(
+            success_body, data.get("prep_instructions")
+        )
     else:
         success_body = (
             "تم تأكيد حجز موعدك بنجاح\n"
@@ -2478,17 +2592,13 @@ def _build_booking_success_display_directive(messages: list, templates: dict) ->
 
     block = f"{greeting_line}\n{success_body}\n{clinic_line}"
 
-    # LAB-STYLE CLIENTS ONLY: repeat the prep instructions (fasting
-    # duration, sample type, etc.) that were already shown once when the
-    # test was found - `create_new_booking` carries them forward from
-    # `search_lab_services`'s cache, keyed by the service actually
-    # booked. Absent/empty for every other client, and for a lab client
-    # whose booked service simply had none cached - changes nothing
-    # there either.
-    if (templates or {}).get("_is_lab_client"):
-        prep_text = (data.get("prep_instructions") or "").strip()
-        if prep_text:
-            block += f"\n\n📋 برجاء اتباع التعليمات التالية:\n{prep_text}"
+    # prep instructions are now filled INTO the template via
+    # [service_description] (see _fill_service_description above), not
+    # appended after it - this lets the clinic control WHERE in their
+    # own template the instructions go. A msg_booking_success with no
+    # [service_description] placeholder gets no instructions section at
+    # all, same as before - the placeholder is what turns this on now,
+    # not `_is_lab_client`.
 
     return (
         "[INTERNAL INSTRUCTION - NOT FOR THE USER - READ CAREFULLY]\n"
@@ -19349,6 +19459,10 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     if slot_lock_pair is not None:
         deterministic_pairs.extend(slot_lock_pair)
         history = history + list(slot_lock_pair)
+    service_pick_pair = _deterministic_service_pick(state, agent_name)
+    if service_pick_pair is not None:
+        deterministic_pairs.extend(service_pick_pair)
+        history = history + list(service_pick_pair)
     schedule_pairs = _deterministic_doctor_schedule_lookup(state, agent_name)
     if schedule_pairs:
         deterministic_pairs.extend(schedule_pairs)
