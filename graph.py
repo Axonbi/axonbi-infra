@@ -14710,7 +14710,89 @@ def _build_otp_required_directive(messages: list, agent_name: str) -> str:
     return _OTP_REQUIRED_DIRECTIVE
 
 
+
+# "I DON'T HAVE THAT" WITH NOTHING LOOKED UP.
+#
+# CONFIRMED REAL PRODUCTION FAILURE (lab-ezz staging, 2026-09-23
+# 12:23:48): asked "لا رقمهم" ("no - their number") about the lab, the
+# faq agent made NO tool call at all and replied "معنديش أرقام تليفونات
+# الفروع دي متاحة دلوقتي" - while the clinic's own knowledge base lists
+# the hotline, the WhatsApp number, and a phone for every branch. A
+# statement of absence is a factual claim about the clinic; with no
+# lookup behind it, it is invented just as surely as a made-up number.
+#
+# Deliberately narrow, because a guard that fires on a correct reply
+# does more damage than the bug it exists for (see the stand-downs on
+# _reply_reasks_something_just_given):
+#   - faq agent only, and only when this client has a knowledge base;
+#   - only when NO tool at all ran for the patient's latest message -
+#     after any lookup, "we don't have that" is a RESULT and stands;
+#   - never when the reply is showing a list of real options.
+# Once the retry calls answer_hospital_faq, the check can no longer
+# fire on that turn, so it cannot loop.
+_FAQ_NO_LOOKUP_CORRECTION_DIRECTIVE = (
+    "\n\n============================================================\n"
+    "CORRECTION - CHECK BEFORE SAYING YOU DON'T HAVE IT\n"
+    "============================================================\n"
+    "Your draft told the patient this information is not available, but "
+    "you did not look anything up for their latest message. Call "
+    "`answer_hospital_faq` now. Write the `question` as a complete, "
+    "standalone question that spells out what the patient is referring "
+    "to from the conversation (for a short follow-up like \"their "
+    "number?\", name the clinic or branch it is about). Answer ONLY from "
+    "the passages it returns. Only if it returns \"not_found\" may you "
+    "say you don't have that information."
+)
+
+
+# An absence claim ABOUT INFORMATION - a negation followed closely by
+# what is missing. NOT _NOT_FOUND_STATEMENT_RE on its own: that also
+# matches "مفيش مشكلة" / "لا يوجد أي إزعاج" (a polite "no problem" after
+# a thank-you), and firing there would send a courtesy reply off to the
+# knowledge base - or, if the rewrite kept the same wording, replace it
+# with the safe fallback.
+_INFO_NOUNS = (
+    r"(?:معلوم|بيانات|تفاصيل|رقم|ارقام|أرقام|تليفون|هاتف|تواصل|عنوان|عناوين|"
+    r"مواعيد|ساعات|اسعار|أسعار|سعر|information|info|details?|numbers?|"
+    r"phone|contact|address|hours|prices?)"
+)
+_INFO_ABSENCE_RE = re.compile(
+    r"(?:معنديش|ما\s*عندي(?:ش)?|مفيش|ما\s*في|لا\s*يوجد|ليس\s*لدي|لا\s*تتوفر|"
+    r"مش\s*متاح|غير\s*متاح|مش\s*موجود|غير\s*موجود|"
+    r"(?:don'?t|do\s*not)\s*have|not\s*available)"
+    r"[^.؟?!\n]{0,40}?" + _INFO_NOUNS
+    + r"|" + _INFO_NOUNS
+    + r"[^.؟?!\n]{0,40}?(?:مش\s*متاح|غير\s*متاح|مش\s*موجود|غير\s*موجود|not\s*available)",
+    re.IGNORECASE,
+)
+
+
+def _reply_claims_no_info_without_lookup(reply_text: str, state: AgentState, agent_name: str) -> bool:
+    if agent_name != "faq" or not reply_text:
+        return False
+    if not ((state.get("templates") or {}).get("_knowledge_base_file")):
+        return False
+    if not _INFO_ABSENCE_RE.search(reply_text):
+        return False
+    if _SHOWS_A_LIST_RE.search(reply_text):
+        return False
+
+    messages = state.get("messages") or []
+    start = _latest_human_index(messages)
+    if start < 0:
+        return False
+    ran_a_tool = any(
+        getattr(msg, "type", None) == "tool" for msg in messages[start + 1:]
+    )
+    return not ran_a_tool
+
 _REPLY_VERIFIERS = (
+    (
+        lambda reply, state, agent_name: _reply_claims_no_info_without_lookup(reply, state, agent_name),
+        lambda reply, state: _FAQ_NO_LOOKUP_CORRECTION_DIRECTIVE,
+        "reply told the patient information is not available without looking "
+        "anything up for their latest message",
+    ),
     (
         lambda reply, state, agent_name: _reply_offers_home_mode_for_imaging(reply, state),
         lambda reply, state: _no_imaging_home_mode_correction(reply, state),
