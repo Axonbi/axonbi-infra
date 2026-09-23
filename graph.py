@@ -10789,11 +10789,40 @@ _HOURS_OF_OPERATION_CUES = (
     "working hours", "opening hours", "operating hours", "work hours",
 )
 
+# STRUCTURAL, not just lexical - confirmed real false positive that a
+# pure cue-word list misses. The keyword scan above only skips a
+# segment that literally says "ساعات العمل"/"working hours", but the
+# model does not always phrase hours that way - "تعمل جميع أيام
+# الأسبوع من 8:00 صباحًا حتى 12:00 منتصف الليل" states the exact same
+# grounded fact with the word "تعمل" ("[it] operates") instead, and
+# that segment carries none of the literal cues. A "من X إلى/حتى Y"
+# (or "from X to Y") range sitting next to a day-part word (صباحًا/
+# مساءً/ظهرًا/منتصف الليل/AM/PM) is what actually marks a sentence as
+# an hours-of-operation statement, regardless of which verb introduces
+# it - a single appointment offer states ONE time, never a range with
+# a day-part word on each end.
+_HOURS_RANGE_CONNECTOR_RE = re.compile(
+    r"من\s[^.\n؟?]{0,25}?(?:إلى|حتى|-|–)\s[^.\n؟?]{0,25}|"
+    r"from\s[^.\n?]{0,25}?\bto\b[^.\n?]{0,25}",
+    re.IGNORECASE,
+)
+_DAYPART_WORD_RE = re.compile(
+    r"صباح|مساء|ظهر|عصر|فجر|منتصف\s*الليل|\bAM\b|\bPM\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_operating_hours_range(segment: str) -> bool:
+    return bool(_HOURS_RANGE_CONNECTOR_RE.search(segment)) and bool(
+        _DAYPART_WORD_RE.search(segment)
+    )
+
 
 def _dates_times_claimed_in(reply_text: str):
     """The date/time tokens this reply states, from segments that are
-    not plainly a clinic operating-hours statement (see
-    `_HOURS_OF_OPERATION_CUES` above). Used by
+    not plainly a clinic operating-hours statement - either by cue
+    word (`_HOURS_OF_OPERATION_CUES`) or by shape
+    (`_looks_like_operating_hours_range`). Used by
     `_reply_invents_availability` in place of a bare regex scan over
     the whole reply."""
 
@@ -10806,6 +10835,8 @@ def _dates_times_claimed_in(reply_text: str):
             continue
         folded = _norm_ar(segment)
         if any(cue in folded for cue in _HOURS_OF_OPERATION_CUES):
+            continue
+        if _looks_like_operating_hours_range(segment):
             continue
         dates.extend(_DATE_IN_REPLY_RE.findall(segment))
         times.extend(_TIME_IN_REPLY_RE.findall(segment))
