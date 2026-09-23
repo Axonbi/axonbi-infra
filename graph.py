@@ -4002,6 +4002,43 @@ _ASKED_SPECIALTY_OR_DOCTOR_RE = re.compile(
 )
 
 
+_BOOKING_ENTRY_ASK_TEST_TYPE_DIRECTIVE = (
+    "============================================================\n"
+    "THEY WANT TO BOOK, AND HAVE NOT SAID WHAT - ASK ONE QUESTION\n"
+    "============================================================\n"
+    "The patient has asked to book and has named no test, no symptom, "
+    "and no collection mode yet. This client offers BOTH lab tests "
+    "(تحليل) and imaging/radiology (أشعة) - the collection-mode question "
+    "(in-lab or home) does not even apply to imaging, so it can never be "
+    "the opening question here. This is STEP NB1's true opening rung for "
+    "this client: which of the two service types they want.\n\n"
+    "Your reply is ONE question, and it is NOT the lab/home question:\n\n"
+    "    \"بالتأكيد يمكنني مساعدتك\n"
+    "تحب تحجزي تحليل ولا أشعة؟\"\n\n"
+    "(this exact wording is normally sent from code without a model call - "
+    "see _booking_entry_message. You only compose it yourself if a clinic "
+    "has overridden it, in which case follow ITS wording.)\n\n"
+    "CONFIRMED REAL PRODUCTION FAILURE: a bare \"عاوزه احجز\" (no test "
+    "named) went straight to the fixed lab/home question - skipping this "
+    "one entirely - because the fixed fast-path that sends the opening "
+    "question without a model call did not yet know this client offers "
+    "imaging at all. A patient who actually wanted an X-ray was asked a "
+    "question that does not even apply to their case, and would have "
+    "been offered a nonexistent \"home\" option for imaging afterward had "
+    "the flow continued unchecked.\n\n"
+    "Once they answer:\n"
+    "  - أشعة (imaging): skip the collection-mode question entirely (see "
+    "NB1-Q2's imaging rule) and go straight to asking which scan, silently "
+    "locking mode=in_lab first.\n"
+    "  - تحليل (lab test): proceed to the normal lab flow, which DOES "
+    "still ask the collection-mode question once the test itself is "
+    "settled.\n\n"
+    "Everything else about this turn is wrong exactly as in the lab/home "
+    "entry rung below - no phone number, no branch, no symptom question, "
+    "no tool call.\n\n"
+)
+
+
 _BOOKING_ENTRY_ASK_DIRECTIVE = (
     "============================================================\n"
     "THEY WANT TO BOOK, AND HAVE NOT SAID WHAT - ASK ONE QUESTION\n"
@@ -4123,6 +4160,45 @@ _BOOKING_ENTRY_MESSAGE = {
     ),
 }
 
+# THE SAME OPENING RUNG, FOR A CLIENT THAT ALSO OFFERS IMAGING.
+#
+# CONFIRMED REAL PRODUCTION FAILURE: a bare "عاوزه احجز" (no test named)
+# from a client with radiology configured got the LAB/HOME message above
+# - "في المعمل ولا في البيت؟" - even though the patient had not yet said
+# whether they wanted a lab test or a scan at all. Imaging is never a
+# home visit (see NB1-Q2's imaging rule), so that question can be
+# unanswerable for a third of what this clinic books. The real opening
+# rung for such a client is "تحليل ولا أشعة؟" - see
+# `_client_offers_radiology` for how this is detected, and
+# `_BOOKING_ENTRY_ASK_TEST_TYPE_DIRECTIVE` for the model-authored
+# fallback used when a clinic overrides only PART of this wording.
+_BOOKING_ENTRY_TEST_TYPE_MESSAGE = {
+    "ar": (
+        "بالتأكيد يمكنني مساعدتك\n"
+        "تحب تحجزي تحليل ولا أشعة؟"
+    ),
+    "en": (
+        "Of course, I can help you\n"
+        "Would you like to book a lab test or an imaging scan?"
+    ),
+}
+
+
+def _client_offers_radiology(templates: dict) -> bool:
+    """True when this client has radiology/imaging configured at all -
+    see `tools._lab_test_specialty_id` / `tools._lab_service_type_id`
+    with specialty="radiology" for the same two config keys read there.
+    Read directly off the plain dict here (not through `tools`) to avoid
+    a circular import; both call sites are simple config lookups, never
+    an API call, so there is nothing to keep in sync beyond the key
+    names themselves."""
+
+    templates = templates or {}
+    return bool(
+        templates.get("_lab_test_specialty_id_radiology")
+        or templates.get("_lab_service_type_id_radiology")
+    )
+
 
 def _booking_entry_message(templates: dict, target_language: Optional[str]) -> str:
     """The exact opening question, every time.
@@ -4139,7 +4215,10 @@ def _booking_entry_message(templates: dict, target_language: Optional[str]) -> s
         return str(authored).replace("\r\n", "\n").replace("\r", "\n").strip()
 
     is_english = (target_language or "").strip().lower().startswith("en")
-    return _BOOKING_ENTRY_MESSAGE["en" if is_english else "ar"]
+    lang_key = "en" if is_english else "ar"
+    if _client_offers_radiology(templates):
+        return _BOOKING_ENTRY_TEST_TYPE_MESSAGE[lang_key]
+    return _BOOKING_ENTRY_MESSAGE[lang_key]
 
 
 def _build_symptom_in_booking_directive(messages: list, agent_name: str) -> str:
@@ -4228,13 +4307,20 @@ def _booking_entry_mode_given_directive(mode: str) -> str:
     )
 
 
-def _build_booking_entry_directive(messages: list, session_id: str, agent_name: str) -> str:
+def _build_booking_entry_directive(
+    messages: list, session_id: str, agent_name: str, templates: Optional[dict] = None,
+) -> str:
     """The opening rung of the booking flow, decided in code.
 
     Stands down the moment the message carries anything concrete - that
     is `_build_multi_intent_directive`'s job and the two must never both
     be in the prompt, since one says "ask which way to start" and the
-    other says "they already told you, don't ask"."""
+    other says "they already told you, don't ask".
+
+    `templates` decides WHICH opening question this rung asks - see
+    `_client_offers_radiology`. Optional only for callers that predate
+    this parameter; passing it is required to get the "تحليل ولا أشعة؟"
+    rung for a client that offers both."""
 
     if agent_name not in ("booking", "concierge") or not messages:
         return ""
@@ -4318,6 +4404,9 @@ def _build_booking_entry_directive(messages: list, session_id: str, agent_name: 
     stated_mode = _collection_mode_stated_in(folded)
     if stated_mode:
         return _booking_entry_mode_given_directive(stated_mode)
+
+    if _client_offers_radiology(templates):
+        return _BOOKING_ENTRY_ASK_TEST_TYPE_DIRECTIVE
 
     return _BOOKING_ENTRY_ASK_DIRECTIVE
 
@@ -19149,6 +19238,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         "" if established_specialty_directive
         else _build_booking_entry_directive(
             state["messages"], state.get("session_id"), agent_name,
+            templates=state.get("templates"),
         )
     )
 
@@ -19629,7 +19719,9 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     deterministic_reply = (
         _booking_entry_message(state.get("templates") or {}, target_language)
         if (agent_name == "booking"
-            and booking_entry_directive is _BOOKING_ENTRY_ASK_DIRECTIVE) else None
+            and booking_entry_directive in (
+                _BOOKING_ENTRY_ASK_DIRECTIVE, _BOOKING_ENTRY_ASK_TEST_TYPE_DIRECTIVE,
+            )) else None
     )
 
     # THE SAME TREATMENT FOR STEP 1's "reference or phone?" QUESTION, and
