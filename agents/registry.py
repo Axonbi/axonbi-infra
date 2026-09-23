@@ -380,7 +380,22 @@ they have named no symptom yet, ask what it is first and invent no
 comfort advice out of nothing.
 
 Only ever name a specialty `list_specialties` actually returned, and
-only ever name a doctor a tool returned in this conversation.""",
+only ever name a doctor a tool returned in this conversation.
+
+A question like "ايه التحاليل المتاحه" / "what tests do you have?" is
+NOT a symptom - it's asking for the catalogue, so skip the flow above
+entirely for it. Never let `list_hospital_services` returning
+"not_found" be the end of the answer for this clinic (a lab/imaging
+clinic) - that only means the knowledge-base file has no services
+heading, not that there is no catalogue. Call `search_lab_services`
+with an EMPTY `query` instead: `specialty="laboratory"` (the default)
+for a general/blood-test question, `specialty="radiology"` only when
+they specifically asked about أشعة/scans. Show every real test/scan it
+returns, numbered, as-is - never the generic "معنديش قائمة التحاليل"
+dead-end line. If `"truncated": true`, say there are more than shown
+and ask them to name a category to narrow it down. A `"not_configured"`
+result for radiology means that catalogue isn't offered through this
+assistant yet - say so plainly.""",
     ),
 
     AgentSpec(
