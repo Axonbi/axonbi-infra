@@ -1,3 +1,4 @@
+
 """
 Lightweight in-memory RAG for per-client hospital FAQ knowledge bases.
 
@@ -81,7 +82,162 @@ def _get_embeddings_model() -> OpenAIEmbeddings:
     return _embeddings_model
 
 
+# HEADING-AWARE CHUNKING.
+#
+# CONFIRMED REAL PRODUCTION FAILURE: asked "مين هما عز لاب" ("who is
+# Ezz Lab?"), the best chunk scored 0.306 - just under RELEVANCE_FLOOR -
+# and the assistant told the patient it had no information about the
+# lab, although the knowledge base has a whole "About Ezz Labs / عن معامل
+# عز" section and a "لماذا عز لاب" block. Cause: the old chunker packed
+# blank-line paragraphs greedily with no notion of headings, so a
+# heading routinely landed as the LAST line of the previous chunk and
+# the body under it was embedded without it - no chunk put the lab's
+# name next to the text describing it. It also emitted heading-only
+# fragments (96 chars of "## Home Page / ### English / **Why Ezz lab**")
+# that carry no answer at all.
+#
+# Now:
+#   1. Every markdown heading (#..######) is a hard chunk boundary -
+#      one chunk never spans two sections.
+#   2. Every chunk starts with its heading path, e.g.
+#      "About Ezz Labs / عن معامل عز › العربية / Arabic", so a passage
+#      carries its own context both for embedding and for the model
+#      that reads it.
+#   3. A short standalone **bold** line is a sub-heading: it is never
+#      left as the last line of a chunk - it moves to the next chunk,
+#      beside the text it introduces.
+#   4. A heading with no body of its own produces no chunk; it lives on
+#      in the path of the chunks below it.
+#
+# Still generic: this only reads markdown structure, never a clinic's
+# wording. RAG_HEADING_AWARE_CHUNKS=0 restores the old chunker without
+# a redeploy (restart needed - embeddings are cached in memory).
+HEADING_AWARE_CHUNKS = os.getenv("RAG_HEADING_AWARE_CHUNKS", "1").strip().lower() not in ("0", "false", "no", "off")
+
+_MD_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
+_BOLD_LINE_RE = re.compile(r"^\*\*([^*]+)\*\*:?$")
+_PATH_SEPARATOR = " › "
+# The document title (a single "# ..." line) names the whole file, so
+# it adds nothing to distinguish one chunk from another.
+_PATH_MIN_LEVEL = 2
+
+
+def _is_bold_subheading(line: str) -> bool:
+    match = _BOLD_LINE_RE.match(line)
+    if not match:
+        return False
+    inner = match.group(1).strip()
+    # A bold phone number or hotline ("**15032**") is content, not a
+    # heading - it must stay with whatever it belongs to.
+    return 0 < len(inner) <= 80 and bool(re.search(r"[^\W\d_]", inner))
+
+
+def _split_into_sections(text: str) -> list:
+    """[(heading_path, [block, ...]), ...] in document order. A block is
+    a blank-line paragraph or a standalone bold sub-heading line."""
+
+    path: dict = {}
+    sections = []
+    blocks: list = []
+    paragraph: list = []
+
+    def end_paragraph():
+        if paragraph:
+            blocks.append("\n".join(paragraph))
+            paragraph.clear()
+
+    def end_section():
+        end_paragraph()
+        if blocks:
+            heading_path = _PATH_SEPARATOR.join(path[level] for level in sorted(path) if level >= _PATH_MIN_LEVEL)
+            sections.append((heading_path, blocks.copy()))
+            blocks.clear()
+
+    for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = raw_line.strip()
+
+        heading = _MD_HEADING_RE.match(line)
+        if heading:
+            end_section()
+            level = len(heading.group(1))
+            for deeper in [lvl for lvl in path if lvl >= level]:
+                del path[deeper]
+            path[level] = heading.group(2).strip()
+            continue
+
+        if not line:
+            end_paragraph()
+            continue
+
+        if _is_bold_subheading(line):
+            end_paragraph()
+            blocks.append(line)
+            continue
+
+        paragraph.append(line)
+
+    end_section()
+    return sections
+
+
 def _chunk_text(text: str) -> list:
+    """Split text into chunks that respect the document's headings (see
+    HEADING-AWARE CHUNKING above). Within a section, paragraphs are
+    packed up to CHUNK_SIZE_CHARS; a single paragraph longer than that
+    is hard-split with CHUNK_OVERLAP_CHARS overlap, as before."""
+
+    if not HEADING_AWARE_CHUNKS:
+        return _chunk_text_legacy(text)
+
+    chunks = []
+
+    for heading_path, blocks in _split_into_sections(text):
+        prefix = (heading_path + "\n") if heading_path else ""
+        budget = max(CHUNK_SIZE_CHARS - len(prefix), 200)
+        current: list = []
+
+        def flush():
+            carried = []
+            # Never end a chunk on a sub-heading - it belongs with the
+            # text after it.
+            while current and _is_bold_subheading(current[-1]):
+                carried.insert(0, current.pop())
+            if current:
+                chunks.append(prefix + "\n".join(current))
+            current.clear()
+            current.extend(carried)
+
+        for block in blocks:
+            if len(block) > budget:
+                flush()
+                lead = "\n".join(current)
+                current.clear()
+                step = budget - CHUNK_OVERLAP_CHARS
+                body = (lead + "\n" + block) if lead else block
+                for i in range(0, len(body), step):
+                    chunks.append(prefix + body[i:i + budget])
+                    if i + budget >= len(body):
+                        break
+                continue
+
+            size = sum(len(b) + 1 for b in current) + len(block)
+            if current and size > budget:
+                flush()
+            current.append(block)
+
+        flush()
+        # A section that ends on bold lines with nothing after them. A
+        # run of several is real content (e.g. a list of partner
+        # names) - keep it. A single one is a heading with no text
+        # under it ("**Quality Assurance**"): it answers nothing and
+        # would only take a top_k slot from a real passage.
+        if len(current) > 1:
+            chunks.append(prefix + "\n".join(current))
+
+    return chunks
+
+
+def _chunk_text_legacy(text: str) -> list:
     """Split text into chunks along paragraph/blank-line boundaries
     where possible (keeps related sentences together), falling back to
     a hard character-count split with overlap for any single paragraph
