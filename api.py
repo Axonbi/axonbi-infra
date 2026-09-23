@@ -753,6 +753,7 @@ def get_doctor_fees(
 def get_services(
     base_url: str,
     branch_ids: Optional[list] = None,
+    service_type_ids: Optional[list] = None,
     is_published: bool = True,
     page_size: int = 500,
     client_id: Optional[str] = None,
@@ -762,14 +763,24 @@ def get_services(
 
     The clinic's real SERVICE CATALOGUE, straight from the system -
     optionally narrowed to the branches that actually provide each
-    service via `branch_ids`, and to published services only via
-    `is_published`.
+    service via `branch_ids`, to a service type (lab test / radiology
+    test / ...) via `service_type_ids`, and to published services only
+    via `is_published`.
 
     NOT the same thing as the services section of the knowledge base
     file: that one is marketing copy describing the hospital's service
     lines as a whole, with no per-branch information at all. When the
     question is "what services does THIS BRANCH provide?", only this
     endpoint can answer it - see tools.list_branch_services.
+
+    `service_type_ids`: real serviceTypeId GUIDs from this tenant's own
+    Services/GetList request schema - NOT the same thing as a
+    specialtyId (see tools._lab_test_specialty_id, which filters
+    DOCTORS by specialty; this filters SERVICES by type directly, at
+    this endpoint). Confirmed per-tenant values live in
+    tools._lab_service_type_id / config.CLIENT_LAB_ENTITY_NAMES - never
+    hardcode a value here, and never guess one for a client where it
+    isn't configured.
 
     `pageNumber` must be 1 or above, not 0 - same as every other
     paged endpoint here (see get_specialties()'s note)."""
@@ -783,6 +794,8 @@ def get_services(
 
     if branch_ids:
         payload["branchIds"] = branch_ids
+    if service_type_ids:
+        payload["serviceTypeIds"] = service_type_ids
 
     return _post_json(url, payload, client_id=client_id, language=language)
 
