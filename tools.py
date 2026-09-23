@@ -6410,6 +6410,54 @@ def _doctor_active_branch_names(state: AgentState, base_url: str, doctor_id: str
     return names
 
 
+# Words that describe WHAT KIND of place a clinic is, not WHICH one -
+# "معامل عز" and "عز لاب" name the same clinic; only "عز" identifies it.
+_CLINIC_GENERIC_WORDS = frozenset(_normalize_arabic(w) for w in (
+    "معامل", "معمل", "لاب", "مختبر", "مختبرات", "مستشفى", "مستشفي",
+    "مستشفيات", "عيادة", "عيادات", "مركز", "مجمع", "فرع", "ال",
+    "lab", "labs", "laboratory", "laboratories", "hospital", "clinic",
+    "clinics", "center", "centre", "medical", "branch",
+))
+
+
+def _distinctive_tokens(text: str) -> set:
+    tokens = re.findall(r"[\w]+", _normalize_arabic(text or ""))
+    return {t for t in tokens if t not in _CLINIC_GENERIC_WORDS and not t.isdigit()}
+
+
+def _active_agent_has_tool(state, tool_name: str) -> bool:
+    """Whether the specialist handling this turn is bound to `tool_name`.
+    Lazy import: agents.registry imports this module."""
+
+    try:
+        from agents import registry as _registry
+        return tool_name in (_registry.get_spec((state or {}).get("active_agent")).tool_names or ())
+    except Exception:
+        logger.exception("could not resolve the active agent's tools - assuming %s is unavailable", tool_name)
+        return False
+
+
+def _input_names_the_clinic_itself(user_input: str, state) -> str:
+    """The clinic's configured name if `user_input` names the clinic
+    itself (every distinctive word in it belongs to the clinic's own
+    Arabic or English name), else "". Generic by design: reads only
+    this client's clinic_name / clinic_name_ar."""
+
+    templates = (state or {}).get("templates") or {}
+    names = [n for n in (templates.get("_clinic_name_ar"), templates.get("_clinic_name")) if n]
+    if not names or not (user_input or "").strip():
+        return ""
+
+    input_tokens = _distinctive_tokens(user_input)
+    if not input_tokens:
+        return ""
+
+    clinic_tokens = set().union(*(_distinctive_tokens(n) for n in names))
+    if clinic_tokens and input_tokens <= clinic_tokens:
+        return names[0]
+    return ""
+
+
 @tool
 def match_entity_info(
     state: Annotated[AgentState, InjectedState],
@@ -6455,6 +6503,12 @@ def match_entity_info(
         # guess at the same fragment.
     {"status": "out_of_range", "list_size": N}
     {"status": "no_list_shown"}
+    {"status": "is_the_clinic_itself", "clinic_name": "..."}
+        # entity_type="branch" only: `user_input` is this clinic's OWN
+        # name (e.g. the lab/hospital name), not one of its branches.
+        # The patient is asking about the clinic as a whole - call
+        # `answer_hospital_faq` with their question instead. Do not
+        # show a branch list or ask "which branch?" for it.
     {"status": "not_configured"} / {"status": "error"}
 
     Doctor fields: formatedName, altName, degreeName, specialtyName,
@@ -6752,6 +6806,38 @@ def match_entity_info(
                 user_input,
             )
             return {"status": "looks_like_stray_word", "word": stripped_input}
+
+        # THE CLINIC'S OWN NAME IS NOT A BRANCH NAME.
+        #
+        # CONFIRMED REAL PRODUCTION FAILURE (lab-ezz staging,
+        # 2026-09-23 12:23): right after "مين هما عز لاب", the patient
+        # asked "مواعيد العمل" - a clinic-wide question. This tool got
+        # called with user_input="معامل عز" (the clinic's own name,
+        # lifted from the conversation), returned "not_matched", and
+        # the reply listed five branches and asked "which one?" - while
+        # the knowledge base states the hours for every branch in one
+        # line. Refuse up front with a distinct status that points at
+        # answer_hospital_faq, the same way looks_like_stray_word does.
+        #
+        # A real branch whose name genuinely matches wins: this only
+        # fires when the input is NOT an exact branch match.
+        # ONLY FOR AN AGENT THAT CAN ACT ON IT. booking / reschedule /
+        # cancel / complaint also hold this tool but not
+        # answer_hospital_faq; "احجز في معامل عز" reaching them still
+        # needs the branch list ("which branch?"), exactly as before.
+        clinic_name = (
+            _input_names_the_clinic_itself(stripped_input, state)
+            if _active_agent_has_tool(state, "answer_hospital_faq") else ""
+        )
+        if clinic_name:
+            exact_probe = _fuzzy_match(user_input, items, name_keys)
+            if not (exact_probe["result"] == "matched" and exact_probe.get("score", 0) >= 0.95):
+                logger.info(
+                    "match_entity_info (branch): user_input=%r is the clinic's own name "
+                    "(%r), not a branch - pointing to answer_hospital_faq",
+                    user_input, clinic_name,
+                )
+                return {"status": "is_the_clinic_itself", "clinic_name": clinic_name}
 
     match_candidates = items
 
