@@ -11828,8 +11828,11 @@ def search_lab_services(
 
     Returns EVERY real service that matched well enough, most relevant
     first - never a single guess, and never an item outside the real
-    catalogue:
-    {"status": "found", "services": [{"id", "name", "description"}, ...]}
+    catalogue. Each item carries "specialty": "lab" or "rad", tagging
+    which catalogue it came from (mirrors the `specialty` argument this
+    call was made with) - so a reply mixing both, or shown later without
+    the original call in view, can still say which is which:
+    {"status": "found", "services": [{"id", "name", "description", "specialty"}, ...]}
     {"status": "not_found"}  # nothing in the real catalogue matched well enough
     {"status": "not_configured"} / {"status": "error"}
     """
@@ -11843,6 +11846,13 @@ def search_lab_services(
         return {"status": "not_configured"}
 
     language = conversation_language(state)
+
+    # Short code tagged onto every returned item so the caller (and the
+    # model composing the reply) can tell at a glance which catalogue a
+    # given item came from, without having to remember which `specialty`
+    # value this particular call used - "lab" for laboratory, "rad" for
+    # radiology.
+    specialty_code = "rad" if specialty == "radiology" else "lab"
 
     # Resolve the two fixed doctors' real IDs first - the whitelist for
     # everything below. Not published/registered yet -> nothing to
@@ -11944,6 +11954,7 @@ def search_lab_services(
             description = service_descriptions.get(default_service_id)
             items.append({
                 "id": doctor_id, "name": name, "description": description,
+                "specialty": specialty_code,
                 # Carried so the cache step below can key by the REAL
                 # service id, not the doctor id - create_new_booking
                 # reads the cache by `matched_slot.get("serviceId")`,
@@ -12095,7 +12106,10 @@ def search_lab_services(
         description = (
             item.get("altDescription") if language != "en" else item.get("description")
         ) or item.get("description") or item.get("altDescription")
-        items.append({"id": item.get("id"), "name": name, "description": description})
+        items.append({
+            "id": item.get("id"), "name": name, "description": description,
+            "specialty": specialty_code,
+        })
 
     if not items:
         return {"status": "not_found"}
