@@ -10136,8 +10136,120 @@ _LAB_OR_IMAGING_CHOICE_RE = re.compile(
 )
 
 
+_IMAGING_CONTEXT_LLM_PROMPT = (
+    "You are checking ONE narrow fact about a lab/imaging clinic's chat "
+    "(Arabic or English).\n\n"
+    "Conversation so far, oldest first (role: text):\n{transcript}\n\n"
+    "Question: has the PATIENT themselves actually asked about, chosen, "
+    "or been offered a SPECIFIC imaging/radiology exam - CT, MRI, X-ray, "
+    "ultrasound, echo, Doppler, mammogram, or the word 'أشعة'/'imaging' "
+    "used to say what THEY personally want - at any point in this "
+    "conversation?\n\n"
+    "Answer NO if the only mention of imaging is the clinic's own "
+    "generic greeting, capabilities menu, or a disambiguation question "
+    "that just lists lab-test-or-imaging as the two categories the "
+    "clinic offers (e.g. \"عن التحاليل والأشعة\", \"تحليل ولا أشعة؟\", "
+    "\"lab test or imaging scan\") - that is the assistant describing "
+    "what exists, not the patient asking for imaging.\n\n"
+    "Answer with exactly one word: yes or no."
+)
+
+
+def _llm_confirms_imaging_context(state: AgentState, lookback: int = 10) -> bool:
+    """Whether imaging is genuinely in play in this conversation - judged
+    by the model reading the actual conversation, not by scanning for
+    keywords in a regex.
+
+    THIS REPLACES A KEYWORD/REGEX CHECK ON PURPOSE. Two real production
+    failures (2026-09-23) came from exactly that approach: assistant-
+    authored boilerplate (the mandatory greeting, the lab-or-imaging
+    disambiguation question) routinely contains the word "أشعة" for
+    reasons that have nothing to do with what the CURRENT patient is
+    doing, and no regex written to exclude one such phrase catches the
+    next differently-worded one an LLM produces. A model reading the
+    actual conversation and being told explicitly to ignore boilerplate
+    mentions is far more robust than trying to enumerate every phrasing
+    that could produce a false positive.
+
+    Mirrors agents.router._classify_with_llm's own failure handling: any
+    problem with the call (timeout, bad response, model unavailable)
+    must never be able to block the conversation, so it falls back to
+    the cheap keyword heuristic below rather than raising or hanging.
+    """
+
+    messages = state.get("messages") or []
+    try:
+        from langchain_core.messages import HumanMessage
+
+        llm = _router_llm or _llm
+        if llm is None:
+            raise RuntimeError("no LLM client available")
+
+        lines = []
+        for msg in messages[-lookback:]:
+            role = getattr(msg, "type", None)
+            content = getattr(msg, "content", None)
+            if role not in ("human", "ai", "tool") or not isinstance(content, str):
+                continue
+            content = content.strip()
+            if not content:
+                continue
+            lines.append(f"{role}: {content[:300]}")
+        transcript = "\n".join(lines) or "(no messages yet)"
+
+        prompt = _IMAGING_CONTEXT_LLM_PROMPT.format(transcript=transcript)
+        answer = llm.invoke([HumanMessage(content=prompt)])
+        choice = str(getattr(answer, "content", "")).strip().lower()
+
+        if choice.startswith("yes"):
+            return True
+        if choice.startswith("no"):
+            return False
+
+        logger.warning(
+            "imaging-context check: llm answered %r, not yes/no - "
+            "falling back to the keyword heuristic",
+            choice[:60],
+        )
+    except Exception as exc:
+        logger.warning(
+            "imaging-context check: llm judgment failed (%s: %s) - "
+            "falling back to the keyword heuristic",
+            type(exc).__name__, exc,
+        )
+
+    return _recent_messages_mention_imaging(messages, lookback=lookback)
+
+
 def _recent_messages_mention_imaging(messages: list, lookback: int = 10) -> bool:
+    """Only counts a message as "mentioning imaging" when it is the
+    PATIENT's own words (type "human") or an actual TOOL result (type
+    "tool", e.g. `search_lab_services` returning specialty="radiology") -
+    never assistant-authored text (type "ai").
+
+    CONFIRMED REAL PRODUCTION FAILURE (session 201000625084+medtown2,
+    2026-09-23): stripping just the literal "تحليل ولا/أو أشعة"
+    disambiguation phrase (see `_LAB_OR_IMAGING_CHOICE_RE` above) was not
+    enough, because the MANDATORY capability-listing greeting sent at the
+    start of EVERY conversation with a radiology-enabled client also says
+    "الاستفسار عن التحاليل والأشعة" - a different, LLM-authored wording
+    of the same "we also do imaging" fact. That single boilerplate line,
+    present in effectively every such session from turn one, permanently
+    poisoned this check: a patient who only ever asked to book a plain
+    fasting-blood-sugar test still got their legitimate "في البيت" home-
+    collection answer blocked, three turns later, because the greeting
+    had said "أشعة" once. Enumerating every possible assistant phrasing
+    that could mention imaging is a losing game (the greeting, the menu,
+    the disambiguation question, and any FAQ answer about services can
+    all say it in different words) - the only thing that should ever
+    gate this safety check is whether the PATIENT actually asked about
+    an imaging exam, or a TOOL actually returned one, not whether the
+    word appeared anywhere in the assistant's own prose.
+    """
+
     for msg in reversed((messages or [])[-lookback:]):
+        if getattr(msg, "type", None) not in ("human", "tool"):
+            continue
         content = getattr(msg, "content", None)
         if not content or not isinstance(content, str):
             continue
@@ -10155,7 +10267,7 @@ def _reply_offers_home_mode_for_imaging(reply_text: str, state: AgentState) -> b
 
     if not reply_text or not _HOME_MODE_QUESTION_RE.search(reply_text):
         return False
-    return _recent_messages_mention_imaging(state.get("messages") or [])
+    return _llm_confirms_imaging_context(state)
 
 
 def _reply_ends_imaging_prep_with_booking_offer(reply_text: str, state: AgentState) -> bool:
