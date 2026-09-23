@@ -543,6 +543,19 @@ DETERMINISTIC_DOCTOR_SCHEDULE_LOOKUP: bool = _flag("DETERMINISTIC_DOCTOR_SCHEDUL
 # environment to turn it back off if needed.
 DETERMINISTIC_DAY_RESOLUTION: bool = _flag("DETERMINISTIC_DAY_RESOLUTION", True)
 
+# SAME PROTOTYPE-HOOK PATTERN AS DETERMINISTIC_SLOT_LOCK ABOVE: when the
+# patient's message is a bare number answering the service list
+# `list_branch_services` just showed, resolve it in code via
+# `find_available_doctors(service_name=<their text>)` rather than
+# leaving that resolution to the model. CONFIRMED REAL PRODUCTION
+# FAILURE: the patient answered "1"/"اختار 1" to a shown service list
+# three times in a row; the model tried to resolve "1" as a DOCTOR
+# name instead of a SERVICE position and replied "معنديش دكتور اسمه
+# 1" every time. See `_deterministic_service_pick`. Set
+# DETERMINISTIC_SERVICE_PICK=false in the environment to turn it back
+# off if something unexpected shows up.
+DETERMINISTIC_SERVICE_PICK: bool = _flag("DETERMINISTIC_SERVICE_PICK", True)
+
 # WHICH TURNS THIS GRAPH ANSWERS WITHOUT CALLING THE MODEL.
 #
 # Nine directives in graph.py already pre-build the EXACT text of a
@@ -999,6 +1012,14 @@ CLIENT_LAB_ENTITY_NAMES: Dict[str, Dict[str, str]] = {
         # search_lab_services(specialty="radiology") returns
         # {"status": "not_configured"} rather than guessing.
         "lab_test_specialty_id_radiology": "09996f0c-71eb-4836-9132-ee4319bcf874",
+        # Services/GetList "serviceTypeIds" filter - confirmed from the
+        # API's own request schema. Used by list_branch_services to
+        # narrow a branch's service list to lab/radiology only, instead
+        # of every published service on the branch (which previously
+        # leaked unrelated items like cardiology consults and pathology
+        # protocols into a lab-booking flow).
+        "lab_service_type_id": "b0d1b0eb-dc77-45b7-aeeb-b80a19b4eaa0",
+        "lab_service_type_id_radiology": "837fdfc1-64e1-4c7f-8d4c-b9a3f69c3f43",
     },
     # Confirmed (2026-09-21) to share the exact same demo Booking API
     # account as "lab-alborg" above - same doctor ids showed up in both
@@ -1022,6 +1043,14 @@ CLIENT_LAB_ENTITY_NAMES: Dict[str, Dict[str, str]] = {
         # (same value as lab-alborg above). Was empty, which made every
         # radiology search return not_configured.
         "lab_test_specialty_id_radiology": "09996f0c-71eb-4836-9132-ee4319bcf874",
+        # Services/GetList "serviceTypeIds" filter - confirmed from the
+        # API's own request schema. Used by list_branch_services to
+        # narrow a branch's service list to lab/radiology only, instead
+        # of every published service on the branch (which previously
+        # leaked unrelated items like cardiology consults and pathology
+        # protocols into a lab-booking flow).
+        "lab_service_type_id": "b0d1b0eb-dc77-45b7-aeeb-b80a19b4eaa0",
+        "lab_service_type_id_radiology": "837fdfc1-64e1-4c7f-8d4c-b9a3f69c3f43",
     },
 }
 
@@ -1338,6 +1367,20 @@ def get_messages(client_id: str, dialect: Optional[str] = None, client_row_overr
     merged["_lab_test_specialty_id_radiology"] = (
         client_row.get("lab_test_specialty_id_radiology")
         or _lab_overrides.get("lab_test_specialty_id_radiology")
+        or ""
+    )
+    # Services/GetList "serviceTypeIds" filter values - see
+    # tools._lab_service_type_id. Empty/unset means
+    # list_branch_services shows every published service on the branch
+    # unfiltered, exactly as before this filter existed.
+    merged["_lab_service_type_id"] = (
+        client_row.get("lab_service_type_id")
+        or _lab_overrides.get("lab_service_type_id")
+        or ""
+    )
+    merged["_lab_service_type_id_radiology"] = (
+        client_row.get("lab_service_type_id_radiology")
+        or _lab_overrides.get("lab_service_type_id_radiology")
         or ""
     )
     merged["_phone_example"] = client_row.get("phone_example")
