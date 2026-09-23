@@ -1411,6 +1411,35 @@ def route_turn(
                     "to %s's own question - keeping the flow",
                     text[:40], llm_choice, active_agent,
                 )
+            # RULE 3: booking cannot safely hand an ACTIVE NEW BOOKING
+            # flow to an agent that has no booking tools at all - see
+            # `_CANNOT_COMPLETE_A_BOOKING` above, already used for the
+            # doctor/specialty-list case.
+            #
+            # CONFIRMED REAL PRODUCTION FAILURE (lab-ezz, session
+            # 201000625084+medtown2, 2026-09-23): mid a NEW BOOKING flow
+            # (the entry disambiguation question already asked, no test
+            # chosen yet), "ايه التحاليل المتاحه" classified as `faq`
+            # here - a reasonable read of that one message on its own,
+            # exactly like the `_home_collection_booking_in_progress`
+            # docstring's own 2026-09-21 failure. Every turn after it
+            # stayed on `faq`, which has none of booking's NB1-Q2/Q3
+            # collection-mode guards: it picked the test, then skipped
+            # straight to asking for a branch WITHOUT ever asking
+            # home-vs-lab, and the patient's "في البيت" answer to that
+            # unasked question later tripped the imaging home-mode safety
+            # check. `_home_collection_booking_in_progress` already
+            # covers this same shape of failure for one specific later
+            # step (collection_mode already "home"); this rule covers it
+            # generally, for any point in an active booking flow, the
+            # same way the doctor/specialty-list rule above does.
+            elif active_agent == "booking" and llm_choice in _CANNOT_COMPLETE_A_BOOKING:
+                logger.info(
+                    "router: llm classified %r as %s, but %s cannot "
+                    "complete a booking - keeping the active booking flow "
+                    "rather than handing it an active NEW BOOKING",
+                    text[:40], llm_choice, llm_choice,
+                )
             else:
                 return llm_choice, (
                     f"llm router (message had no deterministic cue, "
