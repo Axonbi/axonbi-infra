@@ -10981,6 +10981,56 @@ def _weekdays_of_dates(known_dates) -> set:
     return weekdays
 
 
+
+# OPENING HOURS ARE NOT AN APPOINTMENT.
+#
+# CONFIRMED REAL PRODUCTION FAILURE (lab-ezz staging, 2026-09-23
+# 12:38): asked "مواعيد العمل", the faq agent answered correctly from
+# the knowledge base - each branch's daily hours and its Friday hours.
+# _reply_invents_availability saw the weekday "الجمعة", found no
+# availability tool in the conversation, and flagged the reply as a
+# fabricated appointment; the rewrite kept the (true) Friday hours, so
+# the patient got the booking fallback "مش قادرة أتأكد من موعد فعلي
+# متاح" in answer to a question about opening hours.
+#
+# Exempt ONLY when all of this holds:
+#   - the faq agent is replying (it cannot complete a booking);
+#   - the reply claims no specific date or time slot - weekdays only;
+#   - every weekday it names appears in a knowledge-base / branch-info
+#     result returned for the patient's LATEST message.
+# A weekday that no lookup this turn mentioned is still flagged, so
+# "the doctor is in on Friday" with nothing behind it is still caught.
+_OPENING_HOURS_INFO_TOOLS = ("answer_hospital_faq", "match_entity_info", "find_nearest_branch")
+
+
+def _faq_weekdays_are_opening_hours_from_lookup(reply_text: str, state: AgentState, agent_name: str) -> bool:
+    if agent_name != "faq" or not reply_text:
+        return False
+
+    dates, times = _dates_times_claimed_in(reply_text)
+    if dates or times:
+        return False
+
+    weekdays = _weekdays_claimed_in(reply_text)
+    if not weekdays:
+        return False
+
+    results = _tool_results_since_latest_human(
+        state.get("messages") or [], _OPENING_HOURS_INFO_TOOLS,
+    )
+    source = tools._normalize_arabic(
+        " ".join(str(getattr(msg, "content", "") or "") for msg in results)
+    )
+    if not source:
+        return False
+
+    for day in weekdays:
+        arabic = tools._normalize_arabic(day)
+        english = str(_WEEKDAY_WORDS.get(day, "")).lower()
+        if arabic not in source and not (english and english in source):
+            return False
+    return True
+
 _AVAILABILITY_CORRECTION_DIRECTIVE = (
     "============================================================\n"
     "YOU STATED A DATE/TIME NO TOOL GAVE YOU - REWRITE YOUR REPLY\n"
@@ -15223,7 +15273,10 @@ _REPLY_VERIFIERS = (
         "appointment has ever been looked up in this conversation",
     ),
     (
-        lambda reply, state, agent_name: _reply_invents_availability(reply, state),
+        lambda reply, state, agent_name: (
+            _reply_invents_availability(reply, state)
+            and not _faq_weekdays_are_opening_hours_from_lookup(reply, state, agent_name)
+        ),
         lambda reply, state: _AVAILABILITY_CORRECTION_DIRECTIVE,
         "reply stated an appointment date/time that NO availability tool returned "
         "- this is a fabricated appointment",
