@@ -1555,6 +1555,31 @@ def _lab_test_specialty_id(state: AgentState, specialty: str = "laboratory") -> 
     return templates.get(key) or None
 
 
+def _lab_service_type_id(state: AgentState, specialty: str = "laboratory") -> Optional[str]:
+    """Services/GetList `serviceTypeIds` filter value for `specialty`
+    ("laboratory" default, or "radiology") - configured per client (see
+    config.CLIENT_LAB_ENTITY_NAMES, merged into state["templates"]).
+
+    NOT the same thing as `_lab_test_specialty_id` above: that filters
+    DOCTORS by specialtyId (used by `search_lab_services` in the
+    per-test-doctors architecture); this filters SERVICES directly by
+    serviceTypeId, at the Services/GetList endpoint itself (used by
+    `list_branch_services`). The two ids are unrelated values from
+    different parts of the Booking API and must never be swapped.
+
+    Returns None when unset, so callers fall back to showing every
+    published service on the branch unfiltered - the same behavior
+    `list_branch_services` already had before this filter existed,
+    never a guessed id."""
+
+    templates = state.get("templates") or {}
+    key = (
+        "_lab_service_type_id_radiology" if specialty == "radiology"
+        else "_lab_service_type_id"
+    )
+    return templates.get(key) or None
+
+
 # ==========================================================
 # Booking session store (moved ABOVE the doctor/specialty tools)
 # ==========================================================
@@ -5559,7 +5584,9 @@ def list_branch_services(
 ) -> dict:
     """List the services a SPECIFIC BRANCH provides, read from the
     clinic's real service catalogue (the Services endpoint), filtered to
-    that branch and to published services only.
+    that branch, to published services only, and to LAB TEST +
+    RADIOLOGY TEST service types (never anything else, e.g. a
+    cardiology consult or a pathology protocol) - see the note below.
 
     CALL THIS - not `list_hospital_services`, and not
     `answer_hospital_faq` - whenever the question is about ONE BRANCH's
@@ -5575,6 +5602,20 @@ def list_branch_services(
     `branch_name`: optional. Pass the patient's raw branch text when
     they named one. Leave it empty to use the branch already confirmed
     in this booking session, or the branch most recently shown to them.
+
+    ALWAYS FILTERED TO LAB + RADIOLOGY TESTS - not a caller option.
+    This endpoint has no specialty concept of its own, so without a
+    filter it returns EVERY published service on the branch. CONFIRMED
+    REAL PRODUCTION FAILURE this closes: a branch's service list
+    included "Venous + Lymphatic small vessel invasion in Specimen by
+    CAP cancer protocols" and "كشف استاذ قلب" right alongside real lab
+    tests like "تحليل السكر الصائم". Both service types (lab test AND
+    radiology test) are ALWAYS requested together in one call - this
+    project's clients are lab/imaging clinics, so a real consult or
+    protocol item is never a valid answer here regardless of what the
+    patient asked about. If this client has neither serviceTypeId
+    configured (see `_lab_service_type_id`), falls back to the
+    unfiltered list rather than erroring or returning nothing.
 
     Returns:
     {"status": "found", "branch": {"id", "name"}, "services": [{"name", "description"}, ...]}
@@ -5642,9 +5683,31 @@ def list_branch_services(
     if not branch_id:
         return {"status": "missing_branch"}
 
+    # ALWAYS lab + radiology together - not a caller option, see the
+    # tool's own docstring. Each id is looked up independently and only
+    # the ones actually configured for this client are sent, so a
+    # client with just one of the two configured (radiology was empty
+    # for a while - see config.CLIENT_LAB_ENTITY_NAMES's own history)
+    # still gets filtered by whichever it does have, rather than the
+    # whole filter being skipped.
+    service_type_ids = [
+        service_type_id
+        for service_type_id in (
+            _lab_service_type_id(state, "laboratory"),
+            _lab_service_type_id(state, "radiology"),
+        )
+        if service_type_id
+    ] or None
+    if service_type_ids is None:
+        logger.info(
+            "list_branch_services: no lab/radiology service_type_id configured "
+            "for client_id=%s - showing every published service on the branch "
+            "unfiltered", state.get("client_id"),
+        )
+
     result = api.get_services(
-        base_url, branch_ids=[branch_id], is_published=True,
-        language=conversation_language(state),
+        base_url, branch_ids=[branch_id], service_type_ids=service_type_ids,
+        is_published=True, language=conversation_language(state),
     )
 
     if not result["success"]:
@@ -5676,6 +5739,21 @@ def list_branch_services(
         services.append({"id": item.get("id"), "name": name, "description": description})
 
     branch_info = {"id": branch_id, "name": branch_display}
+
+    # Cache id -> description on the booking session too, exactly like
+    # search_lab_services does (see its own comment) - so
+    # create_new_booking can repeat these same instructions at the
+    # confirmation step, for a booking that picked its service from
+    # THIS list rather than search_lab_services'. CONFIRMED GAP this
+    # closes: a service picked via list_branch_services (including via
+    # _deterministic_service_pick's bare-number resolution) reached
+    # create_new_booking with prep_instructions always empty, because
+    # only search_lab_services was writing to this cache.
+    session = _get_booking_session(state.get("session_id"))
+    descriptions = session.setdefault("lab_service_descriptions", {})
+    for svc in services:
+        if svc.get("id") and svc.get("description"):
+            descriptions[svc["id"]] = svc["description"]
 
     logger.info(
         "list_branch_services: branch_id=%s (%s) -> %d published service(s)",
