@@ -826,14 +826,37 @@ def compare_phone(
     {"status": "no_match"}. Never decide this yourself - always call
     this tool."""
 
+    # CONFIRMED REAL PRODUCTION FAILURE (session 201158877175+medtown2,
+    # 2026-09-23): the model called this tool with `channel_phone=""`
+    # even though the conversation's real channel identity was
+    # '+201158877175' (the same number the patient was messaging from
+    # and had just confirmed "نكمل الحجز على نفس رقم الواتساب ده؟" for).
+    # The empty string made a real match look like a mismatch, and the
+    # patient - who never should have seen an OTP at all - was sent one
+    # and typed a wrong code before a retry finally passed the real
+    # number through. `channel_phone` must never depend on the model
+    # correctly copying a number it was told elsewhere in the prompt;
+    # the session's own `state["channel_phone"]` is the source of
+    # truth. The `channel_phone` argument is kept only as a fallback for
+    # the (currently theoretical) case where the state field is empty
+    # but the model was somehow given a number to compare against
+    # directly - state always wins when it has a real value.
+    real_channel_phone = (state.get("channel_phone") or "").strip()
+    effective_channel_phone = real_channel_phone or channel_phone
+
     a = normalize_phone_number(provided_phone, state)
-    b = normalize_phone_number(channel_phone, state) if channel_phone else None
+    b = (
+        normalize_phone_number(effective_channel_phone, state)
+        if effective_channel_phone else None
+    )
 
     match = bool(a and b and a == b)
 
     logger.info(
-        "compare_phone: provided=%r -> normalized=%r | channel=%r -> normalized=%r | match=%s",
-        provided_phone, a, channel_phone, b, match,
+        "compare_phone: provided=%r -> normalized=%r | channel(arg)=%r channel(state)=%r "
+        "-> effective=%r -> normalized=%r | match=%s",
+        provided_phone, a, channel_phone, real_channel_phone,
+        effective_channel_phone, b, match,
     )
 
     if match:
