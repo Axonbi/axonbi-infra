@@ -26,3 +26,7 @@ Thumbs.db
 *.rar
 *.zip
 *.log
+
+# Eval output
+evals/last_report.json
+.pytest_cache/

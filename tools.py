@@ -64,6 +64,7 @@ from config import (
 )
 import requests
 from state import AgentState
+import understanding as understanding_module
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +94,8 @@ _EXPLICIT_HUMAN_REQUEST_ROOTS = (
     "موظف", "خدمة العملاء", "خدمه العملاء", "ممثل خدمة", "اتكلم مع حد",
     "أتكلم مع حد", "كلمني حد", "كلميني حد", "حد يرد", "شخص حقيقي",
     "human", "representative", "agent", "someone", "speak to a person",
-    "talk to a person",
+    "talk to a person", "transfer", "customer service", "حولني", "حوليني",
+    "ممثلي خدمة", "ممثلي خدمه",
 )
 
 
@@ -117,11 +119,12 @@ def _latest_ai_text_before_handoff_guard(state: AgentState) -> str:
     was actually OFFERED before this turn, never to allow a handoff on
     its own."""
 
-    for msg in reversed(state.get("messages") or []):
-        if getattr(msg, "type", None) == "ai":
-            content = getattr(msg, "content", "")
-            return content if isinstance(content, str) else str(content or "")
-    return ""
+    # NOT simply the latest AIMessage. While this tool runs, the latest
+    # AIMessage is the one that CALLED it - its content is usually empty -
+    # so the offer made on the previous turn was never seen and every
+    # "yes" to it was refused as "consent not grounded". Read the last
+    # visible reply before the patient's latest message instead.
+    return understanding_module.last_ai_text_before_latest_human(state.get("messages") or [])
 
 
 # ==========================================================
@@ -1160,7 +1163,22 @@ def cancel_appointment(
     # confirmed failure - "تعديل" ended in a cancelled appointment. The
     # explicit-confirmation rule cannot catch that on its own, because
     # the question the patient said yes to was the wrong question.
-    if not _patient_asked_to_cancel(state):
+    # UNDERSTANDING FIRST. When this turn has an LLM reading of the
+    # patient's message, the only thing that authorises destroying an
+    # appointment is the patient clearly saying yes to cancelling it,
+    # read in context. "تم تاكيد الموعد مسبقا" after a booking once
+    # passed the word-scan below and cancelled the booking just made.
+    understanding = state.get("understanding")
+    if understanding is not None:
+        if not understanding.get("cancel_confirmed"):
+            logger.error(
+                "cancel_appointment: REFUSING to cancel booking_id=%r (session_id=%s) - "
+                "the patient's latest message is not a clear confirmation to cancel "
+                "(understanding=%s)",
+                booking_id, state.get("session_id"), understanding,
+            )
+            return {"status": "not_confirmed"}
+    elif not _patient_asked_to_cancel(state):
         logger.error(
             "cancel_appointment: REFUSING to cancel booking_id=%r (session_id=%s) - "
             "no message the patient sent in this conversation asks to cancel "
@@ -1664,21 +1682,34 @@ def _patient_asked_to_cancel(state: AgentState) -> bool:
     for i, msg in enumerate(messages):
         if getattr(msg, "type", None) != "tool":
             continue
-        if getattr(msg, "name", None) not in ("create_new_booking", "reschedule_appointment"):
+        if getattr(msg, "name", None) not in _FLOW_COMPLETING_TOOLS:
             continue
         data = _parse_tool_payload(msg)
         if isinstance(data, dict) and data.get("status") == "success":
             start_index = i + 1  # only what the patient said AFTER this booking counts
 
+    asked = False
     for msg in messages[start_index:]:
         if getattr(msg, "type", None) != "human":
             continue
         content = getattr(msg, "content", "")
         text = content if isinstance(content, str) else str(content)
         if _CANCEL_INTENT_RE.search(_normalize_arabic(text)):
-            return True
+            asked = True
+            break
+    if not asked:
+        return False
 
-    return False
+    # AND THE PATIENT IS ANSWERING A CANCELLATION QUESTION NOW (or asking
+    # to cancel in this very message) - not saying yes to something else.
+    latest = _normalize_arabic(understanding_module.latest_human_text(messages))
+    if _CANCEL_INTENT_RE.search(latest):
+        return True
+    last_question = _normalize_arabic(understanding_module.last_ai_text_before_latest_human(messages))
+    return bool(_CANCEL_INTENT_RE.search(last_question) or re.search(r"الغاء|cancel", last_question, re.IGNORECASE))
+
+
+_FLOW_COMPLETING_TOOLS = ("create_new_booking", "cancel_appointment", "reschedule_appointment")
 
 
 def _resolve_booking_guid(state: AgentState, value: Optional[str]) -> dict:
@@ -7959,35 +7990,63 @@ def _preferred_name(entity: dict, language: str = "ar") -> str:
 
 
 @tool
-def get_doctor_fees(state: Annotated[AgentState, InjectedState]) -> dict:
-    """Get the currently-confirmed doctor's published services and
-    prices for a NEW BOOKING. Reads the doctor from the booking session
-    automatically - you never pass an ID. A doctor MUST already be
-    confirmed (via `match_entity_for_booking`, needsConfirmation=false)
-    before calling this - if none is confirmed yet, this returns
-    {"status": "no_doctor_confirmed"} and you should ask which doctor
-    they're asking about first.
+def get_doctor_fees(state: Annotated[AgentState, InjectedState], doctor_name: str = "") -> dict:
+    """Get a doctor's published services and prices.
+
+    `doctor_name`: the doctor the patient asked about, as they wrote it
+    ("كم سعر الجلسة عند سعد الماضي" -> "سعد الماضي"). Pass it whenever
+    the patient names a doctor - no booking needs to be in progress.
+    Leave it empty to use the doctor already confirmed in the current
+    booking. With neither, this returns {"status": "no_doctor_confirmed"}
+    and you should ask which doctor they mean.
 
     IMPORTANT: fees are PRIVATE BY DEFAULT - only call this when the
     user EXPLICITLY asks about price/cost/fee. Never mention a fee
     proactively, and never quote one from schedule/slot data instead of
     this tool. Returns:
-    {"status": "found", "fees": [{"service": ..., "price": ...}, ...]}
+    {"status": "found", "doctor": "<name>", "fees": [{"service": ..., "price": ...}, ...]}
+    {"status": "ambiguous", "candidates": ["<name>", ...]}  # ask which one
+    {"status": "doctor_not_found"}  # no doctor by that name
     {"status": "no_doctor_confirmed"}
     {"status": "not_found"}  # doctor has no published services
     {"status": "not_configured"} / {"status": "error"}"""
 
-    session_id = state.get("session_id")
-    session = _get_booking_session(session_id)
-    doctor_id = session.get("doctor_id")
-
-    if not doctor_id:
-        return {"status": "no_doctor_confirmed"}
-
+    # A PRICE QUESTION IS NOT A BOOKING. "كم سعر الموعد عند الدكتور
+    # المديفر" used to return no_doctor_confirmed because no booking had
+    # confirmed a doctor yet, and the patient was told "ما عندي معلومات
+    # عن الأسعار" about a doctor whose fees the API had all along.
     base_url = _doctors_base_url(state)
     if not base_url:
         logger.warning("get_doctor_fees called but no doctors_base_url is configured for client_id=%s", state.get("client_id"))
         return {"status": "not_configured"}
+
+    doctor_display = None
+    doctor_id = None
+
+    if (doctor_name or "").strip():
+        roster = api.get_doctors(
+            base_url, page_size=200,
+            has_service_schedule=None, has_published_service=None,
+            language=conversation_language(state),
+        )
+        if not roster["success"]:
+            return _api_error(roster)
+        items = (roster["data"] or {}).get("items", [])
+        match = _fuzzy_match(doctor_name, items, ["formatedName", "altName", "name"])
+        if match["result"] == "ambiguous":
+            return {"status": "ambiguous", "candidates": [
+                _arabic_preferred_name(i) or i.get("formatedName") for i in match["items"]
+            ]}
+        if match["result"] != "matched":
+            return {"status": "doctor_not_found"}
+        doctor_id = match["item"].get("id")
+        doctor_display = _arabic_preferred_name(match["item"]) or match["item"].get("formatedName")
+    else:
+        session = _get_booking_session(state.get("session_id"))
+        doctor_id = session.get("doctor_id")
+
+    if not doctor_id:
+        return {"status": "no_doctor_confirmed"}
 
     result = api.get_doctor_fees(base_url, doctor_ids=[doctor_id], language=conversation_language(state))
 
@@ -8000,7 +8059,10 @@ def get_doctor_fees(state: Annotated[AgentState, InjectedState]) -> dict:
         return {"status": "not_found"}
 
     fees = [{"service": i.get("serviceName"), "price": i.get("price")} for i in items]
-    return {"status": "found", "fees": fees}
+    result = {"status": "found", "fees": fees}
+    if doctor_display:
+        result["doctor"] = doctor_display
+    return result
 
 
 # A phone number shared by a family genuinely has several patients on
@@ -10852,6 +10914,35 @@ def request_human_handoff(
     # `_COMPLAINT_ROOTS_FOR_HANDOFF_GUARD`.
     # ------------------------------------------------------------------
 
+
+    # A PATIENT IN CRISIS ALWAYS GETS A PERSON. Nothing below may stand
+    # between someone who said they want to hurt themselves and a human.
+    if state.get("crisis_active"):
+        logger.warning(
+            "request_human_handoff: crisis is active for session_id=%s - raising the "
+            "handoff unconditionally (reason=%r)", state.get("session_id"), reason,
+        )
+        return {"status": "handoff_requested"}
+
+    # UNDERSTANDING FIRST. The LLM reading of this turn already decided,
+    # in context and in any wording, whether the patient asked for a
+    # person or accepted an offer of one. The regex gates below are only
+    # the fallback for a turn where that reading is unavailable - they
+    # refused "نعم"/"yes"/"confirm"/"transfer me" on every turn.
+    understanding = state.get("understanding")
+    if understanding is not None:
+        if understanding.get("wants_human"):
+            logger.info(
+                "request_human_handoff: session_id=%s client_id=%s reason=%r (understanding: wants_human)",
+                state.get("session_id"), state.get("client_id"), reason,
+            )
+            return {"status": "handoff_requested"}
+        logger.info(
+            "request_human_handoff: NOT raised - understanding says the patient has not "
+            "asked for or accepted a person this turn. session_id=%s reason=%r",
+            state.get("session_id"), reason,
+        )
+        return {"status": "not_requested", "reason": "patient_has_not_agreed"}
 
     latest_text = _latest_human_text_for_handoff_guard(state)
     has_complaint_word = any(root in latest_text for root in _COMPLAINT_ROOTS_FOR_HANDOFF_GUARD)

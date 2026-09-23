@@ -1113,7 +1113,8 @@ def _looks_like_an_answer(text: str) -> bool:
     return False
 
 
-def route_turn(messages: List, active_agent: Optional[str] = None) -> Tuple[str, str]:
+def route_turn(messages: List, active_agent: Optional[str] = None,
+               allow_llm: bool = True) -> Tuple[str, str]:
     """
     Returns `(agent_name, reason)`. The reason is logged, never shown to
     the patient.
@@ -1225,7 +1226,10 @@ def route_turn(messages: List, active_agent: Optional[str] = None) -> Tuple[str,
     # So the two rules below. Between them the classifier keeps every
     # decision it is actually able to make, and loses only the one it
     # cannot: guessing who owns a bare "اه".
-    if config.ROUTER_MODE == "llm" and score < _START_THRESHOLD:
+    # `allow_llm=False` when graph.py already has this turn's LLM reading
+    # (understanding.py) - asking a second model the same question adds
+    # latency and cost for no new information.
+    if config.ROUTER_MODE == "llm" and allow_llm and score < _START_THRESHOLD:
         llm_choice = _classify_with_llm(text, active_agent, messages)
 
         if llm_choice:

@@ -51,7 +51,19 @@ def _get_embeddings_model() -> OpenAIEmbeddings:
 
     global _embeddings_model
     if _embeddings_model is None:
-        _embeddings_model = OpenAIEmbeddings(model=_EMBEDDING_MODEL_NAME)
+        import config
+
+        if config.LLM_PROVIDER == "openrouter":
+            _embeddings_model = OpenAIEmbeddings(
+                model=config.OPENROUTER_EMBEDDING_MODEL,
+                api_key=config.llm_api_key() or "sk-not-configured",
+                base_url=config.OPENROUTER_BASE_URL,
+                # OpenRouter takes text, not the token arrays the
+                # client sends to OpenAI by default.
+                check_embedding_ctx_length=False,
+            )
+        else:
+            _embeddings_model = OpenAIEmbeddings(model=_EMBEDDING_MODEL_NAME)
     return _embeddings_model
 
 

@@ -477,6 +477,13 @@ RESULT_GUIDANCE: dict = {
             "asked to RESCHEDULE (\"تعديل\"/\"تأجيل\") and the flow "
             "drifted into cancelling: go back and ask which of the two "
             "they want, or carry on with the reschedule.",
+        "not_confirmed":
+            "NOTHING HAS BEEN CANCELLED. The patient has not clearly "
+            "confirmed cancelling THIS appointment in their latest "
+            "message. Do NOT tell them it was cancelled. Show the "
+            "appointment (doctor, day, date, time) and ask one plain "
+            "question: do they want it cancelled, yes or no? Call "
+            "cancel_appointment again only after a clear yes.",
     },
 
     # ------------------------------------------------------------------
@@ -484,6 +491,23 @@ RESULT_GUIDANCE: dict = {
         "not_looked_up":
             "This booking was never found by a lookup in this "
             "conversation - go and find it first.",
+    },
+
+    # ------------------------------------------------------------------
+    "get_doctor_fees": {
+        "doctor_not_found":
+            "No doctor by that name. Say so plainly and offer the list "
+            "of doctors (match_entity_info in list mode) - do NOT say "
+            "you have no price information.",
+        "ambiguous":
+            "Several doctors match that name - list `candidates` as a "
+            "numbered list and ask which one they mean.",
+        "no_doctor_confirmed":
+            "Ask which doctor they want the price for, then call "
+            "get_doctor_fees again with `doctor_name`.",
+        "not_found":
+            "This doctor has no published prices. Say so, and offer to "
+            "connect them with customer service for the price.",
     },
 
     # ------------------------------------------------------------------

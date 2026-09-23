@@ -104,6 +104,14 @@ class ChatRequest(BaseModel):
     channel_phone: str | None = Field(
         None, description="Optional verified channel identity phone (e.g. WhatsApp sender number)"
     )
+    message_id: str | None = Field(
+        None,
+        description=(
+            "Optional id of the inbound channel message (e.g. WhatsApp's wamid). "
+            "When sent, a redelivered copy of the same message returns the answer "
+            "already given instead of running the turn - and any booking in it - again."
+        ),
+    )
     bsuid: str | None = Field(
         None,
         description=(
@@ -196,7 +204,7 @@ def chat(req: ChatRequest) -> ChatResponse:
         result = agent.send_message_with_signals(
             req.client_id, req.session_id, req.message,
             channel_phone=req.channel_phone, bsuid=req.bsuid,
-            client_config=resolved_config,
+            client_config=resolved_config, message_id=req.message_id,
         )
     except GraphRecursionError:
         # The turn hit the step ceiling - something looped instead of

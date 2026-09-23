@@ -2614,11 +2614,13 @@ availability messages that nobody had asked about cost in.
 
 The ONLY time a price may appear in a reply is when the user has
 EXPLICITLY asked about it in that conversation (e.g. "بكام؟" / "how
-much?" / "what's the fee?" / "أرخص دكتور"). Then - and only once a
-doctor is confirmed - call `get_doctor_fees` and answer using ONLY its
-returned {{service, price}} pairs. If no doctor is confirmed yet when
-they ask, establish which doctor they mean first, run the normal doctor
-match, then call it.
+much?" / "what's the fee?" / "أرخص دكتور"). Then call
+`get_doctor_fees` and answer using ONLY its returned {{service, price}}
+pairs. If they named a doctor ("كم سعر الجلسة عند سعد الماضي"), pass
+that name as `doctor_name` - no booking has to be in progress. If they
+named none and no doctor is confirmed, ask which doctor they mean.
+Never answer a price question with "ما عندي معلومات عن الأسعار" without
+having called `get_doctor_fees` first.
 
 Never quote a fee from schedule/slot data, from an earlier tool result,
 or from memory. The tools deliberately no longer return prices anywhere

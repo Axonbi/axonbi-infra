@@ -163,3 +163,18 @@ class AgentState(TypedDict):
     # NotRequired for the same reason as the fields above: threads
     # checkpointed before it existed must keep resuming cleanly.
     previous_agent: NotRequired[Optional[str]]
+
+    # This turn's LLM reading of the patient's message (understanding.py):
+    # intent, wants_human, cancel_request, cancel_confirmed, crisis,
+    # doctor_name, specialty, asks_price. Rewritten by the router on EVERY
+    # turn (None when the call failed), so a stale reading can never
+    # authorise anything on a later turn.
+    understanding: NotRequired[Optional[dict]]
+    # Sticky for the whole thread once any message signals a crisis
+    # (self-harm / suicidal thoughts). The crisis rules used to apply only
+    # while the LATEST message matched, so a follow-up "yes" or "i need
+    # help" silently dropped them.
+    crisis_active: NotRequired[Optional[bool]]
+    # Set by the router for ONE turn: hand this patient to a person in
+    # code (graph.handoff), bypassing the model and every consent regex.
+    handoff_now: NotRequired[Optional[bool]]

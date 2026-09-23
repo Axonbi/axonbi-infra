@@ -64,6 +64,7 @@ import tools
 from prompts import build_agent_system_prompt, build_system_prompt
 from state import AgentState
 import tool_result_guidance
+import understanding
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,29 @@ logger = logging.getLogger(__name__)
 # LLM (bound to every tool) - api.py/config.py's OPENAI_* settings,
 # UNCHANGED from the old project
 # ==========================================================
+
+def _make_llm(model: str, **kwargs):
+    """The chat client for `model`, for config.LLM_PROVIDER.
+
+    openrouter (default): OpenRouter's OpenAI-compatible endpoint, so
+    tool calling, JSON mode and every call site work unchanged; bare
+    OpenAI names get the "openai/" prefix (config.llm_model_id).
+    openai: api.openai.com, exactly as before."""
+
+    if config.LLM_PROVIDER == "openrouter":
+        return ChatOpenAI(
+            model=config.llm_model_id(model),
+            api_key=config.llm_api_key() or "sk-not-configured",
+            base_url=config.OPENROUTER_BASE_URL,
+            default_headers={
+                "HTTP-Referer": config.OPENROUTER_SITE_URL,
+                "X-Title": config.OPENROUTER_APP_NAME,
+            },
+            **kwargs,
+        )
+
+    return ChatOpenAI(model=model, api_key=config.OPENAI_API_KEY or "sk-not-configured", **kwargs)
+
 
 # TEMPERATURE IS PINNED, NOT LEFT TO THE API DEFAULT (1.0).
 #
@@ -83,9 +107,8 @@ logger = logging.getLogger(__name__)
 # directly against agents/response_contract.py's stated goal, that two
 # patients in the same situation get the same shape of reply - the
 # normalizer was left mopping up variance the sampler was creating.
-_llm = ChatOpenAI(
-    model=config.OPENAI_MODEL,
-    api_key=config.OPENAI_API_KEY or "sk-not-configured",
+_llm = _make_llm(
+    config.OPENAI_MODEL,
     timeout=config.OPENAI_TIMEOUT_SECONDS,
     temperature=config.OPENAI_TEMPERATURE,
 )
@@ -105,13 +128,23 @@ _llm_with_tools = _llm.bind_tools(tools.ALL_TOOLS)
 # back to the deterministic result. A router that is occasionally
 # unavailable costs nothing; a router that blocks the turn costs the
 # conversation.
-_router_llm = ChatOpenAI(
-    model=config.OPENAI_MODEL_ROUTER,
-    api_key=config.OPENAI_API_KEY or "sk-not-configured",
+_router_llm = _make_llm(
+    config.OPENAI_MODEL_ROUTER,
     timeout=config.ROUTER_LLM_TIMEOUT_SECONDS,
     temperature=0,
     max_retries=0,
 )
+
+# TURN UNDERSTANDING (understanding.py). Same fast-failing shape as the
+# router: a short timeout and no retries, because a failure here simply
+# falls back to the deterministic rules. JSON mode so the answer always
+# parses. Tests replace this attribute with a scripted fake.
+_understanding_llm = _make_llm(
+    config.OPENAI_MODEL_UNDERSTANDING,
+    timeout=config.UNDERSTANDING_TIMEOUT_SECONDS,
+    temperature=0,
+    max_retries=0,
+).bind(response_format={"type": "json_object"})
 
 # The object `_llm_with_tools` was bound to at import time, kept as an
 # identity sentinel. `_llm_for()` below compares against it to tell
@@ -144,9 +177,8 @@ def _llm_for_model(model: str):
         return existing
 
     try:
-        client = ChatOpenAI(
-            model=model,
-            api_key=config.OPENAI_API_KEY or "sk-not-configured",
+        client = _make_llm(
+            model,
             timeout=config.OPENAI_TIMEOUT_SECONDS,
             temperature=config.OPENAI_TEMPERATURE,
         )
@@ -3517,7 +3549,31 @@ def _fragment_after_cue(text: str, cue_re) -> str:
     return " ".join(words).strip()
 
 
-def _build_multi_intent_directive(messages: list, session_id: str, agent_name: str = "booking") -> str:
+def _doctor_fragment(text: str, reading: Optional[dict] = None) -> str:
+    """The doctor NAME the patient gave in `text`, or "".
+
+    With this turn's LLM reading (understanding.py) available, that
+    reading decides: it knows "الدكتور نفسي" means a psychiatrist and
+    "اود اخذ موعد مع عمر المديفر" names a doctor with no cue word at all.
+
+    Without it, the old cue-word extraction - minus the case that broke
+    in production: "كم موعد عند الدكتور نفسي" was searched as a doctor
+    NAMED "نفسي" and answered "ما لقيت دكتور اسمه نفسي". A word right
+    after "دكتور" that is a specialty is a specialty, not a name."""
+
+    if reading is not None:
+        return (reading.get("doctor_name") or "").strip()
+
+    fragment = _fragment_after_cue(text, _DOCTOR_CUE_RE)
+    if fragment:
+        first = _norm_ar(fragment.split()[0])
+        if _BARE_SPECIALTY_RE.search(" " + first + " "):
+            return ""
+    return fragment
+
+
+def _build_multi_intent_directive(messages: list, session_id: str, agent_name: str = "booking",
+                                  reading: Optional[dict] = None) -> str:
     """Lists, in the system prompt, every distinct piece of information
     the patient's latest message contains - and forbids asking for any
     of them again.
@@ -3575,7 +3631,7 @@ def _build_multi_intent_directive(messages: list, session_id: str, agent_name: s
 
     found = []
 
-    doctor_fragment = _fragment_after_cue(text, _DOCTOR_CUE_RE)
+    doctor_fragment = _doctor_fragment(text, reading)
     if doctor_fragment:
         found.append((
             "A DOCTOR",
@@ -3617,6 +3673,8 @@ def _build_multi_intent_directive(messages: list, session_id: str, agent_name: s
         bare = _BARE_SPECIALTY_RE.search(_norm_ar(text))
         if bare:
             specialty_fragment = bare.group(1).strip()
+    if not specialty_fragment and reading is not None:
+        specialty_fragment = (reading.get("specialty") or "").strip()
     if specialty_fragment:
         found.append((
             "A SPECIALTY OR SERVICE",
@@ -4092,7 +4150,7 @@ def _build_booking_entry_directive(messages: list, session_id: str, agent_name: 
             return ""
 
     # Anything concrete in the message means a later rung owns the turn.
-    if (_fragment_after_cue(text, _DOCTOR_CUE_RE)
+    if (_doctor_fragment(text)
             or _fragment_after_cue(text, _SPECIALTY_CUE_RE)
             or _BARE_SPECIALTY_RE.search(folded)
             or _named_weekday_in_latest_human(messages)
@@ -4323,7 +4381,7 @@ def _build_established_specialty_directive(messages: list, session_id: str, agen
         return ""
 
     # Naming a doctor of their own is more specific - that path wins.
-    if _fragment_after_cue(text, _DOCTOR_CUE_RE):
+    if _doctor_fragment(text):
         return ""
 
     # A doctor already confirmed means we are past the roster.
@@ -10560,7 +10618,7 @@ def upstream_api_failed(messages: list) -> bool:
 # but nothing upstream is broken. No "technical problem", no "try again
 # later" - just a short line that keeps the turn alive.
 _SOFT_RECOVERY_TEXT = {
-    "ar": "ممكن توضحلي طلبك تاني؟ عشان أقدر أساعدك صح 🌷",
+    "ar": "ممكن توضح لي طلبك مرة أخرى؟ حتى أقدر أساعدك بشكل صحيح 🌷",
     "en": "Could you tell me what you need again? I want to make sure I help you properly 🌷",
 }
 
@@ -10583,8 +10641,8 @@ _SOFT_RECOVERY_TEXT = {
 # itself - handing off to a human is honest and moves the conversation
 # forward; a third identical message would not.
 _SOFT_RECOVERY_ESCALATION_TEXT = {
-    "ar": "عذرًا، شكلي مش قادرة أوصل لطلبك ده صح حاليًا 🌷\n"
-          "حابب أحولك لأحد ممثلي خدمة العملاء يكمل معاك؟",
+    "ar": "عذرًا، يبدو أنني لم أتمكن من فهم طلبك بشكل صحيح 🌷\n"
+          "هل تحب أحوّلك لأحد ممثلي خدمة العملاء لإكمال طلبك؟",
     "en": "Sorry - it looks like I'm not able to get to this properly right "
           "now 🌷\nWould you like me to connect you with one of our "
           "customer service team to continue with you?",
@@ -10805,40 +10863,40 @@ def _safe_fallback_reply(
         # which is the whole failure this gate exists to prevent.
         (
             ("claim gate: told the patient their appointment is booked",),
-            "عذرًا، ما قدرتش أأكد الحجز فعليًا حاليًا - يعني الموعد لسه "
-            "مش محجوز 🌷\nتحب نرجع نختار الموعد من تاني؟",
+            "عذرًا، لم أتمكن من تأكيد الحجز فعليًا - الموعد لم يُحجز بعد 🌷\n"
+            "هل تحب نختار الموعد مرة أخرى؟",
             "Sorry - I wasn't able to actually confirm the booking just "
             "now, so the appointment is NOT reserved yet 🌷\nShall we "
             "pick the time again?",
         ),
         (
             ("claim gate: told the patient their appointment is cancelled",),
-            "عذرًا، ما قدرتش أنفّذ الإلغاء فعليًا حاليًا - يعني الموعد لسه "
-            "قائم 🌷\nتحب نحاول نلغيه من تاني؟",
+            "عذرًا، لم أتمكن من تنفيذ الإلغاء فعليًا - الموعد ما زال قائمًا 🌷\n"
+            "هل تحب نحاول الإلغاء مرة أخرى؟",
             "Sorry - I wasn't able to actually cancel it just now, so the "
             "appointment is still active 🌷\nShall we try the "
             "cancellation again?",
         ),
         (
             ("claim gate: told the patient their appointment has been moved",),
-            "عذرًا، ما قدرتش أنقل الموعد فعليًا حاليًا - يعني الموعد القديم "
-            "لسه هو القائم 🌷\nتحب نختار الوقت الجديد من تاني؟",
+            "عذرًا، لم أتمكن من تغيير الموعد فعليًا - الموعد القديم ما زال "
+            "قائمًا 🌷\nهل تحب نختار الوقت الجديد مرة أخرى؟",
             "Sorry - I wasn't able to actually move the appointment just "
             "now, so your original time still stands 🌷\nShall we pick "
             "the new time again?",
         ),
         (
             ("claim gate: told the patient their complaint was filed",),
-            "عذرًا، ما قدرتش أسجّل الشكوى فعليًا حاليًا - يعني ما وصلتش "
-            "لفريق الجودة لسه 🌷\nحابب أحوّلك لخدمة العملاء يتابعوها معاك؟",
+            "عذرًا، لم أتمكن من تسجيل الشكوى فعليًا - لم تصل لفريق الجودة "
+            "بعد 🌷\nهل تحب أحوّلك لخدمة العملاء لمتابعتها معك؟",
             "Sorry - your complaint wasn't actually filed just now, so it "
             "hasn't reached the quality team yet 🌷\nWould you like me to "
             "connect you with customer service instead?",
         ),
         (
             ("claim gate: told the patient they are being handed to a human",),
-            "عذرًا، ما قدرتش أحوّلك لموظف فعليًا حاليًا 🌷\nتحب أحاول "
-            "التحويل من تاني؟",
+            "عذرًا، لم أتمكن من تحويلك لموظف فعليًا 🌷\nهل تحب أحاول "
+            "التحويل مرة أخرى؟",
             "Sorry - I wasn't able to actually transfer you to a member "
             "of staff just now 🌷\nShall I try the transfer again?",
         ),
@@ -10865,8 +10923,8 @@ def _safe_fallback_reply(
             # none free. Saying it cannot understand the symptom is
             # both untrue and useless; saying no doctor is available is
             # true and tells them what to do next.
-            "عذرًا، ما لقيتش دكتور متاح حاليًا للحالة دي في المستشفى 🌷\n"
-            "أفضل حاجة إنك تتواصل مع فريقنا الطبي مباشرة يوجهوك صح. تحب أحولك لهم؟",
+            "عذرًا، لم أجد طبيبًا متاحًا حاليًا لهذه الحالة في المستشفى 🌷\n"
+            "الأفضل أن تتواصل مع فريقنا الطبي مباشرة ليوجهوك بشكل صحيح. هل تحب أحوّلك لهم؟",
             "Sorry - I couldn't find a doctor available for this at the "
             "hospital right now 🌷\nIt's best to speak directly with our "
             "medical team so they can guide you properly. Would you like "
@@ -10875,32 +10933,32 @@ def _safe_fallback_reply(
         (
             ("fabricated appointment", "invents availability", "invented availability",
              "no availability tool"),
-            "عذرًا، مش قادرة أتأكد من موعد فعلي متاح حاليًا 🌷\n"
-            "ممكن نرجع نشوف الأيام والمواعيد المتاحة تاني من الأول؟",
+            "عذرًا، لم أتمكن من التأكد من موعد متاح فعليًا 🌷\n"
+            "هل نراجع الأيام والمواعيد المتاحة مرة أخرى من البداية؟",
             "Sorry, I can't confirm a real available slot right now 🌷\n"
             "Shall we look at the available days and times again from the "
             "start?",
         ),
         (
             ("cancellation without", "confirm cancelling", "offers cancellation without lookup"),
-            "عذرًا، مش لاقية حجز مؤكد بالمعلومات دي 🌷\n"
-            "ممكن تبعتلي رقم الحجز أو رقم الجوال المسجل بيه الحجز؟",
+            "عذرًا، لم أجد حجزًا مؤكدًا بهذه المعلومات 🌷\n"
+            "ممكن ترسل لي رقم الحجز أو رقم الجوال المسجل عليه الحجز؟",
             "Sorry, I can't find a confirmed booking with that information 🌷\n"
             "Could you send me the booking reference or the phone number "
             "the booking is under?",
         ),
         (
             ("complaint was filed", "fabricates complaint submission"),
-            "عذرًا، مش قادرة أأكد تسجيل الشكوى فعلياً حاليًا 🌷\n"
-            "حابب أحولك لفريق خدمة العملاء يتابعوها معاك مباشرة؟",
+            "عذرًا، لم أتمكن من تأكيد تسجيل الشكوى فعليًا 🌷\n"
+            "هل تحب أحوّلك لفريق خدمة العملاء لمتابعتها معك مباشرة؟",
             "Sorry, I can't confirm your complaint was actually filed yet "
             "🌷\nWould you like me to connect you with our customer "
             "service team so they can follow up directly?",
         ),
         (
             ("branch had nothing available", "denies a branch", "branch denial"),
-            "عذرًا، حصل لبس عندي في معلومة الفرع 🌷\n"
-            "ممكن تأكدلي اسم الفرع تاني؟",
+            "عذرًا، حصل عندي لبس في معلومة الفرع 🌷\n"
+            "ممكن تأكد لي اسم الفرع مرة أخرى؟",
             "Sorry, I mixed up the branch information 🌷\n"
             "Could you confirm the branch name again?",
         ),
@@ -10913,8 +10971,8 @@ def _safe_fallback_reply(
             # they need is a clear next step, not a third attempt at
             # the same question.
             ("generic out-of-scope service menu",),
-            "عذرًا، حابة أفهم طلبك صح بس مش قادرة حاليًا 🌷\n"
-            "حابب أحولك لفريقنا يساعدك مباشرة؟",
+            "عذرًا، أحب أفهم طلبك بشكل صحيح لكن لم أتمكن من ذلك حاليًا 🌷\n"
+            "هل تحب أحوّلك لفريقنا لمساعدتك مباشرة؟",
             "Sorry, I want to make sure I understand your request "
             "correctly but I'm not able to right now 🌷\nWould you like "
             "me to connect you with our team directly?",
@@ -11266,7 +11324,7 @@ def _reply_reasks_something_just_given(reply_text: str, state: AgentState) -> bo
     normalized = _norm_ar(reply_text)
 
     if _PATH_CHOICE_QUESTION_RE.search(normalized):
-        if (_fragment_after_cue(text, _DOCTOR_CUE_RE)
+        if (_doctor_fragment(text)
                 or _fragment_after_cue(text, _SPECIALTY_CUE_RE)):
             return True
 
@@ -11288,7 +11346,7 @@ def _reasked_information_correction_directive(reply_text: str, state: AgentState
     text = content if isinstance(content, str) else str(content)
 
     supplied = []
-    doctor_fragment = _fragment_after_cue(text, _DOCTOR_CUE_RE)
+    doctor_fragment = _doctor_fragment(text)
     if doctor_fragment:
         supplied.append("the doctor: \"" + doctor_fragment + "\"")
     branch_fragment = _fragment_after_cue(text, _BRANCH_CUE_RE)
@@ -11470,7 +11528,7 @@ def _signals_crisis(messages: list) -> bool:
     return bool(text) and bool(_CRISIS_RE.search(_norm_ar(text)))
 
 
-def _build_crisis_directive(messages: list, templates: dict) -> str:
+def _build_crisis_directive(messages: list, templates: dict, active: bool = False) -> str:
     """A patient has said they want to harm themselves. Nothing else
     this turn matters.
 
@@ -11480,7 +11538,10 @@ def _build_crisis_directive(messages: list, templates: dict) -> str:
     that had never been given the crisis rules and answered with the
     service menu."""
 
-    if not _signals_crisis(messages):
+    # `active` is the thread's sticky crisis flag. Checking only the
+    # latest message dropped these rules the moment the patient replied
+    # "yes" or "i need help" - exactly when they matter most.
+    if not (active or _signals_crisis(messages)):
         return ""
 
     clinic = (templates or {}).get("_clinic_name_ar") or (templates or {}).get("_clinic_name") or ""
@@ -11621,6 +11682,43 @@ def _reply_scope_refuses_a_health_message(reply_text: str, state: AgentState) ->
         return False
 
     return _is_scope_refusal(reply_text, state.get("templates") or {})
+
+
+_IN_SCOPE_INTENTS = ("booking", "cancel", "reschedule", "medical", "faq", "complaint", "human", "answer")
+
+
+def _reply_scope_refuses_an_in_scope_message(reply_text: str, state: AgentState) -> bool:
+    """True when the reply is the out-of-scope service menu, but this
+    turn's LLM reading (understanding.py) says the message IS about the
+    hospital - a booking, a price, a service, a symptom, an answer to our
+    question.
+
+    One check for the whole class, instead of one regex per phrasing the
+    menu has already swallowed (injuries, OTP retries, "I don't have the
+    reference", "احتاج اخذ فكره عن العيادات والاسعار" ...). With no
+    reading available it simply stands down and the older checks apply."""
+
+    reading = state.get("understanding")
+    if not reading or reading.get("intent") not in _IN_SCOPE_INTENTS:
+        return False
+    return _is_scope_refusal(reply_text, state.get("templates") or {})
+
+
+def _in_scope_refusal_correction_directive(reply_text: str, state: AgentState) -> str:
+    reading = state.get("understanding") or {}
+    return (
+        "============================================================\n"
+        "THIS MESSAGE IS IN SCOPE - DO NOT SEND THE SERVICE MENU\n"
+        "============================================================\n"
+        "Your draft answered with the generic out-of-scope refusal (\"أنا "
+        "لطيفة... مختصة بمساعدتك في...\"). The patient's message is about "
+        "the hospital: it reads as intent=" + str(reading.get("intent")) +
+        (", asking about a price" if reading.get("asks_price") else "") +
+        ". Answer what they actually asked, using the tools for it. If "
+        "you genuinely do not have the information, say exactly what is "
+        "missing in one line and offer to connect them with customer "
+        "service - never the service menu.\n\n"
+    )
 
 
 def _reply_scope_refuses_an_answer_to_our_own_question(
@@ -13505,6 +13603,12 @@ _REPLY_VERIFIERS = (
         ),
         lambda reply, state: _SPECIALTY_CATALOGUE_CORRECTION_DIRECTIVE,
         "medical-guidance reply printed the specialty catalogue for the patient to pick from",
+    ),
+    (
+        lambda reply, state, agent_name: _reply_scope_refuses_an_in_scope_message(reply, state),
+        lambda reply, state: _in_scope_refusal_correction_directive(reply, state),
+        "reply sent the generic out-of-scope service menu for a message the "
+        "turn understanding read as in scope",
     ),
     (
         lambda reply, state, agent_name: (
@@ -18242,6 +18346,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     # actually bound to, so nobody is ordered to call a tool it lacks.
     multi_intent_directive = _build_multi_intent_directive(
         state["messages"], state.get("session_id"), agent_name,
+        reading=state.get("understanding"),
     )
 
     # The opening rung of the booking flow, and the medical -> booking
@@ -18376,6 +18481,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
 
     crisis_directive = _build_crisis_directive(
         state["messages"], state.get("templates") or {},
+        active=bool(state.get("crisis_active")),
     )
     medication_directive = _build_medication_request_directive(
         state["messages"], state.get("templates") or {},
@@ -19452,8 +19558,29 @@ def router(state: AgentState) -> dict:
     added latency."""
 
     previous = state.get("active_agent")
+    messages = state["messages"]
 
-    chosen, reason = agents.route_turn(state["messages"], previous)
+    # ONE LLM READING OF THIS MESSAGE, IN CONTEXT. Everything that used
+    # to pattern-match the patient's words to decide consent or intent
+    # reads this instead; None means "unavailable" and every consumer
+    # falls back to its deterministic rule.
+    reading = _understand_turn(state)
+
+    crisis_now = bool(reading and reading.get("crisis")) or _signals_crisis(messages)
+    crisis_was_active = bool(state.get("crisis_active"))
+    handoff_now = False
+
+    if crisis_now and not crisis_was_active:
+        # FIRST SIGN OF A CRISIS: a person, now, with a safety message.
+        # Not an offer the patient has to accept through a consent gate.
+        chosen, reason, handoff_now = agents.CONCIERGE, "crisis: immediate human handoff", True
+    elif reading and reading.get("wants_human"):
+        # They asked for a person, or said yes to our offer of one - in
+        # whatever words. They get one, deterministically, this turn.
+        chosen, reason, handoff_now = agents.CONCIERGE, "handoff: patient wants a person", True
+    else:
+        decided = _route_from_reading(reading, previous)
+        chosen, reason = decided or agents.route_turn(messages, previous, allow_llm=reading is None)
 
     # Once per turn, from the node - never from the conditional edge,
     # which LangGraph may call more than once. See _clear_stale_branch_context.
@@ -19475,6 +19602,126 @@ def router(state: AgentState) -> dict:
         "active_agent": chosen,
         "routing_reason": reason,
         "previous_agent": previous,
+        "understanding": reading,
+        "crisis_active": crisis_was_active or crisis_now,
+        "handoff_now": handoff_now,
+    }
+
+
+def _understand_turn(state: AgentState) -> Optional[dict]:
+    if not config.UNDERSTANDING_ENABLED:
+        return None
+    return understanding.understand_turn(state.get("messages") or [], _understanding_llm)
+
+
+_READING_SPECIALISTS = ("booking", "cancel", "reschedule", "medical", "faq", "complaint")
+
+
+def _route_from_reading(reading: Optional[dict], previous: Optional[str]):
+    """The owner of this turn according to the LLM reading, or None to
+    let the deterministic router decide (no reading, or a reading that
+    does not name a flow)."""
+
+    if not reading:
+        return None
+
+    intent = reading.get("intent")
+
+    if intent == "answer":
+        # An answer belongs to whoever asked the question.
+        if previous in agents.AGENT_NAMES:
+            return previous, f"understanding: answering {previous}'s question"
+        return None
+
+    if reading.get("asks_price") and intent in ("faq", "booking", "other"):
+        # A price question mid-booking stays in booking (it holds
+        # get_doctor_fees and the confirmed doctor); otherwise faq.
+        if previous == "booking":
+            return "booking", "understanding: price question during booking"
+        return "faq", "understanding: price question"
+
+    if intent in _READING_SPECIALISTS:
+        return intent, f"understanding: {intent}"
+
+    return None
+
+
+def _latest_is_english(messages: list) -> bool:
+    text = understanding.latest_human_text(messages)
+    return bool(text) and not re.search(r"[؀-ۿ]", text)
+
+
+_HANDOFF_TEXT_EN = (
+    "I'm connecting you with a member of our customer service team now 🌷\n"
+    "They will reply to you here as soon as possible."
+)
+_HANDOFF_TEXT_AR = "تم تحويلك إلى أحد ممثلي خدمة العملاء 🌷\nسيتم الرد عليك هنا في أقرب وقت."
+
+
+def _crisis_text(english: bool, templates: dict) -> str:
+    # A real number only when the clinic configured one - never invented.
+    hotline = str((templates or {}).get("crisis_hotline") or "").strip()
+    if english:
+        number = f" ({hotline})" if hotline else ""
+        return (
+            "I hear you, and I'm really glad you told me 🌷 You are not alone in this.\n"
+            f"If you are in danger right now or might hurt yourself, please call your local emergency number{number} "
+            "or go to the nearest emergency room immediately.\n"
+            "I'm connecting you with a member of our team right now so they can reach you directly."
+        )
+    number = f" ({hotline})" if hotline else ""
+    return (
+        "أنا سامعتك، وشكرًا إنك شاركتني 🌷 لست وحدك في هذا.\n"
+        f"إذا كنت في خطر الآن أو ممكن تؤذي نفسك، اتصل فورًا برقم الطوارئ{number} أو توجّه لأقرب قسم طوارئ.\n"
+        "حوّلتك الآن لأحد أعضاء فريقنا حتى يتواصلوا معك مباشرة."
+    )
+
+
+def handoff(state: AgentState) -> dict:
+    """Hands the patient to a person - in code, not through the model.
+
+    Reached only when the router decided it: the patient asked for a
+    person / accepted our offer (understanding.wants_human), or a crisis
+    was just detected. Emits the same request_human_handoff tool result
+    main._turn_signals already reads for n8n's escalate flag, plus the
+    confirmation line, and ends the turn. No verifier, no consent regex,
+    no second model call can turn a "yes" into another question here."""
+
+    messages = state.get("messages") or []
+    templates = state.get("templates") or {}
+    english = _latest_is_english(messages)
+    crisis = str(state.get("routing_reason") or "").startswith("crisis")
+
+    if crisis:
+        text = _crisis_text(english, templates)
+    elif english:
+        text = _HANDOFF_TEXT_EN
+    else:
+        text = templates.get("msg_handoff_confirmation") or _HANDOFF_TEXT_AR
+
+    call_id = f"handoff_{uuid.uuid4().hex[:12]}"
+    reason = "crisis detected" if crisis else "patient asked for / accepted a person"
+    logger.warning(
+        "handoff: raising human handoff in code for session_id=%s (%s)",
+        state.get("session_id"), reason,
+    )
+
+    return {
+        "messages": [
+            AIMessage(content="", tool_calls=[{
+                "name": "request_human_handoff",
+                "args": {"reason": reason, "patient_agreed": True},
+                "id": call_id,
+                "type": "tool_call",
+            }]),
+            ToolMessage(
+                content=json.dumps({"status": "handoff_requested", "via": "router"}),
+                name="request_human_handoff",
+                tool_call_id=call_id,
+            ),
+            AIMessage(content=text),
+        ],
+        "greeted": True,
     }
 
 
@@ -19560,6 +19807,16 @@ def route_to_specialist(state: AgentState) -> str:
     specialist. Never raises - an unrecognised value lands on the
     concierge, which has the full prompt and every tool."""
 
+    if state.get("handoff_now"):
+        return HANDOFF_NODE
+
+    return _specialist_for(state)
+
+
+HANDOFF_NODE = "handoff"
+
+
+def _specialist_for(state: AgentState) -> str:
     chosen = state.get("active_agent")
 
     if chosen not in agents.AGENT_NAMES:
@@ -19620,7 +19877,7 @@ def route_after_tools(state: AgentState) -> str:
     never through the router again, which is what keeps one turn's
     reasoning with one owner."""
 
-    return route_to_specialist(state)
+    return _specialist_for(state)
 
 
 def _node_name(agent_name: str) -> str:
@@ -19995,7 +20252,11 @@ if config.MULTI_AGENT_ENABLED:
         )
         specialist_nodes[_node] = _node
 
-    builder.add_conditional_edges("router", route_to_specialist, specialist_nodes)
+    builder.add_node(HANDOFF_NODE, handoff)
+    builder.add_edge(HANDOFF_NODE, END)
+    builder.add_conditional_edges(
+        "router", route_to_specialist, {**specialist_nodes, HANDOFF_NODE: HANDOFF_NODE},
+    )
     builder.add_conditional_edges("tools", route_after_tools, specialist_nodes)
 
     logger.info(

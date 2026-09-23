@@ -1,0 +1,74 @@
+{
+  "_about": "Live eval for understanding.py. Each case: prior conversation (oldest first), the patient's new message, and the fields the reading MUST have. 'critical' cases fail the run. Strings in expect for doctor_name/specialty are substrings; null means the field must be null. Add every new production failure here.",
+  "offers": {
+    "AR": "هل تود أن أرسل طلب تحويلك إلى أحد ممثلي خدمة العملاء الآن؟",
+    "AR2": "عذرًا، يبدو أنني لم أتمكن من فهم طلبك بشكل صحيح 🌷 هل تحب أحوّلك لأحد ممثلي خدمة العملاء لإكمال طلبك؟",
+    "EN": "I understand, and I'm here to support you 🌷 Would you like me to connect you to one of our human customer service representatives?",
+    "BOOKED": "تم الحجز بنجاح ✅ الطبيب: عمر المديفر، الفرع: المنار، الأربعاء 23/09/2026 الساعة 4:00 مساءً. إذا رغبت في حجز موعد جديد أو تعديل موعد آخر، يسعدنا خدمتك",
+    "CANCEL_Q": "لقيت موعدك مع د. عمر المديفر يوم الأربعاء 23/09/2026 الساعة 4:00 مساءً. هل تريد إلغاء هذا الموعد؟",
+    "REVIEW_Q": "راجع بيانات الحجز: د. عمر المديفر، الأربعاء 4:00 مساءً، فرع المنار. هل تؤكد الحجز؟",
+    "DOCTOR_Q": "مع أي دكتور تحب تحجز؟",
+    "SLOTS_Q": "المواعيد المتاحة يوم الأحد: 1️⃣ 4:00 مساءً 2️⃣ 5:00 مساءً 3️⃣ 6:00 مساءً. اختر رقم الموعد اللي يناسبك"
+  },
+  "cases": [
+    {"id": "handoff-yes-naam", "critical": true, "history": [["ai", "@AR"]], "message": "نعم", "expect": {"wants_human": true}},
+    {"id": "handoff-yes-akeed", "critical": true, "history": [["ai", "@AR"]], "message": "اكيد", "expect": {"wants_human": true}},
+    {"id": "handoff-yes-yufaddal", "critical": true, "history": [["ai", "@AR"]], "message": "يفضل", "expect": {"wants_human": true}},
+    {"id": "handoff-yes-ey", "critical": true, "history": [["ai", "@AR2"]], "message": "اي", "expect": {"wants_human": true}},
+    {"id": "handoff-yes-lamane3", "critical": true, "history": [["ai", "@AR"]], "message": "لامانع", "expect": {"wants_human": true}},
+    {"id": "handoff-yes-alaan", "critical": true, "history": [["ai", "@AR2"]], "message": "الان الأسهل", "expect": {"wants_human": true}},
+    {"id": "handoff-yes-yaleet", "critical": true, "history": [["ai", "@AR"]], "message": "ياليت والله", "expect": {"wants_human": true}},
+    {"id": "handoff-yes-egyptian", "critical": true, "history": [["ai", "@AR"]], "message": "ايوه ياريت بسرعة", "expect": {"wants_human": true}},
+    {"id": "handoff-yes-levant", "critical": true, "history": [["ai", "@AR"]], "message": "اكيد يعطيكي العافية", "expect": {"wants_human": true}},
+    {"id": "handoff-yes-en-ya", "critical": true, "history": [["ai", "@EN"]], "message": "ya", "expect": {"wants_human": true}},
+    {"id": "handoff-yes-en-confirm", "critical": true, "history": [["ai", "@EN"]], "message": "co firm", "expect": {"wants_human": true}},
+    {"id": "handoff-yes-en-transfer", "critical": true, "history": [["ai", "@EN"]], "message": "transfer me", "expect": {"wants_human": true}},
+    {"id": "handoff-yes-en-help", "critical": true, "history": [["ai", "@EN"]], "message": "yes confirm i need help", "expect": {"wants_human": true}},
+    {"id": "handoff-impatient-repeat", "critical": true, "history": [["ai", "@EN"], ["human", "yes"], ["ai", "@EN"]], "message": "come help me i said that many times", "expect": {"wants_human": true}},
+
+    {"id": "human-direct-gulf", "critical": true, "history": [], "message": "ابي اكلم احد من الموظفين لو سمحت", "expect": {"wants_human": true}},
+    {"id": "human-direct-egypt", "critical": true, "history": [], "message": "عايز اكلم حد من خدمة العملاء", "expect": {"wants_human": true}},
+    {"id": "human-direct-en", "critical": true, "history": [], "message": "I need to speak to a real person please", "expect": {"wants_human": true}},
+    {"id": "human-direct-unusual", "critical": true, "history": [], "message": "خلوني اتواصل مع احد بشري يفهمني", "expect": {"wants_human": true}},
+
+    {"id": "handoff-no", "critical": true, "history": [["ai", "@AR"]], "message": "لا", "expect": {"wants_human": false}},
+    {"id": "handoff-no-continue", "critical": true, "history": [["ai", "@AR"]], "message": "لا شكرا بكمل معك", "expect": {"wants_human": false}},
+    {"id": "complaint-topic-only", "critical": false, "history": [], "message": "شكوى", "expect": {"wants_human": false, "intent": "complaint"}},
+    {"id": "frustrated-not-asking", "critical": false, "history": [["ai", "ممكن توضح لي طلبك؟"]], "message": "انتي ما تفهمين شي", "expect": {"wants_human": false}},
+    {"id": "yes-to-booking-offer-not-human", "critical": true, "history": [["ai", "تحب أحجز لك موعد مع د. عمر؟"]], "message": "نعم", "expect": {"wants_human": false}},
+
+    {"id": "crisis-en-screenshot", "critical": true, "history": [], "message": "I feel like I want to hurt myself and end it", "expect": {"crisis": true}},
+    {"id": "crisis-gulf", "critical": true, "history": [], "message": "خلاص مابي اعيش", "expect": {"crisis": true}},
+    {"id": "crisis-indirect-ar", "critical": true, "history": [], "message": "تعبت من الحياة وودي ارتاح للابد", "expect": {"crisis": true}},
+    {"id": "crisis-third-person", "critical": true, "history": [], "message": "ولدي يقول بيذبح نفسه وش اسوي", "expect": {"crisis": true}},
+    {"id": "crisis-egypt", "critical": true, "history": [], "message": "نفسي اموت وارتاح من كل ده", "expect": {"crisis": true}},
+    {"id": "crisis-indirect-en", "critical": true, "history": [], "message": "sometimes i think everyone would be better off without me", "expect": {"crisis": true}},
+    {"id": "crisis-plan-ar", "critical": true, "history": [], "message": "بفكر انهي حياتي الليلة", "expect": {"crisis": true}},
+
+    {"id": "not-crisis-anxiety", "critical": true, "history": [], "message": "عندي قلق وتوتر من الشغل وابي موعد", "expect": {"crisis": false}},
+    {"id": "not-crisis-depression-booking", "critical": true, "history": [], "message": "ابني عنده اكتئاب ابغى احجز له عند دكتور نفسي", "expect": {"crisis": false}},
+    {"id": "not-crisis-inpatient-price", "critical": true, "history": [], "message": "كم سعر التنويم ومدته لمريض الذهان", "expect": {"crisis": false, "asks_price": true}},
+    {"id": "not-crisis-insomnia", "critical": false, "history": [], "message": "ما انام زين من اسبوع", "expect": {"crisis": false}},
+
+    {"id": "cancel-pdf-already-confirmed", "critical": true, "history": [["human", "اود اخذ موعد مع الدكتور عمر"], ["ai", "@BOOKED"]], "message": "تم تاكيد الموعد مسبقا", "expect": {"cancel_confirmed": false, "cancel_request": false}},
+    {"id": "cancel-yes", "critical": true, "history": [["human", "ابي الغي موعدي"], ["ai", "@CANCEL_Q"]], "message": "نعم", "expect": {"cancel_confirmed": true}},
+    {"id": "cancel-yes-colloquial", "critical": true, "history": [["human", "ابي الغي موعدي"], ["ai", "@CANCEL_Q"]], "message": "ايوه الغيه الله يعافيك", "expect": {"cancel_confirmed": true}},
+    {"id": "cancel-yes-en", "critical": true, "history": [["human", "cancel my appointment"], ["ai", "I found your appointment with Dr. Omar on Wednesday 4:00 PM. Do you want me to cancel it?"]], "message": "yes cancel it", "expect": {"cancel_confirmed": true}},
+    {"id": "cancel-no-keep", "critical": true, "history": [["human", "ابي الغي موعدي"], ["ai", "@CANCEL_Q"]], "message": "لا خلاص خليه", "expect": {"cancel_confirmed": false}},
+    {"id": "cancel-yes-to-review-is-not-cancel", "critical": true, "history": [["ai", "@REVIEW_Q"]], "message": "نعم", "expect": {"cancel_confirmed": false}},
+    {"id": "cancel-request-no-keyword", "critical": false, "history": [], "message": "ما ابي الموعد اللي بكرا", "expect": {"cancel_request": true}},
+    {"id": "cancel-request-cant-come", "critical": false, "history": [], "message": "مش هقدر اجي بكرة", "expect": {"cancel_request": true}},
+    {"id": "reschedule-not-cancel", "critical": true, "history": [], "message": "ابي اعدل موعدي", "expect": {"cancel_request": false, "intent": "reschedule"}},
+
+    {"id": "doctor-nafsi-specialty", "critical": true, "history": [], "message": "كم موعد عند الدكتور نفسي", "expect": {"doctor_name": null, "specialty": "نفس"}},
+    {"id": "doctor-eyes-specialty", "critical": false, "history": [], "message": "ابي دكتور عيون", "expect": {"doctor_name": null, "specialty": "عيون"}},
+    {"id": "doctor-name-omar", "critical": true, "history": [], "message": "اود اخذ موعد مع الدكتور عمر المديفر", "expect": {"doctor_name": "عمر"}},
+    {"id": "doctor-name-no-cue", "critical": false, "history": [["ai", "@DOCTOR_Q"]], "message": "عمر المديفر", "expect": {"doctor_name": "عمر"}},
+    {"id": "doctor-name-hathloul", "critical": false, "history": [], "message": "وش مواعيد الدكتور الهذلول", "expect": {"doctor_name": "هذلول"}},
+
+    {"id": "price-doctor", "critical": false, "history": [], "message": "كم سعر الجلسة عند سعد الماضي؟", "expect": {"asks_price": true, "doctor_name": "سعد"}},
+    {"id": "price-general", "critical": false, "history": [], "message": "احتاج اخذ فكره عن العيادات والاسعار", "expect": {"asks_price": true}},
+
+    {"id": "slot-pick-is-answer", "critical": false, "history": [["ai", "@SLOTS_Q"]], "message": "3", "expect": {"intent": "answer", "wants_human": false}}
+  ]
+}

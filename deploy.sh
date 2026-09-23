@@ -43,8 +43,17 @@ KEEP_BACKUPS="${KEEP_BACKUPS:-10}"
 FILES=(
   graph.py tools.py prompts.py rag.py main.py app.py config.py
   state.py api.py progress.py start.py
+  understanding.py tool_result_guidance.py
   agents/__init__.py agents/router.py agents/registry.py
   agents/sections.py agents/response_contract.py agents/hard_rules.py
+)
+
+# The regression suite. Downloaded and RUN against the new code before
+# anything is installed - never copied into $APP_DIR. A failing test
+# means the deploy stops with production untouched.
+# SKIP_TESTS=1 bypasses it; only for an emergency rollforward.
+TEST_FILES=(
+  tests/conftest.py tests/test_production_scenarios.py tests/test_gates.py tests/test_round2.py
 )
 
 RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; DIM=$'\033[2m'; OFF=$'\033[0m'
@@ -101,6 +110,13 @@ for f in "${FILES[@]}"; do
 done
 ok "${#FILES[@]} file(s) downloaded"
 
+for f in "${TEST_FILES[@]}"; do
+  url="https://raw.githubusercontent.com/$REPO/$BRANCH/$f?cb=$(date +%s%N)"
+  mkdir -p "$STAGE/$(dirname "$f")"
+  curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' -o "$STAGE/$f" "$url"     || die "could not download $f - the regression suite must be on branch $BRANCH"
+done
+ok "${#TEST_FILES[@]} test file(s) downloaded"
+
 # ----------------------------------------------------------
 # 2. Verify before touching anything
 # ----------------------------------------------------------
@@ -112,6 +128,24 @@ for f in "${FILES[@]}"; do
     || die "$f does not parse - nothing has been changed"
 done
 ok "every file parses"
+
+# The new code, run as it will run: a scratch copy of what is deployed
+# (so the CSVs and knowledge base are the server's own), overlaid with
+# every downloaded file, then the regression suite.
+if [[ "${SKIP_TESTS:-0}" == "1" ]]; then
+  warn "SKIP_TESTS=1 - deploying WITHOUT the regression suite"
+else
+  step "Regression tests"
+  "$PY" -c "import pytest" 2>/dev/null || die "pytest is not installed for $PY (pip install pytest) - nothing has been changed"
+  TESTDIR="$(mktemp -d)"
+  trap 'rm -rf "$STAGE" "$TESTDIR"' EXIT
+  (cd "$APP_DIR" && tar --exclude=.venv --exclude=__pycache__ -cf - .) | (cd "$TESTDIR" && tar -xf -)
+  (cd "$STAGE" && tar -cf - .) | (cd "$TESTDIR" && tar -xf -)
+  if ! (cd "$TESTDIR" && OPENAI_API_KEY= OPENROUTER_API_KEY= "$PY" -m pytest tests -q -p no:cacheprovider); then
+    die "regression tests failed - nothing has been changed"
+  fi
+  ok "regression suite passed"
+fi
 
 CHANGED=(); for f in "${FILES[@]}"; do
   if [[ ! -f "$APP_DIR/$f" ]] || ! cmp -s "$STAGE/$f" "$APP_DIR/$f"; then CHANGED+=("$f"); fi

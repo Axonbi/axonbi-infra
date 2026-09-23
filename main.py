@@ -21,11 +21,11 @@ import logging
 import re
 import threading
 import time
-from typing import Dict
+from typing import Dict, Optional
 
 from langchain_core.messages import HumanMessage
 
-from config import GRAPH_RECURSION_LIMIT, POST_SUCCESS_TIMEOUT_SECONDS, SESSION_TIMEOUT_SECONDS, THREAD_ID_PREFIX, configure_logging, get_messages
+from config import DUPLICATE_MESSAGE_WINDOW_SECONDS, GRAPH_RECURSION_LIMIT, MESSAGE_ID_MEMORY_SECONDS, POST_SUCCESS_TIMEOUT_SECONDS, SESSION_TIMEOUT_SECONDS, THREAD_ID_PREFIX, configure_logging, get_messages
 from graph import graph, soft_recovery_reply, upstream_api_failed
 
 import progress
@@ -53,6 +53,43 @@ logger = logging.getLogger(__name__)
 
 _session_locks: Dict[str, threading.Lock] = {}
 _session_locks_guard = threading.Lock()
+
+
+# The last answered message per session: (text, message_id, result,
+# finished_at). Read under the session lock, so a redelivered copy that
+# was waiting on the first one finds its result here instead of running
+# the whole turn - and every tool in it - a second time.
+_last_answered: Dict[str, tuple] = {}
+# Channel message ids already answered: {(session_id, message_id): (result, finished_at)}
+_answered_ids: Dict[tuple, tuple] = {}
+
+
+def _duplicate_result(session_id: str, message: str, message_id: Optional[str],
+                      arrived_at: float) -> Optional[Dict]:
+    if message_id:
+        hit = _answered_ids.get((session_id, message_id))
+        if hit and _now() - hit[1] <= MESSAGE_ID_MEMORY_SECONDS:
+            return dict(hit[0])
+        return None
+    last = _last_answered.get(session_id)
+    # An exact repeat of the last message this session answered, arriving
+    # while it was still being answered or within the window after - see
+    # the 2026-09-22 incident note below (n8n posted one "اه" twice, the
+    # second request AFTER the first had finished).
+    if last and last[0] == (message or "").strip() and arrived_at <= last[3] + DUPLICATE_MESSAGE_WINDOW_SECONDS:
+        return dict(last[2])
+    return None
+
+
+def _remember_answer(session_id: str, message: str, message_id: Optional[str], result: Dict) -> None:
+    now = _now()
+    _last_answered[session_id] = ((message or "").strip(), message_id, dict(result), now)
+    if message_id:
+        _answered_ids[(session_id, message_id)] = (dict(result), now)
+        if len(_answered_ids) > 5000:
+            cutoff = now - MESSAGE_ID_MEMORY_SECONDS
+            for key in [k for k, v in _answered_ids.items() if v[1] < cutoff]:
+                _answered_ids.pop(key, None)
 
 
 def _lock_for(session_id: str) -> threading.Lock:
@@ -95,34 +132,8 @@ def _lock_for(session_id: str) -> threading.Lock:
 # the first reply was slow to arrive) is a real message and must reach
 # the graph normally. Only an EXACT repeat of text this session's very
 # last processed message counts; anything else always proceeds.
-_DUPLICATE_MESSAGE_WINDOW_SECONDS = 10
-
-_last_processed: Dict[str, tuple] = {}  # session_id -> (message, reply_dict, processed_at)
-
-
-def _cached_duplicate_reply(session_id: str, message: str) -> "Dict | None":
-    """The previous turn's full result dict if `message` is an exact repeat
-    of the last message THIS session actually finished processing, within
-    the duplicate window - else None, meaning: proceed normally."""
-
-    entry = _last_processed.get(session_id)
-    if entry is None:
-        return None
-
-    last_message, last_result, processed_at = entry
-    if last_message != message:
-        return None
-    if (_now() - processed_at) > _DUPLICATE_MESSAGE_WINDOW_SECONDS:
-        return None
-
-    logger.warning(
-        "session_id=%s: exact duplicate of the message this session just "
-        "processed %.1fs ago (%r) - returning the same reply instead of "
-        "re-running the turn. Likely a repeated webhook delivery from the "
-        "channel/n8n side; see the note above _last_processed.",
-        session_id, _now() - processed_at, message,
-    )
-    return last_result
+# Implemented by _duplicate_result / _remember_answer above, with the
+# window in config.DUPLICATE_MESSAGE_WINDOW_SECONDS.
 
 
 # ==========================================================
@@ -167,7 +178,7 @@ def _prune_session_bookkeeping() -> None:
         _last_active.pop(session_id, None)
         _success_at.pop(session_id, None)
         _generation.pop(session_id, None)
-        _last_processed.pop(session_id, None)
+        _last_answered.pop(session_id, None)
         with _session_locks_guard:
             lock = _session_locks.get(session_id)
             # Never discard a lock some thread is currently holding -
@@ -334,7 +345,7 @@ def _turn_signals(messages: list) -> dict:
 
 
 def send_message(client_id: str, session_id: str, message: str, channel_phone: str = None,
-                 bsuid: str = None, client_config: dict = None) -> str:
+                 bsuid: str = None, client_config: dict = None, message_id: str = None) -> str:
     """
     Send one user message for `session_id` and return the agent's reply
     text for this turn.
@@ -364,13 +375,13 @@ def send_message(client_id: str, session_id: str, message: str, channel_phone: s
 
     return send_message_with_signals(
         client_id, session_id, message, channel_phone=channel_phone,
-        bsuid=bsuid, client_config=client_config,
+        bsuid=bsuid, client_config=client_config, message_id=message_id,
     )["reply"]
 
 
 def send_message_with_signals(
     client_id: str, session_id: str, message: str, channel_phone: str = None,
-    bsuid: str = None, client_config: dict = None,
+    bsuid: str = None, client_config: dict = None, message_id: str = None,
 ) -> Dict:
     """
     Same as send_message(), but returns a dict with the reply text PLUS
@@ -399,6 +410,7 @@ def send_message_with_signals(
     is identical here.
     """
 
+    arrived_at = _now()
     logger.info("session_id=%s: sending message", session_id)
 
     # Bracket the whole turn for progress.py. begin_turn arms nothing by
@@ -412,9 +424,14 @@ def send_message_with_signals(
 
     try:
         with _lock_for(session_id):
-            cached = _cached_duplicate_reply(session_id, message)
-            if cached is not None:
-                return cached
+            duplicate = _duplicate_result(session_id, message, message_id, arrived_at)
+            if duplicate is not None:
+                logger.warning(
+                    "session_id=%s: duplicate delivery of %r (message_id=%s) - returning the "
+                    "answer already given instead of running the turn again",
+                    session_id, (message or "")[:60], message_id,
+                )
+                return duplicate
 
             thread_config = _config_for(session_id)
 
@@ -568,13 +585,7 @@ def send_message_with_signals(
             if signals["escalate"] or signals["location"]:
                 logger.info("session_id=%s: turn signals=%s", session_id, signals)
 
-            # Record what THIS session's most recent message actually
-            # produced, so an exact repeat of it arriving again shortly
-            # after (see `_cached_duplicate_reply` above) returns this
-            # same result instead of re-running the turn. Written only
-            # once the reply is known good - a turn that raised never
-            # reaches this line, so nothing is cached for it.
-            _last_processed[session_id] = (message, {"reply": reply, **signals}, _now())
+            _remember_answer(session_id, message, message_id, {"reply": reply, **signals})
 
     finally:
         # Whatever happened above, the turn is over: cancel any interim

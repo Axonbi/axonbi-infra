@@ -412,6 +412,42 @@ def _agent_models(raw: str) -> dict:
 
 
 OPENAI_MODEL_BY_AGENT: dict = _agent_models(os.getenv("OPENAI_MODEL_BY_AGENT", ""))
+
+# ==========================================================
+# LLM provider: OpenRouter (default) or OpenAI directly
+# ==========================================================
+#
+# LLM_PROVIDER=openrouter (DEFAULT) -> the OpenAI-compatible client pointed
+#     at OpenRouter. Every OPENAI_MODEL* value is an OpenRouter model id; a
+#     bare OpenAI name ("gpt-4.1") is sent as "openai/gpt-4.1", so the
+#     existing values keep working. Key: OPENROUTER_API_KEY.
+# LLM_PROVIDER=openai -> api.openai.com with OPENAI_API_KEY, as before.
+LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "openrouter").strip().lower()
+
+OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
+OPENROUTER_BASE_URL: str = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+# Optional attribution headers OpenRouter shows on its dashboard.
+OPENROUTER_SITE_URL: str = os.getenv("OPENROUTER_SITE_URL", "https://axonbi.com")
+OPENROUTER_APP_NAME: str = os.getenv("OPENROUTER_APP_NAME", "Latifa (Axonbi)")
+# Embeddings for the knowledge base (rag.py) go through OpenRouter too.
+OPENROUTER_EMBEDDING_MODEL: str = os.getenv("OPENROUTER_EMBEDDING_MODEL", "openai/text-embedding-3-small")
+
+
+def llm_api_key() -> str:
+    """The key for whichever provider is active."""
+    if LLM_PROVIDER == "openrouter":
+        return OPENROUTER_API_KEY
+    return OPENAI_API_KEY
+
+
+def llm_model_id(model: str) -> str:
+    """The model id to send. OpenRouter needs a vendor prefix; a bare
+    OpenAI name ("gpt-4.1-mini") is OpenAI's, so it becomes
+    "openai/gpt-4.1-mini". Ids that already carry a vendor pass through."""
+    if LLM_PROVIDER == "openrouter" and model and "/" not in model:
+        return "openai/" + model
+    return model
+
 # RAISED FROM 10s. The system prompt alone is ~130 KB before the ~40
 # directive blocks and the trimmed history are added, so a 10-second
 # ceiling was being hit in normal operation - and a second hit turns
@@ -730,6 +766,29 @@ ROUTER_LLM_TIMEOUT_SECONDS: float = float(
 # Set OPENAI_MODEL_ROUTER=gpt-4.1 to put it back on the primary model.
 OPENAI_MODEL_ROUTER: str = os.getenv("OPENAI_MODEL_ROUTER", OPENAI_MODEL_CHEAP)
 
+# TURN UNDERSTANDING (understanding.py) - one LLM reading per turn of
+# what the patient means (intent, wants a human, cancel consent, crisis,
+# doctor name vs specialty). The router, the handoff/cancel tools and
+# the doctor/crisis directives read it instead of regex. Any failure
+# falls back to the old deterministic rules, so turning it off
+# (UNDERSTANDING_ENABLED=false) restores the previous behaviour exactly.
+# DUPLICATE DELIVERY. WhatsApp/n8n redeliver a message - sometimes while
+# the first copy is still running, sometimes as a second request right
+# after it finished - and each copy used to run as a new turn: the same
+# reply twice, and any booking/cancel in it executed twice. An exact
+# repeat of the last message a session answered, arriving within this
+# many seconds of that answer, gets the SAME result back without running
+# again. When n8n passes the channel's own message id (`message_id`),
+# that id decides instead and is remembered for MESSAGE_ID_MEMORY_SECONDS.
+DUPLICATE_MESSAGE_WINDOW_SECONDS: float = float(os.getenv("DUPLICATE_MESSAGE_WINDOW_SECONDS", "10"))
+MESSAGE_ID_MEMORY_SECONDS: float = float(os.getenv("MESSAGE_ID_MEMORY_SECONDS", "900"))
+
+UNDERSTANDING_ENABLED: bool = os.getenv("UNDERSTANDING_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
+OPENAI_MODEL_UNDERSTANDING: str = os.getenv("OPENAI_MODEL_UNDERSTANDING", OPENAI_MODEL_CHEAP)
+UNDERSTANDING_TIMEOUT_SECONDS: float = float(
+    os.getenv("UNDERSTANDING_TIMEOUT_SECONDS", str(ROUTER_LLM_TIMEOUT_SECONDS))
+)
+
 # The reply normalizer (agents/response_contract.py) that guarantees
 # every agent's output has identical shape. False -> only the two
 # original normalizations (extra-question trimming, emoji list numbers)
@@ -1043,6 +1102,9 @@ def get_messages(client_id: str, dialect: Optional[str] = None, client_row_overr
     # one merged object per (client_id, dialect) pair.
     merged["_clinic_name"] = client_row.get("clinic_name")
     merged["_clinic_name_ar"] = client_row.get("clinic_name_ar")
+    # The clinic's own crisis / emergency number, quoted in the crisis
+    # handoff message only when configured - never invented.
+    merged["crisis_hotline"] = client_row.get("crisis_hotline")
     merged["_agent_name"] = client_row.get("agent_name")
     merged["_agent_name_ar"] = client_row.get("agent_name_ar")
     merged["_base_url"] = (
