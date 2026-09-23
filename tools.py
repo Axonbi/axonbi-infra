@@ -9316,6 +9316,31 @@ def list_available_days_for_booking(
                         # escape by typing the branch name.
                         branch_options.append({"id": item_branch_id, "name": name})
 
+                # PER-TEST-DOCTORS MODEL ONLY (see _lab_uses_per_test_doctors,
+                # and the same exclusion already applied in
+                # match_entity_for_booking's branch listing and in
+                # get_doctor_schedule_for_booking): this doctor may also
+                # carry a schedule at the fixed home-service branch, purely
+                # so "home" mode can auto-resolve to it - never a real
+                # walk-in option to offer here. CONFIRMED REAL PRODUCTION
+                # FAILURE: this is a THIRD, separate code path from those
+                # two earlier fixes and was not covered by either of them -
+                # without this, "فرع خدمة منزلية" appeared alongside the
+                # doctor's real branches in the missing_branch list shown
+                # to the patient for an in-lab booking.
+                if _lab_uses_per_test_doctors(state):
+                    before_count = len(branch_options)
+                    branch_options = [
+                        b for b in branch_options
+                        if not _is_home_service_branch_name(b.get("name"), state)
+                    ]
+                    if len(branch_options) != before_count:
+                        logger.info(
+                            "list_available_days_for_booking: dropped %d fixed "
+                            "home-service branch row(s) from doctor_id=%s's "
+                            "missing_branch options", before_count - len(branch_options), doctor_id,
+                        )
+
                 # MARK WHICH ONES ARE ACTUALLY BOOKABLE.
                 #
                 # A schedule row means the doctor is ROSTERED at that
@@ -12254,6 +12279,7 @@ def _resolve_home_service_branch(state: AgentState, base_url: str, session: dict
 def select_sample_collection_mode(
     state: Annotated[AgentState, InjectedState],
     mode: str,
+    forced_by_imaging: bool = False,
 ) -> dict:
     """Silently resolve and lock in the (hidden) doctor and branch this
     booking needs, based on whether the patient wants the sample drawn
@@ -12262,6 +12288,22 @@ def select_sample_collection_mode(
 
     `mode`: "in_lab" or "home" - never anything else, never guessed;
     ask the patient directly if it isn't already clear from this turn.
+
+    `forced_by_imaging`: True ONLY for the silent, unasked
+    `mode="in_lab"` call NB1-Q2 makes for a radiology/imaging service
+    (imaging can never be drawn at home, so that question is never put
+    to the patient at all). Leave this False for every call that
+    followed the patient actually answering "في المعمل ولا من البيت؟"
+    themselves - including a later "in_lab" for a lab/blood test.
+    This flag is what lets a LATER switch back to a lab/blood test
+    re-ask the lab-or-home question instead of silently inheriting
+    imaging's forced in_lab mode: CONFIRMED REAL PRODUCTION FAILURE -
+    patient asked about an x-ray (forcing mode=in_lab silently), then
+    said "لا تحليل" (changed their mind to a lab test instead), and the
+    lab-or-home question was never asked at all for that test, because
+    the session already showed collection_mode="ready"/"in_lab" from
+    the imaging turn - the patient never actually got to choose home
+    collection for the test they ended up booking.
 
     TWO ARCHITECTURES, SAME PATIENT-FACING BEHAVIOR - see
     `_lab_uses_per_test_doctors` (AgentState.templates
@@ -12326,6 +12368,11 @@ def select_sample_collection_mode(
         # later (see search_lab_services) - nothing to resolve here
         # beyond the mode itself and, for "home", the fixed branch.
         session["collection_mode"] = mode
+        # Always overwritten on every call, never merged - this must
+        # reflect ONLY the most recent call. A later genuine (non-forced)
+        # call for a lab test must clear a stale True left over from an
+        # earlier imaging turn in the same conversation.
+        session["collection_mode_forced_by_imaging"] = bool(forced_by_imaging)
         session["doctor_display_name"] = "حجز التحليل" if mode == "in_lab" else "حجز السحب المنزلي"
 
         if mode == "home":
@@ -12381,6 +12428,10 @@ def select_sample_collection_mode(
     # generic label here means even a bug that leaked this field would
     # not leak the hidden doctor's identity.
     session["doctor_display_name"] = "حجز التحليل" if mode == "in_lab" else "حجز السحب المنزلي"
+    # Same forced-by-imaging bookkeeping as the per-test-doctors branch
+    # above - see this tool's docstring for why it must always be
+    # overwritten, never merged.
+    session["collection_mode_forced_by_imaging"] = bool(forced_by_imaging)
 
     if mode == "home":
         failure = _resolve_home_service_branch(state, base_url, session, language)
