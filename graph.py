@@ -10075,6 +10075,154 @@ _HOME_ADDRESS_LABEL_RE = re.compile(
 )
 
 
+# ==========================================================
+# IMAGING / SCAN EXAMS CANNOT BE HOME-COLLECTED
+# ==========================================================
+#
+# Home-mode sample collection is physically impossible for any
+# imaging/scan exam (CT, MRI, X-ray, ultrasound, mammogram, echo,
+# Doppler...) - only blood/urine/sample-based lab tests can be drawn at
+# a patient's home. prompts.py already says this in as many words, in
+# more than one place, and even documents a CONFIRMED REAL PRODUCTION
+# FAILURE of exactly this shape (an imaging prep reply that closed with
+# a booking offer, followed by a next turn that asked "في المعمل ولا
+# سحب عينة من البيت؟" for the scan). That failure recurred verbatim in
+# production again on 2026-09-23 (session 201158877175+medtown2, via
+# the `medical` agent's CT-scan prep flow) - prose-only instructions
+# were not enough to stop the model from repeating it, so these two
+# checks give the rule an actual code-level backstop, the same way the
+# branch-line and fake-address checks above already do for the
+# home-collection review card.
+_IMAGING_KEYWORDS = (
+    "أشعة", "الأشعة", "مقطعية", "المقطعية", "رنين", "الرنين", "سونار",
+    "الموجات فوق الصوتية", "الموجات الصوتية", "دوبلر", "إيكو", "ايكو",
+    "ماموجرام", "MRI", "mri", "CT", "ct scan", "X-ray", "x-ray", "xray",
+    "ultrasound", "echo", "mammogram",
+)
+
+_HOME_MODE_QUESTION_RE = re.compile(
+    r"(من\s*البيت|في\s*البيت|من\s*المنزل|في\s*المنزل|سحب\s*(?:عينة\s*)?"
+    r"من\s*(?:المنزل|البيت)|home\s*collection|at\s*home)",
+    re.IGNORECASE,
+)
+
+_BOOKING_OFFER_RE = re.compile(
+    r"(تحب[ىي]?\s*تحجز|حابب[ةه]?\s*(?:أساعدك|اساعدك|احجزلك|أحجزلك|احجز|أحجز)|"
+    r"أحجز\s*لك|هل\s*(?:تريد|ترغب)\s*(?:في\s*)?(?:حجز|أن\s*أحجز)|"
+    r"would\s*you\s*like.*book|shall\s*i\s*book|book\s*(?:an\s*)?appointment)",
+    re.IGNORECASE,
+)
+
+
+def _recent_messages_mention_imaging(messages: list, lookback: int = 10) -> bool:
+    for msg in reversed((messages or [])[-lookback:]):
+        content = getattr(msg, "content", None)
+        if not content or not isinstance(content, str):
+            continue
+        if any(keyword in content for keyword in _IMAGING_KEYWORDS):
+            return True
+    return False
+
+
+def _reply_offers_home_mode_for_imaging(reply_text: str, state: AgentState) -> bool:
+    """Fires when a reply asks about or offers home-collection ('من
+    البيت') while the conversation was just discussing an imaging/scan
+    exam. See the module note above - home-mode does not exist for
+    imaging, full stop, regardless of which agent is asking."""
+
+    if not reply_text or not _HOME_MODE_QUESTION_RE.search(reply_text):
+        return False
+    return _recent_messages_mention_imaging(state.get("messages") or [])
+
+
+def _reply_ends_imaging_prep_with_booking_offer(reply_text: str, state: AgentState) -> bool:
+    """Fires when a reply gives imaging/scan prep instructions (names an
+    imaging keyword) and closes with a booking offer. The imaging-prep
+    flow only ever calls `answer_hospital_faq`, never `search_lab_services`,
+    so it never has a real 'found' catalogue match to offer a booking
+    against - see prompts.py's own rule (\"DO NOT END WITH A BOOKING
+    OFFER OF ANY KIND FROM THIS FLOW - EVER\")."""
+
+    if not reply_text:
+        return False
+    if not any(keyword in reply_text for keyword in _IMAGING_KEYWORDS):
+        return False
+    return bool(_BOOKING_OFFER_RE.search(reply_text))
+
+
+def _no_imaging_home_mode_correction(reply: str, state: AgentState) -> str:
+    return (
+        "\n\nCORRECTION - MANDATORY: your reply asked about or offered "
+        "home-collection ('من البيت'/'at home') for what is an imaging/scan "
+        "exam (CT/MRI/X-ray/ultrasound/echo/etc). Home-mode sample "
+        "collection is PHYSICALLY IMPOSSIBLE for imaging - only lab/blood/"
+        "urine tests can be drawn at a patient's home. Rewrite the reply "
+        "with NO home-vs-lab question for this exam at all. If a booking "
+        "for this exam is underway, imaging is in-lab only - do not ask "
+        "about it, do not explain why, just proceed as if in-lab had "
+        "already been silently selected.\n"
+    )
+
+
+def _no_booking_offer_after_imaging_prep_correction(reply: str, state: AgentState) -> str:
+    return (
+        "\n\nCORRECTION - MANDATORY: your reply gave imaging/scan prep "
+        "instructions and then closed with a booking offer. This flow only "
+        "ever calls answer_hospital_faq for imaging prep and never "
+        "establishes anything as bookable, so it must NEVER end with a "
+        "booking offer of any kind. Rewrite the reply so it ends with the "
+        "required ⚕️ notice only, with no booking question attached at "
+        "all.\n"
+    )
+
+
+def _honest_no_imaging_home_offer_reply(
+    description: Optional[str], state: AgentState, target_language: Optional[str],
+    flagged_reply: str = "",
+) -> Optional[str]:
+    """Rebuilds a twice-flagged imaging/home-mode violation in code
+    rather than falling through to the fully generic staff-handoff
+    message: strips out the illegal home-mode question/booking-offer
+    line(s) and keeps the rest of the draft, since the prep instructions
+    themselves are usually still correct - same \"can the truth be built
+    in code?\" pattern as `_honest_home_address_question` above."""
+
+    if description not in (
+        "reply asked about or offered home-collection for an imaging/scan exam, "
+        "which is physically impossible - home-mode is lab/blood tests only",
+        "reply gave imaging/scan prep instructions and closed with a booking "
+        "offer, which this flow never has a real bookable match to support",
+    ):
+        return None
+
+    if not flagged_reply:
+        return None
+
+    kept = []
+    for line in flagged_reply.splitlines():
+        stripped = line.strip()
+        if stripped and (
+            _HOME_MODE_QUESTION_RE.search(stripped)
+            or _BOOKING_OFFER_RE.search(stripped)
+        ):
+            continue
+        kept.append(line)
+
+    while kept and not kept[-1].strip():
+        kept.pop()
+
+    if not kept:
+        return None
+
+    logger.info(
+        "agent: stripped the illegal imaging home-mode question/booking offer "
+        "out of the flagged draft in code, keeping the rest of the prep "
+        "instructions intact (session_id=%s)",
+        state.get("session_id"),
+    )
+    return "\n".join(kept)
+
+
 def _reply_shows_fake_home_address(reply_text: str, state: AgentState) -> bool:
     """True when a review card's "عنوان الاستلام" (collection address)
     line does not carry a real address the patient actually gave -
@@ -11729,6 +11877,43 @@ def _honest_home_address_question(
                 replaced = True
             else:
                 rebuilt_lines.append(line)
+
+        # A THIRD SHAPE OF THE SAME FAILURE (session 201158877175+medtown2,
+        # 2026-09-23): the two cases above assume the real address text
+        # is SOMEWHERE in the draft, just mislabeled. This time it
+        # wasn't there at all - the model dropped the address line
+        # entirely and wrote a fabricated/stale branch name instead
+        # ("🏥 الفرع: فرع اكتوبر" for a HOME-collection booking, with no
+        # trace of the real address anywhere in the reply). The loop
+        # above never matches (no line CONTAINS `real_address`), so it
+        # used to fall straight through to the generic
+        # `_HOME_COLLECTION_ADDRESS_QUESTION` and re-ask the patient for
+        # an address they had already given and that was already saved
+        # via `set_home_collection_address` minutes earlier. Instead,
+        # replace whichever line LOOKS like the branch/address line
+        # (starts with either marker, or carries either label) even
+        # though it doesn't literally contain the address text - this
+        # is still strictly better than re-asking a settled question.
+        if not replaced:
+            for index, line in enumerate(rebuilt_lines):
+                stripped = line.strip()
+                if (
+                    stripped.startswith("🏥")
+                    or stripped.startswith("📍")
+                    or "الفرع" in stripped
+                    or "عنوان الاستلام" in stripped
+                ):
+                    rebuilt_lines[index] = f"📍 عنوان الاستلام: {real_address}"
+                    replaced = True
+                    logger.info(
+                        "agent: the flagged draft dropped the real home address "
+                        "entirely and showed a fabricated branch line instead - "
+                        "replaced that line with the real saved address in code "
+                        "rather than re-asking a question the patient already "
+                        "answered (session_id=%s)",
+                        session_id,
+                    )
+                    break
 
         if replaced:
             templates = state.get("templates") or {}
@@ -14298,6 +14483,18 @@ def _build_otp_required_directive(messages: list, agent_name: str) -> str:
 
 
 _REPLY_VERIFIERS = (
+    (
+        lambda reply, state, agent_name: _reply_offers_home_mode_for_imaging(reply, state),
+        lambda reply, state: _no_imaging_home_mode_correction(reply, state),
+        "reply asked about or offered home-collection for an imaging/scan exam, "
+        "which is physically impossible - home-mode is lab/blood tests only",
+    ),
+    (
+        lambda reply, state, agent_name: _reply_ends_imaging_prep_with_booking_offer(reply, state),
+        lambda reply, state: _no_booking_offer_after_imaging_prep_correction(reply, state),
+        "reply gave imaging/scan prep instructions and closed with a booking "
+        "offer, which this flow never has a real bookable match to support",
+    ),
     (
         lambda reply, state, agent_name: _reply_scope_refuses_a_health_message(reply, state),
         lambda reply, state: _health_message_refusal_correction(reply, state),
@@ -19984,6 +20181,9 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                     ) or _honest_home_address_question(
                         description, state, target_language,
                         normalized,
+                    ) or _honest_no_imaging_home_offer_reply(
+                        description, state, target_language,
+                        normalized,
                     ) or _honest_unstaffed_reply(
                         normalized, state["messages"],
                         state.get("templates") or {}, target_language,
@@ -20087,6 +20287,9 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                         ) or _honest_home_address_question(
                             description, state, target_language,
                             normalized,
+                        ) or _honest_no_imaging_home_offer_reply(
+                            description, state, target_language,
+                            normalized,
                         ) or _honest_unstaffed_reply(
                             normalized, state["messages"],
                             state.get("templates") or {}, target_language,
@@ -20164,6 +20367,9 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                     ) or _honest_day_list_reply(
                         description, state, target_language,
                     ) or _honest_home_address_question(
+                        description, state, target_language,
+                        normalized,
+                    ) or _honest_no_imaging_home_offer_reply(
                         description, state, target_language,
                         normalized,
                     ) or _honest_unstaffed_reply(
