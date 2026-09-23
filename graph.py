@@ -1,3 +1,4 @@
+"""
 LangGraph graph for the LLM-tool-calling Guest Booking Cancellation Agent.
 
 REWRITTEN (see graph.py.pre_rewrite_backup for the old deterministic
@@ -5,8 +6,7 @@ REWRITTEN (see graph.py.pre_rewrite_backup for the old deterministic
 
     START -> load_config -> agent <-> tools -> END
 
-  - load_config: loa"""
-ds/caches the tenant's client_config.csv +
+  - load_config: loads/caches the tenant's client_config.csv +
     dialect_templates.csv (config.get_messages, UNCHANGED function) and
     builds the system prompt (prompts.build_system_prompt) - but only
     once per thread (checked via state.get("templates")), not every turn.
@@ -19566,6 +19566,20 @@ def router(state: AgentState) -> dict:
     # falls back to its deterministic rule.
     reading = _understand_turn(state)
 
+    # In a crisis the reading is trusted as-is: "i need help" from someone
+    # who just said they want to hurt themselves IS a request for a person.
+    in_crisis = bool(state.get("crisis_active")) or bool(reading and reading.get("crisis"))
+    if (reading and reading.get("wants_human") and not in_crisis
+            and not _handoff_is_explicit(messages)):
+        logger.warning(
+            "router: understanding said wants_human for %r, but it is neither an explicit "
+            "request for a person nor a clear yes to a transfer offer - not transferring "
+            "(session_id=%s)",
+            understanding.latest_human_text(messages)[:60], state.get("session_id"),
+        )
+        reading = {**reading, "wants_human": False,
+                   "intent": "other" if reading.get("intent") == "human" else reading.get("intent")}
+
     crisis_now = bool(reading and reading.get("crisis")) or _signals_crisis(messages)
     crisis_was_active = bool(state.get("crisis_active"))
     handoff_now = False
@@ -19606,6 +19620,40 @@ def router(state: AgentState) -> dict:
         "crisis_active": crisis_was_active or crisis_now,
         "handoff_now": handoff_now,
     }
+
+
+# NEVER TRANSFER ON A GUESS.
+#
+# CONFIRMED REAL PRODUCTION FAILURE (tanasuq, session
+# 201158877175-DEMO1223=23, 2026-09-23 22:23:45): faq said "هذا القسم
+# غير متوفر... أقدر أحولك لأحد ممثلي خدمة العملاء؟", the patient replied
+# "دي" ("this one"), the reading came back wants_human=True and the
+# patient was transferred without having asked. Same on 21:50:33, where
+# a bare "3" after the soft-recovery offer was taken as a yes. The
+# reading may propose a transfer; code only carries it out for an
+# explicit request or a clear yes to an offer the assistant just made.
+_HANDOFF_YES_RE = re.compile(
+    r"^(?:اه+|ايوه|ايوا|ايه|اي|نعم|تمام|ماشي|اكيد|يفضل|لا ?مانع|يا ?ريت|الان(?: الاسهل)?|"
+    r"طيب|اوكي|اوك|حاضر|okay|ok|yes|yep|yeah|sure|please|confirm)"
+    r"(?:\s+(?:لو سمحت|من فضلك|please|حولني|حوليني))?[\s!.،,؟?]*$"
+)
+_TRANSFER_OFFER_RE = re.compile(
+    r"احول|احوّل|تحويلك|اوصلك|ممثلي خدمه العملاء|ممثل خدمه العملاء|خدمه العملاء|"
+    r"customer service|connect you|transfer you"
+)
+
+
+def _handoff_is_explicit(messages: list) -> bool:
+    text = agents.router.normalize(understanding.latest_human_text(messages))
+    if not text:
+        return False
+    roots = (agents.router.normalize(root) for root in tools._EXPLICIT_HUMAN_REQUEST_ROOTS)
+    if any(root and root in text for root in roots):
+        return True
+    if not _HANDOFF_YES_RE.match(text):
+        return False
+    last_ai = agents.router.normalize(understanding.last_ai_text_before_latest_human(messages))
+    return bool(_TRANSFER_OFFER_RE.search(last_ai))
 
 
 def _understand_turn(state: AgentState) -> Optional[dict]:
