@@ -965,35 +965,39 @@ def _deterministic_slot_lock(state: AgentState, agent_name: str):
 
 
 def _deterministic_service_pick(state: AgentState, agent_name: str):
-    """When the patient's message is a BARE NUMBER answering the
-    service list `list_branch_services` just showed, resolve it in
-    code via `find_available_doctors(service_name=<their text>)`
-    rather than leaving that resolution to the model's own tool-
-    calling judgement.
+    """When the patient's message is a BARE NUMBER answering a service
+    or test list, resolve it in code rather than leaving that resolution
+    to the model's own tool-calling judgement.
 
-    SAME SHAPE AS `_deterministic_slot_lock` ABOVE, ONE STEP EARLIER:
-    `tools._resolve_service_for_booking` already resolves a bare
-    number correctly by POSITION against `session["last_list"]` when
-    `entity_type == "service"` - the gap was that nothing called it
-    deterministically on a bare-number turn, so the turn went to the
-    model instead, which tried to read the number as a doctor's name.
+    HANDLES TWO DISTINCT LIST TYPES, EACH WITH ITS OWN RESOLUTION TOOL:
 
-    CONFIRMED REAL PRODUCTION FAILURE (tenant): `list_branch_services`
-    showed a 9-item numbered service list; the patient replied "1",
-    then "اختار 1", then "1" again - every time the reply was "معنديش
-    دكتور اسمه 1 في المعمل" (no doctor named 1), because the model
-    treated the bare number as a doctor-name search instead of a
-    positional service pick.
+      entity_type == "service" (from `list_branch_services`):
+        Items carry a real service-catalogue id. Resolution tool is
+        `find_available_doctors(service_name=<text>)`, which calls
+        `_resolve_service_for_booking` internally and locks the service
+        onto the session AND returns the doctors for it in one hop.
 
-    NARROWLY SCOPED, DELIBERATELY - same reasoning as
-    `_deterministic_slot_lock`. Only fires for a bare number against a
-    remembered SERVICE list; a named service ("فحص النظر") still goes
-    to the model exactly as before, since that path already works.
-    Calls the real `find_available_doctors` tool (not a new one), so
-    the service gets resolved into `session["service_id"]` AND the
-    matching doctors come back in the same hop - exactly what the
-    model would have done next anyway had it read the number
-    correctly."""
+      entity_type == "lab_test_doctor" (from `search_lab_services` in
+        the per-test-doctors architecture):
+        Items carry a DOCTOR id under "id" (each test IS a doctor in
+        this architecture). Resolution tool is
+        `match_entity_for_booking(user_input=<text>, entity_type="doctor")`
+        which resolves the position against the remembered list and
+        confirms the doctor onto the session.
+
+    SAME SHAPE AS `_deterministic_slot_lock` ABOVE.
+
+    CONFIRMED REAL PRODUCTION FAILURES (both):
+      "service" list: patient replied "1"/"اختار 1" to a 9-item branch
+        service list three times - model read "1" as a doctor name and
+        replied "معنديش دكتور اسمه 1" every time.
+      "lab_test_doctor" list: patient replied "1" to "1️⃣ تحليل سكر
+        صائم 2️⃣ منحنى تحمل السكر" - model called search_lab_services
+        with query="1" which scored 0.205 below the relevance floor and
+        replied "ما لقيتش تحليل اسمه 1".
+
+    NARROWLY SCOPED, DELIBERATELY - only bare numbers against a
+    remembered list; named services/tests still go to the model."""
 
     if not config.DETERMINISTIC_SERVICE_PICK:
         return None
@@ -1004,7 +1008,8 @@ def _deterministic_service_pick(state: AgentState, agent_name: str):
     session_id = state.get("session_id")
     session = tools._get_booking_session(session_id)
     last_list = session.get("last_list") or {}
-    if last_list.get("entity_type") != "service":
+    entity_type = last_list.get("entity_type")
+    if entity_type not in ("service", "lab_test_doctor"):
         return None
 
     messages = state.get("messages") or []
@@ -1018,31 +1023,53 @@ def _deterministic_service_pick(state: AgentState, agent_name: str):
     if not _POSITIONAL_ANSWER_RE.match(text):
         return None  # a named service still goes to the model, as before
 
+    # DIFFERENT TOOL PER LIST TYPE - see the docstring above for why.
     try:
-        payload = tools.find_available_doctors.func(state, service_name=text)
+        if entity_type == "service":
+            tool_name = "find_available_doctors"
+            tool_args = {"service_name": text}
+            payload = tools.find_available_doctors.func(state, service_name=text)
+            decline_status = "service_not_matched"
+        else:  # lab_test_doctor
+            tool_name = "match_entity_for_booking"
+            tool_args = {"user_input": text, "entity_type": "doctor"}
+            payload = tools.match_entity_for_booking.func(state, user_input=text, entity_type="doctor")
+            # match_entity_for_booking returns {"matched": false, "status": "out_of_range"}
+            # for an invalid position, not a status at the top level like find_available_doctors.
+            decline_status = None  # checked differently below
     except Exception:  # noqa: BLE001
         logger.warning(
-            "_deterministic_service_pick: find_available_doctors raised for "
-            "session_id=%s - handing the turn to the model", session_id,
+            "_deterministic_service_pick: %s raised for "
+            "session_id=%s - handing the turn to the model", tool_name, session_id,
             exc_info=True,
         )
         return None
 
-    if not isinstance(payload, dict) or payload.get("status") == "service_not_matched":
-        # out-of-range position, or anything else - the model's own
-        # path sees the same result if it calls the tool itself.
-        logger.info(
-            "_deterministic_service_pick: declined (status=%r) - the model "
-            "takes this turn",
-            (payload or {}).get("status") if isinstance(payload, dict) else None,
-        )
+    if not isinstance(payload, dict):
         return None
 
+    # Decline conditions differ by tool:
+    if entity_type == "service":
+        if payload.get("status") == "service_not_matched":
+            logger.info(
+                "_deterministic_service_pick: declined (status=%r) - the model "
+                "takes this turn", payload.get("status"),
+            )
+            return None
+    else:  # lab_test_doctor
+        if payload.get("matched") is False:
+            logger.info(
+                "_deterministic_service_pick: declined (matched=False, status=%r) - "
+                "the model takes this turn", payload.get("status"),
+            )
+            return None
+
     logger.info(
-        "_deterministic_service_pick: resolved service pick in code for "
-        "session_id=%s (user_input=%r)", session_id, text,
+        "_deterministic_service_pick: resolved %s pick in code for "
+        "session_id=%s (user_input=%r, entity_type=%r)",
+        entity_type, session_id, text, entity_type,
     )
-    return _forge_tool_pair("find_available_doctors", {"service_name": text}, payload)
+    return _forge_tool_pair(tool_name, tool_args, payload)
 
 
 def _deterministic_doctor_schedule_lookup(state: AgentState, agent_name: str) -> list:
