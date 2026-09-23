@@ -7885,7 +7885,23 @@ def match_entity_for_booking(
     position = _extract_selection_number(user_input)
     last_list = session.get("last_list")
 
-    if position is not None and last_list and last_list.get("entity_type") == entity_type:
+    # `lab_test_doctor` lists (from search_lab_services in the
+    # per-test-doctors architecture) carry a real DOCTOR id under "id",
+    # so a positional pick from them is a valid doctor selection even
+    # though the entity_type tag is "lab_test_doctor" not "doctor".
+    # CONFIRMED REAL PRODUCTION FAILURE: search_lab_services showed
+    # "1️⃣ تحليل سكر صائم 2️⃣ منحنى تحمل السكر", the patient replied
+    # "1", and this check refused to resolve it because
+    # "lab_test_doctor" != "doctor". The model then fell through to
+    # search_lab_services(query="1") which did a semantic search and
+    # found nothing (relevance floor 0.32, best score 0.205), replying
+    # "ما لقيتش تحليل اسمه 1".
+    list_entity_type = (last_list or {}).get("entity_type")
+    entity_type_matches = (
+        list_entity_type == entity_type
+        or (entity_type == "doctor" and list_entity_type == "lab_test_doctor")
+    )
+    if position is not None and last_list and entity_type_matches:
         list_items = last_list.get("items") or []
 
         if 1 <= position <= len(list_items):
@@ -10979,6 +10995,18 @@ def find_best_doctor_in_specialty(
 _COMPLAINT_CONFIRMATION_QUESTION_RE = re.compile(
     r"تأكيد\s*(?:ال)?إرسال|تأكيد\s*(?:ال)?ارسال|أأكد\s*(?:ال)?إرسال|"
     r"موافق\s*ع(?:لى)?\s*(?:ال)?إرسال|هل\s*(?:ال)?بيانات\s*صحيح|"
+    # The model's ACTUAL phrasing in production (confirmed from real
+    # logs) - broader patterns the earlier entries above didn't cover.
+    # CONFIRMED REAL PRODUCTION FAILURE: the model asked "هل تأكدت إن كل
+    # التفاصيل اللي قلتها صحيحة وحابب نرسل الشكوى دي؟" three times;
+    # each time this regex didn't match it, so send_complaint_email
+    # refused with `missing: ['explicit_confirmation']` and the patient
+    # had to re-confirm repeatedly. These patterns catch the real
+    # phrasing the model actually produces, not just the ideal one.
+    r"نرسل\s*(?:ال)?شكو[يى]|ن(?:أ|ا)كد\s*(?:ال)?(?:إ|ا)رسال|"
+    r"تأكدت?\s*(?:إن|ان)\s*(?:كل)?\s*(?:ال)?(?:تفاصيل|بيانات)|"
+    r"(?:ال)?تفاصيل\s*(?:دي)?\s*(?:كلها)?\s*صح|"
+    r"حاب[بة]?\s*نرسل|حابب?\s*(?:ن|أ)(?:أ|ا)كد|"
     r"confirm\s*(?:the\s*)?(?:sending\s*(?:the\s*)?)?complaint|"
     r"shall\s*i\s*send\s*(?:this|the)\s*complaint"
 )
@@ -11887,8 +11915,16 @@ def search_lab_services(
             name = _arabic_preferred_name(doctor) or doctor.get("name") or doctor.get("formatedName")
             if not doctor_id or not name:
                 continue
-            description = service_descriptions.get(doctor.get("defaultServiceId"))
-            items.append({"id": doctor_id, "name": name, "description": description})
+            default_service_id = doctor.get("defaultServiceId")
+            description = service_descriptions.get(default_service_id)
+            items.append({
+                "id": doctor_id, "name": name, "description": description,
+                # Carried so the cache step below can key by the REAL
+                # service id, not the doctor id - create_new_booking
+                # reads the cache by `matched_slot.get("serviceId")`,
+                # which is the service's own id, not the doctor's.
+                "_defaultServiceId": default_service_id,
+            })
 
         if not items:
             return {"status": "not_found"}
@@ -11930,8 +11966,18 @@ def search_lab_services(
         session = _get_booking_session(state.get("session_id"))
         descriptions = session.setdefault("lab_service_descriptions", {})
         for item in services:
-            if item.get("id") and item.get("description"):
-                descriptions[item["id"]] = item["description"]
+            # Cache by the REAL service id (defaultServiceId), not the
+            # doctor id - create_new_booking reads this back via
+            # `matched_slot.get("serviceId")`, which is the service's
+            # own catalogue id, not the doctor's. CONFIRMED REAL
+            # PRODUCTION BUG this closes: descriptions were cached by
+            # doctor_id, create_new_booking looked them up by
+            # service_id, cache always missed, and [service_description]
+            # in the confirmation message stayed empty even though the
+            # service had a real description in the admin panel.
+            cache_key = item.get("_defaultServiceId") or item.get("id")
+            if cache_key and item.get("description"):
+                descriptions[cache_key] = item["description"]
 
         result = {"status": "found", "services": services}
         if truncated:
