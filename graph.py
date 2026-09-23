@@ -9907,7 +9907,27 @@ def _reply_is_review_card_with_wrong_confirmation(reply_text: str, state: AgentS
     Scoped to reject only when the reply's own closing question-bearing
     line is a REAL MISMATCH - i.e. it contains a question mark, the
     reply otherwise looks like a genuine review card, and no expected
-    sentence appears in it at all."""
+    sentence appears in it at all.
+
+    CALL THIS ONLY FOR agent_name IN ("booking", "concierge") - i.e.
+    the NEW BOOKING flow, where a "does this look right?" question
+    genuinely must be THIS clinic's msg_booking_confirmation wording.
+    CONFIRMED REAL PRODUCTION FAILURE (session 201003365691+medtown2,
+    2026-09-23): the reschedule flow's own identify-the-appointment
+    card ("👤 الاسم: ... هل هذا هو الموعد الذي تود تعديله؟ (نعم/لا)")
+    matched `_REVIEW_CARD_FIELD_LABELS_RE` (it has a "👤 الاسم:" line
+    like any review card) and got flagged here for not containing
+    msg_booking_confirmation's wording - which it was never supposed
+    to, since it isn't confirming a new booking at all. The correction
+    directive told the model to rewrite the question into the
+    NEW-booking template, which made no sense for "is this the right
+    appointment to edit?", so the corrected reply failed the exact same
+    check again and the whole reschedule fell back to a human handoff
+    for a patient who had done nothing wrong. Gate this check by
+    agent_name at the call site (see the wrong-confirmation entry in
+    the reply-correction table) rather than loosening the check itself -
+    cancel/reschedule genuinely have their own, different confirmation
+    wording that this function must never judge against."""
 
     if not reply_text:
         return False
@@ -15010,7 +15030,10 @@ _REPLY_VERIFIERS = (
         "which has no branch the patient should ever see",
     ),
     (
-        lambda reply, state, agent_name: _reply_is_review_card_with_wrong_confirmation(reply, state),
+        lambda reply, state, agent_name: (
+            agent_name in ("booking", "concierge")
+            and _reply_is_review_card_with_wrong_confirmation(reply, state)
+        ),
         lambda reply, state: _WRONG_CONFIRMATION_QUESTION_CORRECTION_DIRECTIVE,
         "reply's review card closed with a paraphrased confirmation question instead "
         "of this clinic's own configured msg_booking_confirmation wording",
