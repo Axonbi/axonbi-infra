@@ -1,4 +1,3 @@
-"""
 LangGraph graph for the LLM-tool-calling Guest Booking Cancellation Agent.
 
 REWRITTEN (see graph.py.pre_rewrite_backup for the old deterministic
@@ -6,7 +5,8 @@ REWRITTEN (see graph.py.pre_rewrite_backup for the old deterministic
 
     START -> load_config -> agent <-> tools -> END
 
-  - load_config: loads/caches the tenant's client_config.csv +
+  - load_config: loa"""
+ds/caches the tenant's client_config.csv +
     dialect_templates.csv (config.get_messages, UNCHANGED function) and
     builds the system prompt (prompts.build_system_prompt) - but only
     once per thread (checked via state.get("templates")), not every turn.
@@ -19579,7 +19579,7 @@ def router(state: AgentState) -> dict:
         # whatever words. They get one, deterministically, this turn.
         chosen, reason, handoff_now = agents.CONCIERGE, "handoff: patient wants a person", True
     else:
-        decided = _route_from_reading(reading, previous)
+        decided = _route_from_reading(reading, previous, messages)
         chosen, reason = decided or agents.route_turn(messages, previous, allow_llm=reading is None)
 
     # Once per turn, from the node - never from the conditional edge,
@@ -19617,7 +19617,34 @@ def _understand_turn(state: AgentState) -> Optional[dict]:
 _READING_SPECIALISTS = ("booking", "cancel", "reschedule", "medical", "faq", "complaint")
 
 
-def _route_from_reading(reading: Optional[dict], previous: Optional[str]):
+def _answer_hands_over_to_booking(messages: list, previous: Optional[str]) -> Optional[str]:
+    """Why an "answer" must move to `booking` instead of staying with
+    the agent that asked, or None when it should stay.
+
+    CONFIRMED REAL PRODUCTION FAILURE (tanasuq, session
+    201158877175-DEMO1223=23, 2026-09-23 21:55-21:56): leg injury ->
+    `medical` offered to book -> "اه" -> `medical` listed three
+    orthopaedic doctors -> "3". Both replies were read as intent
+    "answer", and "an answer belongs to whoever asked" kept them in
+    `medical`, which owns no booking tool. It called get_doctor_fees
+    (unasked) twice, tripped the repeated-call guard and sent the
+    soft-recovery reply. agents/router.py already routes both of these
+    to booking - the reading returned before it was ever consulted."""
+
+    text = understanding.latest_human_text(messages)
+    if not text or previous == "booking":
+        return None
+    if agents.router._affirms_previous_booking_offer(messages, text):
+        return "bare affirmation answering the assistant's own booking offer"
+    if (previous in agents.router._CANNOT_COMPLETE_A_BOOKING
+            and (agents.router._picks_from_a_doctor_list(messages, text)
+                 or agents.router._picks_from_a_specialty_list(messages, text))):
+        return f"picked from a doctor/specialty list ({previous} has no booking tools)"
+    return None
+
+
+def _route_from_reading(reading: Optional[dict], previous: Optional[str],
+                        messages: Optional[list] = None):
     """The owner of this turn according to the LLM reading, or None to
     let the deterministic router decide (no reading, or a reading that
     does not name a flow)."""
@@ -19628,6 +19655,9 @@ def _route_from_reading(reading: Optional[dict], previous: Optional[str]):
     intent = reading.get("intent")
 
     if intent == "answer":
+        handover = _answer_hands_over_to_booking(messages or [], previous)
+        if handover:
+            return "booking", f"understanding: answer - {handover}"
         # An answer belongs to whoever asked the question.
         if previous in agents.AGENT_NAMES:
             return previous, f"understanding: answering {previous}'s question"
@@ -19647,8 +19677,11 @@ def _route_from_reading(reading: Optional[dict], previous: Optional[str]):
 
 
 def _latest_is_english(messages: list) -> bool:
-    text = understanding.latest_human_text(messages)
-    return bool(text) and not re.search(r"[؀-ۿ]", text)
+    # The conversation's language, not the latest message's script: a
+    # bare "3" has no Arabic letters, and used to send the English
+    # handoff line into an Arabic conversation (session
+    # 201000625084-DEMO1223=23, 2026-09-23 21:50:33).
+    return _detect_target_language(messages) == "en"
 
 
 _HANDOFF_TEXT_EN = (
