@@ -10770,6 +10770,48 @@ _WEEKDAY_NOT_A_CLAIM_CUES = (
 
 _SEGMENT_SPLIT_RE = re.compile(r"[\n.!?\u061f]+")
 
+# CONFIRMED REAL PRODUCTION FAILURE (tenant, 2026-09-23): an FAQ reply
+# correctly quoted the lab's standard hours straight from the
+# knowledge base ("ساعات العمل في جميع الفروع من 8:00 صباحًا إلى 12:00
+# منتصف الليل") and was rejected TWICE by `_reply_invents_availability`
+# as a fabricated appointment, then replaced with the generic "let's
+# start over" fallback - because no availability tool ever runs for an
+# hours-of-operation question, and `EZZLAB.txt` gives every branch's
+# hours in exactly this clock format. That is a grounded fact, not an
+# invented appointment.
+#
+# Mirrors the segment-based approach `_weekdays_claimed_in` already
+# uses for the same class of false positive (see the two confirmed
+# false positives noted above it): skip whichever SEGMENT the cue
+# appears in, rather than disabling the date/time scan everywhere.
+_HOURS_OF_OPERATION_CUES = (
+    "ساعات العمل", "مواعيد العمل", "ساعات عمل", "ساعات الدوام",
+    "working hours", "opening hours", "operating hours", "work hours",
+)
+
+
+def _dates_times_claimed_in(reply_text: str):
+    """The date/time tokens this reply states, from segments that are
+    not plainly a clinic operating-hours statement (see
+    `_HOURS_OF_OPERATION_CUES` above). Used by
+    `_reply_invents_availability` in place of a bare regex scan over
+    the whole reply."""
+
+    if not reply_text:
+        return [], []
+
+    dates, times = [], []
+    for segment in _SEGMENT_SPLIT_RE.split(reply_text):
+        if not segment:
+            continue
+        folded = _norm_ar(segment)
+        if any(cue in folded for cue in _HOURS_OF_OPERATION_CUES):
+            continue
+        dates.extend(_DATE_IN_REPLY_RE.findall(segment))
+        times.extend(_TIME_IN_REPLY_RE.findall(segment))
+
+    return dates, times
+
 
 def _weekdays_claimed_in(reply_text: str) -> list:
     """The weekday names this reply OFFERS as bookable - denials and
@@ -10809,8 +10851,7 @@ def _reply_invents_availability(reply_text, state) -> bool:
     if not reply_text:
         return False
 
-    dates = _DATE_IN_REPLY_RE.findall(reply_text)
-    times = _TIME_IN_REPLY_RE.findall(reply_text)
+    dates, times = _dates_times_claimed_in(reply_text)
 
     # Weekday names count too. Confirmed real production failure: the
     # reply offered "1️⃣ الخميس 2️⃣ السبت 3️⃣ الاثنين" as bookable days
