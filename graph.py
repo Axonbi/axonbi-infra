@@ -10113,12 +10113,35 @@ _BOOKING_OFFER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# PRODUCTION FALSE-POSITIVE (session 201158877175+medtown2, 2026-09-23):
+# the opening `_BOOKING_ENTRY_TEST_TYPE_MESSAGE` menu ("تحب تحجزي تحليل
+# ولا أشعة؟" / "Would you like to book a lab test or an imaging scan?")
+# names "أشعة" only as one of two choices offered BEFORE the patient has
+# said which they want. That single sentence tripped both checks below:
+# it reads as "imaging keyword + booking phrase" to
+# `_reply_ends_imaging_prep_with_booking_offer` (flagging the menu
+# question itself as an illegal booking offer), and it lingers in the
+# message history so `_recent_messages_mention_imaging` later treated a
+# perfectly legal in-lab-or-home question for the LAB branch as if it
+# were about imaging, once the patient had already picked "تحليل".
+# Neither check should count this disambiguation phrasing as "the
+# conversation is about an imaging exam" - strip it out before testing
+# for imaging keywords.
+_LAB_OR_IMAGING_CHOICE_RE = re.compile(
+    r"(?:تحليل|تحاليل)\s*(?:و?لا|أو)\s*(?:أشعة|اشعة)|"
+    r"(?:أشعة|اشعة)\s*(?:و?لا|أو)\s*(?:تحليل|تحاليل)|"
+    r"lab\s*test\s*or\s*(?:an\s*)?imaging\s*scan|"
+    r"imaging\s*scan\s*or\s*(?:a\s*)?lab\s*test",
+    re.IGNORECASE,
+)
+
 
 def _recent_messages_mention_imaging(messages: list, lookback: int = 10) -> bool:
     for msg in reversed((messages or [])[-lookback:]):
         content = getattr(msg, "content", None)
         if not content or not isinstance(content, str):
             continue
+        content = _LAB_OR_IMAGING_CHOICE_RE.sub(" ", content)
         if any(keyword in content for keyword in _IMAGING_KEYWORDS):
             return True
     return False
@@ -10145,7 +10168,8 @@ def _reply_ends_imaging_prep_with_booking_offer(reply_text: str, state: AgentSta
 
     if not reply_text:
         return False
-    if not any(keyword in reply_text for keyword in _IMAGING_KEYWORDS):
+    scan_text = _LAB_OR_IMAGING_CHOICE_RE.sub(" ", reply_text)
+    if not any(keyword in scan_text for keyword in _IMAGING_KEYWORDS):
         return False
     return bool(_BOOKING_OFFER_RE.search(reply_text))
 
