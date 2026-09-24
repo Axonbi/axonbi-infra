@@ -7989,6 +7989,29 @@ def _preferred_name(entity: dict, language: str = "ar") -> str:
     return _arabic_preferred_name(entity)
 
 
+_PRICE_WORDS_RE = re.compile(
+    r"سعر|اسعار|أسعار|تكلف|رسوم|بكام|بكم|كم (?:ال)?(?:سعر|كشف|حق)|حق الكشف|فلوس|"
+    r"price|cost|fee|how much",
+    re.IGNORECASE,
+)
+
+
+def _fees_requested(state: AgentState) -> bool:
+    """False only when the turn reading exists and says no price was
+    asked, and the patient's previous message did not ask one either.
+    No reading (deterministic mode) keeps the old behaviour."""
+
+    reading = state.get("understanding")
+    if reading is None or reading.get("asks_price"):
+        return True
+    humans = [m for m in (state.get("messages") or []) if getattr(m, "type", None) == "human"]
+    for message in humans[-2:]:
+        content = getattr(message, "content", "")
+        if _PRICE_WORDS_RE.search(content if isinstance(content, str) else str(content)):
+            return True
+    return False
+
+
 @tool
 def get_doctor_fees(state: Annotated[AgentState, InjectedState], doctor_name: str = "") -> dict:
     """Get a doctor's published services and prices.
@@ -8010,6 +8033,27 @@ def get_doctor_fees(state: Annotated[AgentState, InjectedState], doctor_name: st
     {"status": "no_doctor_confirmed"}
     {"status": "not_found"}  # doctor has no published services
     {"status": "not_configured"} / {"status": "error"}"""
+
+    # FEES ARE PRIVATE UNLESS ASKED - enforced here, not only in prose.
+    # CONFIRMED REAL PRODUCTION FAILURE (tanasuq, session
+    # 201001255864-DEMO1223=23, 2026-09-24 10:54:24): the patient asked
+    # "هى ايه الفروع اللى موجودة فيها؟" and faq answered with the doctor's
+    # 150-riyal fee instead of the branches. The turn reading already
+    # says whether this message asks a price; the previous patient message
+    # counts too, for "بكام؟" -> "عند مين؟" -> "سعد".
+    if not _fees_requested(state):
+        logger.warning(
+            "get_doctor_fees: refused for session_id=%s - the patient has not asked about "
+            "price (understanding.asks_price=False)", state.get("session_id"),
+        )
+        return {
+            "status": "not_requested",
+            "instruction": (
+                "The patient did NOT ask about price, cost or fees. Do not mention any fee "
+                "and do not call get_doctor_fees again this turn. Answer exactly what they "
+                "asked instead."
+            ),
+        }
 
     # A PRICE QUESTION IS NOT A BOOKING. "كم سعر الموعد عند الدكتور
     # المديفر" used to return no_doctor_confirmed because no booking had
