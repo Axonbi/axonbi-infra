@@ -247,15 +247,33 @@ def _invoke_llm_resilient(llm, messages, *, agent_name: str, target_language: st
     sites this was - the main turn or a verifier's correction retry)."""
 
     last_exc = None
-    for attempt in (1, 2):
+    for attempt in (1, 2, 3):
         try:
             return llm.invoke(messages)
         except (_OpenAIAPITimeoutError, _OpenAIAPIConnectionError) as exc:
             last_exc = exc
             logger.warning(
-                "agent[%s]: %s - LLM call failed on attempt %d/2 (%s: %s)",
+                "agent[%s]: %s - LLM call failed on attempt %d/3 (%s: %s)",
                 agent_name, context, attempt, type(exc).__name__, exc,
             )
+            if attempt >= 2:
+                break
+        except Exception as exc:
+            # 429 RATE LIMIT (Azure "exceeded rate limit"). CONFIRMED REAL
+            # PRODUCTION FAILURE (Tanasuq, 2026-09-24 00:00-00:02): the
+            # gpt-4.1-mini deployment returned 429 and the exception
+            # crashed the whole turn ("Graph invocation failed"). Wait
+            # briefly and retry; if it persists, fall back gracefully below.
+            if "RateLimit" not in type(exc).__name__ and getattr(exc, "status_code", None) != 429:
+                raise
+            last_exc = exc
+            logger.warning(
+                "agent[%s]: %s - rate limited on attempt %d/3 - retrying after backoff",
+                agent_name, context, attempt,
+            )
+            if attempt < 3:
+                import time as _time
+                _time.sleep(1.5 * attempt)
 
     logger.error(
         "agent[%s]: %s - LLM call failed twice in a row (%s) - returning a "
@@ -10612,36 +10630,62 @@ _SOFT_RECOVERY_TEXT = {
 # notice it already said this exact line last turn and stop repeating
 # itself - handing off to a human is honest and moves the conversation
 # forward; a third identical message would not.
+# Neutral Arabic on purpose: this text is shared by every tenant, and the
+# previous Egyptian wording ("حابب أحولك ... يكمل معاك") reached Saudi
+# patients at Tanasuq.
 _SOFT_RECOVERY_ESCALATION_TEXT = {
-    "ar": "عذرًا، شكلي مش قادرة أوصل لطلبك ده صح حاليًا 🌷\n"
-          "حابب أحولك لأحد ممثلي خدمة العملاء يكمل معاك؟",
+    "ar": "عذرًا، يبدو أني غير قادرة على إتمام طلبك بشكل صحيح حاليًا 🌷\n"
+          "هل تود أن أحولك لأحد ممثلي خدمة العملاء لإكمال طلبك؟",
     "en": "Sorry - it looks like I'm not able to get to this properly right "
           "now 🌷\nWould you like me to connect you with one of our "
           "customer service team to continue with you?",
 }
 
+_SOFT_RECOVERY_CLARIFY_TEXT = {
+    "ar": "عذرًا، ما قدرت أفهم طلبك بشكل واضح 🌷\n"
+          "ممكن توضح لي أكثر وش تحتاج بالضبط؟",
+    "en": "Sorry - I didn't quite get that 🌷\n"
+          "Could you tell me a bit more about what you need?",
+}
+
 
 def _soft_recovery_reply(target_language: Optional[str],
-                         messages: Optional[list] = None) -> str:
+                         messages: Optional[list] = None,
+                         force_handoff: bool = False) -> str:
     """The universal last-resort reply - used whenever a verifier
     rejects a draft twice, or the model gets stuck repeating an
     identical tool call, anywhere in the project.
 
-    ALWAYS RETURNS THE ACTIONABLE HANDOFF OFFER, NOT THE BARE
-    "ممكن توضحلي طلبك تاني؟" LINE. The two-tier design this replaced -
-    a content-free "please clarify" on the first occurrence, escalating
-    to a human-handoff offer only once the SAME text repeated - existed
-    to avoid over-reacting to a possible one-off hiccup. Per explicit
-    instruction, that trade-off is no longer wanted: NO safety-triggered
-    fallback anywhere in the project should ever hand the patient a
-    dead end, even the first time it happens, since every call site
-    here already means the assistant could not make progress on its
-    own. `messages` is accepted for backward compatibility with
-    existing call sites but no longer changes the result."""
+    TWO TIERS AGAIN. It had been changed to offer a human handoff on the
+    very FIRST failure. The Tanasuq QA report (2026-09-24) found far too
+    many conversations ending in a handoff, including patients whose
+    message had simply not been understood once. Now: the first time,
+    ask the patient to clarify; offer a handoff only if the previous
+    assistant message was already a recovery line (clarify or handoff),
+    i.e. the assistant is stuck twice in a row."""
 
     is_english = (target_language or "").strip().lower().startswith("en")
     lang_key = "en" if is_english else "ar"
-    return _SOFT_RECOVERY_ESCALATION_TEXT[lang_key]
+
+    previous = ""
+    for msg in reversed(messages or []):
+        if getattr(msg, "type", None) == "ai":
+            content = getattr(msg, "content", "")
+            text = content if isinstance(content, str) else str(content or "")
+            if text.strip():
+                previous = text.strip()
+                break
+
+    recovery_lines = {
+        value.strip()
+        for table in (_SOFT_RECOVERY_CLARIFY_TEXT, _SOFT_RECOVERY_ESCALATION_TEXT)
+        for value in table.values()
+    }
+    # force_handoff: a crash / recursion limit (app.py) is not the patient
+    # being unclear - "I didn't understand you" would blame them.
+    if force_handoff or previous in recovery_lines:
+        return _SOFT_RECOVERY_ESCALATION_TEXT[lang_key]
+    return _SOFT_RECOVERY_CLARIFY_TEXT[lang_key]
 
 
 # Public aliases: main.py and app.py both need to make the same
@@ -15469,6 +15513,16 @@ def _build_scope_directive(templates: dict, language: str = "ar") -> str:
         "goodbyes, \"كيف حالك\", a patient describing a symptom, saying "
         "yes or no, or any short reply that keeps this conversation "
         "moving are ALL in scope. Answer those normally and warmly.\n\n"
+        "A MESSAGE YOU DID NOT UNDERSTAND IS NOT OFF-TOPIC. If it is "
+        "unclear, garbled, or could plausibly be about the hospital, "
+        "reply with ONE short clarifying question in the patient's own "
+        "dialect about what they need - never the refusal. Questions "
+        "about this hospital's OWN services are in scope, including "
+        "their cost, admission (تنويم) and length of stay: answer from "
+        "the knowledge base, or say plainly you don't have that detail "
+        "and offer to connect them with the team. NEVER send the refusal "
+        "twice in a row: if your previous message was already the "
+        "refusal, ask what they need instead.\n\n"
         "CONFIRMED REAL PRODUCTION FAILURE: a patient opened with "
         "\"اهلا\" and received the welcome message with the refusal "
         "above stapled underneath it - told they were off-topic by the "
@@ -16373,6 +16427,12 @@ def _cancel_or_reschedule_intent(messages: list, agent_name: str) -> str:
     `agent_name` alone would offer cancellation to somebody who asked to
     reschedule."""
 
+    # The specialist the router chose wins: in ROUTER_MODE=llm that IS the
+    # LLM's reading of the patient's message. The verb regexes below are
+    # only the fallback for a turn that reached here without one.
+    if agent_name in ("cancel", "reschedule"):
+        return agent_name
+
     folded = _norm_ar(_latest_human_text(messages))
 
     if folded:
@@ -16380,9 +16440,6 @@ def _cancel_or_reschedule_intent(messages: list, agent_name: str) -> str:
             return "cancel"
         if _MODIFY_VERB_RE.search(folded):
             return "reschedule"
-
-    if agent_name in ("cancel", "reschedule"):
-        return agent_name
 
     return ""
 
@@ -18220,9 +18277,14 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     # "الغيه" / "عدله" about the booking already on the table. Suppressed
     # when the patient typed a reference of their own - that one wins,
     # and the directive above is already acting on it.
+    # Only for the cancel/reschedule specialists - i.e. once the router
+    # (the LLM in ROUTER_MODE=llm) has judged that the patient means it.
+    # It used to fire for `concierge` too, on a keyword match alone, so
+    # "ابي موعد الغد" right after a booking forced a lookup of that booking
+    # as if the patient wanted to cancel it (2026-09-23 incident path).
     just_booked_directive = (
         _build_just_booked_directive(state["messages"])
-        if (agent_name in _EXISTING_BOOKING_AGENTS
+        if (agent_name in ("cancel", "reschedule")
             and not supplied_identifier_directive) else ""
     )
 
@@ -18979,6 +19041,22 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                             "THE VERIFIER IS PROBABLY WRONG HERE; nothing it guards is "
                             "unsafe to send. Reply: %r",
                             agent_name, description, normalized,
+                        )
+                        continue
+
+                    # ONE EXCEPTION: the out-of-scope refusal sent in reply
+                    # to the patient's own answer/request. CONFIRMED REAL
+                    # PRODUCTION FAILURE (Tanasuq, 2026-09-24): "احتاج تحديث
+                    # الوصفة" and "نعم" got the long "عذرًا أنا لطيفة ومختصة..."
+                    # menu even after the check caught it twice. A short
+                    # clarifying question is always better than that menu.
+                    if "out-of-scope service menu" in description:
+                        is_english = (target_language or "").strip().lower().startswith("en")
+                        normalized = _SOFT_RECOVERY_CLARIFY_TEXT["en" if is_english else "ar"]
+                        logger.error(
+                            "agent[%s]: out-of-scope menu survived correction (%s) - "
+                            "replaced with a short clarifying question",
+                            agent_name, description,
                         )
                         continue
 
