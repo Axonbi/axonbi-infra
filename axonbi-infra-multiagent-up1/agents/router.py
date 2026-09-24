@@ -1433,7 +1433,10 @@ If the assistant's last message OFFERED something (e.g. "تبي أحجز لك م
 and the patient accepts, route to the specialist that does it.
 Right after a booking was completed, a message that does not clearly ask to
 cancel or reschedule is NOT a cancellation or reschedule - "تم تأكيد الموعد"
-/ "شكرا" / "تمام" mean the patient is satisfied (concierge)."""
+/ "شكرا" / "تمام" mean the patient is satisfied (concierge).
+answers_last_question is FALSE when the message raises a different topic
+than the assistant's question (e.g. the assistant asked about the WhatsApp
+number and the patient says they applied for training) - even mid-booking."""
 
 
 def _classify_with_llm_structured(text: str, active_agent: Optional[str],
