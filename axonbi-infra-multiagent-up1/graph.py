@@ -15438,13 +15438,9 @@ def _build_out_of_scope_block(templates: dict, language: str = "ar") -> str:
             or "the hospital"
         )
         return (
-            f"I'm sorry 🌷 I'm {agent_name}, the virtual assistant at "
-            f"{clinic_name}, and I can help you with the hospital's own "
-            "services - booking, changing or cancelling appointments, "
-            "choosing the right specialty or doctor, questions about our "
-            "services, filing a complaint, or putting you through to "
-            "customer service.\n"
-            "I'd be glad to help with any of those 😊"
+            "Sorry, that's outside what I can help with 🌷 I'm here for "
+            "this hospital's services only - appointments, doctors, and "
+            "questions about our services."
         )
 
     # The block is Arabic, so the ARABIC name fields come first. Using
@@ -15463,14 +15459,24 @@ def _build_out_of_scope_block(templates: dict, language: str = "ar") -> str:
         or "المستشفى"
     )
 
+    # SHORT, NOT A MENU - and ONLY for things unrelated to the hospital
+    # (a concert, football, weather). Owner's request (2026-09-24): the long
+    # "عذرًا أنا لطيفة... ومختصة بمساعدتك في..." paragraph read as a brush-off.
+    # Hospital matters we have no data on get _HOSPITAL_NO_INFO_TEXT instead.
     return (
-        f"عذرًا 🌷 أنا {agent_name}، المساعدة الافتراضية في {clinic_name}، "
-        "ومختصة بمساعدتك في خدمات المستشفى مثل حجز أو تعديل المواعيد، "
-        "إلغاء المواعيد، اختيار التخصص أو الطبيب المناسب، الاستفسار عن "
-        "خدمات المستشفى، تقديم شكوى، أو التواصل مع خدمة العملاء.\n"
-        "يسعدني مساعدتك في أي من هذه الخدمات 😊"
+        "آسفة، هذا الطلب خارج اللي أقدر أساعد فيه 🌷 "
+        "أنا مختصة بخدمات المستشفى فقط، مثل المواعيد والأطباء والاستفسار عن خدماتنا."
     )
 
+
+# A hospital matter we simply have no data on (training, jobs, a report...):
+# say so and offer a person. Owner's wording, 2026-09-24.
+_HOSPITAL_NO_INFO_TEXT = {
+    "ar": "للأسف ما عندي معلومات عن هذا الموضوع 🌷 "
+          "لكن أقدر أساعدك تتواصل مع أحد ممثلي خدمة العملاء، تحب أحولك؟",
+    "en": "Sorry, I don't have information about that here 🌷 but I can put "
+          "you through to one of our customer service team. Would you like me to?",
+}
 
 def _build_scope_directive(templates: dict, language: str = "ar") -> str:
     """Always present, deliberately short.
@@ -15528,10 +15534,13 @@ def _build_scope_directive(templates: dict, language: str = "ar") -> str:
         "marketing offers, invoices, medical reports, prescription "
         "renewals: these ARE about the hospital. Greet them warmly, say "
         "plainly you don't have information on that here, and offer to "
-        "connect them with customer service, e.g. \"أهلًا بيكِ 🌷 للأسف "
-        "ما عندي معلومات عن التدريب هنا، تحبي أحولك لأحد ممثلي خدمة "
-        "العملاء يساعدك؟\". Never the refusal, and never pull them back "
-        "into a booking they did not mention in this message.\n\n"
+        "connect them with customer service, e.g. \"للأسف ما عندي "
+        "معلومات عن التدريب 🌷 لكن أقدر أساعدك تتواصل مع أحد ممثلي خدمة "
+        "العملاء، تحب أحولك؟\". Never the refusal, and never pull them back "
+        "into a booking they did not mention in this message. The refusal "
+        "above is ONLY for requests with no connection to the hospital "
+        "(e.g. booking a concert, football, weather) - those get no "
+        "customer-service offer.\n\n"
         "CONFIRMED REAL PRODUCTION FAILURE: a patient opened with "
         "\"اهلا\" and received the welcome message with the refusal "
         "above stapled underneath it - told they were off-topic by the "
@@ -19070,7 +19079,10 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                     # clarifying question is always better than that menu.
                     if "out-of-scope service menu" in description:
                         is_english = (target_language or "").strip().lower().startswith("en")
-                        normalized = _SOFT_RECOVERY_CLARIFY_TEXT["en" if is_english else "ar"]
+                        # Fires on a reply to the patient's own message
+                        # mid-conversation - a hospital matter we lack data
+                        # on, not an off-topic request.
+                        normalized = _HOSPITAL_NO_INFO_TEXT["en" if is_english else "ar"]
                         logger.error(
                             "agent[%s]: out-of-scope menu survived correction (%s) - "
                             "replaced with a short clarifying question",
