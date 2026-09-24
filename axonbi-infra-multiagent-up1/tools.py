@@ -10948,16 +10948,12 @@ def request_human_handoff(
     # ------------------------------------------------------------------
 
 
-    # ONE HANDOFF AT A TIME. The Tanasuq QA report (2026-09-24) found the
-    # handoff confirmation "سيتم الرد عليك هنا في أقرب وقت" sent twice in
-    # one conversation: nothing recorded that a handoff had already been
-    # raised. Read from the ToolMessages, so it survives a resumed thread.
-    if patient_agreed and _handoff_recently_raised(state):
-        logger.info(
-            "request_human_handoff: already raised recently in session_id=%s - not raising again",
-            state.get("session_id"),
-        )
-        return {"status": "already_requested"}
+    # NO "already requested" SHORT-CIRCUIT. It was added to stop a repeated
+    # confirmation, but in production (2026-09-24 13:51) it turned a second,
+    # genuine "اه" into a fake escalation: the bot said "the team has your
+    # request" with escalate=False, so n8n never re-alerted anyone. If the
+    # patient is still talking to the bot, the first handoff did not land -
+    # a new, consented request must escalate again.
 
     # CONSENT JUDGED BY THE LLM, NOT BY KEYWORD LISTS.
     #
