@@ -10809,6 +10809,25 @@ def _honest_unstaffed_reply(draft: str, messages: list,
     return rebuilt
 
 
+# THE ONE EXCEPTION TO "SAFE-FALLBACK SUBSTITUTION DISABLED".
+#
+# The substitution was switched off project-wide because it replaced
+# correct replies (a real branch the known-name store had not been told
+# about). The fabricated-appointment check does not have that problem:
+# it fires on a date/time no availability tool returned, and its safe
+# message only offers to look at the days again - no transfer, no
+# invented content. CONFIRMED REAL PRODUCTION FAILURE it covers
+# (tanasuq, session 201001255864-DEMO1223=23, 2026-09-24 10:53:42):
+# "مواعيد الدكتورة ليلى الحربي في فرع المنار: الأحد 10-2، الثلاثاء 4-8"
+# was flagged twice and sent anyway - branch and schedule both invented.
+# SAFE_FALLBACK_FABRICATED_AVAILABILITY=false restores the old behaviour.
+_SAFE_FALLBACK_FABRICATED_AVAILABILITY = _env_flag("SAFE_FALLBACK_FABRICATED_AVAILABILITY", "true")
+
+
+def _substitute_despite_disabled_fallback(description: Optional[str]) -> bool:
+    return _SAFE_FALLBACK_FABRICATED_AVAILABILITY and "fabricated appointment" in (description or "")
+
+
 def _safe_fallback_reply(
     state: AgentState, target_language: Optional[str], failure_description: Optional[str] = None,
 ) -> str:
@@ -19193,6 +19212,16 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                         # FLOW branch above: log it so it is still
                         # visible in the logs, and let the draft through
                         # rather than looping further.
+                        if _substitute_despite_disabled_fallback(description):
+                            logger.error(
+                                "agent[%s]: SAFETY verifier '%s' exhausted its %d tool "
+                                "retries - sending the pre-written safe message instead of "
+                                "an appointment time no tool returned.",
+                                agent_name, description, _MAX_VERIFIER_TOOL_RETRIES,
+                            )
+                            normalized = _safe_fallback_reply(state, target_language, description)
+                            used_safe_fallback = True
+                            break
                         logger.error(
                             "agent[%s]: SAFETY verifier '%s' exhausted its %d tool "
                             "retries - sending the reply as-is (safe-fallback substitution "
@@ -19246,6 +19275,16 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                     # known-name store just hadn't been told about yet).
                     # Treated identically to the FLOW branch above now:
                     # log it for visibility, keep the reply, move on.
+                    if _substitute_despite_disabled_fallback(description):
+                        logger.error(
+                            "agent[%s]: reply STILL failed the same check after correction "
+                            "(%s) - replacing it with the pre-written safe message: an "
+                            "appointment time no tool returned must not reach the patient",
+                            agent_name, description,
+                        )
+                        normalized = _safe_fallback_reply(state, target_language, description)
+                        used_safe_fallback = True
+                        break
                     logger.error(
                         "agent[%s]: reply STILL failed the same check after correction (%s) - "
                         "keeping the reply as-is (safe-fallback substitution disabled per "
@@ -19806,6 +19845,12 @@ def handoff(state: AgentState) -> dict:
     }
 
 
+_CONTINUATION_REASONS = (
+    "bare affirmation answering the assistant's own booking offer",
+    "picked from a doctor/specialty list",
+)
+
+
 def _clear_abandoned_booking_context(chosen: Optional[str], previous: Optional[str], reason: Optional[str], session_id: Optional[str]) -> None:
     """Deterministically drops a stale doctor/specialty from a booking
     attempt the patient has clearly walked away from, the moment the
@@ -19862,7 +19907,14 @@ def _clear_abandoned_booking_context(chosen: Optional[str], previous: Optional[s
     if chosen != "booking" or not previous or previous == "booking" or not session_id:
         return
 
-    if reason == "bare affirmation answering the assistant's own booking offer":
+    # Matched as a substring: the understanding path prefixes the same
+    # reason ("understanding: answer - bare affirmation ..."). An exact
+    # match missed it and wiped specialty_ids on a "تمام" to medical's
+    # single-doctor offer (session 201001255864-DEMO1223=23, 2026-09-24
+    # 10:53:34) - the booking agent then invented a branch and schedule.
+    # A pick from the list the previous agent just showed is the same
+    # continuation, not an abandonment.
+    if reason and any(phrase in reason for phrase in _CONTINUATION_REASONS):
         return
 
     session = tools._BOOKING_SESSIONS.get(session_id)
