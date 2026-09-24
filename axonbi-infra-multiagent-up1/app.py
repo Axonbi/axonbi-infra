@@ -84,7 +84,38 @@ app = FastAPI(
 # config flattened into the top level (see ChatRequest.resolved_client_config).
 _CALL_FIELDS = frozenset({
     "session_id", "client_id", "message", "channel_phone", "bsuid", "client_config",
+    "message_id",
 })
+
+
+# DUPLICATE DELIVERIES OF THE SAME WHATSAPP MESSAGE.
+#
+# Meta / n8n retry a webhook when the first call is slow, and each copy
+# used to run as a separate turn - so the patient got the same question
+# twice (Tanasuq QA report, 2026-09-24: phone-verification step). When the
+# caller sends the channel's own `message_id`, a repeat within the TTL is
+# answered with `duplicate: true` and an empty reply, and nothing runs.
+# Without `message_id` the behaviour is exactly as before.
+import threading
+import time as _time
+
+_SEEN_MESSAGE_IDS: dict = {}
+_SEEN_LOCK = threading.Lock()
+_SEEN_TTL_SECONDS = 15 * 60
+
+
+def _is_duplicate_delivery(session_id: str, message_id) -> bool:
+    if not message_id:
+        return False
+    key = (session_id, str(message_id))
+    now = _time.time()
+    with _SEEN_LOCK:
+        for stale in [k for k, t in _SEEN_MESSAGE_IDS.items() if now - t > _SEEN_TTL_SECONDS]:
+            _SEEN_MESSAGE_IDS.pop(stale, None)
+        if key in _SEEN_MESSAGE_IDS:
+            return True
+        _SEEN_MESSAGE_IDS[key] = now
+    return False
 
 
 class ChatRequest(BaseModel):
@@ -112,6 +143,14 @@ class ChatRequest(BaseModel):
             "channel_phone. Passed straight through to the interim progress "
             "webhook so it can be addressed to the same person as the final "
             "reply. Never interpreted here."
+        ),
+    )
+    message_id: str | None = Field(
+        None,
+        description=(
+            "Optional id of the incoming channel message (e.g. the WhatsApp "
+            "message id). When sent, a repeat delivery of the same id is not "
+            "processed again - see _is_duplicate_delivery."
         ),
     )
     client_config: dict | None = Field(
@@ -151,6 +190,9 @@ class ChatResponse(BaseModel):
     # client_config data table (for lat/lng) and send a map pin.
     location: bool = False
     branch_name: str | None = None
+    # True when this request repeated a message_id already handled - n8n
+    # should send nothing for it.
+    duplicate: bool = False
 
 
 @app.get("/health")
@@ -164,6 +206,13 @@ def chat(req: ChatRequest) -> ChatResponse:
         "Incoming /chat session_id=%s client_id=%s message=%r channel_phone=%r bsuid=%r",
         req.session_id, req.client_id, req.message, req.channel_phone, req.bsuid,
     )
+
+    if _is_duplicate_delivery(req.session_id, req.message_id):
+        logger.warning(
+            "session_id=%s: duplicate delivery of message_id=%s - not processed again",
+            req.session_id, req.message_id,
+        )
+        return ChatResponse(reply="", duplicate=True)
 
     resolved_config = req.resolved_client_config()
 
@@ -214,7 +263,7 @@ def chat(req: ChatRequest) -> ChatResponse:
         # points the patient at the one action that cannot help. A short
         # ask-again keeps the conversation open. See graph.upstream_api_failed.
         return ChatResponse(
-            reply=graph_module.soft_recovery_reply(None),
+            reply=graph_module.soft_recovery_reply(None, force_handoff=True),
             escalate=False,
             location=False,
             branch_name=None,
@@ -240,7 +289,7 @@ def chat(req: ChatRequest) -> ChatResponse:
         # clinic's technical-failure template stays reserved for the
         # case a tool actually reported.
         return ChatResponse(
-            reply=graph_module.soft_recovery_reply(None),
+            reply=graph_module.soft_recovery_reply(None, force_handoff=True),
             escalate=False,
             location=False,
             branch_name=None,
