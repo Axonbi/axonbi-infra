@@ -4307,6 +4307,16 @@ def _booking_entry_mode_given_directive(mode: str) -> str:
     )
 
 
+# The two service categories a lab client offers, as the patient types
+# them (already `_norm_ar`-folded). Local to the booking-entry rung on
+# purpose - `_BARE_SPECIALTY_RE` feeds five other call sites.
+_SERVICE_CATEGORY_WORD_RE = re.compile(
+    r"(?:^|\s)(?:ال)?(?:تحليل|تحاليل|اشعه|اشعة|أشعة|فحص)(?:\s|$)|"
+    r"\b(?:lab\s*tests?|tests?|scans?|x-?rays?|imaging)\b",
+    re.IGNORECASE,
+)
+
+
 def _build_booking_entry_directive(
     messages: list, session_id: str, agent_name: str, templates: Optional[dict] = None,
 ) -> str:
@@ -4373,9 +4383,14 @@ def _build_booking_entry_directive(
             return ""
 
     # Anything concrete in the message means a later rung owns the turn.
+    # That includes the service CATEGORY itself ("احجز تحليل"): it already
+    # answers "تحليل ولا أشعة؟", so the model takes the next step. The
+    # shared `_BARE_SPECIALTY_WORDS` had "تحاليل"/"اشعه" but not the
+    # singular "تحليل" (confirmed production repeat, 2026-09-24).
     if (_fragment_after_cue(text, _DOCTOR_CUE_RE)
             or _fragment_after_cue(text, _SPECIALTY_CUE_RE)
             or _BARE_SPECIALTY_RE.search(folded)
+            or _SERVICE_CATEGORY_WORD_RE.search(folded)
             or _named_weekday_in_latest_human(messages)
             or _booking_reference_in(text)):
         return ""
@@ -10287,7 +10302,49 @@ def _reply_offers_home_mode_for_imaging(reply_text: str, state: AgentState) -> b
 
     if not reply_text or not _HOME_MODE_QUESTION_RE.search(reply_text):
         return False
+    # Decided from facts first, not from reading the transcript: once the
+    # patient has picked a LAB test, "في المعمل ولا من البيت؟" is the
+    # correct next question. The LLM judge below still saw the menu's own
+    # "أشعة" and blocked it twice, ending in the handoff fallback
+    # (confirmed production, "تحليل" -> soft recovery, 2026-09-24).
+    category = _patient_service_category(state)
+    if category == "lab":
+        return False
+    if category == "rad":
+        return True
     return _llm_confirms_imaging_context(state)
+
+
+_LAB_CATEGORY_WORD_RE = re.compile(
+    r"(?:^|\s)(?:ال)?(?:تحليل|تحاليل)(?:\s|$)|\blab\s*tests?\b|\bblood\s*tests?\b",
+    re.IGNORECASE,
+)
+
+
+def _patient_service_category(state: AgentState) -> Optional[str]:
+    """"lab" / "rad" when the patient's own recent messages (newest
+    first) or this booking session already settle which kind of service
+    this is; None when nothing does. Patient wording wins over the
+    session, since they can switch mid-conversation."""
+
+    humans = [
+        m for m in (state.get("messages") or [])
+        if getattr(m, "type", None) == "human"
+    ]
+    for msg in reversed(humans[-4:]):
+        content = getattr(msg, "content", "")
+        text = content if isinstance(content, str) else str(content or "")
+        if any(keyword in text for keyword in _IMAGING_KEYWORDS):
+            return "rad"
+        if _LAB_CATEGORY_WORD_RE.search(_norm_ar(text)):
+            return "lab"
+
+    session = tools._BOOKING_SESSIONS.get(state.get("session_id")) or {}
+    if session.get("collection_mode_forced_by_imaging"):
+        return "rad"
+    if session.get("service_category") in ("lab", "rad"):
+        return session["service_category"]
+    return None
 
 
 def _reply_ends_imaging_prep_with_booking_offer(reply_text: str, state: AgentState) -> bool:
@@ -10368,7 +10425,18 @@ def _honest_no_imaging_home_offer_reply(
         kept.pop()
 
     if not kept:
-        return None
+        # The draft was ONLY the stripped line. Returning None here sent
+        # the generic handoff offer instead - a dead end for a patient
+        # whose booking was fine. Give the in-lab next step in code.
+        is_english = (target_language or "").strip().lower().startswith("en")
+        logger.info(
+            "agent: imaging draft was only the stripped line - replying with the "
+            "in-lab next step instead (session_id=%s)", state.get("session_id"),
+        )
+        return (
+            "Which scan would you like to book?" if is_english
+            else "تحب تعمل أي أشعة بالظبط؟"
+        )
 
     logger.info(
         "agent: stripped the illegal imaging home-mode question/booking offer "
@@ -14850,7 +14918,17 @@ _REPLY_VERIFIERS = (
         "which is physically impossible - home-mode is lab/blood tests only",
     ),
     (
-        lambda reply, state, agent_name: _reply_ends_imaging_prep_with_booking_offer(reply, state),
+        # Prep-instructions flow only. In booking, "رنين" + "تحبي تحجزي"
+        # is the flow working, not a violation (confirmed production
+        # false positive -> handoff fallback, 2026-09-24).
+        lambda reply, state, agent_name: (
+            agent_name != "booking"
+            and not any(
+                getattr(m, "name", None) == "search_lab_services"
+                for m in _tool_messages_this_turn(state.get("messages") or [])
+            )
+            and _reply_ends_imaging_prep_with_booking_offer(reply, state)
+        ),
         lambda reply, state: _no_booking_offer_after_imaging_prep_correction(reply, state),
         "reply gave imaging/scan prep instructions and closed with a booking "
         "offer, which this flow never has a real bookable match to support",
@@ -19578,12 +19656,13 @@ def _break_repeated_tool_loop(response, state: AgentState, agent_name: str,
     if worst >= _TOOL_CALL_REPEAT_CEILING:
         logger.error(
             "agent[%s]: %s has now been requested with identical arguments %d "
-            "times in one turn (session_id=%s) - answering in code rather than "
-            "letting the graph spin to its recursion limit",
+            "times in one turn (session_id=%s) - forcing an answer from the "
+            "results already in hand rather than letting the graph spin",
             agent_name, repeats[0].get("name"), worst + 1,
             state.get("session_id"),
         )
-        return AIMessage(content=_soft_recovery_reply(target_language, messages))
+        return _answer_from_results_in_hand(
+            repeats, state, agent_name, system_message, history, target_language)
 
     logger.warning(
         "agent[%s]: %s was already called with these exact arguments this turn "
@@ -19607,12 +19686,130 @@ def _break_repeated_tool_loop(response, state: AgentState, agent_name: str,
     if _repeated_tool_calls(retry, messages):
         logger.error(
             "agent[%s]: still asking for the same %s call after being told it "
-            "had already run (session_id=%s) - answering in code",
+            "had already run (session_id=%s) - forcing an answer with tools off",
             agent_name, repeats[0].get("name"), state.get("session_id"),
         )
-        return AIMessage(content=_soft_recovery_reply(target_language, messages))
+        return _answer_from_results_in_hand(
+            repeats, state, agent_name, system_message, history, target_language)
 
     return retry
+
+
+# The results of a repeated call are already in the history - the patient
+# does not need a human, they need those results read back to them.
+# CONFIRMED PRODUCTION FAILURE (2026-09-24): "رنين" -> search_lab_services
+# "not_found" -> the same call again -> the handoff offer, where "مفيش
+# رنين، المتاح: ..." was the right answer.
+_ANSWER_ONLY_DIRECTIVE = (
+    "============================================================\n"
+    "ANSWER NOW - NO TOOLS\n"
+    "============================================================\n"
+    "Every tool you need has already run this turn and its result is in "
+    "the history above. Tools are switched off for this reply. Write the "
+    "reply to the patient from those results: if something was not "
+    "found, say so plainly in one line and offer the real options the "
+    "results list (numbered), or ask the one question that moves things "
+    "forward. Do not mention tools, searching, or a technical problem.\n\n"
+)
+
+_llm_answer_only_client = None
+
+
+def _llm_answer_only():
+    """The primary model with tool calls disabled (tool_choice="none"),
+    created on first use. Tools stay DECLARED - the history holds tool
+    calls and results, and the API needs the schemas to accept them -
+    but the model cannot call any. A patched `_llm_with_tools` (tests)
+    is used as-is; its tool calls, if any, are dropped by the caller."""
+
+    global _llm_answer_only_client
+
+    if _llm_with_tools is not _DEFAULT_LLM_WITH_TOOLS:
+        return _llm_with_tools
+    if _llm_answer_only_client is None:
+        _llm_answer_only_client = _llm.bind_tools(tools.ALL_TOOLS, tool_choice="none")
+    return _llm_answer_only_client
+
+
+def _not_found_options_reply(messages: list, target_language) -> str:
+    """Built in code, only from a real result: the latest
+    `search_lab_services` "not_found" of this turn that carries the real
+    `available` list. "" when there is no such result."""
+
+    # Read in full, not via `_result_of_earlier_call` - that one is
+    # truncated to 300 chars for quoting, which would cut the JSON.
+    raw = ""
+    start = _latest_human_index(messages)
+    for message in reversed(messages[start + 1:] if start >= 0 else messages or []):
+        if getattr(message, "name", None) == "search_lab_services":
+            content = getattr(message, "content", "")
+            raw = content if isinstance(content, str) else str(content)
+            break
+    try:
+        payload = json.loads(raw) if raw else {}
+    except (TypeError, ValueError):
+        return ""
+    names = [n for n in (payload.get("available") or []) if isinstance(n, str) and n]
+    if payload.get("status") != "not_found" or not names:
+        return ""
+
+    numbered = "\n".join(
+        f"{_numbered_prefix(i)} {name}" for i, name in enumerate(names, start=1)
+    )
+    if (target_language or "").strip().lower().startswith("en"):
+        return f"I couldn't find that one. Here's what's available:\n{numbered}\nWhich one would you like?"
+    return f"مش لاقية اللي طلبته، بس ده المتاح عندنا:\n{numbered}\nتحب تختار أنهي واحد؟"
+
+
+def _answer_from_results_in_hand(repeats: list, state: AgentState, agent_name: str,
+                                 system_message, history: list, target_language):
+    """Last rung before the handoff offer: one call with tools OFF, so the
+    model must answer from what the repeated call already returned. Then
+    a reply built in code from a real `not_found` + `available` result.
+    Only if both fail does the patient get the handoff offer."""
+
+    from langchain_core.messages import SystemMessage as _SystemMessage
+
+    messages = state.get("messages") or []
+    forced = _SystemMessage(
+        content=_ANSWER_ONLY_DIRECTIVE
+        + _repeated_call_directive(repeats, messages)
+        + str(getattr(system_message, "content", "") or "")
+    )
+
+    try:
+        answer = _invoke_llm_resilient(
+            _llm_answer_only(), [forced] + history,
+            agent_name=agent_name, target_language=target_language,
+            context="repeated tool call - answer only",
+        )
+    except Exception:
+        logger.exception(
+            "agent[%s]: answer-only call failed (session_id=%s)",
+            agent_name, state.get("session_id"),
+        )
+        answer = None
+
+    content = getattr(answer, "content", "") if answer is not None else ""
+    text = (content if isinstance(content, str) else str(content or "")).strip()
+    fallback_texts = set(_LLM_TIMEOUT_FALLBACK_TEXT.values())
+    if text and text not in fallback_texts:
+        logger.info(
+            "agent[%s]: repeated %s call answered from the results in hand "
+            "(session_id=%s)", agent_name, repeats[0].get("name"), state.get("session_id"),
+        )
+        return AIMessage(content=text)
+
+    built = _not_found_options_reply(messages, target_language)
+    if built:
+        logger.info(
+            "agent[%s]: repeated %s call answered in code from its real "
+            "not_found + available result (session_id=%s)",
+            agent_name, repeats[0].get("name"), state.get("session_id"),
+        )
+        return AIMessage(content=built)
+
+    return AIMessage(content=_soft_recovery_reply(target_language, messages))
 
 
 def _run_agent(state: AgentState, agent_name: str) -> dict:
