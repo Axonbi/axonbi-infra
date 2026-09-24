@@ -4718,7 +4718,7 @@ def _build_day_confirmation_requires_tool_directive(messages: list) -> str:
     return ""
 
 
-def _build_schedule_display_directive(messages: list) -> str:
+def _build_schedule_display_directive(messages: list, templates: Optional[dict] = None) -> str:
     """
     If the LAST message is a ToolMessage from `get_doctor_schedule` with
     status "found", pre-build the EXACT branch/day-grouped display block
@@ -4814,23 +4814,31 @@ def _build_schedule_display_directive(messages: list) -> str:
 
     total_day_rows = sum(len(v) for v in by_branch.values())
 
+    # A LAB CLIENT HAS NO DOCTORS TO SHOW. Under the per-test-doctors
+    # model the "doctor" record IS the test/scan itself, so "مواعيد
+    # الدكتور أشعة مقطعية على المعصم الأيمن" names a scan as a person,
+    # and each line's serviceName is the same test again in English
+    # ("— XR tomography Wrist - right"). Confirmed production, 2026-09-24.
+    is_lab = bool((templates or {}).get("_is_lab_client"))
+
     def _day_line(day: str, from_time: str, to_time: str, service: str) -> str:
         line = f"• {day}: من {from_time} لـ {to_time}"
         # NO PRICE, EVER. The service NAME is useful context ("كشف رمد");
         # its fee is private by default and only ever revealed through
         # `get_doctor_fees` on an explicit request - see prompts.py's
         # FEES rule.
-        if service:
+        if service and not is_lab:
             line = f"{line} — {service}"
         return line
 
     branch_blocks = []
     for index, branch in enumerate(branch_order):
-        heading = (
-            f"مواعيد الدكتور {doctor_name} في فرع {branch}:"
-            if index == 0
-            else f"وفي فرع {branch}:"
-        )
+        if index:
+            heading = f"وفي فرع {branch}:"
+        elif is_lab:
+            heading = f"مواعيد {doctor_name} في فرع {branch}:"
+        else:
+            heading = f"مواعيد الدكتور {doctor_name} في فرع {branch}:"
         lines = [heading]
         for day, from_time, to_time, service in by_branch[branch]:
             lines.append(_day_line(day, from_time, to_time, service))
@@ -4862,8 +4870,8 @@ def _build_schedule_display_directive(messages: list) -> str:
         only_day = next(iter(by_branch.values()))[0][0]
         closing_question_instruction = (
             f"  3. Exactly one question asking whether they'd like the "
-            f"available times for {only_day} - the only day this doctor "
-            f"works. Do NOT ask \"which day\" or \"which branch\" when "
+            f"available times for {only_day} - the only day on this "
+            f"schedule. Do NOT ask \"which day\" or \"which branch\" when "
             f"there is only one of each; that is not a choice, and "
             f"reads as though you didn't look.\n"
         )
@@ -4879,13 +4887,23 @@ def _build_schedule_display_directive(messages: list) -> str:
             "not two separate questions, and not two turns.\n"
         )
 
+    lab_note = (
+        "This is a lab test/scan, not a doctor: never write \"الدكتور\"/"
+        "\"doctor\" anywhere in the reply.\n"
+        if is_lab else ""
+    )
+
     return (
         "[INTERNAL INSTRUCTION - NOT FOR THE USER - READ CAREFULLY]\n"
-        "The doctor's schedule was just looked up. Your ENTIRE reply "
+        + ("The schedule was just looked up. " if is_lab
+           else "The doctor's schedule was just looked up. ")
+        + "Your ENTIRE reply "
         "must have EXACTLY this structure and nothing more:\n"
-        "  1. At most one very short lead-in sentence (e.g. \"Here's the "
-        "doctor's schedule:\") - or none at all.\n"
-        "  2. The exact text between the START/END markers below, copied "
+        + lab_note
+        + "  1. At most one very short lead-in sentence (e.g. \"Here's the "
+        + ("schedule:\") - or none at all.\n" if is_lab
+           else "doctor's schedule:\") - or none at all.\n")
+        + "  2. The exact text between the START/END markers below, copied "
         "verbatim, unchanged (translate the LABELS only if the "
         "conversation is in a different language - keep the emoji icons "
         "and the actual values unchanged either way). The START/END "
@@ -19921,7 +19939,8 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     appointment_choice_directive = _build_appointment_choice_directive(
         state["messages"]
     )
-    schedule_display_directive = _build_schedule_display_directive(state["messages"])
+    schedule_display_directive = _build_schedule_display_directive(
+        state["messages"], state.get("templates"))
     day_confirmation_directive = _build_day_confirmation_requires_tool_directive(state["messages"])
     show_soonest_directive = _build_show_soonest_day_directive(state["messages"], state.get("session_id"))
 
