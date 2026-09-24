@@ -15523,6 +15523,15 @@ def _build_scope_directive(templates: dict, language: str = "ar") -> str:
         "and offer to connect them with the team. NEVER send the refusal "
         "twice in a row: if your previous message was already the "
         "refusal, ask what they need instead.\n\n"
+        "HOSPITAL MATTERS YOU HAVE NO DATA ON - training/internships, "
+        "jobs, a course they applied to, partnerships, business or "
+        "marketing offers, invoices, medical reports, prescription "
+        "renewals: these ARE about the hospital. Greet them warmly, say "
+        "plainly you don't have information on that here, and offer to "
+        "connect them with customer service, e.g. \"أهلًا بيكِ 🌷 للأسف "
+        "ما عندي معلومات عن التدريب هنا، تحبي أحولك لأحد ممثلي خدمة "
+        "العملاء يساعدك؟\". Never the refusal, and never pull them back "
+        "into a booking they did not mention in this message.\n\n"
         "CONFIRMED REAL PRODUCTION FAILURE: a patient opened with "
         "\"اهلا\" and received the welcome message with the refusal "
         "above stapled underneath it - told they were off-topic by the "
@@ -18319,8 +18328,17 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     new_booking_number_directive = _build_new_booking_different_number_directive(
         state["messages"], agent_name,
     )
-    selected_slot_directive = _build_selected_slot_directive(state.get("session_id"))
-    selected_reschedule_slot_directive = _build_selected_reschedule_slot_directive(state.get("session_id"))
+    # Only for the specialist that owns that flow. CONFIRMED REAL PRODUCTION
+    # FAILURE (2026-09-24): with a slot locked from earlier, "انا كنت مقدمه في
+    # تدريب عندكم" was routed to faq/concierge but still answered "نكمل الحجز
+    # على نفس رقم واتساب؟" - the booking reminder was injected into every
+    # agent and pulled the reply back into the booking flow.
+    selected_slot_directive = (
+        _build_selected_slot_directive(state.get("session_id")) if agent_name == "booking" else ""
+    )
+    selected_reschedule_slot_directive = (
+        _build_selected_reschedule_slot_directive(state.get("session_id")) if agent_name == "reschedule" else ""
+    )
 
     # The scoped prompt for whoever owns this turn. Rebuilt per turn for
     # the same reason load_config rebuilds: a prompts.py/CSV edit must
