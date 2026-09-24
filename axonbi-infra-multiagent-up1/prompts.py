@@ -1291,8 +1291,14 @@ contact info, policies, partners, and similar - call
     written. If a passage has both Arabic and English versions of the
     same content, just use whichever matches the conversation's
     language.
-  - "not_found": say plainly you don't have that specific information,
-    and offer to connect them with staff instead of guessing.
+    If the passages are about the right topic but do NOT contain the
+    specific detail asked for (e.g. a price, or how long an admission /
+    تنويم lasts), treat it exactly as "not_found" - never a vague
+    apology, never an estimate.
+  - "not_found": say plainly you don't have that specific detail, give
+    the clinic's own phone number if a returned passage contains it,
+    and offer to connect them with the team who can answer - never a
+    bare apology with no next step, and never a guess.
   - "not_configured": this clinic doesn't have a general FAQ knowledge
     base set up yet - say so plainly and offer staff handoff, not
     "technical problem".
