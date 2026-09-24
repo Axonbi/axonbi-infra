@@ -393,7 +393,7 @@ def authentica_verify_otp(phone: str, otp: str, email: str = "") -> dict:
 # same way _post_bookings already handles GuestBookings' identical
 # response envelope.
 
-def _post_json(url: str, payload: dict, client_id: Optional[str] = None, language: Optional[str] = None) -> dict:
+def _post_json(url: str, payload: dict, client_id: Optional[str] = None, language: Optional[str] = None, retry: bool = True) -> dict:
     """Generic POST + envelope handling, shared by get_specialties/
     get_doctors. Mirrors _post_bookings' error handling exactly
     (timeout/5xx/4xx/empty/invalid JSON/isSuccess check), kept as a
@@ -416,7 +416,12 @@ def _post_json(url: str, payload: dict, client_id: Optional[str] = None, languag
     # wrong path) and retrying it would just get the same 4xx back
     # slower, so those still fall straight through to the existing
     # handling below with no retry loop involved.
-    max_attempts = max(1, DOCTORS_API_MAX_RETRIES + 1)
+    # `retry=False` is for NON-IDEMPOTENT calls (GuestBookings/Reservation).
+    # A timeout there does not mean the booking failed - the server may
+    # have created it and only the reply was slow. Retrying then books
+    # the same slot a second time and gets "already booked" back for the
+    # patient's OWN appointment. The caller checks for that instead.
+    max_attempts = max(1, DOCTORS_API_MAX_RETRIES + 1) if retry else 1
     response = None
     last_timeout = False
     last_exc: Optional[Exception] = None
@@ -507,6 +512,10 @@ def _post_json(url: str, payload: dict, client_id: Optional[str] = None, languag
         return _result(False, response.status_code, error="empty_response")
 
     if not body.get("isSuccess"):
+        logger.error(
+            "Doctors/Specialties API reported failure: %s status=%s messages=%s",
+            url, response.status_code, body.get("messages"),
+        )
         return _result(False, response.status_code, data=body, error="api_reported_failure")
 
     return _result(True, response.status_code, data=body.get("data", {}))
@@ -741,7 +750,30 @@ def get_doctor_schedule_slots(
     if branch_ids:
         payload["branchIds"] = branch_ids
 
-    return _post_json(url, payload, client_id=client_id, language=language)
+    result = _post_json(url, payload, client_id=client_id, language=language)
+
+    # A SLOT ON A FULL DAY IS NOT BOOKABLE, EVEN WHEN isBooked=false.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (Tanasuq, Dr. Omar Al-Mudaifer,
+    # 30/09/2026): the doctor's schedule has maxNoOfCases=10 and 11 slots
+    # were already booked. 5:20 PM came back isBooked=false - but with
+    # isAtDailyCapacity=true - so the bot offered it, and every
+    # GuestBookings/Reservation call was refused with "This slot is
+    # already booked Please select another time". The patient was sent
+    # round the same loop again and again. Nothing read this flag.
+    # Filtered here, once, so every caller (days, slots, reschedule, the
+    # pre-booking re-check) agrees with what Reservation will accept.
+    if not is_booked and result.get("success") and isinstance(result.get("data"), dict):
+        items = result["data"].get("items") or []
+        kept = [i for i in items if not (isinstance(i, dict) and i.get("isAtDailyCapacity") is True)]
+        if len(kept) != len(items):
+            logger.info(
+                "get_doctor_schedule_slots: dropped %d slot(s) on days already at the "
+                "doctor's daily capacity (isAtDailyCapacity=true)", len(items) - len(kept),
+            )
+            result["data"] = {**result["data"], "items": kept}
+
+    return result
 
 
 def get_doctor_fees(
@@ -945,7 +977,7 @@ def create_booking(
         "spaceId": space_id,
     }
 
-    return _post_json(url, payload, client_id=client_id)
+    return _post_json(url, payload, client_id=client_id, retry=False)
 
 
 def get_booking_by_id(base_url: str, booking_id: str, client_id: Optional[str] = None) -> dict:
