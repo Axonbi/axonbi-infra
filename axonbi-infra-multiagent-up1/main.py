@@ -344,10 +344,13 @@ def send_message_with_signals(
     # guarantees that cancellation happens even if the turn raises, which
     # is what stops a "please wait" message arriving AFTER the answer -
     # or worse, after an error.
-    progress.begin_turn(session_id)
-
     try:
         with _lock_for(session_id):
+            # INSIDE the lock: a duplicate webhook for the same session used
+            # to call begin_turn while the first turn was still running,
+            # resetting its "already sent" flag and letting a second "please
+            # wait" message out (Tanasuq QA report, 2026-09-24).
+            progress.begin_turn(session_id)
             thread_config = _config_for(session_id)
 
             # Snapshot the message count BEFORE this turn, so we can isolate
