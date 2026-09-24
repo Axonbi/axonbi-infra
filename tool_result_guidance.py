@@ -142,12 +142,24 @@ def _latest_ai_text_before_handoff_guard(state: AgentState) -> str:
     """The most recent AIMessage's raw text (the assistant's own last
     turn) - used only to check whether a staff/customer-service handoff
     was actually OFFERED before this turn, never to allow a handoff on
-    its own."""
+    its own.
+
+    Skips AI messages that carry tool calls or no text. When this runs
+    inside ToolNode, the newest AI message is the very tool call that is
+    requesting the handoff - its content is normally "" - so reading it
+    blocked every short "اه"/"ايوه"/"نعم" that answered a real offer
+    (confirmed production loop, 2026-09-24). What matters is the last
+    reply the patient actually SAW."""
 
     for msg in reversed(state.get("messages") or []):
-        if getattr(msg, "type", None) == "ai":
-            content = getattr(msg, "content", "")
-            return content if isinstance(content, str) else str(content or "")
+        if getattr(msg, "type", None) != "ai":
+            continue
+        if getattr(msg, "tool_calls", None):
+            continue
+        content = getattr(msg, "content", "")
+        text = content if isinstance(content, str) else str(content or "")
+        if text.strip():
+            return text
     return ""
 
 
