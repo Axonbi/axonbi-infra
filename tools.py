@@ -122,12 +122,24 @@ def _latest_ai_text_before_handoff_guard(state: AgentState) -> str:
     """The most recent AIMessage's raw text (the assistant's own last
     turn) - used only to check whether a staff/customer-service handoff
     was actually OFFERED before this turn, never to allow a handoff on
-    its own."""
+    its own.
+
+    Skips AI messages that carry tool calls or no text. When this runs
+    inside ToolNode, the newest AI message is the very tool call that is
+    requesting the handoff - its content is normally "" - so reading it
+    blocked every short "اه"/"ايوه"/"نعم" that answered a real offer
+    (confirmed production loop, 2026-09-24). What matters is the last
+    reply the patient actually SAW."""
 
     for msg in reversed(state.get("messages") or []):
-        if getattr(msg, "type", None) == "ai":
-            content = getattr(msg, "content", "")
-            return content if isinstance(content, str) else str(content or "")
+        if getattr(msg, "type", None) != "ai":
+            continue
+        if getattr(msg, "tool_calls", None):
+            continue
+        content = getattr(msg, "content", "")
+        text = content if isinstance(content, str) else str(content or "")
+        if text.strip():
+            return text
     return ""
 
 
@@ -11900,7 +11912,9 @@ def search_lab_services(
 
     `query` is OPTIONAL. Leave it empty when the patient asked for the
     FULL list with nothing to narrow by (e.g. "قولي التحاليل الي
-    عندكم" / "what tests do you have") - this returns every real,
+    عندكم" / "what tests do you have"), or when they only named the
+    CATEGORY itself ("أشعة", "عايزة احجز اشعه", "تحليل", "a scan") -
+    the category word is not a test name. This returns every real,
     published test/scan for `specialty`, most clinic-relevant first, up
     to `LAB_SERVICES_LIST_CAP` items, instead of running a semantic
     search. If more than the cap exist, `"truncated": true` is set on
@@ -11943,6 +11957,9 @@ def search_lab_services(
     the original call in view, can still say which is which:
     {"status": "found", "services": [{"id", "name", "description", "specialty"}, ...]}
     {"status": "not_found"}  # nothing in the real catalogue matched well enough
+    {"status": "not_found", "available": [name, ...]}  # per-test model: the
+        # real list instead - say plainly the asked-for one isn't offered,
+        # then show these numbered and ask which one (never a dead end)
     {"status": "not_configured"} / {"status": "error"}
     """
 
@@ -12075,10 +12092,32 @@ def search_lab_services(
             return {"status": "not_found"}
 
         truncated = False
+        if query and _is_service_category_only(query):
+            # "أشعة" / "عايزه احجز اشعه" names the catalogue, not an
+            # item in it. Semantic search scores that below the floor
+            # against every real scan name, and the patient heard
+            # "معنديش أشعة متاحة بالاسم ده" (confirmed production,
+            # 2026-09-24). Treat it as the full-list request it is.
+            logger.info(
+                "search_lab_services: query=%r is only the category word - "
+                "returning the full %s list", query, specialty,
+            )
+            query = None
         if query:
             matches = rag.search_items(items, query)
             if not matches:
-                return {"status": "not_found"}
+                # Nothing matched - but the patient still needs a way
+                # forward. Hand back the REAL catalogue (names only, so
+                # nothing can be invented) and remember it, so the reply
+                # can say "مفيش X، المتاح: 1️⃣ ..." and a bare number
+                # picks from it.
+                available = items[:LAB_SERVICES_LIST_CAP]
+                _remember_list(state, "lab_test_doctor", available)
+                return {
+                    "status": "not_found",
+                    "available": [item["name"] for item in available],
+                    "available_truncated": len(items) > LAB_SERVICES_LIST_CAP,
+                }
             services = [item for item, _score in matches]
         else:
             # No query - the patient asked for the FULL list. Return
@@ -12109,6 +12148,10 @@ def search_lab_services(
         _remember_list(state, "lab_test_doctor", services)
 
         session = _get_booking_session(state.get("session_id"))
+        # Which catalogue this booking is in, as a fact later checks can
+        # read (graph._patient_service_category) instead of re-guessing
+        # it from the transcript.
+        session["service_category"] = specialty_code
         descriptions = session.setdefault("lab_service_descriptions", {})
         for item in services:
             # Cache by the REAL service id (defaultServiceId), not the
@@ -12253,6 +12296,42 @@ def search_lab_services(
             descriptions[item["id"]] = item["description"]
 
     return {"status": "found", "services": services}
+
+
+_SERVICE_CATEGORY_WORDS = (
+    "تحليل", "التحليل", "تحاليل", "التحاليل", "اشعه", "الاشعه", "اشعة",
+    "الاشعة", "أشعة", "الأشعة", "فحص", "الفحص", "فحوصات", "الفحوصات",
+    "test", "tests", "lab", "scan", "scans", "imaging", "xray", "x-ray",
+    "radiology",
+)
+
+# Verbs/fillers that carry no test name ("عايزه احجز اشعه").
+_SERVICE_CATEGORY_FILLER = (
+    "احجز", "احجزلي", "حجز", "اعمل", "اعملي", "اعملى", "نعمل", "عمل",
+    "طب", "طيب", "بس", "يا", "book", "do", "get", "an",
+)
+
+
+def _is_service_category_only(query: Optional[str]) -> bool:
+    """True when `query` is only the category word (plus filler) - e.g.
+    "أشعة", "عايزه احجز اشعه", "التحاليل المتاحة" - and names no
+    specific test. Same shape as `_is_entity_list_request`: every token
+    must be a category word, a list cue, or filler; any residue ("أشعة
+    على الصدر", "رنين") means a real name was given."""
+
+    normalized = _normalize_arabic((query or "").strip().lower())
+    normalized = re.sub(r"[،؛؟٪-٭۔¿]+", " ", normalized)
+    normalized = re.sub(r"[^\w؀-ۿ -]+", " ", normalized)
+    tokens = [t for t in normalized.split() if t]
+    if not tokens:
+        return False
+
+    category = {_normalize_arabic(w) for w in _SERVICE_CATEGORY_WORDS}
+    ignorable = category | {
+        _normalize_arabic(w)
+        for w in (*_LIST_REQUEST_CUES, *_LIST_REQUEST_FILLER, *_SERVICE_CATEGORY_FILLER)
+    }
+    return any(t in category for t in tokens) and all(t in ignorable for t in tokens)
 
 
 def _matches_fixed_name(candidate: dict, target: str) -> bool:
