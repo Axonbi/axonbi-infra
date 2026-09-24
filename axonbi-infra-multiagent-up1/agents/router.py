@@ -1150,9 +1150,6 @@ def route_turn(messages: List, active_agent: Optional[str] = None) -> Tuple[str,
     if not text.strip():
         return (active_agent or CONCIERGE), "no user message - kept current specialist"
 
-    if active_agent != "booking" and _affirms_previous_booking_offer(messages, text):
-        return "booking", "bare affirmation answering the assistant's own booking offer"
-
     # Picking a DOCTOR or a SPECIALTY out of a list is a BOOKING action,
     # wherever the list was shown.
     #
@@ -1186,6 +1183,34 @@ def route_turn(messages: List, active_agent: Optional[str] = None) -> Tuple[str,
     # because the whole point is that the score is misleading here.
     if active_agent in ("booking", "concierge") and _answers_booking_entry_question(messages, text):
         return "booking", "answered the booking flow's own doctor-or-specialty question"
+
+    # THE LLM DECIDES WHAT THE PATIENT MEANT - KEYWORDS ARE ONLY THE FALLBACK.
+    #
+    # Owner's directive after the 2026-09-23/24 incidents: patient text is
+    # understood by the LLM, not by regex. The keyword cues below used to
+    # OVERRIDE the classifier whenever they scored high, and the cue lists
+    # misread plain messages ("اهلا" contains "لا"; "الغد" starts like
+    # "الغاء"). Now, in ROUTER_MODE=llm, the classifier reads every
+    # message against the assistant's last reply and returns a structured
+    # decision. The deterministic path runs only when it is unavailable.
+    if config.ROUTER_MODE == "llm":
+        decision = _classify_with_llm_structured(text, active_agent, messages)
+        if decision is not None:
+            llm_choice, answers_last_question = decision
+            specialist_flow_open = (
+                active_agent not in (None, CONCIERGE)
+                and not _flow_just_completed(messages)
+            )
+            if specialist_flow_open and (answers_last_question or llm_choice == CONCIERGE):
+                return active_agent, (
+                    f"llm router: reply to {active_agent}'s own question"
+                    if answers_last_question else
+                    f"llm router: unclear ('concierge') - {active_agent} keeps its flow"
+                )
+            return llm_choice, "llm router"
+
+    if active_agent != "booking" and _affirms_previous_booking_offer(messages, text):
+        return "booking", "bare affirmation answering the assistant's own booking offer"
 
     scores = score_message(text)
     candidate, score = _best(scores)
@@ -1225,7 +1250,9 @@ def route_turn(messages: List, active_agent: Optional[str] = None) -> Tuple[str,
     # So the two rules below. Between them the classifier keeps every
     # decision it is actually able to make, and loses only the one it
     # cannot: guessing who owns a bare "اه".
-    if config.ROUTER_MODE == "llm" and score < _START_THRESHOLD:
+    # Reached only when the structured classifier above was unavailable -
+    # the same model would fail here too, so this legacy call is skipped.
+    if False and config.ROUTER_MODE == "llm" and score < _START_THRESHOLD:
         llm_choice = _classify_with_llm(text, active_agent, messages)
 
         if llm_choice:
@@ -1393,6 +1420,71 @@ def _router_context(messages: List) -> str:
         last_reply = "..." + last_reply[-_ROUTER_CONTEXT_CHARS:]
 
     return last_reply
+
+
+_STRUCTURED_ROUTER_RULES = """
+If the assistant's last message OFFERED something (e.g. "تبي أحجز لك موعد؟")
+and the patient accepts, route to the specialist that does it.
+Right after a booking was completed, a message that does not clearly ask to
+cancel or reschedule is NOT a cancellation or reschedule - "تم تأكيد الموعد"
+/ "شكرا" / "تمام" mean the patient is satisfied (concierge)."""
+
+
+def _classify_with_llm_structured(text: str, active_agent: Optional[str],
+                                  messages: Optional[List] = None):
+    """(agent_name, answers_last_question) from a structured LLM call, or
+    None on any failure (the deterministic cues then decide)."""
+
+    try:
+        from typing import Literal
+
+        from langchain_core.messages import HumanMessage
+        from pydantic import BaseModel, Field
+        import graph  # imported lazily: graph imports this package
+
+        llm = getattr(graph, "_router_llm", None)
+        if llm is None:
+            return None
+
+        class RouteDecision(BaseModel):
+            agent: Literal["cancel", "reschedule", "booking", "medical", "faq", "complaint", "concierge"] = Field(
+                description="The specialist that owns this patient message."
+            )
+            answers_last_question: bool = Field(
+                description=(
+                    "True if the message is the patient ANSWERING the assistant's last "
+                    "message (a yes/no, a number from a list, a day, a time, a name, a "
+                    "phone number, a code) rather than opening a new subject."
+                )
+            )
+
+        prompt = (
+            _LLM_ROUTER_PROMPT.replace(
+                "Reply with EXACTLY ONE of these words and nothing else:",
+                "Choose ONE of these specialists:",
+            ).format(
+                active=active_agent or "none",
+                last_reply=_router_context(messages),
+                message=text[:500],
+            )
+            + _STRUCTURED_ROUTER_RULES
+        )
+        decision = llm.with_structured_output(RouteDecision).invoke([HumanMessage(content=prompt)])
+        if decision is None or decision.agent not in AGENT_NAMES:
+            logger.warning("router: structured llm returned %r - using the deterministic result", decision)
+            return None
+        logger.info(
+            "router: llm classified %r as %s (answers_last_question=%s)",
+            text[:60], decision.agent, decision.answers_last_question,
+        )
+        return decision.agent, bool(decision.answers_last_question)
+
+    except Exception as exc:
+        logger.warning(
+            "router: structured llm classification failed (%s: %s) - using the "
+            "deterministic result", type(exc).__name__, exc,
+        )
+        return None
 
 
 def _classify_with_llm(text: str, active_agent: Optional[str],
