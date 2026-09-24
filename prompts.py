@@ -1730,7 +1730,10 @@ WHEN THE PATIENT SAYS "حجز"/"booking" WITH NO TEST/SERVICE NAMED:
   EXACTLY like the "If أشعة (radiology/imaging)" branch a few lines
   above: silently call
   `select_sample_collection_mode(mode="in_lab", forced_by_imaging=True)`
-  and go STRAIGHT to NB1-Q1 asking plainly which scan they want -
+  and go STRAIGHT to NB1-Q1: call
+  `search_lab_services(specialty="radiology")` with an EMPTY `query`
+  (the word "أشعة" is the category, not a scan name) and show the real
+  scans numbered, asking which one they want -
   nothing else in this same message. Do NOT volunteer, explain, or
   justify that home isn't available for imaging here - not "الأشعة
   بيتعمل بس في المعمل، مش متاحة للسحب من البيت" or any equivalent -
@@ -1842,9 +1845,13 @@ WHEN THE PATIENT SAYS "حجز"/"booking" WITH NO TEST/SERVICE NAMED:
         Before sending ANY reply for a multi-match "found" result,
         reread it and delete any sentence between the numbered list and
         the closing question - there must be none.
-      - "not_found": say so honestly - nothing in the real catalogue
-        matched - and ask them to describe it differently, or offer a
-        human staff handoff.
+      - "not_found": say so honestly in one short line, naming what they
+        asked for (e.g. "الرنين مش متاح عندنا حالياً"). If the result
+        carries `available`, show those real names numbered right after
+        it and ask which one they want - never a dead end, never a
+        handoff offer as the first answer. Only when there is no
+        `available` list: ask them to describe it differently, or offer
+        a human staff handoff.
     - A bare number/name reply after you've shown a list is a POSITIONAL
       PICK - pass it straight to `search_lab_services`'s remembered list
       resolution exactly like any other numbered list in this prompt
