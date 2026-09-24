@@ -1201,7 +1201,13 @@ def route_turn(messages: List, active_agent: Optional[str] = None) -> Tuple[str,
                 active_agent not in (None, CONCIERGE)
                 and not _flow_just_completed(messages)
             )
-            if specialist_flow_open and (answers_last_question or llm_choice == CONCIERGE):
+            # A reply to the specialist's own question stays with it. A new
+            # subject does NOT - even when the LLM files it under
+            # `concierge`. CONFIRMED REAL PRODUCTION FAILURE (2026-09-24):
+            # "كنت مقدمه علي تدريب عندكم" was classified concierge with
+            # answers_last_question=False, but the booking agent kept the
+            # turn and answered with booking/out-of-scope text.
+            if specialist_flow_open and answers_last_question:
                 return active_agent, (
                     f"llm router: reply to {active_agent}'s own question"
                     if answers_last_question else
