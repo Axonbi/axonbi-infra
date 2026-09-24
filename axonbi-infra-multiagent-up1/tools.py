@@ -40,6 +40,7 @@ from langchain_core.tools import tool
 from langgraph.prebuilt import InjectedState
 
 import api
+import intent
 import rag
 from config import (
     DEFAULT_TIMEZONE,
@@ -83,45 +84,18 @@ logger = logging.getLogger(__name__)
 # already-documented failure means the instruction alone cannot be
 # trusted to hold on every turn, so the check is enforced here instead
 # of only being asked for.
-_COMPLAINT_ROOTS_FOR_HANDOFF_GUARD = ("شكو", "اشتك", "complaint")
+# (The complaint-word keyword guard that stood here was replaced by the LLM
+# consent check in request_human_handoff - see intent.patient_wants_handoff.)
 
-# Words that show the patient is SEPARATELY, explicitly asking for a
-# person - as opposed to just naming "complaint" as the topic. If any of
-# these appear alongside a complaint word, the guard steps aside and
-# lets the model's own call stand (e.g. "الشكوى معقدة عايز اتكلم مع حد").
+# Words naming a person/staff. NO LONGER USED TO DECIDE A HANDOFF (that is
+# intent.patient_wants_handoff). Only graph.py's reply-verifier guard for a
+# bare "لا" still reads it, as a hint.
 _EXPLICIT_HUMAN_REQUEST_ROOTS = (
     "موظف", "خدمة العملاء", "خدمه العملاء", "ممثل خدمة", "اتكلم مع حد",
     "أتكلم مع حد", "كلمني حد", "كلميني حد", "حد يرد", "شخص حقيقي",
     "human", "representative", "agent", "someone", "speak to a person",
     "talk to a person",
 )
-
-
-def _latest_human_text_for_handoff_guard(state: AgentState) -> str:
-    """The most recent HumanMessage's raw text, or "" if none is found.
-    Deliberately tolerant of whatever message objects `state["messages"]`
-    holds - only ever used to decide whether to BLOCK a handoff, never
-    to allow one, so a missed/garbled message just means the guard has
-    nothing to catch and the model's own decision goes through."""
-
-    for msg in reversed(state.get("messages") or []):
-        if getattr(msg, "type", None) == "human":
-            content = getattr(msg, "content", "")
-            return content if isinstance(content, str) else str(content or "")
-    return ""
-
-
-def _latest_ai_text_before_handoff_guard(state: AgentState) -> str:
-    """The most recent AIMessage's raw text (the assistant's own last
-    turn) - used only to check whether a staff/customer-service handoff
-    was actually OFFERED before this turn, never to allow a handoff on
-    its own."""
-
-    for msg in reversed(state.get("messages") or []):
-        if getattr(msg, "type", None) == "ai":
-            content = getattr(msg, "content", "")
-            return content if isinstance(content, str) else str(content or "")
-    return ""
 
 
 # ==========================================================
@@ -253,6 +227,30 @@ def _client_default_country_code(state=None) -> str:
     return DEFAULT_COUNTRY_CODE
 
 
+_PHONE_DIGIT_TRANSLATION = str.maketrans(
+    "٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789",
+)
+
+# Countries whose international format really does keep the leading 0.
+_KEEP_TRUNK_ZERO_CODES = ("39", "378", "379")
+
+
+def _drop_trunk_zero(e164: str) -> str:
+    """"+966 0505992148" -> "+966505992148". Patients often type the
+    country code AND keep the local leading 0; the result belongs to
+    nobody, compare_phone fails against their WhatsApp number, and an OTP
+    goes to a number that does not exist (Tanasuq QA report, 2026-09-24)."""
+
+    digits = e164[1:]
+    for code in _KNOWN_COUNTRY_CODES:
+        if digits.startswith(code):
+            rest = digits[len(code):]
+            if code not in _KEEP_TRUNK_ZERO_CODES and rest.startswith("0") and len(rest) > 8:
+                return "+" + code + rest[1:]
+            return e164
+    return e164
+
+
 def normalize_phone_number(phone: Optional[str], state=None) -> Optional[str]:
     """Normalize a phone number to E.164 (e.g. "+201001255864").
 
@@ -274,12 +272,15 @@ def normalize_phone_number(phone: Optional[str], state=None) -> Optional[str]:
     if not phone:
         return phone
 
-    cleaned = re.sub(r"[\s\-().]", "", str(phone).strip())
+    # Arabic-Indic / Persian digits ("٠٥٠٥٩٩٢١٤٨") -> ASCII, before anything
+    # else looks at the number.
+    cleaned = str(phone).strip().translate(_PHONE_DIGIT_TRANSLATION)
+    cleaned = re.sub(r"[\s\-().]", "", cleaned)
 
     if cleaned.startswith("+"):
-        return cleaned
+        return _drop_trunk_zero(cleaned)
     if cleaned.startswith("00"):
-        return "+" + cleaned[2:]
+        return _drop_trunk_zero("+" + cleaned[2:])
 
     default_code = _client_default_country_code(state)
 
@@ -294,11 +295,11 @@ def normalize_phone_number(phone: Optional[str], state=None) -> Optional[str]:
     # the length check is what stops a bare local number that happens to
     # begin with those digits from being misread as international.
     if cleaned.startswith(default_code) and len(cleaned) >= len(default_code) + 8:
-        return "+" + cleaned
+        return _drop_trunk_zero("+" + cleaned)
 
     for code in _KNOWN_COUNTRY_CODES:
         if cleaned.startswith(code) and len(cleaned) >= len(code) + 8:
-            return "+" + cleaned
+            return _drop_trunk_zero("+" + cleaned)
 
     return "+" + default_code + cleaned
 
@@ -1138,9 +1139,14 @@ def cancel_appointment(
     Each status below carries its own handling instruction with the result
     itself (the `_guidance` field) - read that when it arrives.
 
+    Nothing is cancelled until the patient has explicitly said yes to a
+    cancel-confirmation question naming this appointment. If they have
+    not, this returns `needs_confirmation` and cancels nothing - ask
+    them, then call this again after their yes.
+
     Returns one of: {"status": "success"},
-    {"status": "not_looked_up"}, {"status": "not_requested"}, or
-    {"status": "error"}."""
+    {"status": "needs_confirmation", "booking": {...}},
+    {"status": "not_looked_up"}, or {"status": "error"}."""
 
     # SERVER-SIDE ENFORCEMENT, NOT JUST A PROMPT RULE - the same
     # reasoning `lookup_appointment` and `create_new_booking` already
@@ -1156,19 +1162,6 @@ def cancel_appointment(
     # up. `_looked_up_booking_ids` records ids as the lookup tools
     # return them, so an id recalled, mistyped or carried over from
     # somewhere else cannot reach the API.
-    # THEY NEVER ASKED FOR THIS. See `_patient_asked_to_cancel` for the
-    # confirmed failure - "تعديل" ended in a cancelled appointment. The
-    # explicit-confirmation rule cannot catch that on its own, because
-    # the question the patient said yes to was the wrong question.
-    if not _patient_asked_to_cancel(state):
-        logger.error(
-            "cancel_appointment: REFUSING to cancel booking_id=%r (session_id=%s) - "
-            "no message the patient sent in this conversation asks to cancel "
-            "anything. They may have asked to RESCHEDULE.",
-            booking_id, state.get("session_id"),
-        )
-        return {"status": "not_requested"}
-
     resolved = _resolve_booking_guid(state, booking_id)
     if resolved["status"] != "resolved":
         logger.warning(
@@ -1180,6 +1173,27 @@ def cancel_appointment(
         return {"status": "not_looked_up"}
 
     booking_id = resolved["booking_id"]
+
+    # EXPLICIT CONSENT, JUDGED BY THE LLM, ENFORCED IN CODE.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (Tanasuq, 2026-09-23): a patient
+    # booked, sent an ambiguous message, and the appointment was
+    # cancelled. The old gate was a regex over every patient message in
+    # the thread that matched plain booking requests ("اهلا ابي موعد",
+    # "ابي موعد الغد"), and the explicit-yes rule existed only in the
+    # prompt. Now: the patient's latest message must be a clear yes to an
+    # assistant question that asked to confirm cancelling. Decided by
+    # intent.patient_confirmed (structured LLM output); if the model is
+    # unavailable it fails CLOSED - we ask, we never guess.
+    booking_summary = _booking_summary_for_confirmation(state, booking_id)
+    if not intent.patient_confirmed("cancel", state, details=booking_summary.get("text", "")):
+        logger.warning(
+            "cancel_appointment: NOT cancelling booking_id=%s (session_id=%s) - the "
+            "patient's latest message is not a clear yes to a cancel-confirmation "
+            "question. Asking first.",
+            booking_id, state.get("session_id"),
+        )
+        return {"status": "needs_confirmation", "booking": booking_summary.get("fields", {})}
 
     base_url = _base_url(state)
     result = api.cancel_booking_by_guid(base_url, booking_id)
@@ -1274,7 +1288,15 @@ def send_otp(state: Annotated[AgentState, InjectedState], phone: str) -> dict:
         return {"status": "otp_not_needed_matches_channel"}
 
     if OTP_PROVIDER == "authentica":
-        api.authentica_send_otp(normalized)
+        # The result used to be ignored, so a failed send still reported
+        # "otp_sent" and the patient waited for a code that never came.
+        sent = api.authentica_send_otp(normalized)
+        if not sent.get("success"):
+            logger.error(
+                "send_otp: Authentica did not send the code to %s (status=%s error=%s)",
+                normalized, sent.get("status_code"), sent.get("error"),
+            )
+            return _api_error(sent)
         return {"status": "otp_sent"}
 
     _otp_storage[normalized] = {"otp": TEST_OTP, "created_at": time.time()}
@@ -1627,39 +1649,22 @@ def _booking_was_looked_up(state: AgentState, booking_id: Optional[str]) -> bool
 # sent in this conversation express wanting to cancel - and it says
 # nothing about which booking, or whether they confirmed. Those are
 # still `_resolve_booking_guid`'s and the flow's own business.
-_CANCEL_INTENT_RE = re.compile(
-    # الغاء / إلغاء / ألغي / ألغيه / الغاءه, and ابطال / ابطل / ابطلها.
-    # `\w*` because Arabic attaches the object pronoun to the verb.
-    r"(?:^|\s)(?:الغاء|الغي|الغ|ابطال|ابطل)\w*|"
-    # "مش عايز الحجز ده" / "ما ابغى الموعد" - refusing the appointment
-    # itself, which is a cancellation in every way but the word.
-    r"(?:مش|ما|لا)\s*(?:عايز|عاوز|عايزه|عاوزه|ابغى|ابغي|ابي|اريد|محتاج|محتاجه)"
-    r"[^.\n]{0,15}(?:ال)?(?:حجز|موعد|معاد|ميعاد)|"
-    # Not coming - the commonest way patients say it without the word.
-    r"(?:مش\s*(?:هقدر|حقدر|راح\s*اقدر)\s*(?:اجي|احضر)|ما\s*اقدر\s*اجي|لن\s*احضر|مش\s*جاي)|"
-    r"\bcancel\w*\b|\bcall\s*off\b|"
-    r"\b(?:delete|remove|drop)\b[^.\n]{0,20}\b(?:booking|appointment|reservation)\b|"
-    r"\b(?:can(?:\'|\u2019)?t|cannot|won(?:\'|\u2019)?t)\s+(?:make|come|attend)\b"
-)
+def _booking_summary_for_confirmation(state: AgentState, booking_id: str) -> dict:
+    """The looked-up record for `booking_id`, as display fields for the
+    confirmation question plus one line of text for the consent classifier
+    (so it can tell whether the question named THIS appointment)."""
 
-
-def _patient_asked_to_cancel(state: AgentState) -> bool:
-    """True when a message the PATIENT sent in this conversation asks to
-    cancel an appointment.
-
-    Reads only HumanMessages, on purpose: what the assistant asked
-    cannot establish this - see the incident note above, where the
-    assistant's own invented question was the whole problem."""
-
-    for msg in state.get("messages") or []:
-        if getattr(msg, "type", None) != "human":
-            continue
-        content = getattr(msg, "content", "")
-        text = content if isinstance(content, str) else str(content)
-        if _CANCEL_INTENT_RE.search(_normalize_arabic(text)):
-            return True
-
-    return False
+    for record in _looked_up_bookings(state):
+        if str(record.get("id") or "").strip() == str(booking_id).strip():
+            fields = {
+                key: record.get(key)
+                for key in ("ref", "doctorName", "branchName", "serviceName",
+                            "weekday_display", "date_display", "time_display")
+                if record.get(key)
+            }
+            text = ", ".join(f"{k}={v}" for k, v in fields.items())
+            return {"fields": fields, "text": text}
+    return {"fields": {}, "text": ""}
 
 
 def _resolve_booking_guid(state: AgentState, value: Optional[str]) -> dict:
@@ -9381,6 +9386,87 @@ def confirm_booking_review(
     return {"status": "confirmed"}
 
 
+# ----------------------------------------------------------------------
+# FAILED-SLOT MEMORY + "THE PATIENT ALREADY HOLDS IT" CHECK
+#
+# CONFIRMED REAL PRODUCTION FAILURE (Tanasuq, 30/09/2026 5:20 PM):
+# create_new_booking failed with "already booked", the patient asked for
+# the same day, get_available_slots_for_booking offered ONLY 5:20 again,
+# the patient picked it, and it failed again - an endless loop. Two holes:
+#   1. Nothing remembered that a slot had just failed, so it was offered
+#      again and again.
+#   2. Nothing checked whether the "already booked" slot was booked BY
+#      THIS PATIENT (e.g. an earlier attempt that did go through, whose
+#      reply was slow/lost). Telling them it is taken is then wrong.
+# ----------------------------------------------------------------------
+
+def _remember_failed_slot(session: dict, doctor_id, branch_id, slot_start: str) -> None:
+    failed = session.setdefault("failed_slots", [])
+    for entry in failed:
+        if (entry.get("doctor_id") == str(doctor_id) and entry.get("branch_id") == str(branch_id)
+                and _same_instant(entry.get("slotStart"), slot_start)):
+            entry["count"] = entry.get("count", 1) + 1
+            return
+    failed.append({"doctor_id": str(doctor_id), "branch_id": str(branch_id), "slotStart": slot_start, "count": 1})
+
+
+def _is_failed_slot(session: dict, doctor_id, branch_id, slot_start: str) -> bool:
+    return any(
+        entry.get("doctor_id") == str(doctor_id) and entry.get("branch_id") == str(branch_id)
+        and _same_instant(entry.get("slotStart"), slot_start)
+        for entry in (session.get("failed_slots") or [])
+    )
+
+
+def _patient_booking_at(state: AgentState, mobile_number: str, slot_start: str, doctor_id) -> Optional[dict]:
+    """The patient's own active booking with this doctor at exactly this
+    instant, or None. Best-effort: any lookup failure returns None so the
+    caller falls back to its normal failure reply."""
+
+    base_url = _base_url(state)
+    phone = normalize_phone_number(mobile_number, state) or mobile_number
+    if not base_url or not phone or not slot_start:
+        return None
+    try:
+        result = api.get_bookings_by_phone(
+            base_url, phone, language=conversation_language(state),
+            status_list=list(CANCELLABLE_STATUS_CODES),
+        )
+    except Exception:
+        logger.exception("_patient_booking_at: lookup raised for session_id=%s", state.get("session_id"))
+        return None
+    if not result.get("success"):
+        logger.warning(
+            "_patient_booking_at: lookup failed status_code=%s error=%s",
+            result.get("status_code"), result.get("error"),
+        )
+        return None
+    for item in (result.get("data") or {}).get("items", []) or []:
+        status_code = item.get("status")
+        if status_code is not None and status_code not in CANCELLABLE_STATUS_CODES:
+            continue
+        if doctor_id and item.get("doctorId") and str(item.get("doctorId")) != str(doctor_id):
+            continue
+        if _same_instant(item.get("bookingTimeFrom"), slot_start):
+            return item
+    return None
+
+
+def _success_if_patient_already_booked(state: AgentState, session_id, mobile_number: str, slot_start: str, doctor_id) -> Optional[dict]:
+    existing = _patient_booking_at(state, mobile_number, slot_start, doctor_id)
+    if not existing:
+        return None
+    logger.warning(
+        "create_new_booking: slot %s reported unavailable, but THIS patient already holds it "
+        "(booking id=%s ref=%s) - reporting success instead of 'already booked' (session_id=%s)",
+        slot_start, existing.get("id"), existing.get("bookingRefNum"), session_id,
+    )
+    _BOOKING_SESSIONS.pop(session_id, None)
+    if existing.get("bookingRefNum"):
+        return {"status": "success", "booking_ref": existing["bookingRefNum"]}
+    return {"status": "success_ref_pending", "booking_id": existing.get("id"), "booking_ref": None}
+
+
 @tool
 def create_new_booking(
     state: Annotated[AgentState, InjectedState],
@@ -9643,6 +9729,11 @@ def create_new_booking(
         doctor_id, branch_id, day_start, day_end, slot_start, len(raw_items),
     )
 
+    # Several items can share one start time (one per service/room). Book
+    # the one for the service the patient was shown / chose - taking just
+    # the first could book a different, longer service or a busy room,
+    # which the Reservation API then rejects as "already booked".
+    preferred_service_id = (locked_slot or {}).get("serviceId") or session.get("service_id")
     matched_slot = None
     for item in raw_items:
         if item.get("isBooked"):
@@ -9652,14 +9743,21 @@ def create_new_booking(
         except (ValueError, KeyError, AttributeError):
             continue
         if abs(item_ms - requested_ms) < 1:  # same instant
-            matched_slot = item
-            break
+            if matched_slot is None:
+                matched_slot = item
+            if preferred_service_id and str(item.get("serviceId")) == str(preferred_service_id):
+                matched_slot = item
+                break
 
     if not matched_slot:
         logger.warning(
             "create_new_booking: requested slot %s not found or already booked (doctor_id=%s branch_id=%s). Raw slotStarts returned: %s",
             slot_start, doctor_id, branch_id, [i.get("slotStart") for i in raw_items][:20],
         )
+        already = _success_if_patient_already_booked(state, session_id, mobile_number, slot_start, doctor_id)
+        if already:
+            return already
+        _remember_failed_slot(session, doctor_id, branch_id, slot_start)
         return {"status": "slot_unavailable"}
 
     # Normalize to E.164 at the API boundary. The channel identity
@@ -9702,6 +9800,27 @@ def create_new_booking(
             result.get("status_code"), result.get("error"),
             [d.get("field") for d in details] or "unknown",
         )
+        logger.error(
+            "create_new_booking: Reservation rejection detail: messages=%s body=%s",
+            [d.get("message") for d in details], result.get("data"),
+        )
+        # "Already booked" may be THIS patient's own booking (an earlier
+        # attempt that did go through). Check before telling them it's taken.
+        already = _success_if_patient_already_booked(state, session_id, normalized_mobile, slot_start, doctor_id)
+        if already:
+            return already
+        # Never offer this exact slot again in this booking - but only
+        # when the API actually REFUSED it (4xx, or 200 with isSuccess=false).
+        # A timeout/5xx says nothing about the slot, and a rejection of the
+        # patient's own details (phone/name/email) says nothing either.
+        status_code = result.get("status_code")
+        api_refused = status_code is not None and status_code < 500
+        patient_field_rejected = any(
+            any(k in str(d.get("field") or "").lower() for k in ("mobile", "phone", "name", "email"))
+            for d in details
+        )
+        if api_refused and not patient_field_rejected:
+            _remember_failed_slot(session, doctor_id, branch_id, slot_start)
         # A field-level rejection (bad phone format, missing email, ...)
         # is NOT a transient technical fault: retrying later changes
         # nothing, and telling the patient to try again wastes their
@@ -10087,7 +10206,25 @@ def get_available_slots_for_booking(
         logger.info("get_available_slots_for_booking: not_found - all slots were in the past relative to now")
         return {"status": "not_found"}
 
-    slots.sort(key=lambda s: s["slotStart"] or "")
+    # Never re-offer a slot that already failed to book in this booking -
+    # see _remember_failed_slot.
+    before_failed_filter = len(slots)
+    slots = [s for s in slots if not _is_failed_slot(session, doctor_id, branch_id, s["slotStart"])]
+    if len(slots) != before_failed_filter:
+        logger.info(
+            "get_available_slots_for_booking: excluded %d slot(s) that already failed to book (session_id=%s)",
+            before_failed_filter - len(slots), session_id,
+        )
+    if not slots:
+        logger.info("get_available_slots_for_booking: not_found - every open slot already failed to book")
+        return {"status": "not_found"}
+
+    # Within one start time, keep the item for the patient's chosen service.
+    preferred_service_id = session.get("service_id")
+    slots.sort(key=lambda s: (
+        s["slotStart"] or "",
+        0 if preferred_service_id and str(s.get("serviceId")) == str(preferred_service_id) else 1,
+    ))
 
     seen_starts = set()
     deduped = []
@@ -10501,53 +10638,13 @@ def find_best_doctor_in_specialty(
 # call to be recognizably STEP C6's confirmation question, and the
 # patient's own latest message to be a genuine affirmative answer to
 # it - not just any non-empty field values.
-_COMPLAINT_CONFIRMATION_QUESTION_RE = re.compile(
-    r"تأكيد\s*(?:ال)?إرسال|تأكيد\s*(?:ال)?ارسال|أأكد\s*(?:ال)?إرسال|"
-    r"موافق\s*ع(?:لى)?\s*(?:ال)?إرسال|هل\s*(?:ال)?بيانات\s*صحيح|"
-    r"confirm\s*(?:the\s*)?(?:sending\s*(?:the\s*)?)?complaint|"
-    r"shall\s*i\s*send\s*(?:this|the)\s*complaint"
-)
-
-_COMPLAINT_AFFIRMATIVE_RE = re.compile(
-    r"^\s*(?:نعم|ايوه|أيوه|ايوة|آيوه|اه|آه|ايه|تمام|أكيد|اكيد|ماشي|"
-    r"موافق|موافقه|موافقة|صح|تم|ok|okay|yes|sure|confirm(?:ed)?)\b",
-    re.IGNORECASE,
-)
-
-
+# This gate used to be two regexes: one for the confirmation question's
+# wording and one for a "yes" - and "تم" counted as yes. Now the LLM
+# judges it (intent.patient_confirmed): the patient wants to file a
+# complaint, the assistant's last message asked to confirm sending it,
+# and the patient's latest message clearly agrees. Fails closed.
 def _complaint_explicitly_confirmed(state: AgentState) -> bool:
-    """True only when the assistant's own immediately-preceding message
-    reads as STEP C6's confirmation question AND the patient's latest
-    message is a genuine affirmative reply to it."""
-
-    messages = list(state.get("messages") or [])
-
-    last_human_idx = None
-    for i in range(len(messages) - 1, -1, -1):
-        if getattr(messages[i], "type", None) == "human":
-            last_human_idx = i
-            break
-
-    if last_human_idx is None:
-        return False
-
-    last_human_text = str(getattr(messages[last_human_idx], "content", "") or "").strip()
-    if not _COMPLAINT_AFFIRMATIVE_RE.match(last_human_text):
-        return False
-
-    for i in range(last_human_idx - 1, -1, -1):
-        m = messages[i]
-        if getattr(m, "type", None) != "ai":
-            continue
-        content = str(getattr(m, "content", "") or "").strip()
-        if not content:
-            # An AI message with tool_calls but no text content - keep
-            # looking further back for the last one that actually said
-            # something to the patient.
-            continue
-        return bool(_COMPLAINT_CONFIRMATION_QUESTION_RE.search(content))
-
-    return False
+    return intent.patient_confirmed("complaint_send", state)
 
 
 @tool
@@ -10759,6 +10856,23 @@ def send_complaint_email(
     return {"status": "sent", "via": "smtp"}
 
 
+def _handoff_recently_raised(state: AgentState, within_patient_messages: int = 3) -> bool:
+    """True when request_human_handoff returned handoff_requested and the
+    patient has sent at most `within_patient_messages` messages since."""
+
+    humans_since = 0
+    for msg in reversed(state.get("messages") or []):
+        kind = getattr(msg, "type", None)
+        if kind == "human":
+            humans_since += 1
+            if humans_since > within_patient_messages:
+                return False
+        elif kind == "tool" and getattr(msg, "name", None) == "request_human_handoff":
+            if (_parse_tool_payload(msg) or {}).get("status") == "handoff_requested":
+                return True
+    return False
+
+
 @tool
 def request_human_handoff(
     state: Annotated[AgentState, InjectedState],
@@ -10834,57 +10948,42 @@ def request_human_handoff(
     # ------------------------------------------------------------------
 
 
-    latest_text = _latest_human_text_for_handoff_guard(state)
-    has_complaint_word = any(root in latest_text for root in _COMPLAINT_ROOTS_FOR_HANDOFF_GUARD)
-    has_explicit_human_request = any(root in latest_text for root in _EXPLICIT_HUMAN_REQUEST_ROOTS)
+    # ONE HANDOFF AT A TIME. The Tanasuq QA report (2026-09-24) found the
+    # handoff confirmation "سيتم الرد عليك هنا في أقرب وقت" sent twice in
+    # one conversation: nothing recorded that a handoff had already been
+    # raised. Read from the ToolMessages, so it survives a resumed thread.
+    if patient_agreed and _handoff_recently_raised(state):
+        logger.info(
+            "request_human_handoff: already raised recently in session_id=%s - not raising again",
+            state.get("session_id"),
+        )
+        return {"status": "already_requested"}
 
-    if patient_agreed and has_complaint_word and not has_explicit_human_request:
+    # CONSENT JUDGED BY THE LLM, NOT BY KEYWORD LISTS.
+    #
+    # This used to be two substring checks over the patient's text and the
+    # assistant's last message (complaint roots, "staff" roots). CONFIRMED
+    # REAL PRODUCTION FAILURE (Tanasuq, 2026-09-24): the assistant offered
+    # "هل تود أن أتواصل مع أحد ممثلي خدمة العملاء؟", the patient said "نعم"
+    # four times, and every call was blocked - the check read the wrong
+    # message and the offer's wording was not in the list. A keyword list
+    # can never cover every dialect's way of offering or asking for a person.
+    #
+    # intent.patient_wants_handoff: the patient asked for a person
+    # themselves, OR the assistant offered one and the patient said yes. A
+    # complaint topic or frustration alone is not a request (the two
+    # earlier production failures this code was written for). Fails closed.
+    if patient_agreed and not intent.patient_wants_handoff(state):
         logger.warning(
-            "request_human_handoff: BLOCKED BY HARD GUARD - patient's latest message %r "
-            "names a complaint with no separate, explicit request for a person. Overriding "
-            "patient_agreed=True -> not_requested instead of raising a handoff, to stop this "
-            "from repeating the confirmed production failure (a bare 'شكوي' was previously "
-            "transferred with reason='patient asked for staff'). session_id=%s client_id=%s "
-            "original_reason=%r",
-            latest_text, state.get("session_id"), state.get("client_id"), reason,
+            "request_human_handoff: NOT raised - the LLM reads no request for a person "
+            "and no yes to a handoff offer in the latest exchange. session_id=%s "
+            "client_id=%s original_reason=%r",
+            state.get("session_id"), state.get("client_id"), reason,
         )
         return {
             "status": "not_requested",
-            "reason": "complaint_word_without_explicit_human_request",
+            "reason": "consent_not_grounded_in_conversation",
         }
-
-    # GENERAL CONSENT GATE (not tied to any one specific wording): the
-    # complaint-word guard above exists because a documented prose rule
-    # ("frustration is not agreement") was still not enough on its own
-    # once - the same reasoning applies to every OTHER way this tool
-    # could be called with patient_agreed=True on an inference rather
-    # than a real yes. Require the agreement to be grounded in
-    # something the code can actually see:
-    #   - the patient's own latest message explicitly names a person
-    #     ("موظف", "خدمة العملاء", "human agent"...), OR
-    #   - the assistant's OWN previous turn actually said one of those
-    #     same words - i.e. a handoff was genuinely offered, and this
-    #     turn's short "yes" is answering THAT offer.
-    # This is a heuristic, not a perfect parse of intent - it can still
-    # ask an extra confirming question in a genuinely-agreed edge case
-    # phrased outside these words, which is the safe direction to be
-    # wrong in for something that ends a patient's conversation.
-    if patient_agreed and not has_explicit_human_request:
-        latest_ai_text = _latest_ai_text_before_handoff_guard(state)
-        had_prior_offer = any(root in latest_ai_text for root in _EXPLICIT_HUMAN_REQUEST_ROOTS)
-        if not had_prior_offer:
-            logger.warning(
-                "request_human_handoff: BLOCKED BY GENERAL CONSENT GATE - patient_agreed=True "
-                "but the patient's latest message %r names no person explicitly, and the "
-                "assistant's own last turn %r did not offer a staff handoff either. Overriding "
-                "to not_requested rather than trusting an inferred consent. session_id=%s "
-                "client_id=%s original_reason=%r",
-                latest_text, latest_ai_text, state.get("session_id"), state.get("client_id"), reason,
-            )
-            return {
-                "status": "not_requested",
-                "reason": "consent_not_grounded_in_conversation",
-            }
 
     if not patient_agreed:
         # Fail closed: an unconfirmed handoff silently drops rather than
