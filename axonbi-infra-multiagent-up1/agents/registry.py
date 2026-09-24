@@ -146,6 +146,13 @@ class AgentSpec:
     # need cannot recover, it simply stalls.
     full_tools: bool = False
 
+    # Tools this specialist must NEVER hold, even when `full_tools` /
+    # `full_access` bind everything else. CONFIRMED REAL PRODUCTION
+    # FAILURES (2026-09-08 and 2026-09-23): the fallback agent, which has
+    # none of the cancel flow's text, improvised cancellations. Cancelling
+    # belongs to the `cancel` specialist only.
+    excluded_tools: tuple = ()
+
     def tools(self) -> List:
         """Resolves this specialist's tools out of tools.ALL_TOOLS.
 
@@ -156,7 +163,10 @@ class AgentSpec:
         """
 
         if self.full_access or self.full_tools or not config.AGENT_TOOL_SCOPING:
-            return list(tools_module.ALL_TOOLS)
+            return [
+                tool for tool in tools_module.ALL_TOOLS
+                if getattr(tool, "name", None) not in self.excluded_tools
+            ]
 
         resolved = []
         for name in self.tool_names:
@@ -200,6 +210,7 @@ _SPECS: Tuple[AgentSpec, ...] = (
         # `full_access=True` is what CONCIERGE_FULL_PROMPT restores.
         full_access=config.CONCIERGE_FULL_PROMPT,
         full_tools=True,
+        excluded_tools=("cancel_appointment",),
         section_keys=("medical", "faq", "entity_info"),
         job="""\
 ============================================================
