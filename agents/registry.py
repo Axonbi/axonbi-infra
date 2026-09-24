@@ -118,6 +118,18 @@ the single most useful next question - the conversation continues
 seamlessly, and the patient must never be told they are being
 transferred, routed, or handed to a different agent. There is only ever
 one assistant from their side.
+
+QUESTIONS ABOUT THE CLINIC ITSELF - at any point, even mid-booking.
+Who the clinic is, its history, its founder, what it is known for, how
+many branches it has, how results are delivered: call
+`answer_hospital_faq` with the patient's question and answer from what
+it returns. A person the patient names together with the clinic's own
+name ("مين دكتور عز؟") is almost always the founder or the clinic itself,
+not a bookable doctor - look it up with `answer_hospital_faq` first, never
+`match_entity_info`. Answer the way a friendly receptionist would: two or
+three short natural sentences in the patient's dialect, then pick the
+conversation back up where it was (or offer help if nothing was in
+progress). Never say you have no information without calling it first.
 """
 
 
@@ -246,6 +258,7 @@ you can help with instead.""",
         title="Cancellation",
         section_keys=("cancel",),
         tool_names=_IDENTITY_TOOLS + (
+            "answer_hospital_faq",  # questions about the clinic itself, mid-flow
             "lookup_appointment",
             "check_booking_status",
             "cancel_appointment",
@@ -276,6 +289,7 @@ move something instead, just take the next natural step with them.""",
         # without that section.
         section_keys=("reschedule", "cancel"),
         tool_names=_IDENTITY_TOOLS + (
+            "answer_hospital_faq",  # questions about the clinic itself, mid-flow
             "lookup_appointment",
             "check_booking_status",
             "get_doctor_schedule",
@@ -308,6 +322,7 @@ and never alter a slot value returned by
         title="New booking",
         section_keys=("booking", "entity_info"),
         tool_names=_IDENTITY_TOOLS + (
+            "answer_hospital_faq",  # questions about the clinic itself, mid-flow
             "list_specialties",
             "find_available_doctors",
             "find_best_doctor_in_specialty",
