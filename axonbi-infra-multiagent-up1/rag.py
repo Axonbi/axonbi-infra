@@ -51,8 +51,39 @@ def _get_embeddings_model() -> OpenAIEmbeddings:
 
     global _embeddings_model
     if _embeddings_model is None:
-        _embeddings_model = OpenAIEmbeddings(model=_EMBEDDING_MODEL_NAME)
+        import config
+        # AZURE WHEN THE LLM IS AZURE. CONFIRMED REAL PRODUCTION FAILURE
+        # (Tanasuq, 2026-09-24): chat ran on Azure but embeddings went to
+        # api.openai.com with the Azure key -> 401 on every FAQ question,
+        # and the bot told patients it had no information about the
+        # hospital. Deployment name from AZURE_EMBEDDINGS_DEPLOYMENT.
+        if getattr(config, "LLM_PROVIDER", "") == "azure":
+            from langchain_openai import AzureOpenAIEmbeddings
+
+            _embeddings_model = AzureOpenAIEmbeddings(
+                azure_deployment=os.getenv("AZURE_EMBEDDINGS_DEPLOYMENT", _EMBEDDING_MODEL_NAME),
+                azure_endpoint=config.AZURE_OPENAI_ENDPOINT,
+                api_version=config.AZURE_OPENAI_API_VERSION,
+                api_key=config.OPENAI_API_KEY,
+            )
+        else:
+            _embeddings_model = OpenAIEmbeddings(model=_EMBEDDING_MODEL_NAME)
     return _embeddings_model
+
+
+def _all_chunks_fallback(file_path: str) -> list:
+    """Every chunk of the file, unranked - used only when embeddings are
+    unavailable. The knowledge base is small (a couple of dozen chunks),
+    so handing the model the whole text is far better than telling the
+    patient the hospital has no information."""
+
+    try:
+        with open(file_path, encoding="utf-8") as f:
+            chunks = _chunk_text(f.read())
+    except OSError:
+        return []
+    logger.warning("rag: embeddings unavailable - returning all %d chunk(s) of %s unranked", len(chunks), file_path)
+    return [(chunk, RELEVANCE_FLOOR) for chunk in chunks]
 
 
 def _chunk_text(text: str) -> list:
@@ -270,13 +301,13 @@ def search_with_scores(file_path: str, query: str, top_k: int = DEFAULT_TOP_K) -
 
     chunks_with_vectors = _get_cached_chunks(file_path)
     if not chunks_with_vectors:
-        return []
+        return _all_chunks_fallback(file_path) if os.path.exists(file_path) else []
 
     try:
         query_vector = _get_embeddings_model().embed_query(query)
     except Exception:
         logger.exception("rag: failed to embed query %r", query)
-        return []
+        return _all_chunks_fallback(file_path)
 
     scored = [
         (chunk, _cosine_similarity(query_vector, vector))
