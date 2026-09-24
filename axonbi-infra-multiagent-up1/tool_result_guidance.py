@@ -469,14 +469,17 @@ RESULT_GUIDANCE: dict = {
         "not_looked_up":
             "This booking was never found by a lookup in this "
             "conversation - go and find it first.",
-        "not_requested":
-            "NOTHING THE PATIENT SAID ASKS TO CANCEL. Nothing has been "
-            "cancelled and nothing is broken. Do NOT tell them an "
-            "appointment was cancelled, do not retry, and do not "
-            "describe it as a technical problem. Almost always they "
-            "asked to RESCHEDULE (\"تعديل\"/\"تأجيل\") and the flow "
-            "drifted into cancelling: go back and ask which of the two "
-            "they want, or carry on with the reschedule.",
+        "needs_confirmation":
+            "NOTHING HAS BEEN CANCELLED. The patient has not yet clearly "
+            "asked to cancel AND said yes to a question confirming it. Do "
+            "NOT tell them anything was cancelled and do not describe it "
+            "as a technical problem. If they asked to cancel: show this "
+            "appointment (doctor, day, date, time from `booking`) and ask "
+            "ONE direct question - do they want to cancel it? - then call "
+            "this tool again only after their reply. If they did not ask "
+            "to cancel (e.g. they asked to reschedule, or their message "
+            "was unclear), do not bring up cancelling: ask what they "
+            "would like to do.",
     },
 
     # ------------------------------------------------------------------
@@ -489,10 +492,18 @@ RESULT_GUIDANCE: dict = {
     # ------------------------------------------------------------------
     "request_human_handoff": {
         "not_requested":
-            "`patient_agreed` was False, or the patient's own message "
-            "named a complaint without separately naming a person - no "
-            "handoff was raised. Ask them whether they want a staff "
-            "member first.",
+            "No handoff was raised: the patient has not asked for a "
+            "person, and has not said yes to an offer of one. Do not tell "
+            "them they are being transferred. Keep helping with what they "
+            "actually asked (a complaint topic means: continue the "
+            "complaint flow). Only if they seem to want a person, ask ONCE "
+            "whether they would like to be connected.",
+        "already_requested":
+            "A handoff was ALREADY raised a moment ago in this "
+            "conversation - do not raise another and do not repeat the "
+            "handoff confirmation. Tell them briefly that the team has "
+            "their request and will reply here, and help meanwhile with "
+            "anything you can.",
     },
 }
 
