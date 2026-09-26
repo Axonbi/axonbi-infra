@@ -99,7 +99,7 @@ def _headers(client_id: Optional[str] = None, language: Optional[str] = None) ->
 # Guest Bookings API
 # ==========================================================
 
-def _request_with_retry(method: str, url: str, **kwargs):
+def _request_with_retry(method: str, url: str, *, idempotent: bool = True, **kwargs):
     """Shared retry loop for every outbound call in this module (POST/PUT
     alike), so a slow-but-eventually-alive upstream gets the same patience
     everywhere - not just on the Doctors/Specialties endpoint that
@@ -110,6 +110,14 @@ def _request_with_retry(method: str, url: str, **kwargs):
     comment in config.py. A 4xx is a real, reproducible problem with THIS
     request and retrying it would just get the same 4xx back slower, so
     those are returned immediately with no retry loop involved.
+
+    `idempotent=False` IS FOR REQUESTS THAT CHANGE SOMETHING UPSTREAM
+    (create/cancel/update a booking, send or consume an OTP). A read
+    timeout or a 5xx does not mean the server did nothing - it may have
+    created the booking and then failed to answer - so repeating the
+    request can apply it twice. Those are retried ONLY when the
+    connection itself never opened (`requests.ConnectTimeout`), which is
+    the one failure where the request provably never reached the server.
 
     Returns (response_or_None, last_was_timeout, last_exception).
     Callers treat `response is None` as "never got a response at all"
@@ -126,8 +134,14 @@ def _request_with_retry(method: str, url: str, **kwargs):
     for attempt in range(1, max_attempts + 1):
         last_timeout = False
         last_exc = None
+        never_sent = False
         try:
             response = requests.request(method, url, timeout=REQUEST_TIMEOUT_SECONDS, **kwargs)
+        except requests.ConnectTimeout:
+            # Must precede `requests.Timeout`: ConnectTimeout subclasses it.
+            last_timeout = True
+            never_sent = True
+            response = None
         except requests.Timeout:
             last_timeout = True
             response = None
@@ -139,26 +153,33 @@ def _request_with_retry(method: str, url: str, **kwargs):
             break
 
         is_last_attempt = attempt == max_attempts
+        will_retry = not is_last_attempt and (idempotent or never_sent)
         if response is not None:
             logger.error(
                 "%s %s server error status=%s (attempt %d/%d%s)",
                 method.upper(), url, response.status_code, attempt, max_attempts,
-                "" if is_last_attempt else ", retrying",
+                ", retrying" if will_retry else "",
             )
         elif last_timeout:
             logger.warning(
                 "Request timed out: %s %s (attempt %d/%d%s)",
                 method.upper(), url, attempt, max_attempts,
-                "" if is_last_attempt else ", retrying",
+                ", retrying" if will_retry else "",
             )
         else:
             logger.warning(
                 "Request failed: %s %s error=%s (attempt %d/%d%s)",
                 method.upper(), url, last_exc, attempt, max_attempts,
-                "" if is_last_attempt else ", retrying",
+                ", retrying" if will_retry else "",
             )
 
-        if is_last_attempt:
+        if not will_retry:
+            if not is_last_attempt:
+                logger.warning(
+                    "%s %s NOT retried: it changes state upstream and may already "
+                    "have been applied - a second attempt could duplicate it",
+                    method.upper(), url,
+                )
             break
 
         time.sleep(DOCTORS_API_RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1)))
@@ -269,7 +290,7 @@ def cancel_booking_by_guid(base_url: str, booking_guid: str, client_id: Optional
     logger.debug("PUT %s", url)
 
     response, last_timeout, last_exc = _request_with_retry(
-        "put", url, headers=_headers(client_id=client_id),
+        "put", url, idempotent=False, headers=_headers(client_id=client_id),
     )
 
     if response is None:
@@ -320,7 +341,7 @@ def authentica_send_otp(phone: str) -> dict:
         "X-Authorization": AUTHENTICA_API_KEY,
     }
 
-    response, last_timeout, last_exc = _request_with_retry("post", url, headers=headers, json=payload)
+    response, last_timeout, last_exc = _request_with_retry("post", url, idempotent=False, headers=headers, json=payload)
 
     if response is None:
         if last_timeout:
@@ -357,7 +378,7 @@ def authentica_verify_otp(phone: str, otp: str, email: str = "") -> dict:
         "X-Authorization": AUTHENTICA_API_KEY,
     }
 
-    response, last_timeout, last_exc = _request_with_retry("post", url, headers=headers, json=payload)
+    response, last_timeout, last_exc = _request_with_retry("post", url, idempotent=False, headers=headers, json=payload)
 
     if response is None:
         if last_timeout:
@@ -393,7 +414,8 @@ def authentica_verify_otp(phone: str, otp: str, email: str = "") -> dict:
 # same way _post_bookings already handles GuestBookings' identical
 # response envelope.
 
-def _post_json(url: str, payload: dict, client_id: Optional[str] = None, language: Optional[str] = None) -> dict:
+def _post_json(url: str, payload: dict, client_id: Optional[str] = None, language: Optional[str] = None,
+               idempotent: bool = True) -> dict:
     """Generic POST + envelope handling, shared by get_specialties/
     get_doctors. Mirrors _post_bookings' error handling exactly
     (timeout/5xx/4xx/empty/invalid JSON/isSuccess check), kept as a
@@ -416,6 +438,11 @@ def _post_json(url: str, payload: dict, client_id: Optional[str] = None, languag
     # wrong path) and retrying it would just get the same 4xx back
     # slower, so those still fall straight through to the existing
     # handling below with no retry loop involved.
+    #
+    # `idempotent=False` (the Reservation POST): same rule as
+    # `_request_with_retry` - only a connection that never opened is
+    # retried, because a read timeout or 5xx may mean the booking WAS
+    # created and a second POST would create it again.
     max_attempts = max(1, DOCTORS_API_MAX_RETRIES + 1)
     response = None
     last_timeout = False
@@ -424,6 +451,7 @@ def _post_json(url: str, payload: dict, client_id: Optional[str] = None, languag
     for attempt in range(1, max_attempts + 1):
         last_timeout = False
         last_exc = None
+        never_sent = False
         try:
             response = requests.post(
                 url,
@@ -431,6 +459,11 @@ def _post_json(url: str, payload: dict, client_id: Optional[str] = None, languag
                 headers=_headers(client_id=client_id, language=language),
                 timeout=REQUEST_TIMEOUT_SECONDS,
             )
+        except requests.ConnectTimeout:
+            # Must precede `requests.Timeout`: ConnectTimeout subclasses it.
+            last_timeout = True
+            never_sent = True
+            response = None
         except requests.Timeout:
             last_timeout = True
             response = None
@@ -443,24 +476,30 @@ def _post_json(url: str, payload: dict, client_id: Optional[str] = None, languag
             break
 
         is_last_attempt = attempt == max_attempts
+        will_retry = not is_last_attempt and (idempotent or never_sent)
         if response is not None:
             logger.error(
                 "Doctors/Specialties API server error: %s status=%s body=%s (attempt %d/%d%s)",
                 url, response.status_code, response.text[:1000], attempt, max_attempts,
-                "" if is_last_attempt else ", retrying",
+                ", retrying" if will_retry else "",
             )
         elif last_timeout:
             logger.warning(
                 "Request timed out: %s (attempt %d/%d%s)",
-                url, attempt, max_attempts, "" if is_last_attempt else ", retrying",
+                url, attempt, max_attempts, ", retrying" if will_retry else "",
             )
         else:
             logger.warning(
                 "Request failed: %s error=%s (attempt %d/%d%s)",
-                url, last_exc, attempt, max_attempts, "" if is_last_attempt else ", retrying",
+                url, last_exc, attempt, max_attempts, ", retrying" if will_retry else "",
             )
 
-        if is_last_attempt:
+        if not will_retry:
+            if not is_last_attempt:
+                logger.warning(
+                    "POST %s NOT retried: it changes state upstream and may already "
+                    "have been applied - a second attempt could duplicate it", url,
+                )
             break
 
         # Exponential backoff (0.5s, 1s, 2s, ...) - a short pause is
@@ -831,7 +870,7 @@ def _put_json(url: str, payload: dict, client_id: Optional[str] = None) -> dict:
     logger.info("PUT %s payload=%s", url, payload)
 
     response, last_timeout, last_exc = _request_with_retry(
-        "put", url, json=payload, headers=_headers(client_id=client_id),
+        "put", url, idempotent=False, json=payload, headers=_headers(client_id=client_id),
     )
 
     if response is None:
@@ -939,7 +978,7 @@ def create_booking(
         "spaceId": space_id,
     }
 
-    return _post_json(url, payload, client_id=client_id)
+    return _post_json(url, payload, client_id=client_id, idempotent=False)
 
 
 def get_booking_by_id(base_url: str, booking_id: str, client_id: Optional[str] = None) -> dict:
