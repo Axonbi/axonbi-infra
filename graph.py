@@ -16800,12 +16800,20 @@ def _faq_came_back_empty_this_turn(messages: list) -> bool:
 
 
 def _reply_turns_away_a_clinic_question(reply_text: str, state: AgentState) -> bool:
-    """The draft answers a clinic question the knowledge base could not
-    answer with the scope refusal or with "I didn't understand" - both
-    wrong for a question that was understood and IS about the clinic.
-    Decided from the tool result, not from guessing the topic."""
+    """The draft answers a question ABOUT THE CLINIC with the scope
+    refusal or with "I didn't understand" - both wrong for a question
+    that was understood and is about the clinic (jobs, training, "what
+    is this lab?"). About the clinic = the knowledge base was consulted
+    for it this turn, or the router classifier read it as
+    `about_the_clinic`; an unrelated topic still gets the refusal."""
 
-    if not reply_text or not _faq_came_back_empty_this_turn(state.get("messages") or []):
+    if not reply_text:
+        return False
+
+    messages = state.get("messages") or []
+    about_the_clinic = (_faq_came_back_empty_this_turn(messages)
+                        or _latest_intent(messages).get("about_the_clinic"))
+    if not about_the_clinic:
         return False
 
     if _is_scope_refusal(reply_text, state.get("templates") or {}):
@@ -16884,8 +16892,11 @@ def _build_scope_directive(templates: dict, language: str = "ar") -> str:
         "  1. If one of your tools can answer it, call it - "
         "`answer_hospital_faq` for anything about the clinic.\n"
         "  2. If the tool returns the answer, answer from it.\n"
-        "  3. If it returns \"not_found\" / \"not_configured\", or no tool "
-        "you have fits, reply with THIS EXACT text as your entire reply:\n\n"
+        "  3. Only when EVERY tool that could answer it has come back "
+        "empty - for a question about services or tests that means "
+        "`search_lab_services` as well, not just `list_hospital_services` "
+        "- or no tool you have fits, reply with THIS EXACT text as your "
+        "entire reply:\n\n"
         "[BEGIN-EXACT-TEXT]\n"
         f"{_build_no_info_handoff_block(templates, language)}\n"
         "[END-EXACT-TEXT]\n\n"
@@ -20220,6 +20231,21 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         _MAX_VERIFIER_CORRECTIONS = 4
         attempted_checks: set = set()
         corrections_used = 0
+
+        # A CLINIC QUESTION ANSWERED WITH THE SCOPE REFUSAL GETS THE
+        # "I don't have that - shall I connect you?" reply, swapped in code
+        # BEFORE the verifiers run: the right text is fixed and known, and
+        # otherwise a verifier spends a full correction call on a draft
+        # that ends in the generic fallback anyway (seen in production:
+        # three model calls per such message, on the most expensive agent).
+        if _reply_turns_away_a_clinic_question(normalized, state):
+            logger.warning(
+                "agent[%s]: a question about the clinic was answered with the scope "
+                "refusal - sending the no-information handoff offer instead", agent_name,
+            )
+            normalized = _build_no_info_handoff_block(
+                state.get("templates") or {}, target_language or "ar",
+            )
 
         for _verifier_pass in range(_MAX_VERIFIER_PASSES):
             rewritten_this_pass = False
