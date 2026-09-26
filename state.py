@@ -126,6 +126,13 @@ class AgentState(TypedDict):
     # to the patient, who must never learn there is more than one agent.
     routing_reason: NotRequired[Optional[str]]
 
+    # The router classifier's structured reading of the CURRENT message:
+    # {"agent", "about_own_health", "crisis"}. Written by graph.router on
+    # every turn (None when no call was made - a wordless answer, or
+    # ROUTER_MODE=deterministic) and read by guards that used to keep
+    # their own keyword lists. Never carried from one turn to the next.
+    turn_intent: NotRequired[Optional[dict]]
+
     # ==========================================================
     # The evidence ledger
     # ==========================================================
