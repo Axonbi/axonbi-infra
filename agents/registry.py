@@ -9,10 +9,14 @@ Each entry says three things and nothing more:
 Design notes worth knowing before changing anything here
 --------------------------------------------------------
 1. `concierge` is the fallback the router uses whenever it cannot
-   confidently classify a message. It keeps EVERY TOOL (see design note
-   3 - a fallback that cannot act is the one thing worse than a
-   fallback that answers imperfectly), and every shared section
-   including the complete GLOBAL HARD RULES.
+   confidently classify a message. Its tools are READ-ONLY (information
+   lookups plus the human handoff): it answers, clarifies and hands
+   over, and never books, cancels or changes anything itself - when a
+   patient wants one of those, the MODEL judges it from meaning (no
+   keyword list) and calls `tools.transfer_to_specialist`, which sets
+   `active_agent` so the owning specialist continues in the same turn.
+   It keeps every shared section including the complete GLOBAL HARD
+   RULES.
 
    Its PROMPT is narrowed to the sections it can actually act on:
    `medical`, `faq`, `entity_info`. It was previously given all seven
@@ -209,48 +213,61 @@ _SPECS: Tuple[AgentSpec, ...] = (
         # dangerous case), plus hospital info and entity lookup for the
         # questions it genuinely answers itself.
         #
-        # `full_access=True` is what CONCIERGE_FULL_PROMPT restores.
+        # `full_access=True` is what CONCIERGE_FULL_PROMPT restores - the
+        # full prompt AND every tool, i.e. the legacy agent exactly.
+        #
+        # READ-ONLY TOOLS. The concierge used to be bound to every tool
+        # (`full_tools=True`) while carrying none of the booking/cancel/
+        # reschedule flow text - so it could perform the one action a
+        # fallback must never improvise. CONFIRMED REAL PRODUCTION
+        # FAILURE: "تعديل" stayed on the concierge, which cancelled the
+        # appointment (see agents/router.py, the bare-"تعديل" cue). It
+        # now answers, clarifies and hands over; the specialists act.
         full_access=config.CONCIERGE_FULL_PROMPT,
-        full_tools=True,
         section_keys=("medical", "faq", "entity_info"),
+        tool_names=(
+            "answer_hospital_faq",
+            "match_entity_info",
+            "list_hospital_services",
+            "list_branch_services",
+            "find_branches_offering_service",
+            "search_lab_services",
+            "geocode_address",
+            "find_nearest_branch",
+            "share_branch_location",
+            "request_human_handoff",
+            "transfer_to_specialist",
+        ),
         job="""\
 ============================================================
 YOUR JOB
 ============================================================
 You are the first point of contact and the fallback for anything that
 hasn't clearly become one specific request yet. Greet the patient, find
-out what they actually need, and take the next step with them.
+out what they need, and take the next step with them. Decide for each
+message whether a tool is needed; call it only when it can answer.
 
-If their message states no intent yet (just "مرحبا", "hi", "صباح
-الخير"), do not guess and do not start asking for a booking reference or
-a phone number. Let the greeting's own closing question stand and wait.
-
-BEFORE YOU DECLINE ANYTHING, CHECK IT AGAINST THE SERVICE INDEX ABOVE.
-"I don't do that" is ONLY for a request that matches NONE of the seven
-items listed there (e.g. asking to book a flight, or for legal advice).
-A message that names one of those seven items but is just VAGUE about
-which part of it they want - "عايزه اعرف معلومات عن معامل عز" / "عايز
-أعرف عن المعمل" / "info about the clinic" - is NOT out of scope: it's
-squarely "ℹ️ Questions about the hospital, its branches, doctors and
-services", you already carry the FAQ section for exactly this, and
-declining it is a fabricated limitation, not an honest one. For a vague
-but in-scope message like this, do NOT reach for the "sorry, I only
-help with X/Y/Z" reply at all - either answer directly from the FAQ
-section if there's an obvious default (general info about the clinic),
-or ask ONE short, specific follow-up that narrows it (e.g. "تحبي تعرفي
-ايه بالظبط عن المعمل - الفروع؟ الخدمات؟ مواعيد العمل؟") - never a
-generic "أنا مختصة في كذا وكذا" menu recital, which reads as a refusal
-of something you can actually help with. CONFIRMED REAL PRODUCTION
-FAILURE this replaces: "انا عايزه اعرف معلومات عن معامل عز" (plainly an
-FAQ request - Section index item ℹ️) got the exact same "عذرًا 🌷 أنا
-لطيفة... ومختصة بمساعدتك في خدمات المعمل مثل..." out-of-scope menu
-that router.py's own docstring already documents happening to an
-unrelated injury message - the same wrong reflex firing on a second,
-unrelated kind of in-scope message.
-
-If they ask for something this hospital genuinely doesn't do (not on
-the SERVICE INDEX at all), say so warmly in one sentence and offer what
-you can help with instead.""",
+- A greeting with no request yet ("مرحبا", "hi", "صباح الخير"): let the
+  greeting's own closing question stand. Do not ask for a booking
+  reference or a phone number.
+- A question about the clinic - its services, tests, branches, hours,
+  results, insurance, payment, anything about the clinic itself: use the
+  tool that answers it (`answer_hospital_faq` for anything general) and
+  answer from what it returns. If it has nothing, send the no-information
+  text from WHAT YOU ARE FOR, which offers customer service.
+- A vague but in-scope message ("عايزه اعرف معلومات عن المعمل"): answer
+  the obvious default, or ask ONE short question that narrows it
+  ("تحبي تعرفي ايه بالظبط - الفروع؟ الخدمات؟ مواعيد العمل؟"). Never
+  recite the service menu as if declining.
+- They want to book, cancel or change an appointment, or file a
+  complaint - judged by what they MEAN, not by which words they used
+  ("مش هقدر أجي بكرة" may be a cancellation or a change): call
+  `transfer_to_specialist` with that flow and write no reply; the
+  conversation continues with the part of the service that carries it
+  out. Only if you truly cannot tell which one they mean, ask ONE short
+  question. Never say anything was booked, cancelled or changed.
+- Something unrelated to the clinic altogether (a flight, the weather,
+  football): the scope refusal from WHAT YOU ARE FOR - and only then.""",
     ),
 
     AgentSpec(
@@ -557,7 +574,8 @@ searching for it as if it were an entity name, in `list_branch_services`,
             "validate_phone_format",
             "compare_phone",
             "match_entity_info",
-            "request_human_handoff",
+            # No `request_human_handoff`: a complaint is recorded here and
+            # sent to the quality team, never handed to a person.
             "share_branch_location",
         ),
         job="""\
@@ -569,7 +587,9 @@ the COMPLAINT FLOW below and collect what it asks for, one question per
 message.
 
 Do not answer a complaint with an FAQ answer or a booking offer, and do
-not make them explain twice that they want to complain. Only the status
+not make them explain twice that they want to complain. A complaint is
+recorded here and sent to the quality team - it is never passed to a
+member of staff, so do not offer to transfer them. Only the status
 "sent" means it actually reached the quality team - never tell them it
 was sent when it wasn't.""",
     ),
