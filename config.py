@@ -712,13 +712,13 @@ BRANCH_NAME_ADJUDICATOR: bool = _flag("BRANCH_NAME_ADJUDICATOR", False)
 # is the first thing to flip.
 CONCIERGE_FULL_PROMPT: bool = _flag("CONCIERGE_FULL_PROMPT", False)
 
-# "deterministic" (default) -> routing is pure code: weighted intent
-#     cues + stickiness. Costs zero extra LLM calls and zero extra
-#     latency, and is 100% reproducible - the same message always routes
-#     to the same agent.
-# "llm" -> ambiguous messages (and only those) additionally get a small
-#     classification call. More flexible, but adds a call per ambiguous
-#     turn and makes routing non-deterministic.
+# "llm" (DEFAULT) -> one small classification call (OPENAI_MODEL_ROUTER)
+#     decides what each worded message means - no keyword lists. A
+#     wordless answer (list number, OTP, phone) to an active flow needs
+#     no call. See agents/router.py.
+# "deterministic" -> no call at all: the current owner keeps the turn and
+#     a new conversation opens on the concierge, whose own model decides
+#     the intent and calls `transfer_to_specialist`.
 ROUTER_MODE: str = os.getenv("ROUTER_MODE", "llm").strip().lower()
 
 # How long the LLM router (ROUTER_MODE=llm) may take to classify one
