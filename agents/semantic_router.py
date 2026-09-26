@@ -92,6 +92,7 @@ class Decision:
     mode: str
     handoff: bool = False
     clarify: bool = False
+    out_of_scope: bool = False
     override_reason: Optional[str] = None
     reading: Optional[dict] = field(default=None, repr=False)
 
@@ -215,6 +216,25 @@ def decide(reading: Optional[dict], facts: TurnFacts,
             facts.previous if facts.previous in SPECIALISTS + (CONCIERGE,) else CONCIERGE,
             "semantic: ambiguous with no flow to resolve it - clarify", ROUTING_SEMANTIC,
             clarify=True, override_reason=consent_problem and f"handoff not carried out: {consent_problem}",
+            reading=reading,
+        )
+
+    # Outside patient care, and no flow in progress to return to: a short
+    # "not something I can help with - customer service or a contact
+    # number?" offer, written in code. Inside a flow, the owning
+    # specialist answers it and carries on.
+    # Never while a crisis is active: that person gets the specialist
+    # carrying the crisis rules, whatever the message reads as.
+    if (reading.get("intent") == "other" and active_flow(facts) is None
+            and not is_uncertain(reading, thresholds)
+            and not (facts.crisis_active or crisis_now)):
+        return Decision(
+            CONCIERGE,
+            "semantic: outside patient care - "
+            + ("about this hospital, offer customer service" if reading.get("about_this_hospital")
+               else "unrelated to the hospital, decline"),
+            ROUTING_SEMANTIC, out_of_scope=True,
+            override_reason=consent_problem and f"handoff not carried out: {consent_problem}",
             reading=reading,
         )
 

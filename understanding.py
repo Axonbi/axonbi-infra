@@ -68,9 +68,10 @@ _BOOL_FIELDS = (
     "wants_human", "cancel_request", "cancel_confirmed", "crisis",
     "asks_price", "is_ambiguous", "answer_to_previous_question",
     "changes_intent", "declines", "confirms", "asks_location",
+    "about_this_hospital",
 )
 _TEXT_FIELDS = ("doctor_name", "specialty")
-ENTITY_KEYS = ("doctor", "branch", "date", "time", "booking_reference", "phone", "service")
+ENTITY_KEYS = ("doctor", "branch", "date", "time", "booking_reference", "phone", "service", "topic")
 
 # How much conversation the model sees. Enough to know which question
 # the patient is answering and what flow it belongs to; not so much that
@@ -114,9 +115,10 @@ Return ONLY a JSON object with these keys:
 "crisis": suicidal thoughts, wanting to die or "end it", self-harm, or danger to self or others, direct or indirect, including someone with them. Anxiety, sadness, insomnia or asking for a psychiatrist are not.
 "asks_price": asks about a price, fee or cost.
 "asks_location": asks where a branch is, its address or map.
+"about_this_hospital": only for intent "other" - true when it concerns THIS hospital although it is not patient care (a job, training, an interview, a supplier, administration); false when it has nothing to do with the hospital (a party, event tickets, food prices, general chat).
 "doctor_name": a doctor's PERSONAL name as used (or the doctor referred back to, e.g. "الدكتور اللي قولتي عليه"), else null. "دكتور نفسي" / "دكتور عيون" name a specialty.
 "specialty": the specialty, department or service referred to, in the patient's words, else null.
-"entities": {{"branch", "date", "time", "booking_reference", "phone", "service"}} - values this message gives, as written ("بكرة" stays "بكرة"), else null.
+"entities": {{"branch", "date", "time", "booking_reference", "phone", "service", "topic"}} - values this message gives, as written ("بكرة" stays "بكرة"), else null. "topic" only for a request outside patient care: 1-3 words naming it in the patient's language (e.g. "التدريب").
 "reason": at most 8 words, for internal logs.
 Booleans default to false.
 
@@ -311,7 +313,7 @@ def log_view(reading: Optional[dict]) -> dict:
         "intent", "confidence", "is_ambiguous", "alternatives",
         "answer_to_previous_question", "changes_intent", "wants_human",
         "cancel_request", "cancel_confirmed", "crisis", "asks_price",
-        "confirms", "declines", "asks_location",
+        "confirms", "declines", "asks_location", "about_this_hospital",
     )}
     view["entities_present"] = sorted(
         key for key, value in (reading.get("entities") or {}).items() if value

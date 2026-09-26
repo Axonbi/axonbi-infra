@@ -19786,7 +19786,8 @@ def router(state: AgentState) -> dict:
         "answer_to_previous_question": (reading or {}).get("answer_to_previous_question"),
         "changes_intent": (reading or {}).get("changes_intent"),
         "selected_agent": (HANDOFF_NODE if decision.handoff
-                           else CLARIFY_NODE if decision.clarify else chosen),
+                           else CLARIFY_NODE if decision.clarify
+                           else OUT_OF_SCOPE_NODE if decision.out_of_scope else chosen),
         "routing_mode": decision.mode,
         "override_reason": decision.override_reason,
         "reason": reason,
@@ -19806,6 +19807,7 @@ def router(state: AgentState) -> dict:
         "crisis_active": crisis_was_active or crisis_now,
         "handoff_now": decision.handoff,
         "clarify_now": decision.clarify,
+        "out_of_scope_now": decision.out_of_scope,
     }
 
 
@@ -20041,6 +20043,80 @@ def clarify(state: AgentState) -> dict:
     }
 
 
+# ==========================================================
+# Outside patient care - a useful offer, not a dead end
+# ==========================================================
+
+OUT_OF_SCOPE_NODE = "out_of_scope"
+
+
+def _out_of_scope_offer(reading: Optional[dict], english: bool,
+                        templates: Optional[dict] = None) -> str:
+    """"Not something I have information on - customer service, or a
+    contact number?" The offer's wording is what makes the next turn work:
+    "حوّلني" accepts a transfer the assistant really offered (the router's
+    consent check reads this message), "ابعت الرقم" is a faq question.
+    A clinic can author its own as `msg_out_of_scope_offer` /
+    `msg_out_of_scope_offer_en`, with `{topic}` where the subject goes."""
+
+    topic = ((reading or {}).get("entities") or {}).get("topic")
+    templates = templates or {}
+    if english:
+        subject = topic or "this"
+        default = ("I'm sorry, I don't have information about {topic} - it's outside what I can "
+                   "help with 🌷 Would you like me to transfer you to customer service, or send "
+                   "you our contact number?")
+        authored = templates.get("msg_out_of_scope_offer_en")
+    else:
+        subject = topic or "هذا الموضوع"
+        default = ("للأسف ما عندي معلومات عن {topic}، لأنه خارج نطاق خدماتي 🌷 "
+                   "تحب أحوّلك لخدمة العملاء، أو أرسل لك رقم التواصل؟")
+        authored = templates.get("msg_out_of_scope_offer")
+    template = authored if authored and "{topic}" in authored else default
+    return template.replace("{topic}", subject)
+
+
+def out_of_scope(state: AgentState) -> dict:
+    """A request outside patient care with no flow in progress, answered
+    in code (no specialist call):
+      - about THIS hospital (a job, training, an interview): offer
+        customer service or the contact number;
+      - unrelated to the hospital (a party, tickets, food prices): the
+        clinic's own polite out-of-scope reply, no transfer offer - and on
+        the very first message just the greeting, which already lists
+        what the assistant does (the refusal never rides with it)."""
+
+    messages = state.get("messages") or []
+    templates = state.get("templates") or {}
+    english = _latest_is_english(messages)
+    reading = state.get("understanding") or {}
+
+    if reading.get("about_this_hospital"):
+        text = _out_of_scope_offer(reading, english, templates)
+    elif state.get("greeted"):
+        text = _build_out_of_scope_block(templates, "en" if english else "ar").strip()
+    else:
+        first = getattr(messages[0], "content", "") if messages else ""
+        text = _build_greeting(templates, first if isinstance(first, str) else "",
+                               "en" if english else "ar").strip() or \
+            _build_out_of_scope_block(templates, "en" if english else "ar").strip()
+        return {"messages": [_tag_author(AIMessage(content=text), OUT_OF_SCOPE_NODE)],
+                "greeted": True}
+
+    if not state.get("greeted"):
+        first = getattr(messages[0], "content", "") if messages else ""
+        greeting = _build_greeting(templates, first if isinstance(first, str) else "",
+                                   "en" if english else "ar")
+        if greeting:
+            head = _greeting_without_its_closing_question(greeting).strip() or greeting.strip()
+            text = f"{head}\n\n{text}"
+
+    return {
+        "messages": [_tag_author(AIMessage(content=text), OUT_OF_SCOPE_NODE)],
+        "greeted": True,
+    }
+
+
 def _latest_is_english(messages: list) -> bool:
     # The conversation's language, not the latest message's script: a
     # bare "3" has no Arabic letters, and used to send the English
@@ -20228,6 +20304,9 @@ def route_to_specialist(state: AgentState) -> str:
 
     if state.get("clarify_now"):
         return CLARIFY_NODE
+
+    if state.get("out_of_scope_now"):
+        return OUT_OF_SCOPE_NODE
 
     return _specialist_for(state)
 
@@ -20675,9 +20754,12 @@ if config.MULTI_AGENT_ENABLED:
     builder.add_edge(HANDOFF_NODE, END)
     builder.add_node(CLARIFY_NODE, clarify)
     builder.add_edge(CLARIFY_NODE, END)
+    builder.add_node(OUT_OF_SCOPE_NODE, out_of_scope)
+    builder.add_edge(OUT_OF_SCOPE_NODE, END)
     builder.add_conditional_edges(
         "router", route_to_specialist,
-        {**specialist_nodes, HANDOFF_NODE: HANDOFF_NODE, CLARIFY_NODE: CLARIFY_NODE},
+        {**specialist_nodes, HANDOFF_NODE: HANDOFF_NODE, CLARIFY_NODE: CLARIFY_NODE,
+         OUT_OF_SCOPE_NODE: OUT_OF_SCOPE_NODE},
     )
     builder.add_conditional_edges("tools", route_after_tools, specialist_nodes)
 

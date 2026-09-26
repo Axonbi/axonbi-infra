@@ -186,3 +186,7 @@ class AgentState(TypedDict):
     # between intents and no flow in progress settles it, so graph.clarify
     # asks one short question (no specialist call).
     clarify_now: NotRequired[Optional[bool]]
+    # Set by the router for ONE turn: a request outside patient care with
+    # no flow in progress - graph.out_of_scope offers customer service or
+    # a contact number (no specialist call).
+    out_of_scope_now: NotRequired[Optional[bool]]

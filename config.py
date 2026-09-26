@@ -964,6 +964,10 @@ _CLIENT_OVERRIDE_KEYS = (
     # file may carry it; absent, a neutral built-in wording is used.
     "msg_clarify_intent",
     "msg_clarify_intent_en",
+    # Optional: the out-of-scope offer (graph.out_of_scope), "{topic}"
+    # where the subject goes.
+    "msg_out_of_scope_offer",
+    "msg_out_of_scope_offer_en",
 )
 
 
