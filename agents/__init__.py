@@ -4,7 +4,7 @@ Multi-agent layer for the Guest Booking Agent.
 This package turns the previous SINGLE agent (one 90 KB system prompt +
 28 tools handling six unrelated flows) into a supervisor pattern:
 
-    router (deterministic)  ->  one specialist agent  ->  tools  -> ...
+    router (LLM classifier + structural rules)  ->  one specialist  ->  tools  -> ...
 
 Nothing in `api.py`, `tools.py`, `config.py`'s CSV loading, `rag.py`, or
 the CSV files themselves is touched. `prompts.py`'s big template is not
