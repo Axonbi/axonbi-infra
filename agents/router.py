@@ -27,6 +27,9 @@ is most likely answering. It returns structured fields, not prose:
     asks_about_medicine  which medicine, a dose, can I take X
     asks_for_location    where a branch is / how to get there
     wants_human          asks for a person (a complaint is not that)
+    about_the_clinic     anything about this clinic, as opposed to an
+                         unrelated topic
+    (agent may also be "unclear" - the abstention)
     last_question        what the ASSISTANT's last message asked (the
                          booking opening question, a booking offer, ...)
     named_doctor / named_branch / named_specialty_or_service
@@ -57,8 +60,10 @@ Only structure, never wording:
   - An information question in the middle of a booking stays with
     `booking`, which holds the same lookup tools as `faq`; `faq` could
     not finish the booking it would take over.
-  - A classifier "concierge" while a specialist owns a flow is an
-    abstention, not a decision - the owner keeps the turn.
+  - A classifier "unclear" is an abstention - the owner keeps the
+    turn. "concierge" is a real destination (a greeting, a request for
+    a person, a clinic topic no specialist handles) - except for an
+    answer to the flow's own question, which stays with its owner.
   - Any classifier failure keeps the current owner. Routing must never
     be able to break a conversation.
 
@@ -271,14 +276,16 @@ agent - exactly one of:
   cancel      wants to cancel an existing appointment ("مش هقدر أجي", "مش محتاجة الموعد ده")
   reschedule  wants an existing appointment moved to another time
   medical     describes a symptom, an injury or a health worry, asks which test or specialty they need, or asks about medicine
-  faq         asks about the clinic itself: services, tests on offer, branches, hours, prices, results, insurance
+  faq         asks about the clinic itself - who or what it is ("ايه عز لاب ده؟"), services, tests on offer, branches, hours, prices, results, insurance
   complaint   wants to complain or make a suggestion
-  concierge   a greeting or thanks with no request, asks to speak to a person, or is genuinely unclear
+  concierge   a greeting or thanks with no request, asks to speak to a person, or raises something about the clinic that none of the above handles (jobs, training, partnerships, a general remark)
+  unclear     you genuinely cannot tell what they want
 
 AN ANSWER BELONGS TO WHOEVER ASKED. When the message answers the assistant's last message - a choice from a list, yes or no, a name, a day, a time, a phone number, a code - or simply continues what is already being done, choose the ACTIVE FLOW, unless the patient has plainly changed what they want. A "yes" to an offer ("تحب أحجز لك؟") belongs to the action that was offered. Picking a doctor, specialty or test from a list in order to book it is booking.
 
 about_own_health - true when the message is about the patient's own body (a symptom, pain, an injury, a medicine question), whatever agent you chose.
-wants_human - true when they ask to talk to a person / staff / customer service, in any words. Wanting to file a complaint is NOT asking for a person.
+wants_human - true ONLY when they explicitly ask to talk to a person / staff / customer service, in any words. Asking a question is not asking for a person, and wanting to file a complaint is NOT asking for a person.
+about_the_clinic - true when the message is about THIS clinic in any way (its services, staff, prices, jobs, training, anything about it); false for things unrelated to it (weather, football, news).
 asks_about_medicine - true when they ask which medicine to take, a dose, or whether they can take something.
 asks_for_location - true when they ask where a branch is, its address, or how to get there.
 reply_kind - how the message answers the assistant's last message: "yes" (agrees, nothing else to add), "no" (declines or refuses what was offered or asked), "dont_know" (says they do not know / are not sure), or "other" (anything else, including a yes that also asks for a change).
@@ -330,9 +337,10 @@ try:
     class RouterDecision(BaseModel):
         """The classifier's structured answer."""
 
-        agent: Literal["booking", "cancel", "reschedule", "medical", "faq", "complaint", "concierge"]
+        agent: Literal["booking", "cancel", "reschedule", "medical", "faq", "complaint", "concierge", "unclear"]
         about_own_health: bool = False
         wants_human: bool = False
+        about_the_clinic: bool = False
         asks_about_medicine: bool = False
         asks_for_location: bool = False
         reply_kind: Literal["yes", "no", "dont_know", "other"] = "other"
@@ -355,6 +363,10 @@ except Exception:  # pragma: no cover - pydantic ships with langchain
 
 
 _REPLY_KINDS = ("yes", "no", "dont_know", "other")
+
+# The classifier's abstention - "I cannot tell". Not an agent: while a
+# specialist owns a flow it keeps the turn; otherwise the concierge opens.
+UNCLEAR = "unclear"
 _QUESTIONS = ('booking_start', 'doctor_name', 'choose_option', 'booking_offer', 'branch_services_offer', 'same_number', 'reference_or_phone', 'anything_to_add', 'other')
 
 
@@ -392,13 +404,14 @@ def _as_intent(raw) -> Optional[dict]:
         return None
 
     agent = str(raw.get("agent") or "").strip().lower()
-    if agent not in AGENT_NAMES:
+    if agent not in AGENT_NAMES and agent != UNCLEAR:
         logger.warning("router: classifier answered %r, which is not an agent name", agent[:40])
         return None
     return {
         "agent": agent,
         "about_own_health": bool(raw.get("about_own_health")),
         "wants_human": bool(raw.get("wants_human")),
+        "about_the_clinic": bool(raw.get("about_the_clinic")),
         "asks_about_medicine": bool(raw.get("asks_about_medicine")),
         "asks_for_location": bool(raw.get("asks_for_location")),
         "reply_kind": (raw.get("reply_kind") if raw.get("reply_kind") in _REPLY_KINDS else "other"),
@@ -481,7 +494,7 @@ def route_turn_with_intent(
 
     if CRISIS_RE.search(normalize(text)):
         return "medical", "crisis safety net", {
-            "agent": "medical", "about_own_health": True, "wants_human": False,
+            "agent": "medical", "about_own_health": True, "wants_human": False, "about_the_clinic": True,
             "asks_about_medicine": False, "asks_for_location": False,
             "reply_kind": "other", "last_question": "other", "crisis": True,
         }
@@ -515,10 +528,21 @@ def route_turn_with_intent(
     if home_booking and choice in ("booking", "faq", "medical", CONCIERGE):
         return "booking", "unfinished at-home collection booking owns this turn", intent
 
+    if choice == UNCLEAR:
+        if flow_active:
+            return active_agent, "classifier could not tell - current owner keeps the turn", intent
+        return CONCIERGE, "classifier could not tell - the concierge clarifies", intent
+
     if flow_active:
-        if choice == CONCIERGE:
+        # "concierge" is a real destination now ("unclear" is the
+        # abstention) - but not for an ANSWER to the flow's own question:
+        # a yes/no, an "I don't know", or a reply to what the assistant
+        # just asked stays with the specialist that asked it.
+        answering = (intent.get("reply_kind") in ("yes", "no", "dont_know")
+                     or intent.get("last_question") not in (None, "other"))
+        if choice == CONCIERGE and answering:
             return active_agent, (
-                f"classifier abstained (concierge) - {active_agent} keeps its flow"
+                f"an answer to {active_agent}'s own question - {active_agent} keeps its flow"
             ), intent
         # An information question in the middle of a booking stays with
         # booking: it holds the same lookup tools as `faq`
