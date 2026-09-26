@@ -42,7 +42,7 @@ KEEP_BACKUPS="${KEEP_BACKUPS:-10}"
 # ever decide the branch is authoritative for those too.
 FILES=(
   graph.py tools.py prompts.py rag.py main.py app.py config.py
-  state.py api.py progress.py start.py
+  state.py api.py progress.py start.py tool_result_guidance.py
   agents/__init__.py agents/router.py agents/registry.py
   agents/sections.py agents/response_contract.py agents/hard_rules.py
 )
