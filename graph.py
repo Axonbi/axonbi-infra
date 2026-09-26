@@ -246,7 +246,10 @@ def _llm_for(agent_name: str):
     if _llm_with_tools is not _DEFAULT_LLM_WITH_TOOLS:
         return _llm_with_tools
 
-    if not config.AGENT_TOOL_SCOPING:
+    # The legacy single-agent graph runs as `concierge`, which is no
+    # longer bound to every tool - the kill switch must still restore
+    # the old agent's full tool set.
+    if not config.MULTI_AGENT_ENABLED or not config.AGENT_TOOL_SCOPING:
         return _llm_with_tools
 
     return _AGENT_LLMS.get(agent_name, _llm_with_tools)
@@ -847,6 +850,17 @@ def _deterministic_doctor_list(state: AgentState, agent_name: str,
     return [request, result, _tag_author(AIMessage(content=reply), agent_name)]
 
 
+
+def _agent_holds_tools(agent_name: str, *tool_names: str) -> bool:
+    """True when `agent_name`'s registry tool subset contains every one
+    of `tool_names`. Used by the deterministic hooks below, which call
+    tool functions directly (`.func`) and so bypass `_tool_node`'s
+    allow-list - they must apply the same boundary themselves."""
+
+    held = {getattr(t, "name", "") for t in agents.tools_for(agent_name)}
+    return all(name in held for name in tool_names)
+
+
 def _deterministic_slot_lock(state: AgentState, agent_name: str):
     """When the patient's message is a BARE NUMBER answering the slot
     list `get_available_slots_for_booking` just showed, resolve and
@@ -909,6 +923,11 @@ def _deterministic_slot_lock(state: AgentState, agent_name: str):
         return None
 
     if agent_name not in ("booking", "medical"):
+        return None
+
+    # Runs tools outside ToolNode, so it must respect the same scope:
+    # a specialist not bound to these tools never has them run for it.
+    if not _agent_holds_tools(agent_name, 'select_appointment_slot'):
         return None
 
     session_id = state.get("session_id")
@@ -1003,6 +1022,11 @@ def _deterministic_service_pick(state: AgentState, agent_name: str):
         return None
 
     if agent_name not in ("booking", "medical"):
+        return None
+
+    # Runs tools outside ToolNode, so it must respect the same scope:
+    # a specialist not bound to these tools never has them run for it.
+    if not _agent_holds_tools(agent_name, 'find_available_doctors', 'match_entity_for_booking'):
         return None
 
     session_id = state.get("session_id")
@@ -1127,6 +1151,11 @@ def _deterministic_doctor_schedule_lookup(state: AgentState, agent_name: str) ->
         return []
 
     if agent_name not in ("booking", "medical"):
+        return []
+
+    # Runs tools outside ToolNode, so it must respect the same scope:
+    # a specialist not bound to these tools never has them run for it.
+    if not _agent_holds_tools(agent_name, 'get_doctor_schedule_for_booking', 'list_available_days_for_booking'):
         return []
 
     session_id = state.get("session_id")
@@ -1282,6 +1311,11 @@ def _deterministic_day_and_slot_resolution(state: AgentState, agent_name: str) -
         return []
 
     if agent_name not in ("booking", "medical"):
+        return []
+
+    # Runs tools outside ToolNode, so it must respect the same scope:
+    # a specialist not bound to these tools never has them run for it.
+    if not _agent_holds_tools(agent_name, 'resolve_available_day', 'get_available_slots_for_booking', 'select_appointment_slot'):
         return []
 
     session_id = state.get("session_id")
@@ -3580,17 +3614,6 @@ _MULTI_INTENT_TIME_RE = re.compile(
     re.IGNORECASE,
 )
 
-# The cue words that introduce a name, and the words that end it. The
-# stop list is what keeps "دكتور احمد العقيل يوم التلات" from being read
-# as a doctor called "احمد العقيل يوم التلات".
-_DOCTOR_CUE_RE = re.compile(
-    r"(?:الدكتوره|الدكتورة|الدكتور|دكتوره|دكتورة|دكتور|د\.|استشاري|استشارية|dr\.?|doctor)\s+",
-    re.IGNORECASE,
-)
-_BRANCH_CUE_RE = re.compile(r"(?:فرع|الفرع|branch)\s+", re.IGNORECASE)
-_SPECIALTY_CUE_RE = re.compile(
-    r"(?:تخصص|التخصص|عياده|عيادة|قسم|specialty|clinic)\s+", re.IGNORECASE,
-)
 
 # A message that is nothing but a list position ("2", "٢", "رقم 2").
 # It answers the question just asked; it carries no facts of its own.
@@ -3626,43 +3649,6 @@ _BARE_SPECIALTY_RE = re.compile(
     r"(?:^|\s)(" + "|".join(_BARE_SPECIALTY_WORDS) + r")(?:\s|$)",
     re.IGNORECASE,
 )
-
-
-_FRAGMENT_STOP_WORDS = (
-    "يوم", "في", "فرع", "الفرع", "الساعه", "الساعة", "بكره", "بكرة",
-    "عشان", "علشان", "لان", "لأن", "ومحتاج", "ومحتاجه", "واحجز",
-    "وعايز", "وعاوز", "on", "at", "in", "branch", "day", "please",
-    "لو", "ممكن", "بس", "او", "أو", "ولا",
-)
-
-
-def _fragment_after_cue(text: str, cue_re) -> str:
-    """The words following a cue like "دكتور", stopped at the first word
-    that clearly starts something else ("يوم", "في", "فرع", a digit).
-
-    Returns the patient's own characters, untouched - this is quoted
-    back to the model as "what they wrote", never treated as a resolved
-    entity."""
-
-    match = cue_re.search(text or "")
-    if not match:
-        return ""
-
-    tail = (text or "")[match.end():]
-    words = []
-    for word in re.split(r"\s+", tail.strip()):
-        clean = word.strip(".,،؟?!:؛()[]")
-        if not clean:
-            break
-        if clean.lower() in _FRAGMENT_STOP_WORDS:
-            break
-        if re.search(r"\d", clean):
-            break
-        words.append(clean)
-        if len(words) >= 4:
-            break
-
-    return " ".join(words).strip()
 
 
 def _build_multi_intent_directive(messages: list, session_id: str, agent_name: str = "booking") -> str:
@@ -3711,7 +3697,7 @@ def _build_multi_intent_directive(messages: list, session_id: str, agent_name: s
     # else is fair game, including short ones: "عايز جلدية" is two
     # words and names a specialty.
     stripped = text.strip(" .!؟?،,")
-    if _POSITIONAL_ANSWER_RE.match(stripped) or _BARE_AFFIRMATION_RE.match(_norm_ar(stripped)):
+    if _POSITIONAL_ANSWER_RE.match(stripped) or _reply_kind(messages) == "yes":
         return ""
 
     # What this specialist may actually be told to call.
@@ -3722,8 +3708,9 @@ def _build_multi_intent_directive(messages: list, session_id: str, agent_name: s
         return tool_name in available
 
     found = []
+    intent = _latest_intent(messages)
 
-    doctor_fragment = _fragment_after_cue(text, _DOCTOR_CUE_RE)
+    doctor_fragment = intent.get("named_doctor")
     if doctor_fragment:
         found.append((
             "A DOCTOR",
@@ -3742,7 +3729,7 @@ def _build_multi_intent_directive(messages: list, session_id: str, agent_name: s
             ),
         ))
 
-    branch_fragment = _fragment_after_cue(text, _BRANCH_CUE_RE)
+    branch_fragment = intent.get("named_branch")
     if branch_fragment:
         found.append((
             "A BRANCH",
@@ -3758,13 +3745,7 @@ def _build_multi_intent_directive(messages: list, session_id: str, agent_name: s
             ),
         ))
 
-    specialty_fragment = _fragment_after_cue(text, _SPECIALTY_CUE_RE)
-    if not specialty_fragment:
-        # No "تخصص"/"عيادة" cue in front of it - look for the specialty
-        # named on its own, which is how patients actually write it.
-        bare = _BARE_SPECIALTY_RE.search(_norm_ar(text))
-        if bare:
-            specialty_fragment = bare.group(1).strip()
+    specialty_fragment = intent.get("named_specialty_or_service")
     if specialty_fragment:
         found.append((
             "A SPECIALTY OR SERVICE",
@@ -3918,88 +3899,7 @@ def _build_multi_intent_directive(messages: list, session_id: str, agent_name: s
 #   said "مش عارف" to that question             -> help them choose,
 #       starting from the symptom, never from the raw catalogue.
 
-# AN EXPLICIT REQUEST TO BOOK. Needs a wanting/booking VERB - the bare
-# nouns "حجز"/"موعد" are not enough, because they appear just as often
-# in "ألغي حجزي" and "أكد الحجز". See the guard in
-# _build_booking_entry_directive for why the precision matters here in
-# particular.
-_BARE_BOOKING_REQUEST_RE = re.compile(
-    r"(?:عايز|عاوز|عايزه|عاوزه|ابغى|ابغي|ابي|حاب|حابه|نفسي|اريد|ودي|بدي)"
-    r"[^.\n]{0,12}(?:احجز|حجز|موعد|معاد|ميعاد|كشف)|"
-    r"(?:^|\s)(?:احجز|احجزلي|احجز\s*لي|اححز)(?:\s|$)|"
-    r"(?:^|\s)(?:حجز|عمل\s*حجز)\s*(?:موعد|معاد|ميعاد|كشف)|"
-    r"\b(?:i\s*(?:want|need|would\s+like)|can\s+i|i'?d\s+like)\b[^.\n]{0,20}"
-    r"\b(?:book|appointment|reserve|schedule)\b|"
-    r"\bbook\s+(?:an?\s+)?appointment\b|\bmake\s+(?:an?\s+)?appointment\b"
-)
 
-# Words that mean "yes, go ahead with the thing already on the table" -
-# never "start a new booking".
-_CONFIRMATION_WORD_RE = re.compile(
-    r"(?:^|\s)(?:اكد|أكد|اكدلي|تاكيد|أكدلي|كمل|كملي|نفذ)(?:\s|$)|"
-    r"\b(?:confirm|go\s+ahead|proceed)\b"
-)
-
-
-_DONT_KNOW_RE = re.compile(
-    r"^\s*(?:"
-    r"مش\s*عارف\w*|مش\s*عارفه|ما\s*ادري|مااادري|ما\s*اعرف|لا\s*اعرف|"
-    r"مش\s*متاكد\w*|مو\s*عارف\w*|محتار\w*|"
-    r"(?:i\s*)?d(?:on'?|o\s*no)t\s*know|not\s*sure|no\s*idea|unsure"
-    r")\s*[.!؟?،,]*\s*$",
-    re.IGNORECASE,
-)
-
-# The booking flow's opening question in the assistant's own last reply.
-# Kept in step with agents/router._ASKED_SPECIALTY_OR_DOCTOR_RE, which
-# makes the routing half of the same decision - both have to recognise
-# the question in whatever wording the clinic's dialect produced it,
-# including the fuller "do you have a doctor in mind, or shall we search
-# by specialty?" form that replaced the terse original.
-_ASKED_SPECIALTY_OR_DOCTOR_RE = re.compile(
-    # NOTE: these alternations are in FOLDED form ("ام", not "أم").
-    # The text is normalised before matching - alef forms are unified -
-    # but this pattern is compiled raw, so a hamza written here would
-    # never match anything. That is a silent failure: the question
-    # simply stops being recognised.
-    r"بالتخصص\s*ولا\s*بالدكتور|بالدكتور\s*ولا\s*بالتخصص|"
-    # "دكتور أو تخصص معيّن في بالك؟" - the current wording, which
-    # puts the two options side by side instead of contrasting them
-    # with "ولا". Added when the message changed; without it the
-    # question stops being recognised and the routing rule that
-    # keeps a symptom with `booking` silently stops firing.
-    r"(?:دكتور|طبيب)\s*(?:او|ولا|ام)\s*تخصص|"
-    r"تخصص\s*(?:او|ولا|ام)\s*(?:دكتور|طبيب)|"
-    r"تبدا\s*بالتخصص|تبدا\s*بالدكتور|"
-    r"طبيب\s*(?:معين|محدد)[^.\n؟?]{0,40}(?:ولا|او|ام)[^.\n؟?]{0,20}تخصص|"
-    r"دكتور\s*(?:معين|محدد)[^.\n؟?]{0,40}(?:ولا|او|ام)[^.\n؟?]{0,20}تخصص|"
-    r"تخصص[^.\n؟?]{0,40}(?:ولا|او|ام)[^.\n؟?]{0,20}(?:طبيب|دكتور)|"
-    r"specific\s+doctor[^.\n?]{0,40}(?:or|prefer)[^.\n?]{0,25}specialt|"
-    r"by\s*specialty\s*or\s*by\s*doctor|"
-    # THE LAB/IMAGING CLINIC'S OWN OPENING QUESTION - "في المعمل ولا في
-    # البيت؟" (see _BOOKING_ENTRY_MESSAGE) replaced the doctor/specialty
-    # question above for this clinic entirely, so this half of the same
-    # decision has to recognise IT now instead. Without this, a bare
-    # reply to it ("في المعمل") gets routed by the LLM fallback as if
-    # it were a fresh, unrelated message - confirmed real production
-    # failure: "في المعمل" was classified as `medical` instead of
-    # staying with `booking`.
-    r"(?:بال|في\s*ال)?معمل[^.\n؟?]{0,20}(?:ولا|او)[^.\n؟?]{0,20}(?:بيت|منزل)|"
-    r"(?:بيت|منزل)[^.\n؟?]{0,20}(?:ولا|او)[^.\n؟?]{0,20}معمل|"
-    r"in.?lab[^.\n?]{0,25}(?:or|prefer)[^.\n?]{0,25}home|"
-    r"home[^.\n?]{0,25}(?:or|prefer)[^.\n?]{0,25}in.?lab|"
-    # NB1-Q1's OWN "WHICH TEST?" QUESTION - kept in step with
-    # agents/router._ASKED_SPECIALTY_OR_DOCTOR_RE's identical addition.
-    # CONFIRMED REAL PRODUCTION FAILURE: `booking` asked "عايزة تعملي
-    # أي تحليل معين أو تحبي أساعدك تختاري؟", the patient answered
-    # "سكر" (the test name), and because neither copy of this regex had
-    # a pattern for that question's wording, the reply fell through to
-    # the generic classifier, which read a bare test name as a
-    # `medical` question and tore the turn away from `booking`.
-    r"(?:اي|أي|انهي|أنهي)\s*(?:تحليل|تحاليل|فحص|اشعه|أشعة)[^.\n؟?]{0,30}؟|"
-    r"(?:تحليل|فحص|اشعه|أشعة)\s*(?:معين|محدد)[^.\n؟?]{0,30}؟|"
-    r"which\s+test[^.\n?]{0,30}\?"
-)
 
 
 _BOOKING_ENTRY_ASK_TEST_TYPE_DIRECTIVE = (
@@ -4115,19 +4015,6 @@ _SYMPTOM_IN_BOOKING_DIRECTIVE = (
     "a failure to paper over.\n\n"
 )
 
-# Body-part / pain wording, used only to tell "they answered with a
-# symptom" apart from "they answered with a specialty or a doctor".
-# Deliberately loose: the cost of a false positive here is a directive
-# telling booking to do what it was already going to do.
-_SYMPTOM_ANSWER_RE = re.compile(
-    r"وجع|يوجع|بيوجع|بتوجع|توجع|الم|آلم|تعبان|تعبانه|مريض|مريضه|"
-    r"صداع|حراره|سخونه|مغص|دوخه|دوار|كحه|سعال|ترجيع|قيء|غثيان|اسهال|"
-    r"امساك|حكه|طفح|تنميل|نزيف|ضيق\s*تنفس|حساسيه|"
-    r"بطني|معدتي|راسي|ضهري|ظهري|صدري|رقبتي|عيني|سناني|ضرسي|حلقي|"
-    r"قلبي|كتفي|ركبتي|رجلي|ايدي|جسمي|"
-    r"\bpain\b|\bache|\bhurts?\b|\bfever\b|\bheadache\b|\bnausea\b|"
-    r"\bdizz|\bcough\b|\brash\b|\bswollen\b|\bbleeding\b"
-)
 
 
 # ==========================================================
@@ -4243,51 +4130,14 @@ def _build_symptom_in_booking_directive(messages: list, agent_name: str) -> str:
         return ""
 
     folded = _norm_ar(text)
-
-    if not _SYMPTOM_ANSWER_RE.search(folded):
+    if not _message_intent(messages[index]).get("about_own_health"):
         return ""
 
     # Only immediately after the entry question.
-    last_ai = _norm_ar(_last_ai_reply_text(messages))
-    if not last_ai or not _ASKED_SPECIALTY_OR_DOCTOR_RE.search(last_ai):
+    if not _assistant_just_asked(messages, "booking_start"):
         return ""
 
     return _SYMPTOM_IN_BOOKING_DIRECTIVE
-
-
-# A COLLECTION MODE NAMED IN THE OPENING REQUEST ITSELF.
-#
-# CONFIRMED REAL PRODUCTION FAILURE (session 201158877175+medtown2,
-# 2026-09-20): "طب عاوزه احجز تحليل من البيت" - the patient said HOME in
-# the request - and the reply was the fixed question "في المعمل ولا في
-# البيت؟". The question is sent from code with no model call, so nothing
-# downstream could notice it was already answered. The patient ignored
-# it and typed a test name; with no mode on file the flow then booked
-# against a LAB branch, for a patient who wanted a home visit.
-#
-# Folded text (see _norm_ar). Exactly one mode must be named: a message
-# naming BOTH ("في المعمل ولا البيت؟") is the patient asking us the
-# question, not answering it.
-_COLLECTION_HOME_RE = re.compile(
-    r"(?<!\w)(?:ال)?(?:بيت|منزل)(?:ي|ك|نا)?(?!\w)|"
-    r"\bat\s+home\b|\bfrom\s+home\b|"
-    r"\bhome\s+(?:visit|collection|service|sample|draw)\b"
-)
-_COLLECTION_LAB_RE = re.compile(
-    r"(?<!\w)(?:في|ف|ب)\s*(?:ال)?معمل|"
-    r"\b(?:in|at)\s+(?:the\s+)?lab\b|\bin.?lab\b"
-)
-
-
-def _collection_mode_stated_in(folded: str) -> Optional[str]:
-    """\"home\" / \"in_lab\" when the folded message names exactly one
-    collection mode, else None."""
-
-    home = bool(_COLLECTION_HOME_RE.search(folded))
-    lab = bool(_COLLECTION_LAB_RE.search(folded))
-    if home == lab:
-        return None
-    return "home" if home else "in_lab"
 
 
 def _booking_entry_mode_given_directive(mode: str) -> str:
@@ -4305,16 +4155,6 @@ def _booking_entry_mode_given_directive(mode: str) -> str:
         "WHICH test they want (one short question). Do not name a branch, "
         "day or time until the test is settled.\n\n"
     )
-
-
-# The two service categories a lab client offers, as the patient types
-# them (already `_norm_ar`-folded). Local to the booking-entry rung on
-# purpose - `_BARE_SPECIALTY_RE` feeds five other call sites.
-_SERVICE_CATEGORY_WORD_RE = re.compile(
-    r"(?:^|\s)(?:ال)?(?:تحليل|تحاليل|اشعه|اشعة|أشعة|فحص)(?:\s|$)|"
-    r"\b(?:lab\s*tests?|tests?|scans?|x-?rays?|imaging)\b",
-    re.IGNORECASE,
-)
 
 
 def _build_booking_entry_directive(
@@ -4354,9 +4194,8 @@ def _build_booking_entry_directive(
     # "مش عارف" only means "I can't choose" when it ANSWERS the
     # specialty-or-doctor question. Said anywhere else it is an ordinary
     # negative and this rung has nothing to do with it.
-    if _DONT_KNOW_RE.match(text.strip()) or _DONT_KNOW_RE.match(folded):
-        last_ai = _norm_ar(_last_ai_reply_text(messages))
-        if last_ai and _ASKED_SPECIALTY_OR_DOCTOR_RE.search(last_ai):
+    if _message_intent(messages[index]).get("reply_kind") == "dont_know":
+        if _assistant_just_asked(messages, "booking_start"):
             return _BOOKING_ENTRY_DONT_KNOW_DIRECTIVE
         return ""
 
@@ -4369,28 +4208,24 @@ def _build_booking_entry_directive(
     # weigh against everything else - but the reply is now emitted
     # directly from code, so a false positive here replaces a real answer
     # with the opening question. It has to be exact.
-    if not _BARE_BOOKING_REQUEST_RE.search(folded):
+    if _message_intent(messages[index]).get("agent") != "booking":
         return ""
 
     # Confirming, cancelling or moving something is not opening a new
     # booking, whatever nouns the sentence happens to contain.
-    if _CONFIRMATION_WORD_RE.search(folded):
+    if _message_intent(messages[index]).get("reply_kind") == "yes":
         return ""
 
-    scores = agents.router.score_message(text)
-    for other in ("cancel", "reschedule", "complaint"):
-        if scores.get(other, 0) >= scores.get("booking", 0):
-            return ""
 
     # Anything concrete in the message means a later rung owns the turn.
     # That includes the service CATEGORY itself ("احجز تحليل"): it already
     # answers "تحليل ولا أشعة؟", so the model takes the next step. The
     # shared `_BARE_SPECIALTY_WORDS` had "تحاليل"/"اشعه" but not the
     # singular "تحليل" (confirmed production repeat, 2026-09-24).
-    if (_fragment_after_cue(text, _DOCTOR_CUE_RE)
-            or _fragment_after_cue(text, _SPECIALTY_CUE_RE)
-            or _BARE_SPECIALTY_RE.search(folded)
-            or _SERVICE_CATEGORY_WORD_RE.search(folded)
+    intent = _message_intent(messages[index])
+    if (intent.get("named_doctor")
+            or intent.get("named_specialty_or_service")
+            or intent.get("service_category")
             or _named_weekday_in_latest_human(messages)
             or _booking_reference_in(text)):
         return ""
@@ -4416,7 +4251,7 @@ def _build_booking_entry_directive(
     if _established_specialty(messages, session_id):
         return ""
 
-    stated_mode = _collection_mode_stated_in(folded)
+    stated_mode = intent.get("collection_mode")
     if stated_mode:
         return _booking_entry_mode_given_directive(stated_mode)
 
@@ -4520,7 +4355,8 @@ _ESTABLISHED_SPECIALTY_DIRECTIVE = (
 )
 
 
-def _build_specialty_picked_directive(messages: list, agent_name: str) -> str:
+def _build_specialty_picked_directive(messages: list, agent_name: str,
+                                      session_id: Optional[str] = None) -> str:
     """Fires the moment the patient picks a specialty out of the list
     they were just shown.
 
@@ -4561,21 +4397,13 @@ def _build_specialty_picked_directive(messages: list, agent_name: str) -> str:
     picked_position = _POSITIONAL_ANSWER_RE.match(_norm_ar(text)) is not None
 
     # The list the patient is answering has to be a SPECIALTY list.
-    last_ai = _last_ai_reply_text(messages)
-    if not last_ai:
+    # The list on screen is known from the session (`_remember_list`
+    # records every list a tool returns), not read back out of the
+    # assistant's wording.
+    session = tools._BOOKING_SESSIONS.get(session_id) or {}
+    if (session.get("last_list") or {}).get("entity_type") != "specialty":
         return ""
-
-    folded_ai = _norm_ar(last_ai)
-    showed_specialties = bool(
-        ("تخصص" in folded_ai or "specialt" in last_ai.lower())
-        and _NUMBERED_LIST_ITEM_RE.search(last_ai)
-    )
-    if not showed_specialties:
-        return ""
-
-    # Their raw text is what the tool resolves - never an id worked out
-    # here. See tools.find_available_doctors's `specialty_name`.
-    if not (picked_position or _BARE_SPECIALTY_RE.search(_norm_ar(text))):
+    if not (picked_position or _message_intent(messages[index]).get("named_specialty_or_service")):
         return ""
 
     return (
@@ -4615,18 +4443,16 @@ def _build_established_specialty_directive(messages: list, session_id: str, agen
 
     folded = _norm_ar(text)
 
-    # Either an explicit booking request, or a bare "yes" answering the
-    # assistant's own offer to book.
-    wants_booking = bool(_BOOKING_INTENT_RE.search(folded))
-    if not wants_booking and _BARE_AFFIRMATION_RE.match(folded):
-        last_ai = _norm_ar(_last_ai_reply_text(messages))
-        wants_booking = bool(last_ai and _BOOKING_OFFER_RE.search(last_ai))
+    # Either an explicit booking request, or a "yes" to the assistant's own
+    # offer to book - the classifier reads both as `booking`, shown the
+    # offer it is answering.
+    wants_booking = _message_intent(messages[index]).get("agent") == "booking"
 
     if not wants_booking:
         return ""
 
     # Naming a doctor of their own is more specific - that path wins.
-    if _fragment_after_cue(text, _DOCTOR_CUE_RE):
+    if _message_intent(messages[index]).get("named_doctor"):
         return ""
 
     # A doctor already confirmed means we are past the roster.
@@ -6593,8 +6419,6 @@ _LEGACY_VERIFIER_STRICT = "true" if _env_flag("BRANCH_VERIFIER_STRICT") else "fa
 _VERIFIERS_SAFETY_STRICT = _env_flag("VERIFIERS_SAFETY_STRICT", _LEGACY_VERIFIER_STRICT)
 _VERIFIERS_FLOW_STRICT = _env_flag("VERIFIERS_FLOW_STRICT", _LEGACY_VERIFIER_STRICT)
 
-# Kept as a name because the tests and older call sites reference it.
-_BRANCH_VERIFIER_STRICT = _VERIFIERS_SAFETY_STRICT or _VERIFIERS_FLOW_STRICT
 
 if not _VERIFIERS_SAFETY_STRICT:
     logger.critical(
@@ -6765,10 +6589,6 @@ def _doctor_names_from_tools(state: AgentState) -> set:
 
 
 _TIME_LIST_RE = re.compile(r"[1-9]\uFE0F?\u20E3\s*\d{1,2}\s*[:：]\s*\d{2}")
-_SOONEST_OFFER_RE = re.compile(
-    r"اقرب\s*موعد|أقرب\s*موعد|هل\s*يناسبك|يناسبك\s*(?:هذا|ده|هالموعد)|"
-    r"earliest\s*(?:available\s*)?appointment|does\s*(?:this|that)\s*work"
-)
 
 
 # Every tool that can put a clock time in a reply: the two slot lists,
@@ -6872,121 +6692,6 @@ _STALE_TIME_LIST_CORRECTION_DIRECTIVE = (
     "memory, twice, sixteen minutes after the last real lookup. The "
     "patient answered \"5\", nothing could resolve it, and every tool "
     "in the booking flow refused for the next five minutes.\n\n"
-)
-
-
-def _reply_dumps_times_without_offering_soonest(reply_text: str, state: AgentState) -> bool:
-    """True when a reply answers a DAY choice with the full list of that
-    day's times, instead of offering the soonest one first.
-
-    The agreed flow is: day settled -> ONE concrete soonest appointment
-    + "does that suit you?" -> only if they decline, the full list. A
-    wall of twenty times is what that flow exists to avoid, and the
-    prose rule for it has not held on its own.
-
-    CONFIRMED REAL PRODUCTION FAILURE: the patient answered "الأحد", and
-    got "المواعيد المتاحة ليوم الأحد 30/08/2026" followed by eight
-    numbered times - no soonest-appointment offer at all, while the
-    identical step in another flow did it correctly.
-
-    Fires only when the patient's own last message was a DAY choice, so
-    a time list they explicitly asked for is untouched.
-
-    EXEMPTION - does NOT fire when the most recent tool call was
-    `get_available_slots_for_booking` returning "found": that result is
-    handled by `_build_slots_numbered_list_directive`, which FORCES the
-    exact same full numbered list verbatim as the only acceptable reply
-    for that turn. Without this exemption the two directives contradict
-    each other on the identical trigger (patient names a weekday ->
-    resolve_available_day/get_available_slots_for_booking run in the
-    same turn -> full list comes back): the model is first ordered to
-    print the whole list, then this check immediately rejects that same
-    list and forces it back down to a single "soonest" offer instead.
-
-    CONFIRMED REAL PRODUCTION FAILURE (the mirror-image one this
-    exemption fixes): patient said "الثلاثاء", got the correct 7-slot
-    numbered list, which this check then overrode into "أقرب موعد
-    متاح ... من 11:00 إلى 11:30 - هل يناسبك؟". The patient replied
-    "مناسب" believing they were confirming the single time shown, when
-    in fact 7 times were available and the intended next step was to
-    show all of them, not silently narrow to the first."""
-
-    if not reply_text:
-        return False
-
-    if len(_TIME_LIST_RE.findall(reply_text)) < 3:
-        return False
-
-    if _SOONEST_OFFER_RE.search(_norm_ar(reply_text)):
-        return False
-
-    last_tool_msg = next(
-        (m for m in reversed(state.get("messages") or []) if getattr(m, "type", None) == "tool"),
-        None,
-    )
-    if getattr(last_tool_msg, "name", None) == "get_available_slots_for_booking":
-        try:
-            tool_data = json.loads(last_tool_msg.content)
-        except (ValueError, TypeError):
-            tool_data = None
-        if isinstance(tool_data, dict) and tool_data.get("status") == "found":
-            return False
-
-    from langchain_core.messages import HumanMessage as _HumanMessage
-
-    last_human = None
-    for msg in reversed(state.get("messages") or []):
-        if isinstance(msg, _HumanMessage):
-            content = getattr(msg, "content", "")
-            last_human = content if isinstance(content, str) else str(content)
-            break
-
-    if not last_human:
-        return False
-
-    folded = _norm_ar(last_human)
-
-    picked_a_day = bool(
-        re.search(
-            r"الاثنين|الثلاثاء|الاربعاء|الخميس|الجمعه|السبت|الاحد|"
-            r"بكره|بكرا|اليوم|غدا|monday|tuesday|wednesday|thursday|friday|saturday|sunday",
-            folded,
-        )
-    )
-
-    if not picked_a_day:
-        return False
-
-    # If they asked outright to SEE the times, showing them is correct.
-    if re.search(r"الاوقات|المواعيد\s*المتاحه|وريني|اعرض", folded):
-        return False
-
-    return True
-
-
-_SOONEST_FIRST_CORRECTION_DIRECTIVE = (
-    "============================================================\n"
-    "OFFER THE SOONEST APPOINTMENT FIRST - NOT THE WHOLE DAY'S LIST\n"
-    "============================================================\n"
-    "The patient chose a DAY, and your previous draft answered with "
-    "every time on it. That is a wall of options where one sentence "
-    "would have finished the booking.\n\n"
-    "Rewrite it as a single concrete offer - the EARLIEST time from the "
-    "tool result you already have - plus one question, in this exact "
-    "plain shape (the same one used everywhere else in this project "
-    "for a single day/time offer):\n"
-    "    أقرب موعد متاح عند [doctor name] في [branch name]:\n"
-    "    🗓️ [weekday] [date] — [earliest time]\n"
-    "    هل يناسبك هذا الموعد؟\n"
-    "Take the doctor, branch, date and time verbatim from the tool "
-    "result; invent nothing. Omit \"عند [doctor]\"/\"في [branch]\" only "
-    "if that information genuinely isn't available yet.\n\n"
-    "Only if they say it does NOT suit them do you show the rest of the "
-    "day's times as a numbered list.\n\n"
-    "CONFIRMED REAL PRODUCTION FAILURE: the patient answered \"الأحد\" "
-    "and received eight numbered times with no soonest-appointment "
-    "offer, while the same step in another flow correctly offered one "
-    "appointment and asked.\n\n"
 )
 
 
@@ -8012,12 +7717,6 @@ _MEDICATION_CORRECTION_DIRECTIVE = (
 _NUMBERED_LIST_ITEM_RE = re.compile(r"[1-9]\uFE0F?\u20E3|^\s*[1-9][\.\)]\s", re.MULTILINE)
 
 
-_BOOKING_OFFER_RE = re.compile(
-    r"تحب\s*(?:ت)?حجز|ترغب\s*(?:في\s*)?(?:ت)?حجز|تبي\s*(?:ت)?حجز|"
-    r"احجز\s*لك|اساعدك\s*ب?حجز|نكمل\s*(?:ال)?حجز|"
-    r"اكتب\s*اسم\s*(?:ال)?دكتور|"
-    r"(?:would you like|want)\s*to\s*book|shall\s*i\s*book"
-)
 
 
 _GENERIC_BRANCH_QUESTION_RE = re.compile(
@@ -8299,12 +7998,12 @@ def _medical_reply_offers_unrelated_specialty(reply_text: str, state: AgentState
     # search with no finding - which is the correct outcome, not a
     # reason to keep looking for an older complaint to object to.
     human_messages = [
-        _norm_ar(str(getattr(m, "content", "")))
+        (m, _norm_ar(str(getattr(m, "content", ""))))
         for m in (state.get("messages") or [])
         if isinstance(m, _HumanMessage)
     ]
 
-    for text in reversed(human_messages):
+    for message, text in reversed(human_messages):
         if not text.strip():
             continue
 
@@ -8322,8 +8021,8 @@ def _medical_reply_offers_unrelated_specialty(reply_text: str, state: AgentState
         # This guard is about the ASSISTANT mis-referring somebody
         # who described a symptom and left the choice to it - not
         # about overruling a choice the patient made out loud.
-        if _DOCTOR_CUE_RE.search(text) or _SPECIALTY_CUE_RE.search(text) \
-                or _BARE_SPECIALTY_RE.search(text):
+        if _message_intent(message).get("named_doctor") \
+                or _message_intent(message).get("named_specialty_or_service"):
             logger.info(
                 "_medical_reply_offers_unrelated_specialty: the patient named a "
                 "specialty or a doctor themselves - no older complaint judges this reply",
@@ -8335,8 +8034,7 @@ def _medical_reply_offers_unrelated_specialty(reply_text: str, state: AgentState
         # not in _SYMPTOM_ANSWER_RE's body-part list - so the injury
         # patterns are consulted too. Both come from one place each, so
         # widening either one widens this automatically.
-        if not (_SYMPTOM_ANSWER_RE.search(text)
-                or agents.router.INJURY_RE.search(text)):
+        if not _message_intent(message).get("about_own_health"):
             # Not a complaint at all ("اه", "الخميس", a phone number) -
             # keep looking further back.
             continue
@@ -8777,16 +8475,15 @@ def _current_turn_accepts_a_medical_offer(state: AgentState) -> bool:
     if not text.strip():
         return True
 
-    folded = _norm_ar(text)
-
-    if _LEADING_REFUSAL_RE.search(folded) or _BARE_NEGATION_RE.search(folded):
+    intent = _message_intent(latest)
+    if intent.get("reply_kind") == "no":
         logger.info(
             "_in_medical_guidance_handoff: the patient REFUSED the medical offer "
             "(%r) - medical-guidance guards do not apply to this turn", text[:80],
         )
         return False
 
-    if _CANCEL_OR_CHANGE_INTENT_RE.search(folded):
+    if intent.get("agent") in ("cancel", "reschedule"):
         logger.info(
             "_in_medical_guidance_handoff: the patient asked to cancel/reschedule "
             "an existing appointment (%r) - medical-guidance guards do not apply "
@@ -8924,17 +8621,17 @@ def _medical_reply_missing_not_a_diagnosis(reply_text: str, state: AgentState) -
     # ending in "ما لقيتش دكتور متاح حاليًا للحالة دي", which is false:
     # a real, available doctor's real branch WAS found and named.
     human_messages = [
-        _norm_ar(str(getattr(m, "content", "")))
+        (m, _norm_ar(str(getattr(m, "content", ""))))
         for m in (state.get("messages") or [])
         if getattr(m, "type", None) == "human"
     ]
-    for text in reversed(human_messages):
+    for message, text in reversed(human_messages):
         if not text.strip():
             continue
-        if _DOCTOR_CUE_RE.search(text) or _SPECIALTY_CUE_RE.search(text) \
-                or _BARE_SPECIALTY_RE.search(text):
+        if _message_intent(message).get("named_doctor") \
+                or _message_intent(message).get("named_specialty_or_service"):
             return False
-        if _SYMPTOM_ANSWER_RE.search(text):
+        if _message_intent(message).get("about_own_health"):
             break  # a genuine symptom - the disclaimer is still required
 
     return not _NOT_A_DIAGNOSIS_RE.search(folded)
@@ -9350,8 +9047,7 @@ def _reply_ignores_a_refusal(reply_text: str, state: AgentState) -> bool:
     if not text:
         return False
 
-    folded_human = _norm_ar(text)
-    if not (_BARE_NEGATION_RE.match(folded_human) or _LEADING_REFUSAL_RE.match(folded_human)):
+    if _reply_kind(messages) != "no":
         return False
 
     offered = _entities_offered_in_previous_reply(state)
@@ -9453,9 +9149,8 @@ def _reply_asks_to_identify_a_booking_that_was_never_mentioned(
         text = content if isinstance(content, str) else str(content)
         if _booking_reference_in(text):
             return False
-        if _CANCEL_OR_CHANGE_INTENT_RE.search(_norm_ar(text)):
+        if _message_intent(msg).get("agent") in ("cancel", "reschedule"):
             return False
-
     return True
 
 
@@ -9576,21 +9271,6 @@ def _reply_recommends_medication(reply_text: str, state: AgentState) -> bool:
         return False
 
     return bool(_MEDICATION_MENTION_RE.search(_norm_ar(reply_text)))
-
-
-_DOCTOR_ESTABLISHING_TOOLS = (
-    "find_available_doctors", "match_entity_for_booking",
-    # RESCHEDULE establishes its current doctor differently than NEW
-    # BOOKING does - by looking up the existing appointment's own
-    # doctor, not by searching/matching a name. Without this, a fresh
-    # `lookup_appointment` for a second, different booking later in the
-    # same session does not reset the scope, and a stale availability
-    # lookup for the FIRST doctor keeps satisfying this check for the
-    # second one - the exact class of bug this scoping was added to
-    # close, just reachable through reschedule's own doctor-resolution
-    # path instead of booking's.
-    "lookup_appointment",
-)
 
 
 _NEAREST_BRANCH_CLAIM_RE = re.compile(
@@ -10301,8 +9981,14 @@ def _recent_messages_mention_imaging(messages: list, lookback: int = 10) -> bool
     """
 
     for msg in reversed((messages or [])[-lookback:]):
-        if getattr(msg, "type", None) not in ("human", "tool"):
+        if getattr(msg, "type", None) == "human":
+            # The patient's meaning, read by the classifier.
+            if _message_intent(msg).get("service_category") == "imaging":
+                return True
             continue
+        if getattr(msg, "type", None) != "tool":
+            continue
+        # A tool RESULT is data: keywords over it are a data check.
         content = getattr(msg, "content", None)
         if not content or not isinstance(content, str):
             continue
@@ -10333,12 +10019,6 @@ def _reply_offers_home_mode_for_imaging(reply_text: str, state: AgentState) -> b
     return _llm_confirms_imaging_context(state)
 
 
-_LAB_CATEGORY_WORD_RE = re.compile(
-    r"(?:^|\s)(?:ال)?(?:تحليل|تحاليل)(?:\s|$)|\blab\s*tests?\b|\bblood\s*tests?\b",
-    re.IGNORECASE,
-)
-
-
 def _patient_service_category(state: AgentState) -> Optional[str]:
     """"lab" / "rad" when the patient's own recent messages (newest
     first) or this booking session already settle which kind of service
@@ -10350,11 +10030,10 @@ def _patient_service_category(state: AgentState) -> Optional[str]:
         if getattr(m, "type", None) == "human"
     ]
     for msg in reversed(humans[-4:]):
-        content = getattr(msg, "content", "")
-        text = content if isinstance(content, str) else str(content or "")
-        if any(keyword in text for keyword in _IMAGING_KEYWORDS):
+        category = _message_intent(msg).get("service_category")
+        if category == "imaging":
             return "rad"
-        if _LAB_CATEGORY_WORD_RE.search(_norm_ar(text)):
+        if category == "lab":
             return "lab"
 
     session = tools._BOOKING_SESSIONS.get(state.get("session_id")) or {}
@@ -11170,13 +10849,7 @@ _COMPLAINT_STOP_APOLOGY_RE = re.compile(
     r"ما\s*لقي(?:ت|نا)?\s*(دكتور|دكتوره|فرعا?)\s*بهذا\s*الاسم"
 )
 
-_ASKED_WHICH_DOCTOR_OR_BRANCH_RE = re.compile(
-    r"تحت\s*أي\s*دكتور\s*بالظبط|في\s*أنهي\s*فرع\s*بالظبط|"
-    r"which\s*doctor\s*exactly|which\s*branch\s*exactly"
-)
 
-_DOCTOR_CUE_WORD_RE = re.compile(r"دكتور|دكتوره|د\.|طبيب|doctor")
-_BRANCH_CUE_WORD_RE = re.compile(r"فرع|branch")
 
 # A generic word for "the doctor"/"a doctor" (or "the branch") ON ITS
 # OWN, with nothing else - not an actual name. Matched against the
@@ -11236,7 +10909,6 @@ def _reply_fabricates_doctor_not_found_stop(reply_text: str, state: AgentState) 
     if last_call_input is not None and generic_re.match(_norm_ar(last_call_input)):
         return True
 
-    cue_re = _BRANCH_CUE_WORD_RE if is_branch else _DOCTOR_CUE_WORD_RE
 
     messages = state.get("messages") or []
 
@@ -11257,12 +10929,10 @@ def _reply_fabricates_doctor_not_found_stop(reply_text: str, state: AgentState) 
 
     # Legitimate case (a): the assistant had just explicitly asked which
     # doctor/branch, so this answer plausibly names one.
-    if _ASKED_WHICH_DOCTOR_OR_BRANCH_RE.search(prior_ai_text):
+    said = _latest_intent(messages)
+    if said.get("last_question") in ("doctor_name", "choose_option"):
         return False
-
-    # Legitimate case (b): the patient's own message contains a
-    # recognizable doctor/branch cue word somewhere.
-    if cue_re.search(last_human_text):
+    if said.get("named_branch" if is_branch else "named_doctor"):
         return False
 
     return True
@@ -11313,14 +10983,7 @@ _DOCTOR_NOT_FOUND_STOP_CORRECTION_DIRECTIVE = (
 # patient believed it had been handled ("شكرًا للتوضيح" had already
 # been said earlier).
 
-_MORE_DETAILS_QUESTION_RE = re.compile(
-    r"حابب\s*تضيف\s*اي\s*تفاصيل\s*تانيه|اي\s*تفاصيل\s*تانيه\s*قبل\s*ما\s*نكمل|"
-    r"anything\s*else\s*(?:you.?d\s*like\s*to\s*)?add"
-)
 
-_PLAIN_NEGATIVE_RE = re.compile(
-    r"^\s*(?:لا+|لأ+|مفيش|ولا\s*حاجه|no+|nope|nothing)\b", re.IGNORECASE
-)
 
 _OFFERS_CUSTOMER_SERVICE_HANDOFF_RE = re.compile(
     r"(?:أساعدك|تحب|تحبني)[^.\n؟?]{0,25}(?:التواصل|أوصلك|أحولك)[^.\n؟?]{0,25}"
@@ -11346,7 +11009,7 @@ def _reply_derails_complaint_into_handoff_offer(reply_text: str, state: AgentSta
 
     last_human_text = str(getattr(messages[last_human_idx], "content", "") or "").strip()
     folded_last_human = _norm_ar(last_human_text)
-    if not _PLAIN_NEGATIVE_RE.match(folded_last_human):
+    if _message_intent(messages[last_human_idx]).get("reply_kind") != "no":
         return False
 
     # If the patient's own message ALSO separately, explicitly asks for
@@ -11354,19 +11017,10 @@ def _reply_derails_complaint_into_handoff_offer(reply_text: str, state: AgentSta
     # derailment - it's a normal response to a genuine request. Only
     # the bare-decline case (nothing more than "لا"/"nope") is the
     # confirmed failure pattern this guard exists for.
-    if any(root in folded_last_human for root in tools._EXPLICIT_HUMAN_REQUEST_ROOTS):
+    if (state.get("turn_intent") or {}).get("wants_human"):
         return False
 
-    prior_ai_text = ""
-    for i in range(last_human_idx - 1, -1, -1):
-        m = messages[i]
-        if getattr(m, "type", None) == "ai":
-            content = str(getattr(m, "content", "") or "").strip()
-            if content:
-                prior_ai_text = content
-                break
-
-    return bool(_MORE_DETAILS_QUESTION_RE.search(_norm_ar(prior_ai_text)))
+    return _assistant_just_asked(messages, "anything_to_add")
 
 
 _COMPLAINT_HANDOFF_DERAIL_CORRECTION_DIRECTIVE = (
@@ -11643,17 +11297,6 @@ _GYN_MENTION_RE = re.compile(
     r"gyn[ae]colog\w*|obstetric\w*"
 )
 
-# Signals that the PATIENT (never the assistant) actually raised
-# something gynaecological/obstetric themselves - only these justify the
-# reply mentioning نساء وتوليد at all. Deliberately narrow: general
-# symptoms (abdominal pain, nausea, dizziness) must NOT appear here, or
-# they would silently "justify" the exact violation this guard exists to
-# catch.
-_PREGNANCY_SIGNAL_RE = re.compile(
-    r"حمل|حامل|حاملة|الدوره|الدورة|دوره\s*شهريه|دورة\s*شهرية|الطمث|"
-    r"تاخر\s*الدوره|تأخر\s*الدورة|اجهاض|إجهاض|ولاده|ولادة|رضاعه|رضاعة|"
-    r"pregnan\w*|menstru\w*|period\s*late"
-)
 
 
 def _reply_offers_unauthorized_gynecology(reply_text: str, state: AgentState, agent_name: str = "") -> bool:
@@ -11694,8 +11337,7 @@ def _reply_offers_unauthorized_gynecology(reply_text: str, state: AgentState, ag
     for msg in state.get("messages", []):
         if getattr(msg, "type", None) != "human":
             continue
-        content = getattr(msg, "content", "")
-        if content and _PREGNANCY_SIGNAL_RE.search(str(content)):
+        if _message_intent(msg).get("mentions_pregnancy"):
             return False  # the patient genuinely raised it themselves
 
     return True
@@ -11949,14 +11591,6 @@ def upstream_api_failed(messages: list) -> bool:
 
     return False
 
-
-# What the patient hears when OUR side could not produce a good reply,
-# but nothing upstream is broken. No "technical problem", no "try again
-# later" - just a short line that keeps the turn alive.
-_SOFT_RECOVERY_TEXT = {
-    "ar": "ممكن توضحلي طلبك تاني؟ عشان أقدر أساعدك صح 🌷",
-    "en": "Could you tell me what you need again? I want to make sure I help you properly 🌷",
-}
 
 # CROSS-TURN LOOP BREAKER.
 #
@@ -13036,13 +12670,13 @@ def _reply_reasks_something_just_given(reply_text: str, state: AgentState) -> bo
 
     normalized = _norm_ar(reply_text)
 
+    given = _message_intent(messages[index])
     if _PATH_CHOICE_QUESTION_RE.search(normalized):
-        if (_fragment_after_cue(text, _DOCTOR_CUE_RE)
-                or _fragment_after_cue(text, _SPECIALTY_CUE_RE)):
+        if given.get("named_doctor") or given.get("named_specialty_or_service"):
             return True
 
     if _GENERIC_BRANCH_QUESTION_RE.search(normalized):
-        if _fragment_after_cue(text, _BRANCH_CUE_RE):
+        if given.get("named_branch"):
             return True
 
     if _ASKS_WHICH_DAY_RE.search(normalized):
@@ -13059,13 +12693,14 @@ def _reasked_information_correction_directive(reply_text: str, state: AgentState
     text = content if isinstance(content, str) else str(content)
 
     supplied = []
-    doctor_fragment = _fragment_after_cue(text, _DOCTOR_CUE_RE)
+    given = _message_intent(messages[index]) if index >= 0 else {}
+    doctor_fragment = given.get("named_doctor")
     if doctor_fragment:
         supplied.append("the doctor: \"" + doctor_fragment + "\"")
-    branch_fragment = _fragment_after_cue(text, _BRANCH_CUE_RE)
+    branch_fragment = given.get("named_branch")
     if branch_fragment:
         supplied.append("the branch: \"" + branch_fragment + "\"")
-    specialty_fragment = _fragment_after_cue(text, _SPECIALTY_CUE_RE)
+    specialty_fragment = given.get("named_specialty_or_service")
     if specialty_fragment:
         supplied.append("the specialty/service: \"" + specialty_fragment + "\"")
     weekday = tools.resolve_weekday_index(text)
@@ -13188,29 +12823,6 @@ def _specialty_already_established_correction(reply_text: str, state: AgentState
 # specialist runs, and keyed on the MESSAGE rather than on which agent
 # won the routing.
 
-_MEDICATION_REQUEST_RE = re.compile(
-    # Arabic - "give me a medicine", "what do I take", "how many pills",
-    # "what dose", "prescribe me something", "a painkiller".
-    r"(?:ادي|اديني|اعطيني|عطيني|هات|هاتي|وصف|وصفلي|اكتبلي|اكتب\s*لي)\w*\s*"
-    r"(?:\w+\s+){0,2}(?:دوا|دواء|علاج|مسكن|حبوب|برشام)|"
-    r"(?:اخد|اخذ|اشرب|اتناول|استخدم|اعطي|اديه|اسقي)\s*(?:\w+\s+){0,2}"
-    r"(?:ايه|ايش|وش|شنو|كام|قد\s*ايه)|"
-    r"(?:ايه|ايش|وش|شنو|اي|أي)\s*(?:ال)?(?:دوا|دواء|علاج|مسكن|حبوب|برشام)|"
-    r"(?:كام|قد\s*ايه|كم)\s*(?:\w+\s+){0,2}(?:حبه|حبة|قرص|مسكن|جرعه|جرعة|مره|مرة)|"
-    r"(?:ال)?(?:جرعه|جرعة|الجرعات)|"
-    r"(?:دوا|دواء|علاج|مسكن)\s*(?:\w+\s+){0,2}(?:للصداع|للحراره|للحرارة|للالم|للوجع|مناسب)|"
-    # English.
-    r"\b(?:what|which)\s+(?:medicine|medication|drug|painkiller|tablet|pill)s?\b|"
-    r"\bwhat\s+(?:should|can|do)\s+i\s+take\b|"
-    r"\bhow\s+(?:many|much|often)\b[^.\n?]{0,30}"
-    r"\b(?:painkiller|paracetamol|panadol|ibuprofen|tablet|pill|dose|mg)\w*|"
-    r"\b(?:dose|dosage|dosing)\b|"
-    r"\bprescribe\s+(?:me\s+)?(?:a|some|any)?\s*\w*|"
-    r"\b(?:give|recommend)\s+me\s+(?:a\s+|some\s+|any\s+)?"
-    r"(?:medicine|medication|drug|painkiller|tablet|pill|something|anything)|"
-    r"\bis\s+it\s+(?:safe|ok(?:ay)?)\s+to\s+take\b",
-    re.IGNORECASE,
-)
 
 # THE SAME OBJECT THE ROUTER USES. Crisis wording had two definitions -
 # this one, and a much narrower cue in agents/router.py - and the
@@ -13231,9 +12843,100 @@ def _latest_human_text(messages: list) -> str:
     return content if isinstance(content, str) else str(content)
 
 
+def _latest_human_message(messages: list):
+    index = _latest_human_index(messages or [])
+    return messages[index] if index >= 0 else None
+
+
+def _message_intent(message) -> dict:
+    """The router classifier's reading of ONE patient message - stored on
+    the message by `router` - as {"agent", "about_own_health",
+    "wants_human", "asks_about_medicine", "reply_kind", "crisis"}.
+
+    {} when that message was never classified (a wordless answer such as
+    a list number or an OTP, ROUTER_MODE=deterministic, or a classifier
+    failure). Every caller treats {} as "no signal", so a missing
+    classification can only make a guard stand down, never fire."""
+
+    kwargs = getattr(message, "additional_kwargs", None) or {}
+    return dict(kwargs.get("turn_intent") or {})
+
+
+def _latest_intent(messages: list) -> dict:
+    latest = _latest_human_message(messages)
+    return _message_intent(latest) if latest is not None else {}
+
+
+def _reply_kind(messages: list):
+    """"yes" / "no" / "dont_know" / "other" for the patient's latest
+    message, or None when it was not classified."""
+
+    return _latest_intent(messages).get("reply_kind")
+
+
+_OWN_MESSAGE_TAGS = ("asked", "authored_by")
+
+
+def _own_tags(message) -> dict:
+    """Only the tags THIS module puts on an assistant message.
+
+    Never the whole `additional_kwargs`: a provider's raw reply can carry
+    `tool_calls` there, and a new AIMessage built from it re-parses them
+    into real tool calls - sending a finished reply back to the tools."""
+
+    kwargs = getattr(message, "additional_kwargs", None) or {}
+    return {key: kwargs[key] for key in _OWN_MESSAGE_TAGS if key in kwargs}
+
+
+def _question_on(message) -> Optional[str]:
+    """The question a CODE-AUTHORED assistant message asked, tagged on it
+    when it was sent (`additional_kwargs["asked"]`) - exact by
+    construction, no reading of its text."""
+
+    return (getattr(message, "additional_kwargs", None) or {}).get("asked")
+
+
+def _previous_assistant_message(messages: list):
+    """The assistant's last visible reply before the patient's latest
+    message (tool-call-only messages skipped)."""
+
+    index = _latest_human_index(messages or [])
+    for message in reversed((messages or [])[:max(index, 0)]):
+        if getattr(message, "type", None) != "ai" or getattr(message, "tool_calls", None):
+            continue
+        if str(getattr(message, "content", "") or "").strip():
+            return message
+    return None
+
+
+def _assistant_just_asked(messages: list, question: str) -> bool:
+    """Did the assistant's last reply ask `question` (see
+    agents.router's `last_question` values)?
+
+    Two structural sources, no wording: the tag a code-authored question
+    carries, and the router classifier's `last_question` - its reading
+    of the assistant's message, stored on the patient's reply to it."""
+
+    previous = _previous_assistant_message(messages)
+    if previous is not None and _question_on(previous) == question:
+        return True
+    return _latest_intent(messages).get("last_question") == question
+
+
+def _assistant_ever_asked(messages: list, question: str) -> bool:
+    """Has `question` been asked anywhere in this conversation?"""
+
+    for message in messages or []:
+        if getattr(message, "type", None) == "ai" and _question_on(message) == question:
+            return True
+        if getattr(message, "type", None) == "human" \
+                and _message_intent(message).get("last_question") == question:
+            return True
+    return False
+
+
 def _asks_for_medication(messages: list) -> bool:
-    text = _latest_human_text(messages)
-    return bool(text) and bool(_MEDICATION_REQUEST_RE.search(_norm_ar(text)))
+    return bool(_latest_intent(messages).get("asks_about_medicine"))
 
 
 def _signals_crisis(messages: list) -> bool:
@@ -13388,7 +13091,7 @@ def _reply_scope_refuses_a_health_message(reply_text: str, state: AgentState) ->
     # the whole class rather than the two known members of it.
     if not (_asks_for_medication(messages)
             or _signals_crisis(messages)
-            or _message_is_about_health(messages)):
+            or _turn_is_about_health(state)):
         return False
 
     return _is_scope_refusal(reply_text, state.get("templates") or {})
@@ -13462,22 +13165,12 @@ _ANSWERED_OUR_QUESTION_CORRECTION_DIRECTIVE = (
 )
 
 
-def _message_is_about_health(messages: list) -> bool:
-    """Whether the patient's latest message is about their own body.
+def _turn_is_about_health(state: AgentState) -> bool:
+    """Whether the patient's latest message is about their own body - as
+    judged by the router's classifier this turn (`turn_intent`), not by a
+    second word list. False when no classification was made this turn."""
 
-    Delegates to agents.router.looks_like_health_message, which reads
-    the router's own medical cues - so this can never fall behind them
-    the way a second hand-written list would."""
-
-    text = _latest_human_text(messages)
-    if not text:
-        return False
-
-    try:
-        return agents.router.looks_like_health_message(text)
-    except Exception:  # pragma: no cover - never worth failing a turn for
-        logger.warning("health-message check failed", exc_info=True)
-        return False
+    return bool((state.get("turn_intent") or {}).get("about_own_health"))
 
 
 def _health_message_refusal_correction(reply_text: str, state: AgentState) -> str:
@@ -13718,17 +13411,6 @@ def _supplied_identifier_correction(reply_text: str, state: AgentState) -> str:
 # SHOWN by `lookup_appointment` is equally "this one" when they say
 # "cancel it" next.
 
-_CANCEL_OR_CHANGE_INTENT_RE = re.compile(
-    # Arabic. `\w*` matters: the object pronoun attaches to the verb, so
-    # "ألغيه", "ألغيها", "عدله", "أجله" are each a single word - the
-    # very phrasings this directive exists for.
-    r"(?:^|\s)(?:الغ|ابطل|بطل)\w*|"
-    r"(?:^|\s)(?:عدل|اعدل|غير|اغير|اجل|اؤجل|انقل|قدم)\w*|"
-    r"(?:ال)?(?:الغاء|تعديل|تاجيل|تغيير)\b|"
-    r"\bcancel\b|\breschedul\w*|\bpostpon\w*|"
-    r"\b(?:change|move|shift)\s+(?:it|this|that|the\s+(?:booking|appointment))\b",
-    re.IGNORECASE,
-)
 
 
 def _just_created_booking_reference(messages: list) -> str:
@@ -13791,7 +13473,7 @@ def _build_just_booked_directive(messages: list) -> str:
     if not text:
         return ""
 
-    if not _CANCEL_OR_CHANGE_INTENT_RE.search(_norm_ar(text)):
+    if _latest_intent(messages).get("agent") not in ("cancel", "reschedule"):
         return ""
 
     # They typed a reference of their own - that one wins, and
@@ -14446,7 +14128,6 @@ def _build_established_facts_directive(ledger: dict) -> str:
 # never on an offer or a question ("أأكد الحجز؟" is not a claim), and
 # only on the five actions that change something in the real world.
 
-_QUESTION_MARK_RE = re.compile(r"[?؟]\s*$")
 
 # "تم الحجز" / "حجزك اتأكد" / "booking confirmed" - the action reported
 # as DONE. The offer forms ("تحب أحجز", "هل أأكد") are excluded by the
@@ -14592,6 +14273,45 @@ def _tool_succeeded_this_turn(messages: list, tool_name: str, ok_statuses: tuple
     return False
 
 
+_CLAIM_CLAUSE_BREAK_RE = re.compile(r"[.!?؟\n✅🎉]")
+_CLAIM_INTERROGATIVE_LEAD_RE = re.compile(
+    r"(?:^|\s)(?:هل|تحب\w*|حاب\w*|تبغ\w*|تبي|تحبي|تريد|اأكد|أأكد|نكمل|أكمل|اكمل)(?:\s|$)|"
+    r"\b(?:shall|should|would\s+you|do\s+you\s+want|want\s+me\s+to|can\s+i)\b",
+    re.IGNORECASE,
+)
+# How far past the matched claim a "?" may sit and still be the claim's
+# own question mark ("تم الحجز؟", "your booking is confirmed?").
+_CLAIM_QUESTION_MAX_GAP = 12
+
+
+def _claim_is_a_question(reply_text: str, match) -> bool:
+    """Is the matched claim itself asked, rather than stated?
+
+    The old test looked for a "?" at the end of the claim's LINE, so a
+    stated claim followed by the reply's closing question on the same
+    line - "تم الحجز بنجاح تحب حاجة تانية؟" - read as a question and
+    stood the gate down with no booking tool behind it.
+
+    Now the claim's own clause is used (bounded by sentence punctuation,
+    a newline or a ✅/🎉 marker), and it counts as a question only when
+    that clause ends in "?"/"؟" AND either opens with an interrogative
+    ("هل تم الحجز؟", "shall I...") or the "?" sits right after the claim
+    ("تم الحجز؟")."""
+
+    before = reply_text[:match.start()]
+    starts = [m.end() for m in _CLAIM_CLAUSE_BREAK_RE.finditer(before)]
+    clause_start = starts[-1] if starts else 0
+
+    after = _CLAIM_CLAUSE_BREAK_RE.search(reply_text, match.end())
+    if not after or after.group() not in "?؟":
+        return False
+
+    if after.start() - match.end() <= _CLAIM_QUESTION_MAX_GAP:
+        return True
+
+    return bool(_CLAIM_INTERROGATIVE_LEAD_RE.search(reply_text[clause_start:match.start()]))
+
+
 def _ungrounded_terminal_claim(reply_text: str, messages: list):
     """The claim gate that fired, or None.
 
@@ -14606,12 +14326,10 @@ def _ungrounded_terminal_claim(reply_text: str, messages: list):
         if not match:
             continue
 
-        # Only the sentence the claim sits in matters for the
-        # question test - a reply can legitimately end with its one
-        # question after stating a completed action.
-        sentence_end = reply_text.find("\n", match.end())
-        sentence = reply_text[match.start(): sentence_end if sentence_end != -1 else len(reply_text)]
-        if _QUESTION_MARK_RE.search(sentence.split(".")[0]):
+        # Only the clause the claim sits in matters for the question
+        # test - a reply can legitimately end with its one question
+        # after stating a completed action.
+        if _claim_is_a_question(reply_text, match):
             continue
 
         if _tool_succeeded_this_turn(messages, gate.tool_name, gate.ok_statuses):
@@ -15551,24 +15269,6 @@ def _build_abandoned_booking_directive(messages: list, session_id: str) -> str:
     return _ABANDONED_BOOKING_RESET_DIRECTIVE
 
 
-# The bare words a patient uses to ANSWER "by specialty or by doctor?"
-# and "a particular branch, or shall I show you them?" - i.e. the word
-# itself, with no name attached.
-#
-# NOTE: "دكتور"/"doctor" is deliberately NOT in this regex any more - it
-# has its own, different handling below (_BARE_DOCTOR_ANSWER_RE), because
-# the product decision for that one path changed: ask for the specific
-# doctor's name first, rather than dumping the whole roster immediately.
-# "تخصص" and "فرع" are unaffected and still show their list right away.
-_BARE_ENTITY_ANSWER_RE = re.compile(
-    r"^\s*(?:"
-    r"(?:ال)?(?:تخصص|تخصصات|قسم|اقسام|أقسام)|"
-    r"(?:ال)?(?:فرع|فروع)|"
-    r"specialt(?:y|ies)|departments?|branch(?:es)?"
-    r")\s*[.!؟?،,]*\s*$",
-    re.IGNORECASE,
-)
-
 _BARE_ENTITY_ANSWER_DIRECTIVE = (
     "============================================================\n"
     "THEY ANSWERED WITH THE CATEGORY, NOT A NAME - SHOW THE LIST\n"
@@ -15594,24 +15294,6 @@ _BARE_ENTITY_ANSWER_DIRECTIVE = (
     "separately - see the DOCTOR PATH directive.)\n\n"
 )
 
-
-# ==========================================================
-# "دكتور" answered bare -> ASK FOR THE NAME, don't list yet
-# ==========================================================
-#
-# Product decision: the patient choosing the DOCTOR PATH with the bare
-# word "دكتور"/"doctor" (no name attached) should be asked to type the
-# specific doctor's name FIRST, rather than immediately being shown the
-# entire roster. The full list is still available - but only once the
-# patient has said they don't have a particular doctor in mind, or asks
-# outright to see everyone. This keeps the roster from being dumped on
-# every patient who simply meant "let me pick by doctor, not by
-# specialty" and may well already know who they want.
-_BARE_DOCTOR_ANSWER_RE = re.compile(
-    r"^\s*(?:ال)?(?:دكتور|دكتوره|دكتورة|دكاتره|دكاترة|طبيب|طبيبه|طبيبة|"
-    r"اطباء|أطباء|doctors?)\s*[.!؟?،,]*\s*$",
-    re.IGNORECASE,
-)
 
 _BARE_DOCTOR_ANSWER_DIRECTIVE = (
     "============================================================\n"
@@ -15697,9 +15379,8 @@ def _build_single_doctor_affirmation_directive(
 
     content = getattr(messages[index], "content", "")
     text = (content if isinstance(content, str) else str(content)).strip()
-    if not text or not _BARE_AFFIRMATION_RE.match(_norm_ar(text)):
+    if not text or _message_intent(messages[index]).get("reply_kind") != "yes":
         return ""
-
     session = tools._BOOKING_SESSIONS.get(session_id) or {}
 
     # Already confirmed - nothing to resolve, and re-confirming would
@@ -15760,27 +15441,12 @@ def _build_bare_doctor_answer_directive(messages: list) -> str:
     content = getattr(last, "content", "")
     text = content if isinstance(content, str) else str(content)
 
-    if not _BARE_DOCTOR_ANSWER_RE.match(text.strip()):
+    said = _message_intent(last)
+    if said.get("asks_for_list") != "doctors" or said.get("named_doctor"):
         return ""
 
     return _BARE_DOCTOR_ANSWER_DIRECTIVE
 
-
-# The follow-up turn: the assistant just asked "من فضلك اكتب اسم
-# الدكتور اللي حابب تحجز معاه" (or an equivalent), and the patient's
-# reply says they don't know one / wants to see everyone instead of
-# naming one.
-_DONT_KNOW_DOCTOR_NAME_RE = re.compile(
-    r"معرفش|مش\s*عارف|مش\s*عارفه|ما\s*اعرف|لا\s*اعرف|مش\s*عارفة|"
-    r"اعرض\s*(?:كل|جميع)?\s*(?:ال)?دكاتره|"
-    r"ورين[ىي]\s*(?:كل|جميع)?\s*(?:ال)?دكاتره|"
-    r"كل\s*(?:ال)?دكاتره\s*المتاح|وريني\s*الكل|اعرض\s*الكل|"
-    r"don'?t\s*know|show\s*(?:me\s*)?all|show\s*(?:me\s*)?every"
-)
-
-# Matches the exact question _BARE_DOCTOR_ANSWER_DIRECTIVE tells the
-# model to ask, loosely enough to survive minor rewording.
-_ASKED_FOR_DOCTOR_NAME_RE = re.compile(r"اسم\s*(?:ال)?دكتور[^\n]{0,40}تحجز")
 
 _SHOW_ALL_DOCTORS_AFTER_ASK_DIRECTIVE = (
     "============================================================\n"
@@ -15815,29 +15481,13 @@ def _build_show_all_doctors_after_ask_directive(messages: list) -> str:
 
     content = getattr(last, "content", "")
     text = content if isinstance(content, str) else str(content)
-    if not _DONT_KNOW_DOCTOR_NAME_RE.search(_norm_ar(text)):
+    if _message_intent(last).get("reply_kind") != "dont_know":
         return ""
 
-    previous_ai = None
-    for msg in reversed(history[:-1]):
-        if isinstance(msg, _AIMessage):
-            previous_ai = msg
-            break
-    if previous_ai is None:
-        return ""
-
-    previous_content = getattr(previous_ai, "content", "")
-    previous_text = previous_content if isinstance(previous_content, str) else str(previous_content)
-    if not _ASKED_FOR_DOCTOR_NAME_RE.search(_norm_ar(previous_text)):
+    if not _assistant_just_asked(history, "doctor_name"):
         return ""
 
     return _SHOW_ALL_DOCTORS_AFTER_ASK_DIRECTIVE
-
-
-_BOOKING_INTENT_RE = re.compile(
-    r"احجز|اح جز|حجز|احجزلي|عايز.{0,12}حجز|عاوز.{0,12}حجز|ابغ[يى].{0,12}حجز|"
-    r"اب[يى].{0,12}حجز|موعد|ميعاد|book|appointment|reserve"
-)
 
 
 _SERVICE_CHOSEN_DIRECTIVE = (
@@ -15887,17 +15537,6 @@ _SERVICE_CHOSEN_DIRECTIVE = (
 )
 
 
-_SERVICE_BOOKING_OFFER_RE = re.compile(
-    r"تحجز\s*موعد\s*ل|تحجز\s*ل|حجز\s*موعد\s*ل|book\s*(?:an\s*)?appointment\s*for"
-)
-
-
-_SHOW_DOCTORS_REQUEST_RE = re.compile(
-    r"(?:ال)?دكاتره|(?:ال)?دكاتره\s*المتاح|(?:ال)?اطباء|(?:ال)?دكتوره|"
-    r"doctors?|physicians?"
-)
-
-
 def _build_doctors_scope_directive(messages: list, session_id: str) -> str:
     """Fires when the patient asks to see the doctors while a specific
     branch is the one under discussion - and scopes the roster to that
@@ -15937,7 +15576,7 @@ def _build_doctors_scope_directive(messages: list, session_id: str) -> str:
     content = getattr(last, "content", "")
     text = content if isinstance(content, str) else str(content)
 
-    if not _SHOW_DOCTORS_REQUEST_RE.search(_norm_ar(text)):
+    if _message_intent(last).get("asks_for_list") != "doctors":
         return ""
 
     return (
@@ -15978,38 +15617,6 @@ def _build_doctors_scope_directive(messages: list, session_id: str) -> str:
     )
 
 
-_SERVICE_WORDED_REQUEST_RE = re.compile(
-    # "خدمة" itself counts: patients often name the service by saying
-    # the word - "خدمه اخصائي تغذيه" - and leaving it out meant a
-    # repeat of the request went unrecognised a second time.
-    r"جلس[هة]|استشار[هة]|إستشار[هة]|كشف|فحص|برنامج|تحليل|اشع[هة]|أشع[هة]|"
-    r"جلسات|خدم[هة]|الخدم[هة]|"
-    r"session|consultation|checkup|check-up|screening|programme|program|service"
-)
-
-
-_BARE_NEGATION_RE = re.compile(
-    r"^\s*(?:لا|لأ|لاء|ﻻ|مش|مو|ما|لا\s*شكرا|لا\s*مش|مش\s*عاوز[هة]?|مش\s*عايز[هة]?|"
-    r"ما\s*ابي|ما\s*ابغى|ما\s*اريد|مو\s*مناسب|مش\s*مناسب|غير\s*مناسب|"
-    r"no|nope|nah|not\s*this|doesn'?t\s*work)"
-    r"\s*[.!؟?،,]*\s*$",
-    re.IGNORECASE,
-)
-
-
-# A refusal that also says WHAT is refused - "لا مش مناسب التلات دا".
-# NOTE: no \b between the tokens. Arabic letters are all "word"
-# characters, so \b never matches between "لا" and "مش" and the pattern
-# silently fails - which is exactly how the confirmed failure below got
-# through a first version of this regex.
-_LEADING_REFUSAL_RE = re.compile(
-    r"^\s*(?:لا|لأ|مش|مو|ما)[\s،,]*"
-    r"(?:لا|مش|مو|ما)?[\s،,]*"
-    r"(?:مناسب|يناسب|عاوز|عايز|عاوزه|عايزه|ابي|ابغى|اريد|ينفع|تمام|كويس|حلو|"
-    r"no|not)"
-)
-
-
 def _build_negation_directive(messages: list) -> str:
     """Fires when the patient's whole message is a refusal ("لا", "مش
     مناسب", "no").
@@ -16044,10 +15651,7 @@ def _build_negation_directive(messages: list) -> str:
     # CONFIRMED REAL PRODUCTION FAILURE: "لا مش مناسب التلات دا" did not
     # match the bare pattern, so nothing fired, and the alternatives
     # offered back still included Tuesday - the very day just rejected.
-    refuses = bool(
-        _BARE_NEGATION_RE.match(folded)
-        or _LEADING_REFUSAL_RE.match(folded)
-    )
+    refuses = _message_intent(last).get("reply_kind") == "no"
 
     if not refuses:
         return ""
@@ -16152,7 +15756,7 @@ def _build_service_named_directive(messages: list, session_id: str) -> str:
     text = content if isinstance(content, str) else str(content)
     folded = _norm_ar(text)
 
-    if not _SERVICE_WORDED_REQUEST_RE.search(folded):
+    if not _message_intent(last).get("named_specialty_or_service"):
         return ""
 
     return (
@@ -16223,14 +15827,7 @@ def _build_service_chosen_directive(messages: list, session_id: str) -> str:
 
     service_offered = False
     if not (service_shown or session.get("service_id")):
-        for msg in reversed(messages[:-1]):
-            if not isinstance(msg, _AIMessage):
-                continue
-            previous = getattr(msg, "content", "")
-            previous = previous if isinstance(previous, str) else str(previous)
-            if previous.strip():
-                service_offered = bool(_SERVICE_BOOKING_OFFER_RE.search(_norm_ar(previous)))
-            break
+        service_offered = _assistant_just_asked(messages, "booking_offer")
 
     if not (service_shown or session.get("service_id") or service_offered):
         return ""
@@ -16559,7 +16156,7 @@ def _build_empty_branch_booking_intent_directive(messages: list, session_id: str
     content = getattr(last, "content", "")
     text = content if isinstance(content, str) else str(content)
 
-    if not _BOOKING_INTENT_RE.search(_norm_ar(text)):
+    if _message_intent(last).get("agent") != "booking":
         return ""
 
     return (
@@ -16639,40 +16236,13 @@ def _build_bare_entity_answer_directive(messages: list) -> str:
     content = getattr(last, "content", "")
     text = content if isinstance(content, str) else str(content)
 
-    if not _BARE_ENTITY_ANSWER_RE.match(text.strip()):
+    if _message_intent(last).get("asks_for_list") not in ("specialties", "branches"):
         return ""
 
-    previous_ai = None
-    for msg in reversed(messages[:-1]):
-        if isinstance(msg, _AIMessage):
-            previous_ai = msg
-            break
-
-    if previous_ai is None:
-        return ""
-
-    previous_content = getattr(previous_ai, "content", "")
-    previous_text = previous_content if isinstance(previous_content, str) else str(previous_content)
-
-    if not _OFFERED_SPECIALTY_OR_DOCTOR_OR_BRANCH_CHOICE_RE.search(_norm_ar(previous_text)):
+    if not _assistant_just_asked(messages, "choose_option"):
         return ""
 
     return _BARE_ENTITY_ANSWER_DIRECTIVE
-
-
-# Loosely matches the family of choice-questions this directive is meant
-# to be answering - "تحب تبدأ بالتخصص ولا بالدكتور؟", "تحب تحجزين في فرع
-# معيّن، ولا أعرض لك الدكاترة/الفروع المتاحين؟", and their variants.
-# Deliberately keyed to phrases that only appear when that specific
-# choice was actually offered, not to the bare category words themselves
-# (which would just recreate the false-positive this guard exists to
-# prevent).
-_OFFERED_SPECIALTY_OR_DOCTOR_OR_BRANCH_CHOICE_RE = re.compile(
-    r"بالتخصص[^\n]{0,10}بالدكتور|بالدكتور[^\n]{0,10}بالتخصص|"
-    r"فرع\s*معي.ن[^\n]{0,40}(?:اعرض|أعرض)|"
-    r"specialty[^\n]{0,15}doctor|doctor[^\n]{0,15}specialty|"
-    r"particular\s*branch[^\n]{0,40}show"
-)
 
 
 # ==========================================================
@@ -16783,10 +16353,6 @@ def _build_branches_info_directive(messages: list) -> str:
     )
 
 
-_BRANCH_QUESTION_RE = re.compile(
-    r"(?:ال)?فروع|(?:ال)?فرع|branch(?:es)?"
-)
-
 _DOCTOR_BRANCHES_DIRECTIVE = (
     "============================================================\n"
     "SHOW THIS DOCTOR'S OWN BRANCHES AND DAYS - NOT A GENERIC LIST\n"
@@ -16833,7 +16399,7 @@ def _build_doctor_branches_directive(messages: list, session_id: str) -> str:
     content = getattr(last, "content", "")
     text = content if isinstance(content, str) else str(content)
 
-    if not _BRANCH_QUESTION_RE.search(_norm_ar(text)):
+    if _message_intent(last).get("asks_for_list") != "branches":
         return ""
 
     return _DOCTOR_BRANCHES_DIRECTIVE
@@ -17182,6 +16748,72 @@ def _build_out_of_scope_block(templates: dict, language: str = "ar") -> str:
     )
 
 
+def _build_no_info_handoff_block(templates: dict, language: str = "ar") -> str:
+    """The reply to a question ABOUT THIS CLINIC that nothing here can
+    answer - the knowledge base came back empty and no other tool fits
+    (results delivery, insurance, an invoice, ...).
+
+    Deliberately NOT the scope refusal: the patient asked about the
+    clinic, so "عذرًا أنا لطيفة... ومختصة بـ..." reads as being turned away
+    for a perfectly reasonable question, and "مش فاهم طلبك" is simply
+    untrue. The honest answer is "I don't have that - a person does",
+    with the handoff offered in the same breath.
+
+    A client can author their own via `msg_no_info_handoff`."""
+
+    authored = (templates or {}).get("msg_no_info_handoff")
+    if authored and authored.strip():
+        return authored.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    if language == "en":
+        return (
+            "I'm sorry, I don't have information about that right now 🌷\n"
+            "Would you like me to connect you with our customer service team?"
+        )
+    return (
+        "للأسف معنديش معلومات عن النقطة دي حاليًا 🌷\n"
+        "تحب أوصلك بخدمة العملاء يساعدوك فيها؟"
+    )
+
+
+# "I didn't understand your request" in the words the model reaches for.
+# Only ever checked on a turn where the knowledge base was consulted and
+# came back empty - i.e. where the request was understood perfectly well.
+_DID_NOT_UNDERSTAND_RE = re.compile(
+    r"مش\s*فاهم\w*|مش\s*واضح|ممكن\s*توضح\w*|وضح\w*\s*(?:لي\s*)?طلبك|لم\s*افهم|"
+    r"didn'?t\s+(?:quite\s+)?understand|could\s+you\s+clarify|not\s+sure\s+what\s+you\s+mean",
+    re.IGNORECASE,
+)
+
+
+def _faq_came_back_empty_this_turn(messages: list) -> bool:
+    """`answer_hospital_faq` ran this turn and found nothing to answer
+    with ("not_found" / "not_configured")."""
+
+    for msg in _tool_messages_this_turn(messages):
+        if getattr(msg, "name", None) != "answer_hospital_faq":
+            continue
+        data = parse_tool_content(msg) or {}
+        if data.get("status") in ("not_found", "not_configured"):
+            return True
+    return False
+
+
+def _reply_turns_away_a_clinic_question(reply_text: str, state: AgentState) -> bool:
+    """The draft answers a clinic question the knowledge base could not
+    answer with the scope refusal or with "I didn't understand" - both
+    wrong for a question that was understood and IS about the clinic.
+    Decided from the tool result, not from guessing the topic."""
+
+    if not reply_text or not _faq_came_back_empty_this_turn(state.get("messages") or []):
+        return False
+
+    if _is_scope_refusal(reply_text, state.get("templates") or {}):
+        return True
+
+    return bool(_DID_NOT_UNDERSTAND_RE.search(_norm_ar(reply_text)))
+
+
 def _build_scope_directive(templates: dict, language: str = "ar") -> str:
     """Always present, deliberately short.
 
@@ -17245,6 +16877,23 @@ def _build_scope_directive(templates: dict, language: str = "ar") -> str:
         "Do NOT mix the two: never answer the off-topic part AND then "
         "add hospital information. Reply with the text above, and "
         "nothing else.\n\n"
+        "A QUESTION ABOUT THIS CLINIC IS NEVER \"ANYTHING ELSE\" - even "
+        "when it is not one of the services listed above (results "
+        "delivery, insurance, invoices, payment, working arrangements, "
+        "anything about the clinic itself). For those:\n"
+        "  1. If one of your tools can answer it, call it - "
+        "`answer_hospital_faq` for anything about the clinic.\n"
+        "  2. If the tool returns the answer, answer from it.\n"
+        "  3. If it returns \"not_found\" / \"not_configured\", or no tool "
+        "you have fits, reply with THIS EXACT text as your entire reply:\n\n"
+        "[BEGIN-EXACT-TEXT]\n"
+        f"{_build_no_info_handoff_block(templates, language)}\n"
+        "[END-EXACT-TEXT]\n\n"
+        "     If the patient then says yes, call `request_human_handoff` "
+        "with `patient_agreed=True`.\n"
+        "Never answer a clinic question with the refusal above, never "
+        "with \"I didn't understand your request\", and never from your "
+        "own knowledge.\n\n"
     )
 
 
@@ -17598,20 +17247,6 @@ _SUMMARY_OR_CONFIRMATION_CUE_RE = re.compile(
     r"is\s*everything\s*correct"
 )
 
-# A bare yes. The patient agreeing to a yes/no question the assistant
-# itself asked.
-_BARE_AFFIRMATION_RE = re.compile(
-    r"^\s*(?:اه|ايه|أيوه|ايوه|ايوا|نعم|تمام|اوك|أوك|ok|okay|yes|yep|sure|"
-    r"اكمل|كمل|اه\s*اكمل|ماشي|حاضر|طبعا|أكيد|اكيد)"
-    r"\s*[.!؟?،,]*\s*$",
-    re.IGNORECASE,
-)
-
-
-_BRANCH_SERVICES_OFFER_RE = re.compile(
-    r"(?:ال)?خدمات[^\n]{0,40}(?:ال)?فرع|(?:ال)?فرع[^\n]{0,40}(?:ال)?خدمات|"
-    r"services[^\n]{0,40}branch|branch[^\n]{0,40}services"
-)
 
 
 def _build_branch_services_affirmation_directive(messages: list, session_id: str) -> str:
@@ -17645,21 +17280,10 @@ def _build_branch_services_affirmation_directive(messages: list, session_id: str
     content = getattr(last, "content", "")
     text = content if isinstance(content, str) else str(content)
 
-    if not _BARE_AFFIRMATION_RE.match(_norm_ar(text)):
+    if _message_intent(last).get("reply_kind") != "yes":
         return ""
 
-    previous_ai = None
-    for msg in reversed(messages[:-1]):
-        if isinstance(msg, _AIMessage):
-            previous_ai = msg
-            break
-    if previous_ai is None:
-        return ""
-
-    previous_content = getattr(previous_ai, "content", "")
-    previous_text = previous_content if isinstance(previous_content, str) else str(previous_content)
-
-    if not _BRANCH_SERVICES_OFFER_RE.search(_norm_ar(previous_text)):
+    if not _assistant_just_asked(messages, "branch_services_offer"):
         return ""
 
     session = tools._BOOKING_SESSIONS.get(session_id) or {}
@@ -17822,12 +17446,8 @@ def _reply_skips_reference_or_phone_question(reply_text: str, state: AgentState)
     from langchain_core.messages import AIMessage as _AIMessage, HumanMessage as _HumanMessage
 
     # STEP 1's own question already appeared somewhere earlier.
-    for msg in messages:
-        if isinstance(msg, _AIMessage):
-            content = getattr(msg, "content", "")
-            text = content if isinstance(content, str) else str(content or "")
-            if _REFERENCE_OR_PHONE_QUESTION_RE.search(_norm_ar(text)):
-                return False
+    if _assistant_ever_asked(messages, "reference_or_phone"):
+        return False
 
     # The patient already supplied a reference or a phone number
     # themselves - STEP 1's smart-detection rule allows skipping the
@@ -17859,19 +17479,6 @@ _REFERENCE_OR_PHONE_CORRECTION_DIRECTIVE = (
     "CONFIRMED REAL PRODUCTION FAILURE: \"عاوزه اعدل معاد\" (no "
     "reference, no phone) was answered with \"نكمل تعديل موعدك على نفس "
     "رقم الواتساب ده؟\" - skipping the choice entirely.\n\n"
-)
-
-
-_CHOSE_PHONE_PATH_RE = re.compile(
-    r"^\s*ب?\s*(?:رقم\s*)?(?:ال)?جوال\s*$|^\s*ب?\s*(?:رقم\s*)?(?:ال)?هاتف\s*$|"
-    r"^\s*ب?\s*(?:رقم\s*)?(?:ال)?تليفون\s*$|^\s*ب?\s*(?:رقم\s*)?(?:ال)?موبايل\s*$|"
-    r"^\s*(?:by\s*)?phone\s*(?:number)?\s*$|^\s*(?:by\s*)?mobile\s*(?:number)?\s*$|"
-    r"^\s*(?:by\s*)?telephone\s*(?:number)?\s*$"
-)
-
-_CHOSE_REFERENCE_PATH_RE = re.compile(
-    r"^\s*ب?\s*(?:رقم\s*)?(?:ال)?حجز\s*$|^\s*ب?\s*(?:ال)?رقم\s*(?:ال)?مرجعي\s*$|"
-    r"^\s*(?:by\s*)?reference\s*(?:number)?\s*$"
 )
 
 
@@ -17936,36 +17543,18 @@ def _reply_reoffers_reference_after_phone_chosen(reply_text: str, state: AgentSt
     # even though the assistant itself had put the conversation on the
     # phone path two messages earlier.
     chose_phone = False
-    asked_step1 = False
     for msg in messages:
-        if isinstance(msg, _AIMessage3):
-            content = getattr(msg, "content", "")
-            text = content if isinstance(content, str) else str(content or "")
-            folded_ai = _norm_ar(text)
-            asked_step1 = bool(_REFERENCE_OR_PHONE_QUESTION_RE.search(folded_ai))
-
-            # The implicit commitment. Scoped exactly like
-            # `_reply_skips_reference_or_phone_question` scopes the same
-            # question, so the unrelated NEW BOOKING flow's own STEP NB6
-            # ("نكمل الحجز على نفس رقم الواتساب ده؟") - which has no
-            # reference option to re-offer in the first place - can never
-            # trip this.
-            if (_SAME_WHATSAPP_QUESTION_RE.search(folded_ai)
-                    and _CANCEL_OR_RESCHEDULE_CONTEXT_RE.search(folded_ai)):
-                chose_phone = True
-        elif isinstance(msg, _HumanMessage3) and asked_step1:
-            content = getattr(msg, "content", "")
-            text = content if isinstance(content, str) else str(content or "")
-            folded_reply = _norm_ar(text)
-            if _CHOSE_PHONE_PATH_RE.search(folded_reply):
-                chose_phone = True
-            elif _CHOSE_REFERENCE_PATH_RE.search(folded_reply):
-                # They chose reference, not phone - re-offering both
-                # later would be a different (currently unaddressed)
-                # situation, not this bug.
-                chose_phone = False
-            asked_step1 = False
-
+        if not isinstance(msg, _HumanMessage3):
+            continue
+        said = _message_intent(msg)
+        # The assistant asked "same WhatsApp number?" in a cancel/change
+        # flow - that question only exists on the phone path.
+        if said.get("last_question") == "same_number" and said.get("agent") in ("cancel", "reschedule"):
+            chose_phone = True
+        if said.get("identifier_choice") == "phone":
+            chose_phone = True
+        elif said.get("identifier_choice") == "reference":
+            chose_phone = False
     return chose_phone
 
 
@@ -18055,49 +17644,6 @@ def _identifier_choice_message(
     return _IDENTIFIER_CHOICE_MESSAGE[intent]["en" if is_english else "ar"]
 
 
-# WHICH VERB. Written in FOLDED form (see `_norm_ar`) - the text is
-# normalised before matching, so a hamza written here would match
-# nothing.
-#
-# Cancel is tested FIRST and wins a message that somehow contains both:
-# "الغي الحجز وعدل الموعد" is a patient who wants the appointment gone,
-# and offering to move it instead is the worse of the two mistakes.
-_CANCEL_VERB_RE = re.compile(
-    r"(?:^|\s)(?:الغ|ابطل|بطل)\w*|(?:^|\s)(?:ال)?الغاء(?:\s|$)|"
-    r"\bcancel\w*",
-    re.IGNORECASE,
-)
-
-_MODIFY_VERB_RE = re.compile(
-    r"(?:^|\s)(?:عدل|اعدل|غير|اغير|اجل|اؤجل|انقل|قدم)\w*|"
-    r"(?:^|\s)(?:ال)?(?:تعديل|تاجيل|تغيير|تقديم)(?:\s|$)|"
-    r"\breschedul\w*|\bpostpon\w*|\b(?:change|move|shift)\b",
-    re.IGNORECASE,
-)
-
-
-# A DELIBERATE REQUEST TO CANCEL OR TO MOVE AN APPOINTMENT, and
-# essentially nothing else. Deliberately much tighter than
-# `_CANCEL_OR_CHANGE_INTENT_RE`, for the same reason
-# `_BARE_BOOKING_REQUEST_RE` is tighter than `_BOOKING_INTENT_RE`: the
-# reply is emitted straight from code, so a false positive here replaces
-# a real answer with a question.
-_BARE_CANCEL_OR_CHANGE_REQUEST_RE = re.compile(
-    r"(?:عايز|عاوز|عايزه|عاوزه|ابغى|ابغي|ابي|حاب|حابه|نفسي|اريد|ودي|بدي|"
-    r"محتاج|محتاجه)"
-    r"[^.\n]{0,12}(?:الغ|اعدل|عدل|اغير|غير|اجل|انقل|تعديل|الغاء|تاجيل|تغيير)|"
-    r"(?:^|\s)(?:الغاء|تعديل|تاجيل|تغيير)\s*(?:ال)?"
-    r"(?:حجز|حجزي|موعد|موعدي|معاد|ميعاد|كشف)|"
-    r"(?:^|\s)(?:الغي|الغ|اعدل|عدل|غير|اجل|انقل)\s*(?:لي\s*)?(?:ال)?"
-    r"(?:حجز|حجزي|موعد|موعدي|معاد|ميعاد|كشف)|"
-    r"\b(?:i\s*(?:want|need|would\s+like)|can\s+i|i'?d\s+like)\b[^.\n]{0,20}"
-    r"\b(?:cancel|reschedul\w*|change|move|postpone)\b|"
-    r"\b(?:cancel|reschedule|postpone|change|move)\s+(?:my|the)\s*"
-    r"(?:appointment|booking|reservation)\b",
-    re.IGNORECASE,
-)
-
-
 def _cancel_or_reschedule_intent(messages: list, agent_name: str) -> str:
     """"cancel" or "reschedule", decided from the patient's own words and
     only falling back to which specialist owns the turn.
@@ -18107,14 +17653,9 @@ def _cancel_or_reschedule_intent(messages: list, agent_name: str) -> str:
     `agent_name` alone would offer cancellation to somebody who asked to
     reschedule."""
 
-    folded = _norm_ar(_latest_human_text(messages))
-
-    if folded:
-        if _CANCEL_VERB_RE.search(folded):
-            return "cancel"
-        if _MODIFY_VERB_RE.search(folded):
-            return "reschedule"
-
+    meant = _latest_intent(messages).get("agent")
+    if meant in ("cancel", "reschedule"):
+        return meant
     if agent_name in ("cancel", "reschedule"):
         return agent_name
 
@@ -18171,11 +17712,6 @@ def _build_identifier_choice_directive(messages: list, agent_name: str) -> str:
     if not text:
         return ""
 
-    folded = _norm_ar(text)
-
-    if not _BARE_CANCEL_OR_CHANGE_REQUEST_RE.search(folded):
-        return ""
-
     if not _cancel_or_reschedule_intent(messages, agent_name):
         return ""
 
@@ -18195,22 +17731,10 @@ def _build_identifier_choice_directive(messages: list, agent_name: str) -> str:
             return ""
 
     # Already asked - do not ask twice.
-    for msg in messages:
-        if getattr(msg, "type", None) != "ai":
-            continue
-        msg_content = getattr(msg, "content", "")
-        msg_text = msg_content if isinstance(msg_content, str) else str(msg_content or "")
-        if _REFERENCE_OR_PHONE_QUESTION_RE.search(_norm_ar(msg_text)):
-            return ""
+    if _assistant_ever_asked(messages, "reference_or_phone"):
+        return ""
 
     return _IDENTIFIER_CHOICE_ASK_DIRECTIVE
-
-
-_REJECTS_SHOWN_BOOKING_RE = re.compile(
-    r"(?:^|\s)لا(?:\s|$)|لأ\b|مش\s*(?:ده|دي|هو|هي|هذا|هذه)|"
-    r"غير\s*(?:ده|هذا|كده)|واحد\s*غيره|غيره\s*انا|"
-    r"(?:^|\s)no(?:\s|$)|not\s*this|different\s*one"
-)
 
 
 def _reply_mishandles_rejected_single_booking(reply_text: str, state: AgentState) -> bool:
@@ -18253,7 +17777,7 @@ def _reply_mishandles_rejected_single_booking(reply_text: str, state: AgentState
 
     last_human_text = getattr(messages[index], "content", "")
     last_human_text = last_human_text if isinstance(last_human_text, str) else str(last_human_text or "")
-    if not _REJECTS_SHOWN_BOOKING_RE.search(_norm_ar(last_human_text)):
+    if _message_intent(messages[index]).get("reply_kind") != "no":
         return False
 
     # A single booking must actually have been found and shown BEFORE
@@ -18462,11 +17986,10 @@ def _build_new_booking_different_number_directive(
 
     content = getattr(messages[index], "content", "")
     text = (content if isinstance(content, str) else str(content)).strip()
-    if not text or not _PLAIN_NEGATIVE_RE.match(_norm_ar(text)):
+    if not text or _message_intent(messages[index]).get("reply_kind") != "no":
         return ""
 
-    last_ai = _norm_ar(_last_ai_reply_text(messages))
-    if not last_ai or not _NEW_BOOKING_SAME_NUMBER_QUESTION_RE.search(last_ai):
+    if not _assistant_just_asked(messages, "same_number"):
         return ""
 
     # Already moved on - a number has since been supplied and checked,
@@ -19063,10 +18586,7 @@ def _reply_asks_for_a_phone_already_known(reply_text: str, state: AgentState) ->
     for msg in reversed(state.get("messages", []) or []):
         if not isinstance(msg, _HumanMessage):
             continue
-        content = getattr(msg, "content", "")
-        text = content if isinstance(content, str) else str(content)
-        return bool(_BARE_AFFIRMATION_RE.match(_norm_ar(text)))
-
+        return _message_intent(msg).get("reply_kind") == "yes"
     return False
 
 
@@ -20008,7 +19528,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     # exists, because correcting a draft that went to branches costs a
     # whole extra call. See `_build_specialty_picked_directive`.
     specialty_picked_directive = _build_specialty_picked_directive(
-        state["messages"], agent_name,
+        state["messages"], agent_name, state.get("session_id"),
     )
     established_specialty_directive = _build_established_specialty_directive(
         state["messages"], state.get("session_id"), agent_name,
@@ -20524,12 +20044,18 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                     state.get("templates") or {}, target_language, intent,
                 )
 
+    # What that fixed question asks, tagged on the message itself so a
+    # later turn knows it without reading the text back.
+    asked = None
+    if deterministic_reply is not None:
+        asked = "booking_start" if agent_name == "booking" else "reference_or_phone"
+
     if deterministic_reply is not None:
         logger.info(
             "agent[%s]: fixed flow-entry question - sending the authored "
             "wording without a model call", agent_name,
         )
-        response = AIMessage(content=deterministic_reply)
+        response = AIMessage(content=deterministic_reply, additional_kwargs={"asked": asked})
     else:
         response = _invoke_llm_resilient(
             _llm_for(agent_name), [system_message] + history,
@@ -21037,6 +20563,20 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
             )
             used_safe_fallback = True
 
+        # A CLINIC QUESTION THE KNOWLEDGE BASE COULD NOT ANSWER GETS THE
+        # "I don't have that - shall I connect you?" reply, never the
+        # scope refusal or "I didn't understand". Swapped in code, with
+        # no model call: the right text is fixed and already known.
+        if not used_safe_fallback and _reply_turns_away_a_clinic_question(normalized, state):
+            logger.warning(
+                "agent[%s]: the knowledge base had nothing for a clinic question and "
+                "the draft turned the patient away - sending the no-information "
+                "handoff offer instead", agent_name,
+            )
+            normalized = _build_no_info_handoff_block(
+                state.get("templates") or {}, target_language or "ar",
+            )
+
         if normalized != response.content:
             if not (normalized or "").strip():
                 # EVERY processing step above can, in principle, remove
@@ -21059,7 +20599,9 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                     agent_name, response.content,
                 )
             else:
-                response = AIMessage(content=normalized)
+                # Keep our own tags (e.g. the `asked` tag of a code-authored
+                # question) - only the text changes. See `_own_tags`.
+                response = AIMessage(content=normalized, additional_kwargs=_own_tags(response))
 
     if not has_tool_calls and not state.get("greeted"):
         first_user_message = state["messages"][0].content if state["messages"] else ""
@@ -21218,7 +20760,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
             else:
                 combined = greeting.strip()
 
-            response = AIMessage(content=combined)
+            response = AIMessage(content=combined, additional_kwargs=_own_tags(response))
 
         updates["greeted"] = True
 
@@ -21262,14 +20804,17 @@ def router(state: AgentState) -> dict:
     still routes exactly once and cannot change owner half way through
     its own tool sequence.
 
-    Costs nothing in the default configuration: routing is pure pattern
-    matching over the latest human message (see agents/router.py for why
-    that is a feature rather than a shortcut), so no LLM call and no
-    added latency."""
+    In the default ROUTER_MODE=llm the meaning of the message is decided
+    by one small classification call on `_router_llm` (see
+    agents/router.py); a wordless answer (a list number, an OTP) to an
+    active flow needs no call. ROUTER_MODE=deterministic makes no call:
+    the current owner keeps the turn."""
 
     previous = state.get("active_agent")
 
-    chosen, reason = agents.route_turn(state["messages"], previous, state.get("session_id"))
+    chosen, reason, turn_intent = agents.router.route_turn_with_intent(
+        state["messages"], previous, state.get("session_id"),
+    )
 
     # Once per turn, from the node - never from the conditional edge,
     # which LangGraph may call more than once. See _clear_stale_branch_context.
@@ -21286,11 +20831,28 @@ def router(state: AgentState) -> dict:
     # booking specialist uses it to decide whether a half-finished
     # booking is a detour to be preserved or an abandoned one to clear -
     # see _build_abandoned_booking_directive.
-    return {
+    update = {
         "active_agent": chosen,
         "routing_reason": reason,
         "previous_agent": previous,
+        # The classifier's structured reading of THIS message (None when
+        # no call was made). Overwritten every turn, never carried over.
+        "turn_intent": turn_intent,
     }
+
+    # ...and the same reading kept ON the patient's message, so any guard
+    # that looks at an earlier message ("which one described the
+    # symptom?") reads what that message MEANT instead of re-scanning its
+    # words. A copy with the same id: `add_messages` replaces it in
+    # place, and additional_kwargs on a user message are never sent to
+    # the model. See `_message_intent`.
+    latest = _latest_human_message(state["messages"])
+    if turn_intent and latest is not None and getattr(latest, "id", None):
+        update["messages"] = [latest.model_copy(update={"additional_kwargs": {
+            **(latest.additional_kwargs or {}), "turn_intent": turn_intent,
+        }})]
+
+    return update
 
 
 def route_to_specialist(state: AgentState) -> str:
@@ -21527,6 +21089,44 @@ def _blocked_create_new_booking_tool_calls(state: AgentState) -> list:
 _base_tool_node = ToolNode(tools.ALL_TOOLS)
 
 
+def _tool_names_bound_to(agent_name: Optional[str]) -> set:
+    """The tool names `agent_name`'s LLM is actually bound to - the same
+    resolution `_llm_for` uses, so what may EXECUTE can never differ from
+    what the model was SHOWN. Every case where `_llm_for` hands out the
+    full-tool binding (legacy graph, scoping switched off, a caller-
+    swapped LLM) allows every tool here too."""
+
+    if (not config.MULTI_AGENT_ENABLED
+            or not config.AGENT_TOOL_SCOPING
+            or _llm_with_tools is not _DEFAULT_LLM_WITH_TOOLS):
+        return {getattr(t, "name", "") for t in tools.ALL_TOOLS}
+
+    return {getattr(t, "name", "") for t in agents.tools_for(agent_name or agents.CONCIERGE)}
+
+
+def _unauthorized_tool_calls(state: AgentState) -> list:
+    """tool_call dicts in the last AIMessage naming a tool the active
+    specialist is not bound to.
+
+    THE BINDING IS NOT AN AUTHORIZATION BOUNDARY ON ITS OWN. ToolNode
+    holds every tool, so a tool name the model was never shown - a
+    hallucinated name, an injected one, a replayed checkpoint written by
+    a different specialist - used to execute anyway. This is the check
+    that makes the per-specialist tool subset in agents/registry.py a
+    boundary rather than a suggestion."""
+
+    messages = state.get("messages") or []
+    if not messages:
+        return []
+
+    tool_calls = list(getattr(messages[-1], "tool_calls", None) or [])
+    if not tool_calls:
+        return []
+
+    allowed = _tool_names_bound_to(state.get("active_agent"))
+    return [tc for tc in tool_calls if tc.get("name") not in allowed]
+
+
 def _tool_node(state: AgentState, config: RunnableConfig) -> dict:
     """`ToolNode`, plus the handling instruction for whatever each tool
     just returned.
@@ -21557,10 +21157,16 @@ def _tool_node(state: AgentState, config: RunnableConfig) -> dict:
     A payload that isn't a dict, or a tool with nothing to say about
     this status, is passed through completely untouched."""
 
-    blocked_calls = _blocked_create_new_booking_tool_calls(state)
+    unauthorized_calls = _unauthorized_tool_calls(state)
+    unauthorized_ids = {tc.get("id") for tc in unauthorized_calls}
 
-    if blocked_calls:
-        blocked_ids = {tc.get("id") for tc in blocked_calls}
+    blocked_calls = [
+        tc for tc in _blocked_create_new_booking_tool_calls(state)
+        if tc.get("id") not in unauthorized_ids
+    ]
+
+    if blocked_calls or unauthorized_calls:
+        blocked_ids = {tc.get("id") for tc in blocked_calls} | unauthorized_ids
         last = state["messages"][-1]
         remaining_calls = [
             tc for tc in (getattr(last, "tool_calls", None) or [])
@@ -21569,7 +21175,7 @@ def _tool_node(state: AgentState, config: RunnableConfig) -> dict:
 
         if remaining_calls:
             # Any OTHER tool call requested in the same turn still runs
-            # normally - only the unconfirmed booking itself is stopped.
+            # normally - only the stopped calls themselves are dropped.
             patched_last = last.model_copy(update={"tool_calls": remaining_calls})
             patched_state = {**state, "messages": state["messages"][:-1] + [patched_last]}
             result = _base_tool_node.invoke(patched_state, config)
@@ -21577,6 +21183,33 @@ def _tool_node(state: AgentState, config: RunnableConfig) -> dict:
             result = {"messages": []}
 
         synthetic_messages = []
+
+        # Every tool_call_id needs an answering ToolMessage, or the next
+        # model call is rejected by the provider - so a refused call is
+        # answered, never silently dropped.
+        for tc in unauthorized_calls:
+            logger.error(
+                "_tool_node: REFUSED %r (tool_call_id=%s, session_id=%s) - not "
+                "bound to the active specialist %r. Nothing was executed.",
+                tc.get("name"), tc.get("id"), state.get("session_id"),
+                state.get("active_agent"),
+            )
+            payload = {
+                "status": "tool_not_permitted",
+                "message": (
+                    f"`{tc.get('name')}` is not available to you here and was NOT "
+                    "run - nothing was looked up, changed or sent. Use only the "
+                    "tools you have been given. Do not tell the patient that "
+                    "anything was done; answer what you safely can and ask the "
+                    "single most useful next question."
+                ),
+            }
+            synthetic_messages.append(ToolMessage(
+                content=json.dumps(payload, ensure_ascii=False, default=str),
+                name=tc.get("name") or "unknown_tool",
+                tool_call_id=tc.get("id"),
+            ))
+
         for tc in blocked_calls:
             logger.warning(
                 "_tool_node: BLOCKED create_new_booking (tool_call_id=%s, "
@@ -21607,11 +21240,27 @@ def _tool_node(state: AgentState, config: RunnableConfig) -> dict:
                 tool_call_id=tc.get("id"),
             ))
 
-        result = {**result, "messages": (result.get("messages") or []) + synthetic_messages}
+        if isinstance(result, list):
+            # A tool returned a `Command` (e.g. transfer_to_specialist), so
+            # ToolNode returned a list of updates - add ours as one more.
+            result = result + [{"messages": synthetic_messages}]
+        else:
+            result = {**result, "messages": (result.get("messages") or []) + synthetic_messages}
     else:
         result = _base_tool_node.invoke(state, config)
 
-    messages = result.get("messages") if isinstance(result, dict) else None
+    if isinstance(result, dict):
+        messages = result.get("messages")
+    else:
+        # A list of updates: plain dicts and `Command`s, each carrying
+        # its own ToolMessage(s). Guidance is attached to all of them.
+        messages = []
+        for item in result or []:
+            update = item.get("messages") if isinstance(item, dict) else (
+                (getattr(item, "update", None) or {}).get("messages")
+                if isinstance(getattr(item, "update", None), dict) else None
+            )
+            messages.extend(update or [])
 
     for message in messages or []:
         tool_name = getattr(message, "name", None)
