@@ -225,7 +225,8 @@ def test_the_unsure_paraphrase_is_offered_exactly_its_candidates(session_id, llm
     msg = "مش شايف إن الموعد ده هينفعني"
     ctx_reader.add(msg, R("cancel", is_ambiguous=True, confidence=0.5, alternatives=["cancel", "reschedule"]))
     result = send(session_id, msg)
-    assert "إلغاء موعد" in result["reply"] and "تعديل موعد موجود" in result["reply"]
+    # Exactly the two candidates, as one natural question.
+    assert "تحب نلغي الموعد، ولا نأجله ليوم تاني؟" in result["reply"]
     assert len(llm.calls) == 0, "a clarification is written in code - no specialist call"
 
 
@@ -632,3 +633,33 @@ def test_just_booked_directive_follows_an_indirect_cancellation():
     ]
     assert graph._build_just_booked_directive(msgs) == ""
     assert "TNS-9" in graph._build_just_booked_directive(msgs, R("cancel", cancel_request=True))
+
+
+# ----------------------------------------------------------------------
+# "مش هعرف اجي بكره" - they can't make it. That is NOT a cancellation:
+# it is cancel OR reschedule, and only the patient knows which.
+# (Production, agent-mu1, 2026-09-26: it was routed straight to cancel.)
+# ----------------------------------------------------------------------
+
+def test_cant_come_asks_cancel_or_move_instead_of_guessing(session_id, llm, ctx_reader):
+    ctx_reader.add("مش هعرف اجي بكره", R("cancel", is_ambiguous=True, confidence=0.5,
+                                          alternatives=["cancel", "reschedule"]))
+    result = send(session_id, "مش هعرف اجي بكره")
+    assert "تحب نلغي الموعد، ولا نأجله ليوم تاني؟" in result["reply"]
+    assert len(llm.calls) == 0
+    assert state_of(session_id)["active_agent"] != "cancel", "guessed cancel"
+
+
+def test_the_answer_to_cancel_or_move_goes_to_the_right_flow(session_id, llm, ctx_reader):
+    ctx_reader.add("مش هعرف اجي بكره", R("cancel", is_ambiguous=True, confidence=0.5,
+                                          alternatives=["cancel", "reschedule"]))
+    send(session_id, "مش هعرف اجي بكره")
+    ctx_reader.add("أجله", R("reschedule", answer_to_previous_question=True))
+    llm._responses.append(AIMessage(content="تحب تعدل الموعد برقم الجوال ولا برقم الحجز؟"))
+    send(session_id, "أجله")
+    assert state_of(session_id)["active_agent"] == "reschedule"
+
+
+def test_the_prompt_no_longer_teaches_cant_come_as_cancel():
+    assert "not being able to come to a booked appointment is a cancellation" not in understanding.PROMPT
+    assert 'alternatives ["cancel", "reschedule"]' in understanding.PROMPT

@@ -19977,6 +19977,15 @@ def _clarification_question(reading: Optional[dict], english: bool,
     reading = reading or {}
 
     options = [name for name in reading.get("alternatives") or [] if name in labels]
+
+    # "مش هقدر اجي" - they can't make it, and have not said whether to
+    # cancel or move it. One natural question offering exactly those two,
+    # unless the clinic authored its own clarification wording.
+    if set(options) == {"cancel", "reschedule"} and not (templates or {}).get(
+            "msg_clarify_intent_en" if english else "msg_clarify_intent"):
+        return ("Sure 🌷 Would you like to cancel the appointment, or move it to another day?"
+                if english else "أكيد 🌷 تحب نلغي الموعد، ولا نأجله ليوم تاني؟")
+
     if len(options) < 2:
         options = list(_CLARIFY_DEFAULT_OPTIONS.get(reading.get("intent"), _CLARIFY_APPOINTMENT_OPTIONS))
 

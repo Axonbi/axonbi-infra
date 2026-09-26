@@ -87,7 +87,7 @@ _REASON_CHARS = 120
 
 PROMPT = """You interpret ONE patient message sent to Latifa, a hospital's WhatsApp assistant. Patients write any Arabic dialect (Gulf/Saudi, Egyptian, Levantine, MSA), English, Arabizi or a mix, often with typos, missing hamza or taa marbuta, or just a word or two.
 
-Interpret the user's meaning using the entire relevant conversation, especially the assistant's immediately previous question. Do not classify based on isolated keywords. A short reply ("اه", "تمام", "أكيد", "الثاني", "الخميس", a name, a number) means nothing alone: it takes its meaning from the question it answers. Indirect wording counts: not being able to come to a booked appointment is a cancellation, wanting it another day is a reschedule, wanting someone to look at a body part is medical.
+Interpret the user's meaning using the entire relevant conversation, especially the assistant's immediately previous question. Do not classify based on isolated keywords. A short reply ("اه", "تمام", "أكيد", "الثاني", "الخميس", a name, a number) means nothing alone: it takes its meaning from the question it answers. Indirect wording counts: wanting an appointment on another day is a reschedule, not wanting it any more is a cancellation, wanting someone to look at a body part is medical. Only being unable to make an appointment, with no sign of whether they want it cancelled or moved, is BOTH: is_ambiguous with alternatives ["cancel", "reschedule"].
 
 Return ONLY a JSON object with these keys:
 "intent": what the patient wants to happen next -
