@@ -11842,6 +11842,17 @@ def _reply_scope_refuses_an_answer_to_our_own_question(
     if not _is_scope_refusal(reply_text, state.get("templates") or {}):
         return False
 
+    # The turn's reading knows whether this message answers our question.
+    # A question mark in our last message does not: the greeting itself
+    # ends "كيف أستطيع مساعدتك اليوم؟", so every off-topic message right
+    # after it was treated as an answer and its correct refusal was sent
+    # back for rewriting (agent-mu1, 2026-09-26 16:23: 3 calls, 63k tokens,
+    # the same reply). Read as unrelated -> the refusal stands.
+    reading = state.get("understanding")
+    if (reading is not None and reading.get("intent") == "other"
+            and not reading.get("answer_to_previous_question")):
+        return False
+
     messages = state.get("messages") or []
     last_ai = _last_ai_reply_text(messages)
     if not last_ai:

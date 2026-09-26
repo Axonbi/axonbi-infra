@@ -267,3 +267,30 @@ def test_trimming_a_question_drops_its_if_yes_lead_in():
     trimmed, removed = graph._strip_extra_questions(text, {})
     assert removed == 1
     assert trimmed == "تحب تلغي الموعد برقم الجوال ولا برقم الحجز؟"
+
+
+# ----------------------------------------------------------------------
+# PRODUCTION (agent-mu1, 2026-09-26 16:17 / 16:23): a training applicant's
+# interview question was correctly answered with the out-of-scope reply,
+# and two verifiers sent it back for rewriting - 3 calls, up to 63k tokens.
+# ----------------------------------------------------------------------
+
+def _menu_state(reading, last_ai="كيف أستطيع مساعدتك اليوم؟ 😊"):
+    templates = {"_agent_name_ar": "لطيفة", "_clinic_name_ar": "مستشفى تناسق الطبية"}
+    return templates, {"templates": templates, "understanding": reading,
+                       "messages": [A(content=last_ai),
+                                    H(content="كنت مقدمه في تدريب في مستشفي اجي اعمل انترفيو امتي")]}
+
+
+def test_an_unrelated_message_after_our_greeting_may_get_the_out_of_scope_reply():
+    templates, state = _menu_state({"intent": "other", "answer_to_previous_question": False})
+    menu = graph._build_out_of_scope_block(templates, "ar")
+    assert graph._reply_scope_refuses_an_answer_to_our_own_question(menu, state) is False
+    assert graph._reply_scope_refuses_an_in_scope_message(menu, state) is False
+
+
+def test_a_real_answer_to_our_question_still_may_not_get_it():
+    templates, state = _menu_state({"intent": "answer", "answer_to_previous_question": True},
+                                   last_ai="ممكن تعطيني رقم الحجز أو رقم جوالك؟")
+    menu = graph._build_out_of_scope_block(templates, "ar")
+    assert graph._reply_scope_refuses_an_answer_to_our_own_question(menu, state) is True
