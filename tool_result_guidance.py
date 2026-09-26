@@ -22,6 +22,15 @@ GUIDANCE_KEY = "_guidance"
 # missing - see the note above - so this grows entry by entry, never by
 # inventing text for a status nobody has specified.
 _GUIDANCE = {
+    "list_hospital_services": {
+        "not_found": (
+            "The knowledge-base FILE has no services section - that does not "
+            "mean the clinic offers nothing. Call `search_lab_services` with "
+            "an EMPTY `query` (specialty=\"laboratory\"; \"radiology\" only if "
+            "they asked about scans) and show the real services it returns, "
+            "numbered. Do not tell the patient you have no information."
+        ),
+    },
     "create_new_booking": {
         "not_confirmed": (
             "Nothing was booked. The patient's reply did not agree to the "
@@ -46,8 +55,10 @@ _GUIDANCE = {
     },
     "answer_hospital_faq": {
         "not_found": (
-            "The knowledge base has nothing on this. The question is still "
-            "about the clinic, so it is NOT off-topic: do not send the scope "
+            "The knowledge base has nothing on this. If the question is about "
+            "services or tests, call `search_lab_services` (empty `query`) "
+            "before anything else. Otherwise: it is still about the clinic, "
+            "so it is NOT off-topic - do not send the scope "
             "refusal, do not say you did not understand, and do not answer "
             "from your own knowledge. Reply with the no-information text "
             "from WHAT YOU ARE FOR (it offers customer service), and call "
