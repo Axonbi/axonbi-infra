@@ -789,6 +789,20 @@ UNDERSTANDING_TIMEOUT_SECONDS: float = float(
     os.getenv("UNDERSTANDING_TIMEOUT_SECONDS", str(ROUTER_LLM_TIMEOUT_SECONDS))
 )
 
+# HOW THE ROUTER USES THE READING'S OWN CONFIDENCE (graph.router).
+#
+# Below CLARIFY (or is_ambiguous) the reading is "unsure": an active flow
+# keeps the turn, and with no flow in progress the patient is asked ONE
+# short clarification question instead of being guessed at.
+# SWITCH is how sure a reading must be to move a conversation out of an
+# active flow when the patient neither answered into another flow nor
+# said they changed their mind (changes_intent).
+# HANDOFF is how sure a wants_human reading must be before a person is
+# called in (a crisis never waits on this).
+UNDERSTANDING_CLARIFY_CONFIDENCE: float = float(os.getenv("UNDERSTANDING_CLARIFY_CONFIDENCE", "0.5"))
+UNDERSTANDING_SWITCH_CONFIDENCE: float = float(os.getenv("UNDERSTANDING_SWITCH_CONFIDENCE", "0.7"))
+UNDERSTANDING_HANDOFF_CONFIDENCE: float = float(os.getenv("UNDERSTANDING_HANDOFF_CONFIDENCE", "0.6"))
+
 # The reply normalizer (agents/response_contract.py) that guarantees
 # every agent's output has identical shape. False -> only the two
 # original normalizations (extra-question trimming, emoji list numbers)
@@ -945,6 +959,11 @@ _CLIENT_OVERRIDE_KEYS = (
     "msg_booking_confirmation",
     "msg_booking_success",
     "msg_On_failure",
+    # Optional: the clarification question (graph.clarify) in the
+    # clinic's own words, with "{options}" where the choices go. Either
+    # file may carry it; absent, a neutral built-in wording is used.
+    "msg_clarify_intent",
+    "msg_clarify_intent_en",
 )
 
 

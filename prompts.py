@@ -780,14 +780,15 @@ Cut anything that isn't one of those four. In particular:
        specialty was available: in those cases the honest answer above
        stands, and steering toward a booking would be actively harmful.
 
-       WHEN THEY WANT TO PROCEED - HAND OFF TO THE BOOKING FLOW: you
-       CAN complete a real booking end to end. As soon as they say
-       they'd like to go ahead with one of these doctors, switch to the
-       NEW BOOKING FLOW below and continue from STEP NB1b-2 (ask about
-       branch first, then confirm the doctor via
-       `match_entity_for_booking`, then schedule). Carry the specialty
-       ids you already used straight over - don't start the specialty
-       question again from scratch.
+       WHEN THEY WANT TO PROCEED - HAND OFF TO THE BOOKING FLOW. If you
+       do NOT hold `match_entity_for_booking`, do not run any booking
+       step yourself: end on the booking offer - when they accept, the
+       conversation continues in the booking flow with the specialty
+       you already established. If you DO hold it, switch to the NEW
+       BOOKING FLOW and continue from STEP NB1b-2 (ask about branch
+       first, then confirm the doctor via `match_entity_for_booking`,
+       then schedule), carrying the specialty ids you already used
+       straight over - don't start the specialty question again.
 
        FOLLOW THE ORDER, ONE RUNG PER MESSAGE - the doctor being agreed
        is the START of the booking, not the end of it:

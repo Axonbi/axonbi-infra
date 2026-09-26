@@ -1,5 +1,32 @@
 """
-The supervisor.
+The DETERMINISTIC FALLBACK router.
+
+STATUS: FALLBACK ONLY. The supervisor is now agents/semantic_router.py,
+which routes on the understanding reading (understanding.py) and the
+conversation state. `route_turn` below runs only for a turn whose
+understanding call failed TECHNICALLY (timeout, error, unparseable
+answer), and graph.router logs that turn as
+routing_mode=deterministic_fallback. It is never consulted to
+second-guess a reading that exists, and no new cue should be added here
+to fix a phrasing - a missed phrasing is an understanding problem
+(evals/understanding_cases.json), not a routing one.
+
+WHAT IN THIS FILE IS STILL LIVE ON THE SEMANTIC PATH, AND WHY
+  CRISIS_RE             SAFETY (A). Unioned with reading.crisis - it can
+                        only add a crisis, never remove one.
+  normalize/_fold_arabic DATA normalisation (B), shared helpers.
+  _flow_just_completed  STATE: reads tool results, not language.
+  _CANNOT_COMPLETE_A_BOOKING  STATE: derived from the registry's tools.
+  looks_like_health_message / INJURY_RE / medical cues
+                        OUTPUT VALIDATION (D): graph's guard that the
+                        out-of-scope refusal never answers a health
+                        message. Not used to route.
+Everything else - `_CUES` and its weights, the stickiness thresholds,
+the bare-affirmation / list-pick / booking-entry-question heuristics and
+the optional LLM classifier - is NATURAL-LANGUAGE INTENT CLASSIFICATION
+(E) and ROUTING HEURISTIC (F): fallback only.
+
+The notes below describe the fallback as it was designed.
 
 Decides which specialist owns the current turn. It runs ONCE per user
 turn, at the top of the graph - never inside the agent<->tools loop - so
@@ -1422,6 +1449,8 @@ def _classify_with_llm(text: str, active_agent: Optional[str],
             message=text[:500],
         )
         answer = llm.invoke([HumanMessage(content=prompt)])
+        import llm_usage
+        llm_usage.record("router_fallback_llm", answer)
         choice = str(getattr(answer, "content", "")).strip().lower()
 
         for name in AGENT_NAMES:

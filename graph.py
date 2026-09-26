@@ -63,6 +63,7 @@ import progress
 import tools
 from prompts import build_agent_system_prompt, build_system_prompt
 from state import AgentState
+import llm_usage
 import tool_result_guidance
 import understanding
 
@@ -251,7 +252,9 @@ def _invoke_llm_resilient(llm, messages, *, agent_name: str, target_language: st
     last_exc = None
     for attempt in (1, 2):
         try:
-            return llm.invoke(messages)
+            response = llm.invoke(messages)
+            llm_usage.record(f"specialist:{agent_name}", response)
+            return response
         except (_OpenAIAPITimeoutError, _OpenAIAPIConnectionError) as exc:
             last_exc = exc
             logger.warning(
@@ -879,6 +882,18 @@ def _deterministic_doctor_list(state: AgentState, agent_name: str,
     return [request, result, _tag_author(AIMessage(content=reply), agent_name)]
 
 
+def _patient_declines_this_turn(state: AgentState) -> bool:
+    """The patient's message rejects what was offered, so a hook must not
+    act on the day/time it names. The reading decides; without one, the
+    refusal patterns the negation directive already uses."""
+
+    reading = state.get("understanding")
+    if reading is not None:
+        return bool(reading.get("declines"))
+    folded = _norm_ar(_latest_human_text(state.get("messages") or []))
+    return bool(folded) and bool(_BARE_NEGATION_RE.match(folded) or _LEADING_REFUSAL_RE.match(folded))
+
+
 def _deterministic_slot_lock(state: AgentState, agent_name: str):
     """When the patient's message is a BARE NUMBER answering the slot
     list `get_available_slots_for_booking` just showed, resolve and
@@ -942,6 +957,9 @@ def _deterministic_slot_lock(state: AgentState, agent_name: str):
 
     if agent_name not in ("booking", "medical"):
         return None
+
+    if _patient_declines_this_turn(state):
+        return None  # "لا مش الساعة 5" is not a pick of 5
 
     session_id = state.get("session_id")
     session = tools._get_booking_session(session_id)
@@ -1207,6 +1225,9 @@ def _deterministic_day_and_slot_resolution(state: AgentState, agent_name: str) -
 
     if agent_name not in ("booking", "medical"):
         return []
+
+    if _patient_declines_this_turn(state):
+        return []  # "لا مش مناسب السبت" names a day to AVOID, not to resolve
 
     session_id = state.get("session_id")
     session = tools._get_booking_session(session_id)
@@ -3666,15 +3687,21 @@ def _build_multi_intent_directive(messages: list, session_id: str, agent_name: s
             ),
         ))
 
-    specialty_fragment = _fragment_after_cue(text, _SPECIALTY_CUE_RE)
-    if not specialty_fragment:
-        # No "تخصص"/"عيادة" cue in front of it - look for the specialty
-        # named on its own, which is how patients actually write it.
-        bare = _BARE_SPECIALTY_RE.search(_norm_ar(text))
-        if bare:
-            specialty_fragment = bare.group(1).strip()
-    if not specialty_fragment and reading is not None:
+    # WITH A READING, THE READING DECIDES - the same rule as the doctor
+    # name above. The bare-specialty word list cannot tell "دكتور نفسي"
+    # (a psychiatrist) from "نفسي احجز موعد" ("I'd love to book"), and
+    # read the second as the specialty "نفسي". The cue and word-list
+    # extraction below is the fallback for a turn with no reading.
+    if reading is not None:
         specialty_fragment = (reading.get("specialty") or "").strip()
+    else:
+        specialty_fragment = _fragment_after_cue(text, _SPECIALTY_CUE_RE)
+        if not specialty_fragment:
+            # No "تخصص"/"عيادة" cue in front of it - look for the specialty
+            # named on its own, which is how patients actually write it.
+            bare = _BARE_SPECIALTY_RE.search(_norm_ar(text))
+            if bare:
+                specialty_fragment = bare.group(1).strip()
     if specialty_fragment:
         found.append((
             "A SPECIALTY OR SERVICE",
@@ -4091,16 +4118,29 @@ def _build_symptom_in_booking_directive(messages: list, agent_name: str) -> str:
     return _SYMPTOM_IN_BOOKING_DIRECTIVE
 
 
-def _build_booking_entry_directive(messages: list, session_id: str, agent_name: str) -> str:
+def _build_booking_entry_directive(messages: list, session_id: str, agent_name: str,
+                                   reading: Optional[dict] = None) -> str:
     """The opening rung of the booking flow, decided in code.
 
     Stands down the moment the message carries anything concrete - that
     is `_build_multi_intent_directive`'s job and the two must never both
     be in the prompt, since one says "ask which way to start" and the
-    other says "they already told you, don't ask"."""
+    other says "they already told you, don't ask".
+
+    "Anything concrete" includes what the turn's reading found. The ASK
+    rung is sent from code with no model call, so a doctor named without
+    a cue word ("عايز احجز مع عمر المديفر") must not be answered with
+    "doctor or specialty?" just because no regex saw the name."""
 
     if agent_name not in ("booking", "concierge") or not messages:
         return ""
+
+    if reading:
+        entities = reading.get("entities") or {}
+        if (reading.get("doctor_name") or reading.get("specialty")
+                or any(entities.get(key) for key in ("branch", "date", "time", "service", "booking_reference"))
+                or reading.get("intent") in ("cancel", "reschedule", "complaint", "human")):
+            return ""
 
     index = _latest_human_index(messages)
     if index < 0:
@@ -4163,7 +4203,7 @@ def _build_booking_entry_directive(messages: list, session_id: str, agent_name: 
     # reference. If it found any of them, this is not a bare opening
     # request and the two directives must never both be live: one says
     # "ask which way to start", the other says "they already told you".
-    if _build_multi_intent_directive(messages, session_id, agent_name):
+    if _build_multi_intent_directive(messages, session_id, agent_name, reading=reading):
         return ""
 
     # A doctor or branch already settled in this session means the
@@ -7192,6 +7232,7 @@ def _branch_names_confirmed(reply_text: str, candidates: tuple) -> tuple:
         answer = _llm_for_model(config.OPENAI_MODEL_CHEAP).invoke(
             [_HumanMessage(content=question)]
         )
+        llm_usage.record("branch_adjudicator", answer)
         raw = (getattr(answer, "content", "") or "").strip()
     except Exception:
         logger.warning(
@@ -8462,6 +8503,15 @@ def _current_turn_accepts_a_medical_offer(state: AgentState) -> bool:
 
     folded = _norm_ar(text)
 
+    # With a reading, meaning decides both disqualifiers. The regexes
+    # below matched "غير" in "ألم غير طبيعي" as a change verb and so
+    # silenced the medical safety guards on a symptom.
+    reading = state.get("understanding")
+    if reading is not None:
+        if reading.get("declines"):
+            return False
+        return not (reading.get("intent") in ("cancel", "reschedule") or reading.get("cancel_request"))
+
     if _LEADING_REFUSAL_RE.search(folded) or _BARE_NEGATION_RE.search(folded):
         logger.info(
             "_in_medical_guidance_handoff: the patient REFUSED the medical offer "
@@ -9120,6 +9170,14 @@ def _reply_asks_to_identify_a_booking_that_was_never_mentioned(
         return False
 
     messages = state.get("messages") or []
+
+    # The patient raised an existing appointment in words no verb regex
+    # knows ("مش هقدر اجي بكرة"), and the router already routed on that
+    # meaning - asking which booking is the right next step, not an
+    # invented prerequisite.
+    if (_reading_wants_an_existing_booking_changed(state.get("understanding"))
+            or state.get("active_agent") in ("cancel", "reschedule")):
+        return False
 
     # A real booking has been touched - the question is legitimate.
     for msg in messages:
@@ -12223,7 +12281,18 @@ def _reference_of_the_booking_on_screen(messages: list) -> str:
     return str(appointment.get("ref") or appointment.get("bookingRefNum") or "")
 
 
-def _build_just_booked_directive(messages: list) -> str:
+def _reading_wants_an_existing_booking_changed(reading: Optional[dict]) -> bool:
+    """The turn's LLM reading says this message is about cancelling or
+    moving an appointment that already exists - in whatever words
+    ("مش هقدر اجي", "خليه يوم تاني"), which the verb regex below cannot
+    see. Only ever ADDS to that regex; it never removes a match."""
+
+    if not reading:
+        return False
+    return bool(reading.get("cancel_request")) or reading.get("intent") in ("cancel", "reschedule")
+
+
+def _build_just_booked_directive(messages: list, reading: Optional[dict] = None) -> str:
     """They said "cancel it"/"change it" about a booking already on the
     table. Point the flow at that booking instead of starting STEP 1
     over."""
@@ -12235,7 +12304,8 @@ def _build_just_booked_directive(messages: list) -> str:
     if not text:
         return ""
 
-    if not _CANCEL_OR_CHANGE_INTENT_RE.search(_norm_ar(text)):
+    if not (_CANCEL_OR_CHANGE_INTENT_RE.search(_norm_ar(text))
+            or _reading_wants_an_existing_booking_changed(reading)):
         return ""
 
     # They typed a reference of their own - that one wins, and
@@ -12315,7 +12385,7 @@ def _reply_reasks_which_booking_when_only_one_is_on_the_table(
         return False
 
     messages = state.get("messages") or []
-    if not _build_just_booked_directive(messages):
+    if not _build_just_booked_directive(messages, state.get("understanding")):
         return False
 
     folded = _norm_ar(reply_text)
@@ -12336,7 +12406,7 @@ def _just_booked_correction(reply_text: str, state: AgentState) -> str:
         "============================================================\n"
         "Your previous draft asked the patient to identify a booking "
         "that is already on the table in this conversation.\n\n"
-    ) + _build_just_booked_directive(state.get("messages") or [])
+    ) + _build_just_booked_directive(state.get("messages") or [], state.get("understanding"))
 
 
 # ==========================================================
@@ -14401,7 +14471,7 @@ _LEADING_REFUSAL_RE = re.compile(
 )
 
 
-def _build_negation_directive(messages: list) -> str:
+def _build_negation_directive(messages: list, reading: Optional[dict] = None) -> str:
     """Fires when the patient's whole message is a refusal ("لا", "مش
     مناسب", "no").
 
@@ -14435,10 +14505,17 @@ def _build_negation_directive(messages: list) -> str:
     # CONFIRMED REAL PRODUCTION FAILURE: "لا مش مناسب التلات دا" did not
     # match the bare pattern, so nothing fired, and the alternatives
     # offered back still included Tuesday - the very day just rejected.
-    refuses = bool(
-        _BARE_NEGATION_RE.match(folded)
-        or _LEADING_REFUSAL_RE.match(folded)
-    )
+    # WITH A READING, THE READING DECIDES. The prefix patterns below read
+    # "لا عاوزه اعدل الحجز" and "مش كويس وعندي صداع" as refusals of the
+    # offer on the table; the reading knows the first is a new request
+    # (routing already moved it) and the second is a symptom.
+    if reading is not None:
+        refuses = bool(reading.get("declines")) and not reading.get("changes_intent")
+    else:
+        refuses = bool(
+            _BARE_NEGATION_RE.match(folded)
+            or _LEADING_REFUSAL_RE.match(folded)
+        )
 
     if not refuses:
         return ""
@@ -14509,7 +14586,8 @@ def _build_negation_directive(messages: list) -> str:
     )
 
 
-def _build_service_named_directive(messages: list, session_id: str) -> str:
+def _build_service_named_directive(messages: list, session_id: str,
+                                   reading: Optional[dict] = None) -> str:
     """Fires when the patient's booking request names a SERVICE rather
     than a specialty or a doctor ("عاوزة احجز جلسة أخصائي تغذية").
 
@@ -14546,6 +14624,12 @@ def _build_service_named_directive(messages: list, session_id: str) -> str:
     if not _SERVICE_WORDED_REQUEST_RE.search(folded):
         return ""
 
+    # "عايز الغي الكشف" contains a service word and is a cancellation.
+    # The reading says what the message is for; a service word inside a
+    # request for another flow is not a request to book that service.
+    if reading and reading.get("intent") in ("cancel", "reschedule", "complaint", "human"):
+        return ""
+
     return (
         "============================================================\n"
         "THEY NAMED A SERVICE - BOOK THAT, DON'T ASK FOR A SPECIALTY\n"
@@ -14577,7 +14661,8 @@ def _build_service_named_directive(messages: list, session_id: str) -> str:
     )
 
 
-def _build_service_chosen_directive(messages: list, session_id: str) -> str:
+def _build_service_chosen_directive(messages: list, session_id: str,
+                                    reading: Optional[dict] = None) -> str:
     """Fires when a service is what the patient is booking - the point
     where the flow used to reset to the specialty-vs-doctor question.
 
@@ -14624,6 +14709,11 @@ def _build_service_chosen_directive(messages: list, session_id: str) -> str:
             break
 
     if not (service_shown or session.get("service_id") or service_offered):
+        return ""
+
+    # An offer to book a service is only "chosen" if they said yes - a
+    # "no" to that offer used to get "book that service" regardless.
+    if service_offered and not service_shown and reading and reading.get("declines"):
         return ""
 
     return _SERVICE_CHOSEN_DIRECTIVE
@@ -16482,14 +16572,20 @@ _BARE_CANCEL_OR_CHANGE_REQUEST_RE = re.compile(
 )
 
 
-def _cancel_or_reschedule_intent(messages: list, agent_name: str) -> str:
-    """"cancel" or "reschedule", decided from the patient's own words and
-    only falling back to which specialist owns the turn.
+def _cancel_or_reschedule_intent(messages: list, agent_name: str,
+                                 reading: Optional[dict] = None) -> str:
+    """"cancel" or "reschedule", decided from what the patient MEANS,
+    then from their words, and only then from which specialist owns the
+    turn.
 
-    The patient's wording is authoritative: the router legitimately keeps
-    a weak cue on whichever specialist was already active, so
-    `agent_name` alone would offer cancellation to somebody who asked to
-    reschedule."""
+    The turn's reading decides when it names one of the two: "مش عايز
+    الغي، عايز اعدل" contains the cancel verb first, and the verb regex
+    below would offer cancellation to somebody who asked to move the
+    appointment. Without a reading (technical failure) the old order
+    holds: the patient's wording, then `agent_name`."""
+
+    if reading and reading.get("intent") in ("cancel", "reschedule"):
+        return reading["intent"]
 
     folded = _norm_ar(_latest_human_text(messages))
 
@@ -17278,6 +17374,7 @@ def _classify_bare_affirmation_with_llm(text: str) -> Optional[bool]:
             f"Patient's message: {text[:200]!r}"
         )
         answer = _router_llm.invoke([_HumanMessage5(content=prompt)])
+        llm_usage.record("affirmation_classifier", answer)
         choice = str(getattr(answer, "content", "")).strip().upper()
 
         if choice.startswith("YES"):
@@ -17329,6 +17426,14 @@ def _reply_asks_for_a_phone_already_known(reply_text: str, state: AgentState) ->
         return False
 
     from langchain_core.messages import HumanMessage as _HumanMessage
+
+    # The turn's reading already says whether this message is a yes to
+    # the question asked - in context, in any wording. No second model
+    # call (the old `_classify_bare_affirmation_with_llm` fallback, which
+    # never saw the question) when it exists.
+    reading = state.get("understanding")
+    if reading is not None:
+        return bool(reading.get("confirms"))
 
     for msg in reversed(state.get("messages", []) or []):
         if not isinstance(msg, _HumanMessage):
@@ -18270,12 +18375,12 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         state["messages"], state.get("session_id"),
     )
     service_chosen_directive = _build_service_chosen_directive(
-        state["messages"], state.get("session_id"),
+        state["messages"], state.get("session_id"), state.get("understanding"),
     )
     service_named_directive = _build_service_named_directive(
-        state["messages"], state.get("session_id"),
+        state["messages"], state.get("session_id"), state.get("understanding"),
     )
-    negation_directive = _build_negation_directive(state["messages"])
+    negation_directive = _build_negation_directive(state["messages"], state.get("understanding"))
     doctors_scope_directive = _build_doctors_scope_directive(
         state["messages"], state.get("session_id"),
     )
@@ -18386,6 +18491,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         "" if established_specialty_directive
         else _build_booking_entry_directive(
             state["messages"], state.get("session_id"), agent_name,
+            reading=state.get("understanding"),
         )
     )
 
@@ -18493,7 +18599,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     # when the patient typed a reference of their own - that one wins,
     # and the directive above is already acting on it.
     just_booked_directive = (
-        _build_just_booked_directive(state["messages"])
+        _build_just_booked_directive(state["messages"], state.get("understanding"))
         if (agent_name in _EXISTING_BOOKING_AGENTS
             and not supplied_identifier_directive) else ""
     )
@@ -18897,7 +19003,9 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     # its own reply from the directive.
     if deterministic_reply is None and agent_name in ("cancel", "reschedule"):
         if identifier_choice_directive is _IDENTIFIER_CHOICE_ASK_DIRECTIVE:
-            intent = _cancel_or_reschedule_intent(state["messages"], agent_name)
+            intent = _cancel_or_reschedule_intent(
+                state["messages"], agent_name, state.get("understanding"),
+            )
             if intent:
                 deterministic_reply = _identifier_choice_message(
                     state.get("templates") or {}, target_language, intent,
@@ -19154,6 +19262,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                     retry = _llm_for(agent_name).invoke(
                         [SystemMessage(content=system_content + directive)] + history
                     )
+                    llm_usage.record(f"verifier:{agent_name}", retry)
                 except (_OpenAIAPITimeoutError, _OpenAIAPIConnectionError) as exc:
                     # Unlike the main turn's call, there is already a usable
                     # (if unverified) reply sitting in `normalized` - a
@@ -19337,6 +19446,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                     forced = forcing_llm.invoke(
                         [SystemMessage(content=system_content + directive)] + history
                     )
+                    llm_usage.record(f"claim_gate:{agent_name}", forced)
                 except (_OpenAIAPITimeoutError, _OpenAIAPIConnectionError) as exc:
                     logger.error(
                         "agent[%s]: claim gate could not force %s (%s) - sending the "
@@ -19591,49 +19701,39 @@ def router(state: AgentState) -> dict:
     still routes exactly once and cannot change owner half way through
     its own tool sequence.
 
-    Costs nothing in the default configuration: routing is pure pattern
-    matching over the latest human message (see agents/router.py for why
-    that is a feature rather than a shortcut), so no LLM call and no
-    added latency."""
+    SEMANTIC FIRST:
+
+        latest message -> understanding.py -> reading
+                       -> agents.semantic_router.decide(reading, facts)
+                       -> specialist | handoff | clarify
+
+    The decision reads the reading and the state this graph already
+    keeps (`_turn_facts`), never the patient's words. Hard rules - crisis,
+    consent integrity, tool capability - are applied inside `decide` and
+    logged as routing_mode=safety_override.
+
+    The keyword/cue router (agents.route_turn) runs ONLY when there is no
+    reading at all - a technical failure (timeout, error, unparseable
+    answer) - and is logged as routing_mode=deterministic_fallback. An
+    uncertain reading is not a failure: context resolves it, and failing
+    that the patient gets one short clarification question."""
 
     previous = state.get("active_agent")
     messages = state["messages"]
 
-    # ONE LLM READING OF THIS MESSAGE, IN CONTEXT. Everything that used
-    # to pattern-match the patient's words to decide consent or intent
-    # reads this instead; None means "unavailable" and every consumer
-    # falls back to its deterministic rule.
     reading = _understand_turn(state)
+    decision = agents.semantic_router.decide(reading, _turn_facts(state), _routing_thresholds())
 
-    # In a crisis the reading is trusted as-is: "i need help" from someone
-    # who just said they want to hurt themselves IS a request for a person.
-    in_crisis = bool(state.get("crisis_active")) or bool(reading and reading.get("crisis"))
-    if (reading and reading.get("wants_human") and not in_crisis
-            and not _handoff_is_explicit(messages)):
-        logger.warning(
-            "router: understanding said wants_human for %r, but it is neither an explicit "
-            "request for a person nor a clear yes to a transfer offer - not transferring "
-            "(session_id=%s)",
-            understanding.latest_human_text(messages)[:60], state.get("session_id"),
-        )
-        reading = {**reading, "wants_human": False,
-                   "intent": "other" if reading.get("intent") == "human" else reading.get("intent")}
-
-    crisis_now = bool(reading and reading.get("crisis")) or _signals_crisis(messages)
-    crisis_was_active = bool(state.get("crisis_active"))
-    handoff_now = False
-
-    if crisis_now and not crisis_was_active:
-        # FIRST SIGN OF A CRISIS: a person, now, with a safety message.
-        # Not an offer the patient has to accept through a consent gate.
-        chosen, reason, handoff_now = agents.CONCIERGE, "crisis: immediate human handoff", True
-    elif reading and reading.get("wants_human"):
-        # They asked for a person, or said yes to our offer of one - in
-        # whatever words. They get one, deterministically, this turn.
-        chosen, reason, handoff_now = agents.CONCIERGE, "handoff: patient wants a person", True
+    if decision.agent is None:
+        chosen, reason = agents.route_turn(messages, previous, allow_llm=True)
     else:
-        decided = _route_from_reading(reading, previous, messages)
-        chosen, reason = decided or agents.route_turn(messages, previous, allow_llm=reading is None)
+        chosen, reason = decision.agent, decision.reason
+
+    # What is stored - and what request_human_handoff / cancel_appointment
+    # read - is the reading AFTER the consent check.
+    reading = decision.reading if decision.reading is not None else reading
+    crisis_was_active = bool(state.get("crisis_active"))
+    crisis_now = bool(reading and reading.get("crisis")) or _signals_crisis(messages)
 
     # Once per turn, from the node - never from the conditional edge,
     # which LangGraph may call more than once. See _clear_stale_branch_context.
@@ -19644,6 +19744,23 @@ def router(state: AgentState) -> dict:
         logger.info(
             "router: %s -> %s (%s)", previous or "none", chosen, reason,
         )
+
+    # ONE STRUCTURED LINE PER TURN - the decision, never the patient's
+    # words or the values they typed.
+    logger.info("routing_decision %s", json.dumps({
+        "session_id": state.get("session_id"),
+        "previous_agent": previous,
+        "semantic_intent": (reading or {}).get("intent"),
+        "confidence": (reading or {}).get("confidence"),
+        "is_ambiguous": (reading or {}).get("is_ambiguous"),
+        "answer_to_previous_question": (reading or {}).get("answer_to_previous_question"),
+        "changes_intent": (reading or {}).get("changes_intent"),
+        "selected_agent": (HANDOFF_NODE if decision.handoff
+                           else CLARIFY_NODE if decision.clarify else chosen),
+        "routing_mode": decision.mode,
+        "override_reason": decision.override_reason,
+        "reason": reason,
+    }, ensure_ascii=False, default=str))
 
     # `previous_agent` records who owned the turn BEFORE this one, which
     # is what tells a specialist whether it has just taken the
@@ -19657,110 +19774,232 @@ def router(state: AgentState) -> dict:
         "previous_agent": previous,
         "understanding": reading,
         "crisis_active": crisis_was_active or crisis_now,
-        "handoff_now": handoff_now,
+        "handoff_now": decision.handoff,
+        "clarify_now": decision.clarify,
     }
 
 
-# NEVER TRANSFER ON A GUESS.
+# CONSENT INTEGRITY, CHECKED AGAINST WHAT WAS OFFERED.
 #
-# CONFIRMED REAL PRODUCTION FAILURE (tanasuq, session
-# 201158877175-DEMO1223=23, 2026-09-23 22:23:45): faq said "هذا القسم
-# غير متوفر... أقدر أحولك لأحد ممثلي خدمة العملاء؟", the patient replied
-# "دي" ("this one"), the reading came back wants_human=True and the
-# patient was transferred without having asked. Same on 21:50:33, where
-# a bare "3" after the soft-recovery offer was taken as a yes. The
-# reading may propose a transfer; code only carries it out for an
-# explicit request or a clear yes to an offer the assistant just made.
-_HANDOFF_YES_RE = re.compile(
-    r"^(?:اه+|ايوه|ايوا|ايه|اي|نعم|تمام|ماشي|اكيد|يفضل|لا ?مانع|يا ?ريت|الان(?: الاسهل)?|"
-    r"طيب|اوكي|اوك|حاضر|okay|ok|yes|yep|yeah|sure|please|confirm)"
-    r"(?:\s+(?:لو سمحت|من فضلك|please|حولني|حوليني))?[\s!.،,؟?]*$"
-)
+# The reading decides whether the patient asked for a person or accepted
+# an offer of one - in any wording. It used to be vetoed unless the
+# patient's text was one of a dozen bare yes-words (`_HANDOFF_YES_RE`),
+# which refused clear acceptances ("أيوه ياريت", "ياليت والله", "yes
+# confirm i need help") - and because the vetoed reading is what reaches
+# `request_human_handoff`, the tool then refused too.
+#
+# What code still checks is whether an offer was MADE, against the
+# assistant's OWN previous message (provenance over our output - an
+# output-validation pattern, not a reading of the patient), and whether
+# the reply is nothing but a list number (data validation: "3" after the
+# soft-recovery line was once taken as a yes, tanasuq 2026-09-23
+# 21:50:33). "دي" after an offer (22:23:45) is the reading's job: the
+# prompt says it is not a clear yes, and an unsure reading never moves a
+# patient to a person. See agents.semantic_router.handoff_consent_problem.
 _TRANSFER_OFFER_RE = re.compile(
-    r"احول|احوّل|تحويلك|اوصلك|ممثلي خدمه العملاء|ممثل خدمه العملاء|خدمه العملاء|"
-    r"customer service|connect you|transfer you"
+    r"احول|تحويلك|اوصلك|ممثلي خدمه العملاء|ممثل خدمه العملاء|خدمه العملاء|"
+    r"احد موظفي|احد زملائي|فريق خدمه|"
+    r"customer service|connect you|transfer you|human (?:agent|representative)|member of our team"
 )
 
+_BARE_LIST_POSITION_RE = re.compile(r"^\s*(?:رقم\s*)?[0-9٠-٩]{1,2}\s*[.!؟?،,]*\s*$")
 
-def _handoff_is_explicit(messages: list) -> bool:
-    text = agents.router.normalize(understanding.latest_human_text(messages))
-    if not text:
-        return False
-    roots = (agents.router.normalize(root) for root in tools._EXPLICIT_HUMAN_REQUEST_ROOTS)
-    if any(root and root in text for root in roots):
-        return True
-    if not _HANDOFF_YES_RE.match(text):
-        return False
+
+def _assistant_offered_a_transfer(messages: list) -> bool:
     last_ai = agents.router.normalize(understanding.last_ai_text_before_latest_human(messages))
-    return bool(_TRANSFER_OFFER_RE.search(last_ai))
+    return bool(last_ai) and bool(_TRANSFER_OFFER_RE.search(last_ai))
+
+
+def _routing_thresholds():
+    return agents.semantic_router.Thresholds(
+        clarify=config.UNDERSTANDING_CLARIFY_CONFIDENCE,
+        switch=config.UNDERSTANDING_SWITCH_CONFIDENCE,
+        handoff=config.UNDERSTANDING_HANDOFF_CONFIDENCE,
+    )
+
+
+def _turn_facts(state: AgentState, previous: Optional[str] = None,
+                messages: Optional[list] = None):
+    """The state-side inputs of the routing decision. Read from what the
+    graph already keeps; the only two looks at the patient's message are
+    the crisis SAFETY pattern and the list-number DATA check."""
+
+    messages = messages if messages is not None else (state.get("messages") or [])
+    previous = previous if previous is not None else state.get("active_agent")
+
+    session = tools._BOOKING_SESSIONS.get(state.get("session_id") or "") or {}
+    last_list = session.get("last_list") or {}
+
+    return agents.semantic_router.TurnFacts(
+        previous=previous,
+        flow_completed=bool(messages) and agents.router._flow_just_completed(messages),
+        crisis_active=bool(state.get("crisis_active")),
+        crisis_signal=_signals_crisis(messages),
+        transfer_offered=_assistant_offered_a_transfer(messages),
+        bare_list_position=bool(_BARE_LIST_POSITION_RE.match(
+            understanding.latest_human_text(messages) or "")),
+        list_on_screen=last_list.get("entity_type") if isinstance(last_list, dict) else None,
+        previous_cannot_book=previous in agents.router._CANNOT_COMPLETE_A_BOOKING,
+    )
 
 
 def _understand_turn(state: AgentState) -> Optional[dict]:
     if not config.UNDERSTANDING_ENABLED:
         return None
-    return understanding.understand_turn(state.get("messages") or [], _understanding_llm)
+    return understanding.understand_turn(
+        state.get("messages") or [], _understanding_llm, _understanding_context(state),
+    )
 
 
-_READING_SPECIALISTS = ("booking", "cancel", "reschedule", "medical", "faq", "complaint")
+def _understanding_context(state: AgentState) -> dict:
+    """The compact conversation state the understanding model reads in
+    place of the transcript.
 
+    Built ONLY from state this graph already keeps - the routing owner,
+    the booking session in tools._BOOKING_SESSIONS, and the previous
+    turn's evidence ledger (`established_facts`, built from tool results
+    only). It is not a second state system; nothing writes to it.
+    Names only - no phone numbers, references or GUIDs."""
 
-def _answer_hands_over_to_booking(messages: list, previous: Optional[str]) -> Optional[str]:
-    """Why an "answer" must move to `booking` instead of staying with
-    the agent that asked, or None when it should stay.
+    messages = state.get("messages") or []
+    active = state.get("active_agent")
+    context: dict = {"flow": active or "none"}
 
-    CONFIRMED REAL PRODUCTION FAILURE (tanasuq, session
-    201158877175-DEMO1223=23, 2026-09-23 21:55-21:56): leg injury ->
-    `medical` offered to book -> "اه" -> `medical` listed three
-    orthopaedic doctors -> "3". Both replies were read as intent
-    "answer", and "an answer belongs to whoever asked" kept them in
-    `medical`, which owns no booking tool. It called get_doctor_fees
-    (unasked) twice, tripped the repeated-call guard and sent the
-    soft-recovery reply. agents/router.py already routes both of these
-    to booking - the reading returned before it was ever consulted."""
+    try:
+        if active and agents.router._flow_just_completed(messages):
+            context["flow_just_completed"] = True
+    except Exception:  # pragma: no cover - context is best-effort
+        pass
 
-    text = understanding.latest_human_text(messages)
-    if not text or previous == "booking":
-        return None
-    if agents.router._affirms_previous_booking_offer(messages, text):
-        return "bare affirmation answering the assistant's own booking offer"
-    if (previous in agents.router._CANNOT_COMPLETE_A_BOOKING
-            and (agents.router._picks_from_a_doctor_list(messages, text)
-                 or agents.router._picks_from_a_specialty_list(messages, text))):
-        return f"picked from a doctor/specialty list ({previous} has no booking tools)"
-    return None
+    session = tools._BOOKING_SESSIONS.get(state.get("session_id") or "") or {}
+    last_list = session.get("last_list") or {}
+    context["booking"] = {
+        "doctor": session.get("doctor_display_name"),
+        "branch": session.get("branch_display_name"),
+        "service": session.get("service_display_name"),
+        "slot_chosen": bool(session.get("selected_slot")),
+        "review_shown": bool(session.get("review_shown")),
+        "list_on_screen": last_list.get("entity_type") if isinstance(last_list, dict) else None,
+    }
+
+    facts = state.get("established_facts") or {}
+    appointments = facts.get("appointments") or []
+    if appointments:
+        context["existing_appointments_found"] = len(appointments)
+    specialties = [s for s in (facts.get("specialties") or []) if isinstance(s, str)]
+    if specialties:
+        context["specialty"] = specialties[-1]
+    if facts.get("identity_verified"):
+        context["identity_verified"] = True
+    if state.get("crisis_active"):
+        context["crisis_active"] = True
+
+    return context
 
 
 def _route_from_reading(reading: Optional[dict], previous: Optional[str],
                         messages: Optional[list] = None):
-    """The owner of this turn according to the LLM reading, or None to
-    let the deterministic router decide (no reading, or a reading that
-    does not name a flow)."""
+    """`(agent, reason)` for a reading, or None when there is no reading
+    (technical failure - the fallback router decides). Ownership only:
+    the handoff and clarification branches are `router`'s. Kept as the
+    unit-test seam over agents.semantic_router.owner."""
 
     if not reading:
         return None
+    facts = _turn_facts({}, previous=previous, messages=messages or [])
+    agent, reason, _ = agents.semantic_router.owner(reading, facts, _routing_thresholds())
+    return agent, reason
 
-    intent = reading.get("intent")
 
-    if intent == "answer":
-        handover = _answer_hands_over_to_booking(messages or [], previous)
-        if handover:
-            return "booking", f"understanding: answer - {handover}"
-        # An answer belongs to whoever asked the question.
-        if previous in agents.AGENT_NAMES:
-            return previous, f"understanding: answering {previous}'s question"
-        return None
+# ==========================================================
+# Clarification - semantic uncertainty, answered with ONE question
+# ==========================================================
 
-    if reading.get("asks_price") and intent in ("faq", "booking", "other"):
-        # A price question mid-booking stays in booking (it holds
-        # get_doctor_fees and the confirmed doctor); otherwise faq.
-        if previous == "booking":
-            return "booking", "understanding: price question during booking"
-        return "faq", "understanding: price question"
+CLARIFY_NODE = "clarify"
 
-    if intent in _READING_SPECIALISTS:
-        return intent, f"understanding: {intent}"
+_CLARIFY_OPTION_LABELS = {
+    "ar": {
+        "booking": "حجز موعد جديد",
+        "reschedule": "تعديل موعد موجود",
+        "cancel": "إلغاء موعد",
+        "medical": "استشارة عن حالتك الصحية لاختيار التخصص المناسب",
+        "faq": "استفسار عن خدمات المستشفى",
+        "complaint": "تقديم شكوى أو اقتراح",
+        "human": "التواصل مع خدمة العملاء",
+    },
+    "en": {
+        "booking": "booking a new appointment",
+        "reschedule": "changing an existing appointment",
+        "cancel": "cancelling an appointment",
+        "medical": "advice on which specialty suits your case",
+        "faq": "a question about the hospital's services",
+        "complaint": "a complaint or suggestion",
+        "human": "speaking to customer service",
+    },
+}
 
-    return None
+# When the reading was unsure but did not list alternatives, the options
+# offered follow the family its best guess belongs to.
+_CLARIFY_DEFAULT_OPTIONS = {
+    "medical": ("medical", "booking"),
+    "faq": ("faq", "booking"),
+    "complaint": ("complaint", "human"),
+}
+_CLARIFY_APPOINTMENT_OPTIONS = ("booking", "reschedule", "cancel")
+
+
+def _clarification_question(reading: Optional[dict], english: bool,
+                            templates: Optional[dict] = None) -> str:
+    """One question offering the reading's candidate intents. A clinic can
+    author its own wording in its dialect as `msg_clarify_intent` (Arabic)
+    / `msg_clarify_intent_en`, with `{options}` where the list goes."""
+
+    labels = _CLARIFY_OPTION_LABELS["en" if english else "ar"]
+    reading = reading or {}
+
+    options = [name for name in reading.get("alternatives") or [] if name in labels]
+    if len(options) < 2:
+        options = list(_CLARIFY_DEFAULT_OPTIONS.get(reading.get("intent"), _CLARIFY_APPOINTMENT_OPTIONS))
+
+    named = [labels[name] for name in options[:3]]
+    if english:
+        listed = named[0] if len(named) == 1 else ", ".join(named[:-1]) + " or " + named[-1]
+        default = "Sure 🌷 Do you mean {options}?"
+        authored = (templates or {}).get("msg_clarify_intent_en")
+    else:
+        listed = named[0] if len(named) == 1 else "، ".join(named[:-1]) + "، أو " + named[-1]
+        default = "أكيد 🌷 هل تقصد {options}؟"
+        authored = (templates or {}).get("msg_clarify_intent")
+    template = authored if authored and "{options}" in authored else default
+    return template.replace("{options}", listed)
+
+
+def clarify(state: AgentState) -> dict:
+    """One concise clarification question, written in code.
+
+    Reached only when the reading is genuinely uncertain between intents
+    and no flow in progress settles it. Costs no specialist call - the
+    question is built from the reading's own alternatives - and never
+    falls back to "I don't understand"."""
+
+    messages = state.get("messages") or []
+    templates = state.get("templates") or {}
+    english = _latest_is_english(messages)
+    question = _clarification_question(state.get("understanding"), english, templates)
+
+    text = question
+    if not state.get("greeted"):
+        first = getattr(messages[0], "content", "") if messages else ""
+        greeting = _build_greeting(templates, first if isinstance(first, str) else "",
+                                   "en" if english else "ar")
+        if greeting:
+            head = _greeting_without_its_closing_question(greeting).strip() or greeting.strip()
+            text = f"{head}\n\n{question}"
+
+    return {
+        "messages": [_tag_author(AIMessage(content=text), CLARIFY_NODE)],
+        "greeted": True,
+    }
 
 
 def _latest_is_english(messages: list) -> bool:
@@ -19848,6 +20087,11 @@ def handoff(state: AgentState) -> dict:
 _CONTINUATION_REASONS = (
     "bare affirmation answering the assistant's own booking offer",
     "picked from a doctor/specialty list",
+    # The semantic path: the patient ANSWERED the previous agent's
+    # question and the answer moves the conversation into booking
+    # ("اه" to medical's "shall I book you with Dr X?"). Same
+    # continuation, read from meaning rather than from a regex.
+    "continuation - answer moves",
 )
 
 
@@ -19942,6 +20186,9 @@ def route_to_specialist(state: AgentState) -> str:
 
     if state.get("handoff_now"):
         return HANDOFF_NODE
+
+    if state.get("clarify_now"):
+        return CLARIFY_NODE
 
     return _specialist_for(state)
 
@@ -20387,8 +20634,11 @@ if config.MULTI_AGENT_ENABLED:
 
     builder.add_node(HANDOFF_NODE, handoff)
     builder.add_edge(HANDOFF_NODE, END)
+    builder.add_node(CLARIFY_NODE, clarify)
+    builder.add_edge(CLARIFY_NODE, END)
     builder.add_conditional_edges(
-        "router", route_to_specialist, {**specialist_nodes, HANDOFF_NODE: HANDOFF_NODE},
+        "router", route_to_specialist,
+        {**specialist_nodes, HANDOFF_NODE: HANDOFF_NODE, CLARIFY_NODE: CLARIFY_NODE},
     )
     builder.add_conditional_edges("tools", route_after_tools, specialist_nodes)
 

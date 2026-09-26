@@ -491,6 +491,11 @@ RESULT_GUIDANCE: dict = {
         "not_looked_up":
             "This booking was never found by a lookup in this "
             "conversation - go and find it first.",
+        "cannot_verify_slot":
+            "The appointment was NOT moved - the chosen time could not be "
+            "re-checked as still free. Do not say it was changed. Fetch "
+            "fresh times with get_available_reschedule_slots, show them, "
+            "and ask the patient to pick again.",
     },
 
     # ------------------------------------------------------------------

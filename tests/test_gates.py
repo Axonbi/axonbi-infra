@@ -191,5 +191,12 @@ def test_price_question_goes_to_faq_unless_booking():
 
 
 def test_no_reading_defers_to_the_deterministic_router():
+    # Only a TECHNICAL failure (no reading) hands the turn to the cues.
     assert graph._route_from_reading(None, "booking") is None
-    assert graph._route_from_reading({"intent": "other"}, "booking") is None
+
+
+def test_a_reading_that_names_no_flow_is_not_second_guessed_by_the_cues():
+    # "other" is a real reading: the active flow keeps the turn, and with
+    # nothing active it is the concierge's - never a keyword score.
+    assert graph._route_from_reading({"intent": "other"}, "booking")[0] == "booking"
+    assert graph._route_from_reading({"intent": "other"}, None)[0] == "concierge"

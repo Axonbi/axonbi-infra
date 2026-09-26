@@ -806,14 +806,31 @@ def compare_phone(
     {"status": "no_match"}. Never decide this yourself - always call
     this tool."""
 
+    # THE CHANNEL IDENTITY COMES FROM STATE, NEVER FROM THE ARGUMENT.
+    #
+    # `channel_phone` used to be taken from the model's own arguments, so
+    # a call passing the same arbitrary number twice "matched" and marked
+    # that number verified - unlocking lookup_appointment (phone path),
+    # get_patient_info and create_new_booking for it with no OTP. The
+    # only number that proves who is messaging is the one the channel
+    # delivered (`state["channel_phone"]`). The argument is kept so
+    # existing calls still validate; it is ignored.
+    verified_channel = (state or {}).get("channel_phone") or ""
+
     a = normalize_phone_number(provided_phone, state)
-    b = normalize_phone_number(channel_phone, state) if channel_phone else None
+    b = normalize_phone_number(verified_channel, state) if verified_channel else None
 
     match = bool(a and b and a == b)
 
+    if channel_phone and normalize_phone_number(channel_phone, state) != b:
+        logger.warning(
+            "compare_phone: ignored a model-supplied channel_phone that is not this "
+            "conversation's channel identity (session_id=%s)", (state or {}).get("session_id"),
+        )
+
     logger.info(
-        "compare_phone: provided=%r -> normalized=%r | channel=%r -> normalized=%r | match=%s",
-        provided_phone, a, channel_phone, b, match,
+        "compare_phone: provided=%r -> normalized=%r | channel(state)=%r | match=%s",
+        provided_phone, a, b, match,
     )
 
     if match:
@@ -5079,7 +5096,12 @@ def get_available_reschedule_slots(
     # one never did, so a bare "7" had nothing to resolve against and
     # `reschedule_appointment` had nothing to check the model's own
     # `new_time_from` against. See `_reschedule_slot_from_remembered`.
-    _remember_list(state, "slot", slots)
+    #
+    # The remembered copy also carries WHICH DOCTOR these slots belong to
+    # (`_doctor_id`), so `reschedule_appointment` can re-verify the exact
+    # slot the patient picked even when the looked-up booking record has
+    # no doctorId. Session-only: the model is shown `slots` without it.
+    _remember_list(state, "slot", [dict(slot, _doctor_id=resolved["doctor_id"]) for slot in slots])
 
     return {"status": "found", "slots": slots}
 
@@ -5208,7 +5230,8 @@ def select_reschedule_slot(state: Annotated[AgentState, InjectedState], user_inp
         session_id, chosen.get("slotStart"), chosen.get("date_display"), chosen.get("time_display"),
     )
 
-    return {"status": "selected", "slot": chosen}
+    return {"status": "selected",
+            "slot": {key: value for key, value in chosen.items() if not str(key).startswith("_")}}
 
 
 @tool
@@ -5234,7 +5257,8 @@ def reschedule_appointment(
     {"status": "slot_not_locked"} (call `select_reschedule_slot` first),
     {"status": "slot_unavailable"} (re-verified against live availability
     and it's gone - show the patient a fresh slot list, don't retry the
-    same time), or {"status": "error"}."""
+    same time), {"status": "cannot_verify_slot"} (the slot could not be
+    re-checked - fetch and show fresh slots), or {"status": "error"}."""
 
     # NOTE: confirmed directly from the user's own curl - GuestBookings/Update
     # lives on the SAME port as Doctors/Specialties (1302), NOT the regular
@@ -5284,6 +5308,7 @@ def reschedule_appointment(
     # instant. Retrying ("حاول تاني") reran the identical wrong write
     # every time, because nothing had ever locked the actual slot.
     locked_slot = _selected_reschedule_slot(state)
+    remembered = None
     if locked_slot and locked_slot.get("slotStart"):
         if not _same_instant(new_time_from, locked_slot.get("slotStart")):
             logger.warning(
@@ -5345,24 +5370,45 @@ def reschedule_appointment(
             doctor_id = record.get("doctorId")
             break
 
+    # NO DOCTOR ON THE RECORD -> THE DOCTOR OF THE SLOT THEY PICKED.
+    # `get_available_reschedule_slots` fetched those slots for one
+    # specific doctor and remembered which (`_doctor_id`), so the exact
+    # slot being written can still be checked live.
     if not doctor_id:
-        logger.warning(
-            "reschedule_appointment: no doctorId on file for booking_id=%s - "
-            "proceeding without re-verifying live availability (session_id=%s)",
+        doctor_id = ((locked_slot or {}).get("_doctor_id")
+                     or (remembered or {}).get("_doctor_id"))
+
+    # AND IF NEITHER KNOWS, DO NOT WRITE BLIND. This used to log a
+    # warning and move the appointment anyway - onto a slot that may have
+    # been taken since it was shown. Refusing costs the patient one fresh
+    # list; writing blind can double-book a doctor. Same rule as
+    # `create_new_booking`, which never writes without re-verifying.
+    if not doctor_id:
+        logger.error(
+            "reschedule_appointment: no doctorId for booking_id=%s or for the chosen "
+            "slot - refusing to write an unverified time (session_id=%s)",
             booking_id, state.get("session_id"),
         )
-    elif new_time_from:
+        return {"status": "cannot_verify_slot"}
+
+    if not new_time_from:
+        # No time at all is no time that can be checked.
+        return {"status": "cannot_verify_slot"}
+
+    if new_time_from:
         try:
             requested_start_dt = datetime.fromisoformat(new_time_from)
             day_start = requested_start_dt.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
             day_end = requested_start_dt.replace(hour=23, minute=59, second=59, microsecond=0).isoformat()
         except ValueError:
-            logger.warning(
-                "reschedule_appointment: unparsable new_time_from=%r - skipping "
-                "re-verification (session_id=%s)",
+            # An instant that cannot be read cannot be checked - and an
+            # unchecked time is exactly what must not reach a live booking.
+            logger.error(
+                "reschedule_appointment: unparsable new_time_from=%r - refusing "
+                "to write an unverified time (session_id=%s)",
                 new_time_from, state.get("session_id"),
             )
-            requested_start_dt = None
+            return {"status": "cannot_verify_slot"}
 
         if requested_start_dt is not None:
             slots_result = api.get_doctor_schedule_slots(
@@ -10415,7 +10461,8 @@ def select_appointment_slot(state: Annotated[AgentState, InjectedState], user_in
         session_id, chosen.get("slotStart"), chosen.get("date_display"), chosen.get("time_display"),
     )
 
-    return {"status": "selected", "slot": chosen}
+    return {"status": "selected",
+            "slot": {key: value for key, value in chosen.items() if not str(key).startswith("_")}}
 
 
 @tool
@@ -10640,6 +10687,16 @@ _COMPLAINT_AFFIRMATIVE_RE = re.compile(
 )
 
 
+# Our own confirmation question worded without "تأكيد" ("هل تريد إرسال
+# الشكوى؟", "أرسل الشكوى؟"). Folded form - matched against
+# `_normalize_arabic` output.
+_COMPLAINT_SEND_QUESTION_RE = re.compile(
+    r"(?:ارسال|ارسل|نرسل|ابعت|نبعت)\w*\s*(?:ال)?(?:شكوي|شكوه|ملاحظه|اقتراح)|"
+    r"\bsend\b[^?]{0,20}\b(?:complaint|feedback)\b",
+    re.IGNORECASE,
+)
+
+
 def _complaint_explicitly_confirmed(state: AgentState) -> bool:
     """True only when the assistant's own immediately-preceding message
     reads as STEP C6's confirmation question AND the patient's latest
@@ -10657,7 +10714,15 @@ def _complaint_explicitly_confirmed(state: AgentState) -> bool:
         return False
 
     last_human_text = str(getattr(messages[last_human_idx], "content", "") or "").strip()
-    if not _COMPLAINT_AFFIRMATIVE_RE.match(last_human_text):
+
+    # The turn's reading decides whether the patient said yes - "صحيح",
+    # "ابعتها", "أرسلها" were refused by the word list below. Without a
+    # reading (technical failure) the word list still applies.
+    understanding = state.get("understanding")
+    if understanding is not None:
+        if not understanding.get("confirms"):
+            return False
+    elif not _COMPLAINT_AFFIRMATIVE_RE.match(last_human_text):
         return False
 
     for i in range(last_human_idx - 1, -1, -1):
@@ -10670,7 +10735,13 @@ def _complaint_explicitly_confirmed(state: AgentState) -> bool:
             # looking further back for the last one that actually said
             # something to the patient.
             continue
-        return bool(_COMPLAINT_CONFIRMATION_QUESTION_RE.search(content))
+        # Provenance over OUR OWN message: it asked to confirm sending.
+        if _COMPLAINT_CONFIRMATION_QUESTION_RE.search(content):
+            return True
+        return bool(
+            ("؟" in content or "?" in content)
+            and _COMPLAINT_SEND_QUESTION_RE.search(_normalize_arabic(content))
+        )
 
     return False
 
@@ -11154,7 +11225,10 @@ def share_branch_location(
             latest_text = content if isinstance(content, str) else str(content or "")
             break
 
-    location_asked = bool(_LOCATION_REQUEST_CUE_RE.search(latest_text))
+    # The reading can only ADD a request the cue words missed.
+    location_asked = bool(_LOCATION_REQUEST_CUE_RE.search(latest_text)) or bool(
+        (state.get("understanding") or {}).get("asks_location")
+    )
 
     # A bare disambiguation reply ("2", "منار") answering some
     # in-between question doesn't repeat the location wording itself -

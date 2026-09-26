@@ -21,12 +21,12 @@ So consistency is enforced in TWO places, deliberately:
      mechanically rather than hoped away.
 
 What consistency does NOT mean here: it does not mean one fixed
-language. The prompt's LANGUAGE & DIALECT rule still mirrors whoever is
-speaking - an Egyptian patient and an English-speaking patient get the
-same STRUCTURE, the same field order, the same templates, the same
-emoji, the same one-question rhythm, each in their own language. That
-distinction is spelled out in the contract text itself so no agent
-"helpfully" flattens everyone into one dialect.
+language. The prompt's LANGUAGE & DIALECT rule decides the language (the
+patient's: Arabic or English) and the Arabic dialect (the clinic's own,
+for every patient) - an Arabic-speaking patient and an English-speaking
+patient get the same STRUCTURE, the same field order, the same
+templates, the same emoji, the same one-question rhythm, each in their
+own language.
 """
 
 import re
@@ -82,9 +82,9 @@ WHAT MUST BE IDENTICAL EVERY TIME
      internal ids - ever.
 
 WHAT LEGITIMATELY VARIES (and only this)
-  - The LANGUAGE and DIALECT, which always mirror the patient, exactly
-    as the LANGUAGE & DIALECT section above requires. Same structure,
-    same order, same emoji - expressed in their own way of speaking.
+  - The LANGUAGE (the patient's: Arabic or English), with Arabic always
+    in the clinic's own dialect, exactly as the LANGUAGE & DIALECT
+    section above requires. Same structure, same order, same emoji.
   - The real DATA from this conversation's tool results.
 Nothing else varies. Two patients asking the same thing in the same
 language get the same message.

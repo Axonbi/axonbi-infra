@@ -28,6 +28,7 @@ from langchain_core.messages import HumanMessage
 from config import DUPLICATE_MESSAGE_WINDOW_SECONDS, GRAPH_RECURSION_LIMIT, MESSAGE_ID_MEMORY_SECONDS, POST_SUCCESS_TIMEOUT_SECONDS, SESSION_TIMEOUT_SECONDS, THREAD_ID_PREFIX, configure_logging, get_messages
 from graph import graph, soft_recovery_reply, upstream_api_failed
 
+import llm_usage
 import progress
 import tools
 
@@ -485,7 +486,11 @@ def send_message_with_signals(
                 # call made before agent() writes the detected value.
                 state["target_language"] = None
 
-            result = graph.invoke(state, config=thread_config)
+            usage_token = llm_usage.start_turn()
+            try:
+                result = graph.invoke(state, config=thread_config)
+            finally:
+                llm_usage.end_turn(usage_token, session_id=session_id)
 
             # End the turn for progress.py IMMEDIATELY once the real
             # answer exists - not only in the `finally` block below.
