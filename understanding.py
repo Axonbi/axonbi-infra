@@ -87,13 +87,13 @@ _REASON_CHARS = 120
 
 PROMPT = """You interpret ONE patient message sent to Latifa, a hospital's WhatsApp assistant. Patients write any Arabic dialect (Gulf/Saudi, Egyptian, Levantine, MSA), English, Arabizi or a mix, often with typos, missing hamza or taa marbuta, or just a word or two.
 
-Interpret the user's meaning using the entire relevant conversation, especially the assistant's immediately previous question. Do not classify based on isolated keywords. A short reply ("اه", "تمام", "أكيد", "الثاني", "الخميس", a name, a number) means nothing alone: it takes its meaning from the question it answers. Indirect wording counts: wanting an appointment on another day is a reschedule, not wanting it any more is a cancellation, wanting someone to look at a body part is medical. Only being unable to make an appointment, with no sign of whether they want it cancelled or moved, is BOTH: is_ambiguous with alternatives ["cancel", "reschedule"].
+Interpret the user's meaning using the entire relevant conversation, especially the assistant's immediately previous question. Do not classify based on isolated keywords. A short reply ("اه", "تمام", "أكيد", "الثاني", "الخميس", a name, a number) means nothing alone: it takes its meaning from the question it answers. Indirect wording counts: wanting an appointment on another day is a reschedule, not wanting it any more is a cancellation, wanting someone to look at a body part is medical.
 
 Return ONLY a JSON object with these keys:
 "intent": what the patient wants to happen next -
   booking: a new appointment, a doctor's available times, or continuing a booking in progress
-  cancel: cancel an existing appointment
-  reschedule: move an existing appointment to another day/time
+  cancel: cancel an existing appointment - they no longer want it
+  reschedule: move an existing appointment - they want another day/time
   medical: a symptom, injury or health worry, or which doctor/specialty suits them
   faq: information about the hospital (services, prices, branches, hours, insurance)
   complaint: file a complaint or suggestion
@@ -103,11 +103,11 @@ Return ONLY a JSON object with these keys:
   other: anything else
   An answer's intent is the flow it moves forward: yes to "shall I book you with Dr X?" is booking, to "cancel it?" is cancel, to "connect you with customer service?" is human.
 "confidence": 0.0-1.0 for intent.
-"is_ambiguous": true only if it could mean different intents and neither STATE nor the conversation settles it (e.g. "الموعد" with nothing before it); then "alternatives": the 2-3 plausible intents, else [].
+"is_ambiguous": true only if it could mean different intents and neither STATE nor the conversation settles it; then "alternatives": the 2-3 plausible intents, else []. Two cases that are ALWAYS ambiguous unless the conversation already says which: "الموعد" with nothing before it; and being unable to make an appointment without saying whether to cancel it or move it ("مش هقدر اجي", "can't make it") -> intent "cancel", is_ambiguous true, alternatives ["cancel", "reschedule"], confidence at most 0.5.
 "answer_to_previous_question": it replies to the assistant's previous message.
 "changes_intent": the patient deliberately leaves the current flow (STATE.flow) for a different request.
 "confirms": clearly says yes to what the assistant's previous message asked to confirm or approve.
-"declines": says no to, or rejects, what that message offered or proposed (a day, time, doctor, branch, booking, transfer). A new unrelated request is not a decline.
+"declines": says no to, or rejects, what the assistant's previous message offered or proposed (a day, time, doctor, branch, booking, transfer). False when that message offered nothing (a greeting, a question). A new unrelated request is not a decline.
 "wants_human": asks for a person in any wording, or clearly accepts an offer to transfer them. False for a decline, frustration alone, a complaint topic, or a reply that is not clearly a yes (a list number, "دي").
 "cancel_request": this message asks for an existing appointment to be cancelled.
 "cancel_confirmed": ONLY when the previous message asked to confirm cancelling a specific appointment and this clearly says yes. "تم تاكيد الموعد مسبقا" (already confirmed) is not.

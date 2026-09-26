@@ -662,4 +662,7 @@ def test_the_answer_to_cancel_or_move_goes_to_the_right_flow(session_id, llm, ct
 
 def test_the_prompt_no_longer_teaches_cant_come_as_cancel():
     assert "not being able to come to a booked appointment is a cancellation" not in understanding.PROMPT
-    assert 'alternatives ["cancel", "reschedule"]' in understanding.PROMPT
+    # The rule sits in the is_ambiguous definition itself, where the model
+    # reads it (a general sentence was ignored live, 2026-09-26 16:01).
+    ambiguity = understanding.PROMPT.split('"is_ambiguous":', 1)[1].splitlines()[0]
+    assert 'alternatives ["cancel", "reschedule"]' in ambiguity
