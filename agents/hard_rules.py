@@ -223,15 +223,3 @@ def scope_hard_rules(hard_rules: str, agent_name: str) -> str:
 
     return result
 
-
-def coverage_report(hard_rules: str) -> Dict[str, object]:
-    """How many rules each specialist keeps. Diagnostics/tests only."""
-
-    parts = _BULLET_RE.split(hard_rules)
-    rules = parts[1:]
-    report: Dict[str, object] = {"_total": len(rules)}
-    for name in sorted(ALL):
-        report[name] = sum(1 for r in rules if name in _scope_for(r))
-    report["_unclassified"] = sum(1 for r in rules if _scope_for(r) == ALL)
-    report["_narrowed"] = sum(1 for r in rules if _scope_for(r) != ALL)
-    return report
