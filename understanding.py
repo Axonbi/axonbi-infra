@@ -95,12 +95,12 @@ Return ONLY a JSON object with these keys:
   cancel: cancel an existing appointment - they no longer want it
   reschedule: move an existing appointment - they want another day/time
   medical: a symptom, injury or health worry, or which doctor/specialty suits them
-  faq: information about the hospital (services, prices, branches, hours, insurance)
+  faq: information for a PATIENT about the hospital's care (services, prices, branches, hours, insurance)
   complaint: file a complaint or suggestion
   human: talk to a real person / staff / customer service
   answer: replies to the assistant's question but you cannot tell which flow it moves forward
   greeting: only a greeting or thanks
-  other: anything else
+  other: anything else - including things that are not patient care: jobs, training, interviews, suppliers, business
   An answer's intent is the flow it moves forward: yes to "shall I book you with Dr X?" is booking, to "cancel it?" is cancel, to "connect you with customer service?" is human.
 "confidence": 0.0-1.0 for intent.
 "is_ambiguous": true only if it could mean different intents and neither STATE nor the conversation settles it; then "alternatives": the 2-3 plausible intents, else []. Two cases that are ALWAYS ambiguous unless the conversation already says which: "الموعد" with nothing before it; and being unable to make an appointment without saying whether to cancel it or move it ("مش هقدر اجي", "can't make it") -> intent "cancel", is_ambiguous true, alternatives ["cancel", "reschedule"], confidence at most 0.5.

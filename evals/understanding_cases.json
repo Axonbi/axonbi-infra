@@ -195,6 +195,7 @@
     {"id": "unseen-8", "critical": false, "history": [["human", "عندي مشكلة في عيني"], ["ai", "أنصحك بكشف عيون ⚕️ عندنا د. أحمد سالم استشاري العيون. تحب أحجز لك معاه؟"]], "message": "الدكتور اللي قولتي عليه ينفع الأسبوع الجاي؟", "expect": {"intent": "booking", "doctor_name": "أحمد"}, "state": {"flow": "medical"}},
     {"id": "cant-come-but-says-cancel", "critical": true, "history": [["human", "اود اخذ موعد مع الدكتور عمر"], ["ai", "@BOOKED"]], "message": "مش هعرف اجي بكره، الغيه", "expect": {"intent": "cancel", "is_ambiguous": false}},
     {"id": "cant-come-but-says-move", "critical": true, "history": [["human", "اود اخذ موعد مع الدكتور عمر"], ["ai", "@BOOKED"]], "message": "مش هعرف اجي بكره، ممكن نخليه يوم تاني؟", "expect": {"intent": "reschedule", "is_ambiguous": false}},
-    {"id": "cant-come-answer-to-clarification", "critical": true, "history": [["human", "مش هعرف اجي بكره"], ["ai", "أكيد 🌷 تحب نلغي الموعد، ولا نأجله ليوم تاني؟"]], "message": "أجله", "expect": {"intent": "reschedule", "answer_to_previous_question": true}}
+    {"id": "cant-come-answer-to-clarification", "critical": true, "history": [["human", "مش هعرف اجي بكره"], ["ai", "أكيد 🌷 تحب نلغي الموعد، ولا نأجله ليوم تاني؟"]], "message": "أجله", "expect": {"intent": "reschedule", "answer_to_previous_question": true}},
+    {"id": "not-patient-care-training-interview", "critical": true, "history": [], "message": "كنت مقدمه في تدريب في مستشفي اجي اعمل انترفيو امتي", "expect": {"intent": "other", "wants_human": false}}
   ]
 }
