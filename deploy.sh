@@ -163,7 +163,11 @@ else
   trap 'rm -rf "$STAGE" "$TESTDIR"' EXIT
   (cd "$APP_DIR" && tar --exclude=.venv --exclude=__pycache__ -cf - .) | (cd "$TESTDIR" && tar -xf -)
   (cd "$STAGE" && tar -cf - .) | (cd "$TESTDIR" && tar -xf -)
-  if ! (cd "$TESTDIR" && OPENAI_API_KEY= OPENROUTER_API_KEY= "$PY" -m pytest tests -q -p no:cacheprovider); then
+  # Tracing off for the test run: the copied .env enables LangSmith, and
+  # with its quota exhausted the exporter thread kept retrying after the
+  # tests finished - the deploy looked hung and was interrupted (Ctrl-C)
+  # before installing anything. Nothing here needs tracing.
+  if ! (cd "$TESTDIR" && OPENAI_API_KEY= OPENROUTER_API_KEY= LANGSMITH_TRACING=false         LANGCHAIN_TRACING_V2=false LANGCHAIN_TRACING=false         "$PY" -m pytest tests -q -p no:cacheprovider); then
     die "regression tests failed - nothing has been changed"
   fi
   ok "regression suite passed"
