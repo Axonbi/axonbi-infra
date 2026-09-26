@@ -43,9 +43,10 @@ KEEP_BACKUPS="${KEEP_BACKUPS:-10}"
 FILES=(
   graph.py tools.py prompts.py rag.py main.py app.py config.py
   state.py api.py progress.py start.py
-  understanding.py tool_result_guidance.py
+  understanding.py tool_result_guidance.py llm_usage.py
   agents/__init__.py agents/router.py agents/registry.py
   agents/sections.py agents/response_contract.py agents/hard_rules.py
+  agents/semantic_router.py
 )
 
 # The regression suite. Downloaded and RUN against the new code before
@@ -54,6 +55,8 @@ FILES=(
 # SKIP_TESTS=1 bypasses it; only for an emergency rollforward.
 TEST_FILES=(
   tests/conftest.py tests/test_production_scenarios.py tests/test_gates.py tests/test_round2.py
+  tests/test_semantic_routing.py tests/test_reading_first_gates.py
+  tests/test_reschedule_reverification.py
 )
 
 RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; DIM=$'\033[2m'; OFF=$'\033[0m'
