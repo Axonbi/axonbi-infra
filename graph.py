@@ -5880,6 +5880,13 @@ _ACTIONABLE_QUESTION_RE = re.compile(
 )
 
 
+_CONDITIONAL_LEADIN_RE = re.compile(
+    r"^(\s*)(?:(?:إذا|اذا|لو|إن|ان)\s*(?:نعم|ايوه|أيوه|ايوة|أيوة|آه|اه|اي|أي|كده|كذا|كان\s*كذلك|"
+    r"وافقت|حبيت|تحب)|if\s+(?:yes|so)|in\s+that\s+case)\s*[،,]\s*",
+    re.IGNORECASE,
+)
+
+
 def _strip_extra_questions(reply_text: str, templates: dict) -> tuple:
     """Keep the FIRST question in a reply and drop any later ones.
 
@@ -5953,6 +5960,10 @@ def _strip_extra_questions(reply_text: str, templates: dict) -> tuple:
             continue
 
         if index == keeper:
+            if removed and index > question_indexes[0]:
+                # The question it depended on is gone, so "إذا نعم، ..."
+                # / "if yes, ..." would now answer nothing.
+                segment = _CONDITIONAL_LEADIN_RE.sub(lambda m: m.group(1), segment, count=1)
             kept.append(segment)
             continue
 
@@ -16632,7 +16643,8 @@ _IDENTIFIER_CHOICE_ASK_DIRECTIVE = (
 )
 
 
-def _build_identifier_choice_directive(messages: list, agent_name: str) -> str:
+def _build_identifier_choice_directive(messages: list, agent_name: str,
+                                       reading: Optional[dict] = None) -> str:
     """STEP 1's opening rung for cancel and reschedule, decided in code.
 
     Stands down the moment there is something to act on instead - an
@@ -16653,10 +16665,16 @@ def _build_identifier_choice_directive(messages: list, agent_name: str) -> str:
 
     folded = _norm_ar(text)
 
-    if not _BARE_CANCEL_OR_CHANGE_REQUEST_RE.search(folded):
+    # A request to cancel or move an EXISTING appointment, read either
+    # from an explicit verb or from the turn's reading - "مش هعرف اجي
+    # بكره" names no verb at all, and without this the model composed
+    # STEP 1 itself, as two questions ("تبغى تلغي موعدك القريب؟ إذا نعم،
+    # تحب تلغي الموعد برقم الجوال ولا برقم الحجز؟").
+    if not (_BARE_CANCEL_OR_CHANGE_REQUEST_RE.search(folded)
+            or _reading_wants_an_existing_booking_changed(reading)):
         return ""
 
-    if not _cancel_or_reschedule_intent(messages, agent_name):
+    if not _cancel_or_reschedule_intent(messages, agent_name, reading):
         return ""
 
     # They already told us HOW to find it - STEP 1's own smart-detection
@@ -18592,7 +18610,8 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     # on it and the two must never both be live.
     identifier_choice_directive = (
         "" if supplied_identifier_directive
-        else _build_identifier_choice_directive(state["messages"], agent_name)
+        else _build_identifier_choice_directive(state["messages"], agent_name,
+                                                state.get("understanding"))
     )
 
     # "الغيه" / "عدله" about the booking already on the table. Suppressed

@@ -238,3 +238,32 @@ def test_a_real_turn_reports_its_calls(session_id, llm, reader, caplog):
     summary = json.loads(lines[-1][len("turn_usage "):])
     assert summary["by_role"]["understanding"]["calls"] == 1
     assert summary["by_role"]["specialist"]["calls"] == 1
+
+
+# ----------------------------------------------------------------------
+# PRODUCTION (agent-mu1, 2026-09-26 15:48): "مش هعرف اجي بكره" routed to
+# cancel correctly, but STEP 1 was composed by the model as two questions
+# and trimmed to "إذا نعم، تحب تلغي الموعد برقم الجوال ولا برقم الحجز؟"
+# ----------------------------------------------------------------------
+
+def test_indirect_cancellation_gets_the_fixed_step1_question(session_id, llm, reader):
+    from conftest import send
+    reader.table["مساء الخير"] = {"intent": "greeting"}
+    llm._responses.append(AIMessage(content="أهلا 🌷"))
+    send(session_id, "مساء الخير")
+    calls_before = len(llm.calls)
+
+    reader.table["مش هعرف اجي بكره"] = {"intent": "cancel", "cancel_request": True,
+                                         "answer_to_previous_question": True}
+    reply = send(session_id, "مش هعرف اجي بكره")["reply"]
+
+    assert "برقم الجوال" in reply and "برقم الحجز" in reply
+    assert "إذا نعم" not in reply
+    assert len(llm.calls) == calls_before, "STEP 1 is fixed text - no model call"
+
+
+def test_trimming_a_question_drops_its_if_yes_lead_in():
+    text = "تبغى تلغي موعدك القريب؟ إذا نعم، تحب تلغي الموعد برقم الجوال ولا برقم الحجز؟"
+    trimmed, removed = graph._strip_extra_questions(text, {})
+    assert removed == 1
+    assert trimmed == "تحب تلغي الموعد برقم الجوال ولا برقم الحجز؟"
