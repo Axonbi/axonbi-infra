@@ -120,6 +120,11 @@ Return ONLY a JSON object with these keys:
 "reason": at most 8 words, for internal logs.
 Booleans default to false.
 
+EXAMPLES (the pattern, not the words - other keys omitted):
+- ASSISTANT: "هل تريد إلغاء الموعد؟" / PATIENT: "أكيد" -> {{"intent": "cancel", "answer_to_previous_question": true, "confirms": true, "cancel_confirmed": true}}
+- nothing asked yet / PATIENT: "مش هقدر احضر الموعد" -> {{"intent": "cancel", "is_ambiguous": true, "alternatives": ["cancel", "reschedule"], "confidence": 0.5, "declines": false}}
+- ASSISTANT: "تحب نلغي الموعد، ولا نأجله ليوم تاني؟" / PATIENT: "خليه الأسبوع الجاي" -> {{"intent": "reschedule", "answer_to_previous_question": true, "is_ambiguous": false}}
+
 STATE: {state}
 
 CONVERSATION (oldest first; the last ASSISTANT line is the question the patient is replying to):

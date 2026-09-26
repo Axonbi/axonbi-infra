@@ -23,6 +23,11 @@
 #   BRANCH=other ./deploy.sh    deploy a different branch
 #   ./deploy.sh --check         download and verify, change nothing
 #   ./deploy.sh --rollback      restore the most recent backup
+#   SOURCE_DIR=/opt/axonbi-infra ./deploy.sh
+#                               install from a local git checkout instead
+#                               of GitHub raw (no CDN cache at all) - run
+#                               `git fetch && git reset --hard origin/BRANCH`
+#                               in that checkout first
 #
 set -euo pipefail
 
@@ -98,15 +103,30 @@ fi
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 
-step "Downloading $REPO@$BRANCH"
+# fetch_file <path> <dest>: from SOURCE_DIR when set, else GitHub raw.
+fetch_file() {
+  if [[ -n "${SOURCE_DIR:-}" ]]; then
+    [[ -f "$SOURCE_DIR/$1" ]] || return 1
+    cp "$SOURCE_DIR/$1" "$2"
+  else
+    curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' -o "$2" \
+      "https://raw.githubusercontent.com/$REPO/$BRANCH/$1?cb=$(date +%s%N)"
+  fi
+}
+
+if [[ -n "${SOURCE_DIR:-}" ]]; then
+  [[ -d "$SOURCE_DIR/.git" ]] || die "SOURCE_DIR=$SOURCE_DIR is not a git checkout"
+  step "Copying from $SOURCE_DIR @ $(git -C "$SOURCE_DIR" log --oneline -1)"
+else
+  step "Downloading $REPO@$BRANCH"
+fi
 for f in "${FILES[@]}"; do
   # The cache buster is not optional: raw.githubusercontent served a
   # several-minute-old copy of a file that had already been pushed, and
   # the deploy silently installed the previous version.
-  url="https://raw.githubusercontent.com/$REPO/$BRANCH/$f?cb=$(date +%s%N)"
   mkdir -p "$STAGE/$(dirname "$f")"
-  if ! curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' -o "$STAGE/$f" "$url"; then
-    die "could not download $f - is it on branch $BRANCH?"
+  if ! fetch_file "$f" "$STAGE/$f"; then
+    die "could not fetch $f - is it on branch $BRANCH?"
   fi
   [[ -s "$STAGE/$f" ]] || die "$f downloaded empty"
   printf '  %-34s %8s bytes\n' "$f" "$(stat -c%s "$STAGE/$f")"
@@ -114,9 +134,8 @@ done
 ok "${#FILES[@]} file(s) downloaded"
 
 for f in "${TEST_FILES[@]}"; do
-  url="https://raw.githubusercontent.com/$REPO/$BRANCH/$f?cb=$(date +%s%N)"
   mkdir -p "$STAGE/$(dirname "$f")"
-  curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' -o "$STAGE/$f" "$url"     || die "could not download $f - the regression suite must be on branch $BRANCH"
+  fetch_file "$f" "$STAGE/$f" || die "could not fetch $f - the regression suite must be on branch $BRANCH"
 done
 ok "${#TEST_FILES[@]} test file(s) downloaded"
 
