@@ -37,10 +37,12 @@ import time
 from datetime import date, datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from zoneinfo import ZoneInfo
-from typing import Annotated, Dict, Optional
+from typing import Annotated, Dict, Literal, Optional
 
-from langchain_core.tools import tool
+from langchain_core.messages import ToolMessage
+from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.prebuilt import InjectedState
+from langgraph.types import Command
 
 import api
 import rag
@@ -73,74 +75,6 @@ import requests
 from state import AgentState
 
 logger = logging.getLogger(__name__)
-
-
-# ==========================================================
-# Hard guard for request_human_handoff - complaint word alone is not
-# consent to be transferred.
-# ==========================================================
-#
-# WHY THIS EXISTS AS CODE, NOT JUST PROSE: the tool's own docstring
-# below already explains, in detail, with a "confirmed real production
-# failure" example, that a bare "شكوي" is a topic, not a request for a
-# human. That prose was already in place and the LLM still called this
-# tool with patient_agreed=True on exactly that input, reason logged as
-# "patient asked for staff" - the same failure the docstring describes,
-# happening again on the same wording. A second occurrence of an
-# already-documented failure means the instruction alone cannot be
-# trusted to hold on every turn, so the check is enforced here instead
-# of only being asked for.
-_COMPLAINT_ROOTS_FOR_HANDOFF_GUARD = ("شكو", "اشتك", "complaint")
-
-# Words that show the patient is SEPARATELY, explicitly asking for a
-# person - as opposed to just naming "complaint" as the topic. If any of
-# these appear alongside a complaint word, the guard steps aside and
-# lets the model's own call stand (e.g. "الشكوى معقدة عايز اتكلم مع حد").
-_EXPLICIT_HUMAN_REQUEST_ROOTS = (
-    "موظف", "خدمة العملاء", "خدمه العملاء", "ممثل خدمة", "اتكلم مع حد",
-    "أتكلم مع حد", "كلمني حد", "كلميني حد", "حد يرد", "شخص حقيقي",
-    "human", "representative", "agent", "someone", "speak to a person",
-    "talk to a person",
-)
-
-
-def _latest_human_text_for_handoff_guard(state: AgentState) -> str:
-    """The most recent HumanMessage's raw text, or "" if none is found.
-    Deliberately tolerant of whatever message objects `state["messages"]`
-    holds - only ever used to decide whether to BLOCK a handoff, never
-    to allow one, so a missed/garbled message just means the guard has
-    nothing to catch and the model's own decision goes through."""
-
-    for msg in reversed(state.get("messages") or []):
-        if getattr(msg, "type", None) == "human":
-            content = getattr(msg, "content", "")
-            return content if isinstance(content, str) else str(content or "")
-    return ""
-
-
-def _latest_ai_text_before_handoff_guard(state: AgentState) -> str:
-    """The most recent AIMessage's raw text (the assistant's own last
-    turn) - used only to check whether a staff/customer-service handoff
-    was actually OFFERED before this turn, never to allow a handoff on
-    its own.
-
-    Skips AI messages that carry tool calls or no text. When this runs
-    inside ToolNode, the newest AI message is the very tool call that is
-    requesting the handoff - its content is normally "" - so reading it
-    blocked every short "اه"/"ايوه"/"نعم" that answered a real offer
-    (confirmed production loop, 2026-09-24). What matters is the last
-    reply the patient actually SAW."""
-
-    for msg in reversed(state.get("messages") or []):
-        if getattr(msg, "type", None) != "ai":
-            continue
-        if getattr(msg, "tool_calls", None):
-            continue
-        content = getattr(msg, "content", "")
-        text = content if isinstance(content, str) else str(content or "")
-        if text.strip():
-            return text
-    return ""
 
 
 # ==========================================================
@@ -342,72 +276,6 @@ def _is_valid_phone_format(phone: Optional[str]) -> bool:
     if not phone:
         return False
     return bool(re.match(r"^\+\d{7,15}$", phone.strip()))
-
-
-def to_riyadh(utc_string: Optional[str], timezone_name: str = DEFAULT_TIMEZONE) -> Optional[str]:
-    """ISO string -> the CLIENT'S OWN local time zone, as an ISO string.
-
-    Despite the historical name (kept to minimize churn - this function
-    used to be Riyadh-only), `timezone_name` is now a real per-client
-    IANA zone name (e.g. "Africa/Cairo", "Asia/Riyadh" - both are real
-    values already present in client_config.csv's own "timezone" column,
-    exposed as state["templates"]["_timezone"]). This replaces a single
-    hardcoded "+3 hours" that used to be applied to every clinic
-    regardless of its actual location, which would have silently
-    produced wrong times for any clinic outside Saudi Arabia, and
-    doesn't account for DST where applicable.
-
-    CRITICAL FIX (kept from the previous version): this used to blindly
-    append a literal offset string to whatever `.isoformat()` produced,
-    regardless of whether the parsed datetime was already timezone-aware.
-    If the input was ALREADY timezone-aware (e.g.
-    "2026-08-06T16:00:00+00:00" - confirmed directly from the real
-    Doctors/GetDoctorScheduleSlots API response), that produced a
-    doubled, invalid offset like "2026-08-06T19:00:00+00:00+03:00" -
-    which caused a real production 400 error from GuestBookings/Update
-    (it received an unparseable timestamp). Now: if the input is
-    timezone-aware, convert it via astimezone(); if naive, assume UTC
-    and attach the target zone directly on the datetime object - never
-    by string concatenation."""
-
-    if not utc_string:
-        return None
-
-    try:
-        target_tz = ZoneInfo(timezone_name)
-    except Exception:
-        logger.warning("to_riyadh: unknown timezone %r, falling back to %s", timezone_name, DEFAULT_TIMEZONE)
-        target_tz = ZoneInfo(DEFAULT_TIMEZONE)
-
-    cleaned = utc_string.replace("Z", "+00:00")
-
-    dt = None
-
-    try:
-        dt = datetime.fromisoformat(cleaned)
-    except ValueError:
-        for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
-            try:
-                dt = datetime.strptime(cleaned, fmt)
-                break
-            except ValueError:
-                continue
-
-    if dt is None:
-        return utc_string
-
-    if dt.tzinfo is not None:
-        # Already timezone-aware - convert the actual instant to the
-        # target zone (adjusts the wall-clock time correctly), don't
-        # just relabel or append to it.
-        local_dt = dt.astimezone(target_tz)
-    else:
-        # Naive - assume UTC, attach UTC first then convert, so DST
-        # rules (where applicable) are resolved correctly rather than
-        # applying a flat manual offset.
-        local_dt = dt.replace(tzinfo=timezone.utc).astimezone(target_tz)
-
-    return local_dt.isoformat()
 
 
 def to_local_wallclock(value: Optional[str], timezone_name: str = DEFAULT_TIMEZONE) -> Optional[str]:
@@ -1187,18 +1055,21 @@ def check_booking_status(
 def cancel_appointment(
     state: Annotated[AgentState, InjectedState],
     booking_id: str,
+    confirmed_by_patient: bool,
 ) -> dict:
     """Cancel a booking by its internal id (from a previous tool's
     "appointment"/"id" field - NEVER the human-readable reference
     number). Always call check_booking_status on the same booking
     immediately before this.
 
-    Each status below carries its own handling instruction with the result
-    itself (the `_guidance` field) - read that when it arrives.
+    `confirmed_by_patient`: True ONLY when the patient's latest message
+    clearly agrees to cancelling the specific booking you showed them -
+    in any wording. False when they hesitated, said no, asked to change
+    it instead, or you are not sure; ask them again in that case.
 
     Returns one of: {"status": "success"},
-    {"status": "not_looked_up"}, {"status": "not_requested"}, or
-    {"status": "error"}."""
+    {"status": "not_looked_up"}, {"status": "not_requested"},
+    {"status": "not_confirmed"}, or {"status": "error"}."""
 
     # SERVER-SIDE ENFORCEMENT, NOT JUST A PROMPT RULE - the same
     # reasoning `lookup_appointment` and `create_new_booking` already
@@ -1214,16 +1085,27 @@ def cancel_appointment(
     # up. `_looked_up_booking_ids` records ids as the lookup tools
     # return them, so an id recalled, mistyped or carried over from
     # somewhere else cannot reach the API.
-    # THEY NEVER ASKED FOR THIS. See `_patient_asked_to_cancel` for the
-    # confirmed failure - "تعديل" ended in a cancelled appointment. The
-    # explicit-confirmation rule cannot catch that on its own, because
-    # the question the patient said yes to was the wrong question.
-    if not _patient_asked_to_cancel(state):
+    # WHO DECIDED THIS IS A CANCELLATION: the routing layer - the router,
+    # its LLM classifier, or the concierge's `transfer_to_specialist` -
+    # which judges the patient's MEANING; the result is
+    # `active_agent == "cancel"`. No keyword list over the patient's words:
+    # one refused every patient who wanted to cancel without using one of
+    # its words. (CONFIRMED FAILURE this replaces the old guard for:
+    # "تعديل" on the concierge ended in a cancellation - the concierge can
+    # no longer cancel at all.) The legacy single-agent graph has no
+    # routing, so there only the consent checks below apply.
+    import config as _config
+
+    intended = (
+        state.get("active_agent") == "cancel" if _config.MULTI_AGENT_ENABLED else True
+    )
+
+    if not intended:
         logger.error(
-            "cancel_appointment: REFUSING to cancel booking_id=%r (session_id=%s) - "
-            "no message the patient sent in this conversation asks to cancel "
-            "anything. They may have asked to RESCHEDULE.",
-            booking_id, state.get("session_id"),
+            "cancel_appointment: REFUSING to cancel booking_id=%r (session_id=%s, "
+            "active_agent=%r) - this conversation was never judged a cancellation. "
+            "They may have asked to RESCHEDULE.",
+            booking_id, state.get("session_id"), state.get("active_agent"),
         )
         return {"status": "not_requested"}
 
@@ -1238,6 +1120,30 @@ def cancel_appointment(
         return {"status": "not_looked_up"}
 
     booking_id = resolved["booking_id"]
+
+    # CONSENT: THE MODEL JUDGES IT, THE CODE CHECKS IT COULD HAVE BEEN GIVEN.
+    #
+    # Whether "اه" / "تمام ألغيه" / "خلاص مش محتاجاه" means yes is a
+    # language question, so it is the model's call - stated explicitly in
+    # `confirmed_by_patient` rather than implied by the call itself. What
+    # the code checks is structural and wording-free: the patient cannot
+    # have agreed to cancel a booking that was not shown to them before
+    # their reply.
+    if not confirmed_by_patient:
+        logger.warning(
+            "cancel_appointment: not cancelling booking_id=%s (session_id=%s) - the "
+            "model did not report a confirmation from the patient",
+            booking_id, state.get("session_id"),
+        )
+        return {"status": "not_confirmed"}
+
+    if not _booking_shown_before_latest_patient_message(state, booking_id):
+        logger.error(
+            "cancel_appointment: REFUSING to cancel booking_id=%s (session_id=%s) - "
+            "it was not shown to the patient before their latest message, so they "
+            "cannot have confirmed it", booking_id, state.get("session_id"),
+        )
+        return {"status": "not_confirmed"}
 
     base_url = _base_url(state)
     result = api.cancel_booking_by_guid(base_url, booking_id)
@@ -1863,95 +1769,27 @@ def _looked_up_bookings(state: AgentState) -> list:
     return records
 
 
-def _booking_was_looked_up(state: AgentState, booking_id: Optional[str]) -> bool:
-    """True when `booking_id` is the internal id of a booking a lookup
-    tool actually returned in THIS conversation.
+def _booking_shown_before_latest_patient_message(state: AgentState, booking_id: str) -> bool:
+    """True when a lookup tool returned `booking_id` BEFORE the patient's
+    latest message - i.e. it was on the table when they replied.
 
-    COMPARES THE `id` FIELD, NOT THE WHOLE MESSAGE.
+    Structural, not linguistic: it reads message order and ToolMessage
+    payloads only, never the wording of either side."""
 
-    This used to substring-search the raw ToolMessage text, which let
-    the WRONG value through: a booking's own human-readable reference
-    ("GBN-2026-09-07-394") is in that text too, so passing the
-    reference where the GUID belongs sailed past the gate and was then
-    sent to the booking API as an id - where it can only ever fail. See
-    `_resolve_booking_guid`, which is what callers should use: it turns
-    a reference (or a positional pick) into the real id instead of
-    letting it reach the API."""
-
-    if not booking_id:
+    messages = list(state.get("messages") or [])
+    last_human = None
+    for index in range(len(messages) - 1, -1, -1):
+        if getattr(messages[index], "type", None) == "human":
+            last_human = index
+            break
+    if last_human is None:
         return False
 
-    wanted = str(booking_id).strip()
-    if not wanted:
-        return False
-
+    earlier = {**state, "messages": messages[:last_human]}
     return any(
-        str(record.get("id") or "").strip() == wanted
-        for record in _looked_up_bookings(state)
+        str(record.get("id") or "").strip() == str(booking_id).strip()
+        for record in _looked_up_bookings(earlier)
     )
-
-
-# ==========================================================
-# NOBODY CANCELS AN APPOINTMENT THAT WAS NEVER ASKED ABOUT
-# ==========================================================
-#
-# CONFIRMED REAL PRODUCTION FAILURE (tenant, session
-# 201000000001+tenant2, 2026-09-08 08:47): the patient typed "تعديل"
-# - modify - and the appointment was CANCELLED. The routing bug behind
-# it is fixed in `agents/router.py`, but the reason it could reach this
-# far is structural and worth its own gate: `concierge` is bound to
-# EVERY tool (deliberately - see the design notes in agents/registry.py)
-# while being given none of the cancel or reschedule flow text. Asked
-# to handle something it has no script for, it improvised the shape of
-# a cancellation: it showed the booking, asked "هذا هو موعدك الذي تبغى
-# تلغيه؟", read the patient's "اه" as consent, and destroyed the
-# appointment. The next message was "قولتلك تعديل".
-#
-# Cancelling is the only irreversible action in this system. The
-# confirmation it requires is already enforced - but a confirmation is
-# only worth anything if the QUESTION was the right one, and here it
-# was not. So the check that matters is not "did they say yes", it is
-# "did they ever ask for this at all", and that can only be answered
-# from the PATIENT's own words. An assistant-authored question can
-# never establish it: inventing that question is exactly the failure.
-#
-# Deliberately narrow. It asks one thing - does any message the patient
-# sent in this conversation express wanting to cancel - and it says
-# nothing about which booking, or whether they confirmed. Those are
-# still `_resolve_booking_guid`'s and the flow's own business.
-_CANCEL_INTENT_RE = re.compile(
-    # الغاء / إلغاء / ألغي / ألغيه / الغاءه, and ابطال / ابطل / ابطلها.
-    # `\w*` because Arabic attaches the object pronoun to the verb.
-    r"(?:^|\s)(?:الغاء|الغي|الغ|ابطال|ابطل)\w*|"
-    # "مش عايز الحجز ده" / "ما ابغى الموعد" - refusing the appointment
-    # itself, which is a cancellation in every way but the word.
-    r"(?:مش|ما|لا)\s*(?:عايز|عاوز|عايزه|عاوزه|ابغى|ابغي|ابي|اريد|محتاج|محتاجه)"
-    r"[^.\n]{0,15}(?:ال)?(?:حجز|موعد|معاد|ميعاد)|"
-    # Not coming - the commonest way patients say it without the word.
-    r"(?:مش\s*(?:هقدر|حقدر|راح\s*اقدر)\s*(?:اجي|احضر)|ما\s*اقدر\s*اجي|لن\s*احضر|مش\s*جاي)|"
-    r"\bcancel\w*\b|\bcall\s*off\b|"
-    r"\b(?:delete|remove|drop)\b[^.\n]{0,20}\b(?:booking|appointment|reservation)\b|"
-    r"\b(?:can(?:\'|\u2019)?t|cannot|won(?:\'|\u2019)?t)\s+(?:make|come|attend)\b"
-)
-
-
-def _patient_asked_to_cancel(state: AgentState) -> bool:
-    """True when a message the PATIENT sent in this conversation asks to
-    cancel an appointment.
-
-    Reads only HumanMessages, on purpose: what the assistant asked
-    cannot establish this - see the incident note above, where the
-    assistant's own invented question was the whole problem."""
-
-    for msg in state.get("messages") or []:
-        if getattr(msg, "type", None) != "human":
-            continue
-        content = getattr(msg, "content", "")
-        text = content if isinstance(content, str) else str(content)
-        if _CANCEL_INTENT_RE.search(_normalize_arabic(text)):
-            return True
-
-    return False
 
 
 def _resolve_booking_guid(state: AgentState, value: Optional[str]) -> dict:
@@ -9865,6 +9703,7 @@ def create_new_booking(
     slot_end: str,
     patient_full_name: str,
     mobile_number: str,
+    confirmed_by_patient: bool,
     email: str = "",
 ) -> dict:
     """Create a brand new appointment booking. Reads the confirmed
@@ -9895,6 +9734,10 @@ def create_new_booking(
         # detail yet - see `confirm_booking_review`, which you must
         # call (after showing that review and getting a yes) before
         # trying this again.
+    {"status": "not_confirmed"}
+        # `confirmed_by_patient` was False: their reply to the review card
+        # did not clearly agree (a no, a change, a hesitation). Nothing
+        # was created.
     {"status": "slot_unavailable"}
     {"status": "missing_doctor"} / {"status": "missing_branch"}
     {"status": "missing_address"}
@@ -9908,6 +9751,19 @@ def create_new_booking(
     {"status": "not_configured"} / {"status": "error"}"""
 
     session_id = state.get("session_id")
+
+    # CONSENT IS THE MODEL'S JUDGEMENT, STATED EXPLICITLY. Whether the
+    # patient's reply to the review card agreed ("تمام", "اه أكد", or a
+    # correction instead) is a language question; graph._tool_node's
+    # review-card gate checks the structural half - that the card was the
+    # assistant's immediately preceding reply.
+    if not confirmed_by_patient:
+        logger.warning(
+            "create_new_booking: not booking (session_id=%s) - the model did not "
+            "report the patient's agreement to the review card", session_id,
+        )
+        return {"status": "not_confirmed"}
+
     session = _get_booking_session(session_id)
     doctor_id = session.get("doctor_id")
     branch_id = session.get("branch_id")
@@ -11430,13 +11286,10 @@ def request_human_handoff(
     not asking to be transferred. Do NOT call this: apologize, ASK
     whether they want a staff member, and call it only after they agree.
 
-    WANTING TO FILE A COMPLAINT IS NOT AGREEMENT EITHER. "شكوى"/"شكوي"/
-    "عاوزه اعمل شكوه"/"I have a complaint" states a TOPIC, not a request
-    for a person. Complaints have their own flow (ask what happened,
-    which doctor/branch if relevant, then `send_complaint_email`) and
-    stay with you unless the patient separately and explicitly asks for
-    a human. The word "complaint"/"شكوى" is never by itself grounds to
-    call this.
+    A COMPLAINT IS NEVER A HANDOFF. Wanting to complain states a topic,
+    not a request for a person: complaints have their own flow
+    (`transfer_to_specialist(flow="complaint")` from the concierge) and
+    are recorded there, never passed to staff through this tool.
 
     Pass `patient_agreed=False` when unsure - the handoff is then NOT
     raised and you should ask them. Never pass True for a handoff you
@@ -11453,87 +11306,14 @@ def request_human_handoff(
 
     Returns {"status": "handoff_requested"}, or
     {"status": "not_requested", "reason": "patient_has_not_agreed"} when
-    `patient_agreed` was False - ask them first in that case.
-
-    HARD GUARD, enforced in code: if the patient's latest message names
-    a complaint ("شكوى"/"اشتكي"/"complaint") and does NOT also
-    separately name a person/staff/representative, the call is
-    downgraded to "not_requested" whatever `patient_agreed` said."""
-    # ------------------------------------------------------------------
-    # MAINTAINER NOTES - MOVED OUT OF THE DOCSTRING.
-    # A tool's docstring IS its `description`, sent to the model on every
-    # call by every agent bound to it. The incident reports below are for
-    # whoever next edits this function - they are not instructions the
-    # model can act on, so they are kept here rather than re-billed every
-    # turn. Nothing has been deleted.
-    #
-    # Confirmed real production failure: a frustrated patient who never
-    # asked for anyone was transferred out of the conversation immediately,
-    # with the reason logged as "patient frustrated, requested human agent"
-    # when no such request had been made.
-    #
-    # Confirmed real production failure: the patient typed "شكوي" alone and
-    # was immediately transferred with reason="patient asked for staff" -
-    # they had said nothing of the kind, and never got the chance to
-    # actually describe the complaint at all.
-    #
-    # The HARD GUARD above is enforced here, not left to the docstring
-    # alone - see the module-level comment above
-    # `_COMPLAINT_ROOTS_FOR_HANDOFF_GUARD`.
-    # ------------------------------------------------------------------
-
-
-    latest_text = _latest_human_text_for_handoff_guard(state)
-    has_complaint_word = any(root in latest_text for root in _COMPLAINT_ROOTS_FOR_HANDOFF_GUARD)
-    has_explicit_human_request = any(root in latest_text for root in _EXPLICIT_HUMAN_REQUEST_ROOTS)
-
-    if patient_agreed and has_complaint_word and not has_explicit_human_request:
-        logger.warning(
-            "request_human_handoff: BLOCKED BY HARD GUARD - patient's latest message %r "
-            "names a complaint with no separate, explicit request for a person. Overriding "
-            "patient_agreed=True -> not_requested instead of raising a handoff, to stop this "
-            "from repeating the confirmed production failure (a bare 'شكوي' was previously "
-            "transferred with reason='patient asked for staff'). session_id=%s client_id=%s "
-            "original_reason=%r",
-            latest_text, state.get("session_id"), state.get("client_id"), reason,
-        )
-        return {
-            "status": "not_requested",
-            "reason": "complaint_word_without_explicit_human_request",
-        }
-
-    # GENERAL CONSENT GATE (not tied to any one specific wording): the
-    # complaint-word guard above exists because a documented prose rule
-    # ("frustration is not agreement") was still not enough on its own
-    # once - the same reasoning applies to every OTHER way this tool
-    # could be called with patient_agreed=True on an inference rather
-    # than a real yes. Require the agreement to be grounded in
-    # something the code can actually see:
-    #   - the patient's own latest message explicitly names a person
-    #     ("موظف", "خدمة العملاء", "human agent"...), OR
-    #   - the assistant's OWN previous turn actually said one of those
-    #     same words - i.e. a handoff was genuinely offered, and this
-    #     turn's short "yes" is answering THAT offer.
-    # This is a heuristic, not a perfect parse of intent - it can still
-    # ask an extra confirming question in a genuinely-agreed edge case
-    # phrased outside these words, which is the safe direction to be
-    # wrong in for something that ends a patient's conversation.
-    if patient_agreed and not has_explicit_human_request:
-        latest_ai_text = _latest_ai_text_before_handoff_guard(state)
-        had_prior_offer = any(root in latest_ai_text for root in _EXPLICIT_HUMAN_REQUEST_ROOTS)
-        if not had_prior_offer:
-            logger.warning(
-                "request_human_handoff: BLOCKED BY GENERAL CONSENT GATE - patient_agreed=True "
-                "but the patient's latest message %r names no person explicitly, and the "
-                "assistant's own last turn %r did not offer a staff handoff either. Overriding "
-                "to not_requested rather than trusting an inferred consent. session_id=%s "
-                "client_id=%s original_reason=%r",
-                latest_text, latest_ai_text, state.get("session_id"), state.get("client_id"), reason,
-            )
-            return {
-                "status": "not_requested",
-                "reason": "consent_not_grounded_in_conversation",
-            }
+    `patient_agreed` was False - ask them first in that case."""
+    # WHETHER THEY ASKED IS THE MODEL'S CALL, stated in `patient_agreed`
+    # - "حد يرد عليا", "عايزة أكلم بني آدم", "please get me someone" all
+    # mean the same thing and no word list covers them. What used to sit
+    # here were two keyword gates (a complaint-word block and a "did
+    # anyone say موظف" consent check); both refused real requests phrased
+    # outside their lists. The complaint case is now structural instead:
+    # the complaint specialist is not bound to this tool at all.
 
     if not patient_agreed:
         # Fail closed: an unconfirmed handoff silently drops rather than
@@ -11549,19 +11329,6 @@ def request_human_handoff(
         state.get("session_id"), state.get("client_id"), reason,
     )
     return {"status": "handoff_requested"}
-
-
-# Cues that the patient is genuinely asking WHERE a branch is / how to
-# get there - as opposed to simply naming it (answering a branch
-# question during booking, a complaint, or anywhere else). Deliberately
-# covers both "address" wording and "how do I get there" wording, in
-# Arabic and English.
-_LOCATION_REQUEST_CUE_RE = re.compile(
-    r"عنوان|فين|وين|أين|اين|موقع|لوكيشن|خريط[هة]|كيف\s*(?:أ|ا)وصل|"
-    r"ازاي\s*(?:أ|ا)روح|إزاي\s*(?:أ|ا)روح|طريقه\s*(?:ال)?وصول|"
-    r"location|address|map|direction|how\s*(?:do\s*i|to)\s*get\s*there|"
-    r"where\s*is"
-)
 
 
 # ==========================================================
@@ -12701,19 +12468,23 @@ def share_branch_location(
     # ------------------------------------------------------------------
 
 
-    latest_text = ""
+    # WHETHER THEY ASKED is read from the router classifier's judgement of
+    # the patient's latest message (`asks_for_location`, stored on the
+    # message) - not from a list of words like "فين"/"عنوان", which missed
+    # "اوصلكم ازاي" and every other phrasing it had not seen. No
+    # classification (a bare number, ROUTER_MODE=deterministic) means no
+    # request, so no pin: the safe direction for an unrequested message.
+    latest_intent = {}
     for msg in reversed(state.get("messages") or []):
         if getattr(msg, "type", None) == "human":
-            content = getattr(msg, "content", "")
-            latest_text = content if isinstance(content, str) else str(content or "")
+            latest_intent = (getattr(msg, "additional_kwargs", None) or {}).get("turn_intent") or {}
             break
-
-    if not _LOCATION_REQUEST_CUE_RE.search(latest_text):
+    if not latest_intent.get("asks_for_location"):
         logger.warning(
             "share_branch_location: REFUSED for client_id=%s session_id=%s branch_name=%r - "
-            "the patient's latest message %r does not actually ask for a location/address, "
+            "the patient's latest message was not read as asking for a location, "
             "so no map pin flag was raised",
-            state.get("client_id"), state.get("session_id"), branch_name, latest_text,
+            state.get("client_id"), state.get("session_id"), branch_name,
         )
         return {"status": "not_requested", "reason": "no_explicit_location_request"}
 
@@ -12723,6 +12494,50 @@ def share_branch_location(
     )
     return {"status": "location_requested", "branch_name": branch_name}
 
+
+
+# ==========================================================
+# Handoff from the concierge to the specialist that acts
+# ==========================================================
+
+
+
+@tool
+def transfer_to_specialist(
+    flow: Literal["booking", "cancel", "reschedule", "complaint"],
+    tool_call_id: Annotated[str, InjectedToolCallId],
+    state: Annotated[AgentState, InjectedState],
+):
+    """Continue this conversation in the part of the service that carries
+    out `flow`: "booking" (a brand new appointment), "cancel" (cancel an
+    existing one), "reschedule" (move an existing one to another time),
+    "complaint" (a complaint or suggestion).
+
+    Call it as soon as that is what the patient wants, however they say
+    it - "مش هقدر أجي بكرة", "مش محتاجة الموعد ده", "عايزة أشوف دكتور" need
+    no keyword to be understood. Nothing is booked, cancelled or sent by
+    this call; the specialist picks the conversation up in this same turn,
+    so write no reply of your own. If you genuinely cannot tell which of
+    the four they mean, ask one short question instead of calling this.
+    Never tell the patient they are being transferred."""
+
+    current = state.get("active_agent")
+    if current not in (None, "concierge"):
+        # Only the concierge hands over - a specialist mid-flow keeps it.
+        return {"status": "not_needed", "active_agent": current}
+
+    logger.info("transfer_to_specialist: %s -> %s (session=%s)",
+                current or "none", flow, state.get("session_id"))
+
+    return Command(update={
+        "active_agent": flow,
+        "routing_reason": f"concierge handed the conversation to {flow}",
+        "messages": [ToolMessage(
+            content=json.dumps({"status": "transferred", "flow": flow}, ensure_ascii=False),
+            name="transfer_to_specialist",
+            tool_call_id=tool_call_id,
+        )],
+    })
 
 ALL_TOOLS = [
     validate_phone_format,
@@ -12764,4 +12579,5 @@ ALL_TOOLS = [
     search_lab_services,
     select_sample_collection_mode,
     set_home_collection_address,
+    transfer_to_specialist,
 ]
