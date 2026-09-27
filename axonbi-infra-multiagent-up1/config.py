@@ -913,6 +913,7 @@ _CLIENT_OVERRIDE_KEYS = (
     "msg_booking_confirmation",
     "msg_booking_success",
     "msg_On_failure",
+    "msg_remote_sessions",
 )
 
 
@@ -1160,6 +1161,9 @@ def get_messages(client_id: str, dialect: Optional[str] = None, client_row_overr
     merged["_timezone"] = client_row.get("timezone") or DEFAULT_TIMEZONE
     merged["_knowledge_base_file"] = client_row.get("knowledge_base_file") or ""
     merged["_complaint_email_to"] = client_row.get("complaint_email_to") or ""
+    # The hospital's unified number, for online / remote-session questions
+    # (graph._clinic_unified_phone falls back to the knowledge base).
+    merged["_unified_phone"] = client_row.get("unified_phone") or ""
     merged["_dialect_name"] = effective_dialect
     merged["_dialect_instruction"] = dialect_row.get("dialect_instruction") or client_row.get(
         "dialect_instruction"
