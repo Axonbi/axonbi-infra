@@ -609,6 +609,7 @@ _FIELD_MAP = (
     ("email", ("email",)),
     ("statusName", ("statusName",)),
     ("branchName", ("branchName",)),
+    ("branchId", ("branchId",)),
     ("doctorName", ("doctorName",)),
     ("doctorId", ("doctorId",)),
     ("serviceName", ("serviceName",)),
@@ -4368,10 +4369,13 @@ _LOOKS_LIKE_BOOKING_REF_RE = re.compile(r"[A-Za-z]{2,}[A-Za-z0-9]*-[A-Za-z0-9]")
 
 def _resolve_doctor_id(state: AgentState, ref_number: str, language: Optional[str]) -> dict:
     """Internal helper: look up a booking by its reference number and
-    return its doctorId, so schedule/slot tools know which doctor to
-    query without the LLM ever having to know or pass a doctor's GUID
-    directly. Returns {"status": "found", "doctor_id": ...} or an error
-    status matching lookup_appointment's own conventions."""
+    return its doctorId (and branchId, when the API includes one on the
+    booking item), so schedule/slot tools know which doctor - and which
+    branch - to query without the LLM ever having to know or pass
+    either GUID directly. Returns
+    {"status": "found", "doctor_id": ..., "branch_id": ...} (branch_id
+    may be None if the raw item didn't carry one) or an error status
+    matching lookup_appointment's own conventions."""
 
     base_url = _base_url(state)
     result = api.get_bookings_by_ref(base_url, ref_number, language=language)
@@ -4389,7 +4393,11 @@ def _resolve_doctor_id(state: AgentState, ref_number: str, language: Optional[st
         logger.warning("_resolve_doctor_id: booking found but has no doctorId - ref_number=%s", ref_number)
         return {"status": "error"}
 
-    return {"status": "found", "doctor_id": doctor_id}
+    branch_id = items[0].get("branchId")
+    if not branch_id:
+        logger.warning("_resolve_doctor_id: booking found but has no branchId - ref_number=%s - callers that need to stay within this booking's own branch cannot do so", ref_number)
+
+    return {"status": "found", "doctor_id": doctor_id, "branch_id": branch_id}
 
 
 # WEEKDAY VOCABULARY - deliberately much wider than "correct" Arabic.
@@ -4865,10 +4873,15 @@ def get_available_reschedule_slots(
     """Get the doctor's ACTUAL open time slots (not just working days)
     for the booking's doctor, within [from_date, to_date] - both in ISO
     format, e.g. "2026-05-01T09:00:00+03:00". Only genuinely available
-    (not already booked) slots are returned. Call `get_doctor_schedule`
-    first to know which weekdays/hours are worth checking, then call
-    this with a specific day's full working-hours range to see the
-    exact bookable times. Returns:
+    (not already booked) slots are returned, and ONLY at the branch the
+    booking is ALREADY at - the reschedule API can change a booking's
+    time but has no way to also move it to a different branch, so a
+    slot from another branch must never be offered here. If the patient
+    wants a different branch, that is a new booking (cancel + rebook),
+    not a reschedule - say so rather than searching other branches.
+    Call `get_doctor_schedule` first to know which weekdays/hours are
+    worth checking, then call this with a specific day's full
+    working-hours range to see the exact bookable times. Returns:
     {"status": "found", "slots": [{"slotStart": ..., "slotEnd": ..., "date_display": ..., "time_display": ..., "doctorName": ..., "serviceName": ...}, ...]}
     {"status": "not_found"}  # no open slots in this range
     {"status": "not_configured"}  # this clinic doesn't have this feature set up yet
@@ -4895,6 +4908,40 @@ def get_available_reschedule_slots(
     if resolved["status"] != "found":
         return resolved
 
+    # MUST STAY WITHIN THE ORIGINAL BOOKING'S OWN BRANCH.
+    #
+    # CONFIRMED REAL PRODUCTION FAILURE (session 201000625084, patient
+    # خوله عائض الدوسري, 2026-09-26): a booking made at فرع المنار was
+    # "rescheduled" by offering this doctor's slots at فرع النزهة too -
+    # a different branch, with different working hours (المنار: Saturday
+    # only; النزهة: Monday/Sunday). The patient picked a النزهة slot and
+    # `reschedule_appointment` wrote it through - but `api.reschedule_booking`
+    # (PUT GuestBookings/Update) only ever sends {id, fromBookingTime,
+    # toBookingTime}; it has NO branchId field at all, so it cannot
+    # actually move a booking to a different branch. The write either
+    # silently keeps the OLD branch (المنار) with a time that branch
+    # never operates at, or the branch and time end up mismatched some
+    # other way - and the final confirmation, having no branch data back
+    # from `reschedule_appointment` either, fell back to repeating the
+    # ORIGINAL branch name from earlier context, so the patient was told
+    # "المنار" for an appointment actually keyed to a النزهة time slot.
+    # Either reading is broken; the only safe fix is to never present a
+    # cross-branch slot as a reschedule option in the first place - a
+    # branch change is a different booking, not a reschedule.
+    #
+    # `branch_id` may be None for an older API response shape that
+    # doesn't carry it on the booking item; in that case we cannot
+    # enforce this and fall back to the previous (unsafe) doctor-wide
+    # behavior, logged loudly so it's visible rather than silent.
+    reschedule_branch_id = resolved.get("branch_id")
+    if not reschedule_branch_id:
+        logger.warning(
+            "get_available_reschedule_slots: ref_number=%r has no branch_id on file - "
+            "cannot restrict candidate slots to the booking's own branch, so slots from "
+            "OTHER branches of this doctor may be offered (session_id=%s)",
+            ref_number, state.get("session_id"),
+        )
+
     # Safety net: if the range came in backwards (from_date after
     # to_date), swap them. Confirmed directly in production: the LLM
     # passed from_date=09:00 and to_date=07:00 (inverted) - the real API
@@ -4919,10 +4966,15 @@ def get_available_reschedule_slots(
         logger.warning("get_available_reschedule_slots called but no doctors_base_url is configured for client_id=%s", state.get("client_id"))
         return {"status": "not_configured"}
 
-    result = api.get_doctor_schedule_slots(
-        base_url, doctor_ids=[resolved["doctor_id"]],
+    slots_kwargs = dict(
+        doctor_ids=[resolved["doctor_id"]],
         from_date=from_date, to_date=to_date, is_booked=False,
-     language=conversation_language(state),)
+        language=conversation_language(state),
+    )
+    if reschedule_branch_id:
+        slots_kwargs["branch_ids"] = [reschedule_branch_id]
+
+    result = api.get_doctor_schedule_slots(base_url, **slots_kwargs)
 
     if not result["success"]:
         logger.error("get_available_reschedule_slots API call failed: status_code=%s error=%s", result.get("status_code"), result.get("error"))
@@ -5295,9 +5347,11 @@ def reschedule_appointment(
     # exactly as given and the API itself does not appear to reject it
     # either. Both matter independently; this closes our side of it.
     doctor_id = None
+    original_branch_id = None
     for record in _looked_up_bookings(state):
         if str(record.get("id") or "").strip() == booking_id:
             doctor_id = record.get("doctorId")
+            original_branch_id = record.get("branchId")
             break
 
     if not doctor_id:
@@ -5320,10 +5374,30 @@ def reschedule_appointment(
             requested_start_dt = None
 
         if requested_start_dt is not None:
-            slots_result = api.get_doctor_schedule_slots(
-                base_url, doctor_ids=[doctor_id],
+            # SAME BRANCH-LOCK AS `get_available_reschedule_slots` -
+            # `api.reschedule_booking` (GuestBookings/Update) only ever
+            # writes {id, fromBookingTime, toBookingTime}, so it cannot
+            # move a booking to a different branch. Re-verifying WITHOUT
+            # this filter would let a cross-branch time re-pass this
+            # check even if the slot list upstream had been fixed, or if
+            # this tool is ever called directly with a hand-picked time -
+            # see the CONFIRMED REAL PRODUCTION FAILURE noted on
+            # `get_available_reschedule_slots` (session 201000625084).
+            reverify_kwargs = dict(
+                doctor_ids=[doctor_id],
                 from_date=day_start, to_date=day_end, is_booked=False, page_size=200,
-             language=conversation_language(state),)
+                language=conversation_language(state),
+            )
+            if original_branch_id:
+                reverify_kwargs["branch_ids"] = [original_branch_id]
+            else:
+                logger.warning(
+                    "reschedule_appointment: no branchId on file for booking_id=%s - "
+                    "cannot confirm the new time is still within this booking's own "
+                    "branch (session_id=%s)",
+                    booking_id, state.get("session_id"),
+                )
+            slots_result = api.get_doctor_schedule_slots(base_url, **reverify_kwargs)
 
             if not slots_result["success"]:
                 logger.error(
