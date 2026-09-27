@@ -122,9 +122,9 @@ _llm = _make_llm(
 
 _llm_with_tools = _llm.bind_tools(tools.ALL_TOOLS)
 
-# A SEPARATE, FAST-FAILING BINDING FOR THE ROUTER (ROUTER_MODE=llm).
+# A SEPARATE, FAST-FAILING BINDING FOR THE ROUTER.
 #
-# The router classifies a message into one word before the turn's real
+# The router reads a message into three fields before the turn's real
 # work has even started, so it must never be able to hold a patient up.
 # Sharing `_llm` would give it that model's 45-second timeout - one slow
 # classification and the reply is 45 seconds late, for a decision the
@@ -3851,8 +3851,8 @@ _DONT_KNOW_RE = re.compile(
 )
 
 # The booking flow's opening question in the assistant's own last reply.
-# Kept in step with agents/router._ASKED_SPECIALTY_OR_DOCTOR_RE, which
-# makes the routing half of the same decision - both have to recognise
+# (Its routing twin in agents/router.py is gone - routing is the
+# router's LLM reading now.) It has to recognise
 # the question in whatever wording the clinic's dialect produced it,
 # including the fuller "do you have a doctor in mind, or shall we search
 # by specialty?" form that replaced the terse original.
@@ -4050,8 +4050,8 @@ def _booking_entry_message(templates: dict, target_language: Optional[str]) -> s
 def _build_symptom_in_booking_directive(messages: list, agent_name: str) -> str:
     """Fires when a symptom answers the booking flow's opening question.
 
-    The router now keeps that turn with `booking` (see
-    agents/router._answers_booking_entry_question); this is the other
+    The router's reading keeps that turn with `booking` (an answer to
+    booking's own question is not a change of subject); this is the other
     half - telling the booking specialist what to DO with it, since its
     instinct, holding the same symptom wording, is to produce the
     medical-guidance reply."""
@@ -4134,10 +4134,8 @@ def _build_booking_entry_directive(messages: list, session_id: str, agent_name: 
     if _CONFIRMATION_WORD_RE.search(folded):
         return ""
 
-    scores = agents.router.score_message(text)
-    for other in ("cancel", "reschedule", "complaint"):
-        if scores.get(other, 0) >= scores.get("booking", 0):
-            return ""
+    # Which flow this is was decided once, by the router's reading - this
+    # rung is only reached by the booking specialist it chose.
 
     # Anything concrete in the message means a later rung owns the turn.
     if (_fragment_after_cue(text, _DOCTOR_CUE_RE)
@@ -4283,8 +4281,8 @@ def _build_specialty_picked_directive(messages: list, agent_name: str) -> str:
     naming what they wanted, they had still never been shown a dentist.
 
     The routing half of that bug is fixed separately (the flow was
-    stranded on `faq`, which owns no booking tools - see
-    `agents/router._picks_from_a_specialty_list`). This is the other
+    stranded on `faq`, which owns no booking tools - the router now
+    hands such a pick to `booking` by capability). This is the other
     half: even on the right agent, the step after a specialty is the
     doctor list, and saying so before the draft exists is cheaper and
     more reliable than correcting a draft that went to branches.
@@ -7826,6 +7824,46 @@ _NAMES_A_SPECIALTY_RE = re.compile(
 )
 
 
+# WHAT HAPPENED, NOT A PAIN WORD - "رجلي وقعت عليها". Used ONLY by
+# `_medical_reply_offers_unrelated_specialty` to find which EARLIER
+# patient message was the complaint a medical reply is answering. It
+# plays no part in routing or intent any more (that is the router's
+# reading); it moved here unchanged from agents/router.py and goes
+# when that verifier moves onto per-turn readings.
+_INJURY_BODY_PART = (
+    r"(?:\u0631\u062C\u0644|\u0631\u062C\u0644\u064A|\u0631\u062C\u0644\u064A\u0627|\u0627\u064A\u062F|\u0627\u064A\u062F\u064A|\u064A\u062F\u064A|\u0631\u0627\u0633|\u0631\u0627\u0633\u064A|\u0636\u0647\u0631|\u0636\u0647\u0631\u064A|\u0638\u0647\u0631|\u0638\u0647\u0631\u064A|\u0643\u062A\u0641|\u0643\u062A\u0641\u064A|"
+    r"\u0631\u0643\u0628\u0647|\u0631\u0643\u0628\u062A\u064A|\u0627\u0635\u0628\u0639|\u0635\u0628\u0627\u0639|\u0635\u0648\u0627\u0628\u0639|\u0642\u062F\u0645|\u0642\u062F\u0645\u064A|\u0628\u0637\u0646|\u0628\u0637\u0646\u064A|\u0635\u062F\u0631|\u0635\u062F\u0631\u064A|\u0631\u0642\u0628\u0647|\u0631\u0642\u0628\u062A\u064A|"
+    r"\u0639\u064A\u0646|\u0639\u064A\u0646\u064A|\u0633\u0646|\u0633\u0646\u0627\u0646\u064A|\u0636\u0631\u0633|\u0636\u0631\u0633\u064A|\u0643\u0648\u0639|\u0643\u0648\u0639\u064A|\u0645\u0639\u0635\u0645|\u0645\u0639\u0635\u0645\u064A|\u0641\u062E\u062F|\u0641\u062E\u062F\u064A|\u0643\u0627\u062D\u0644)"
+)
+
+_INJURY_VERB = (
+    r"(?:\u0648\u0642\u0639|\u0627\u062A\u062E\u0628\u0637|\u062E\u0628\u0637|\u0627\u0646\u062E\u0628\u0637|\u0627\u062A\u0643\u0633\u0631|\u0643\u0633\u0631|\u0627\u0646\u0643\u0633\u0631|\u0627\u062A\u062D\u0631\u0642|\u062D\u0631\u0642|\u0627\u0646\u062D\u0631\u0642|\u0627\u062A\u062C\u0631\u062D|\u062C\u0631\u062D|"
+    r"\u0627\u0646\u062C\u0631\u062D|\u0627\u062A\u0639\u0648\u0631|\u062A\u0639\u0648\u0631|\u0627\u0644\u062A\u0648|\u0627\u062A\u0644\u0648|\u0644\u0648\u064A|\u0627\u0646\u062A\u0641\u062E|\u0648\u0631\u0645|\u0646\u0632\u0641|\u0627\u062A\u062F\u0639\u0633|\u0627\u0646\u062F\u0639\u0633)"
+)
+
+_INJURY_RE = re.compile(
+    # body part first: "\u0631\u062C\u0644\u064A \u0648\u0642\u0639\u062A \u0639\u0644\u064A\u0647\u0627", "\u0627\u064A\u062F\u064A \u0627\u062A\u0643\u0633\u0631\u062A"
+    _INJURY_BODY_PART + r"\w*\s*[^.\n]{0,12}" + _INJURY_VERB + r"|"
+    # verb first: "\u0648\u0642\u0639\u062A \u0639\u0644\u0649 \u0631\u062C\u0644\u064A", "\u0627\u062A\u062E\u0628\u0637\u062A \u0641\u064A \u0627\u064A\u062F\u064A", "\u0643\u0633\u0631\u062A \u0627\u064A\u062F\u064A"
+    r"(?:\u0648\u0642\u0639\u062A|\u0627\u062A\u062E\u0628\u0637\u062A|\u062E\u0628\u0637\u062A|\u0643\u0633\u0631\u062A|\u0627\u062A\u0643\u0633\u0631\u062A|\u062D\u0631\u0642\u062A|\u0627\u062A\u062D\u0631\u0642\u062A|\u062C\u0631\u062D\u062A|\u0627\u062A\u062C\u0631\u062D\u062A|\u0644\u0648\u064A\u062A|\u0627\u0644\u062A\u0648\u064A\u062A|\u0627\u062A\u062F\u0639\u0633\u062A)"
+    r"\s*(?:\u0639\u0644\u0649|\u0641\u064A|\u0645\u0646|\u0628)?\s*[^.\n]{0,10}" + _INJURY_BODY_PART + r"|"
+    # unambiguous on their own - these words have no non-injury reading
+    r"(?:^|\s)(?:\u0627\u062A\u0639\u0648\u0631\u062A|\u0627\u062A\u0639\u0648\u0631|\u0627\u062A\u0643\u0633\u0631\u062A|\u0627\u0646\u0643\u0633\u0631\u062A|\u0627\u062A\u062D\u0631\u0642\u062A|\u0627\u0646\u062D\u0631\u0642\u062A|\u0627\u062A\u062C\u0631\u062D\u062A|\u0627\u0646\u062C\u0631\u062D\u062A|"
+    r"\u0627\u062A\u062E\u0628\u0637\u062A|\u0627\u0646\u062E\u0628\u0637\u062A|\u0627\u0644\u062A\u0648\u064A\u062A|\u0627\u062A\u062F\u0639\u0633\u062A)(?:\s|$)|"
+    # an accident
+    r"(?:\u0639\u0645\u0644\u062A|\u062D\u0635\u0644\s*\u0644\u064A|\u062C\u0627\u0644\u064A|\u062A\u0639\u0631\u0636\u062A\s*\u0644)\s*(?:\u062D\u0627\u062F\u062B|\u062D\u0627\u062F\u062B\u0647|\u0635\u062F\u0645\u0647)|"
+    r"(?:^|\s)\u062D\u0627\u062F\u062B\s*(?:\u0639\u0631\u0628\u064A\u0647|\u0633\u064A\u0631|\u0645\u0631\u0648\u0631\u064A)|"
+    # a bite or a sting
+    r"(?:\u0639\u0636\u0646\u064A|\u0639\u0636\u062A\u0646\u064A|\u0644\u062F\u063A\u0646\u064A|\u0644\u062F\u063A\u062A\u0646\u064A|\u0642\u0631\u0635\u0646\u064A)\s*(?:\u0643\u0644\u0628|\u0642\u0637\u0647|\u0646\u062D\u0644\u0647|\u0639\u0642\u0631\u0628|\u062B\u0639\u0628\u0627\u0646|\u062D\u0634\u0631\u0647)?|"
+    # English
+    r"\b(?:i\s+)?(?:fell|broke|sprained|twisted|burn(?:ed|t)|cut|injured|"
+    r"hurt|banged|sprain)\b[^.\n]{0,20}"
+    r"\b(?:my|leg|arm|hand|foot|ankle|wrist|knee|back|head|finger|shoulder|toe|rib)\b|"
+    r"\b(?:broken|fractured|sprained|dislocated)\s+"
+    r"(?:leg|arm|hand|foot|ankle|wrist|knee|finger|shoulder|rib|bone)\b"
+)
+
+
 def _medical_reply_offers_unrelated_specialty(reply_text: str, state: AgentState) -> bool:
     """True when the patient named a clearly organ-specific symptom and
     the reply offers a specialty that plainly does not treat it.
@@ -8009,7 +8047,7 @@ def _medical_reply_offers_unrelated_specialty(reply_text: str, state: AgentState
         # patterns are consulted too. Both come from one place each, so
         # widening either one widens this automatically.
         if not (_SYMPTOM_ANSWER_RE.search(text)
-                or agents.router.INJURY_RE.search(text)):
+                or _INJURY_RE.search(text)):
             # Not a complaint at all ("اه", "الخميس", a phone number) -
             # keep looking further back.
             continue
@@ -11482,8 +11520,8 @@ def _specialty_already_established_correction(reply_text: str, state: AgentState
 # The medication ban and the crisis response already existed - but only
 # inside the MEDICAL GUIDANCE section of the prompt, which reaches the
 # `medical` and `concierge` specialists and nobody else. Neither message
-# above scores on any router cue (`score_message` returns {} for "Just
-# tell me the normal adult dose" and for "I want to kill myself"), so
+# above scored on the old router cues ("Just tell me the normal adult
+# dose", "I want to kill myself"), so
 # whichever specialist happened to be active kept the turn - and most of
 # them had never been told any of this.
 #
@@ -11515,13 +11553,26 @@ _MEDICATION_REQUEST_RE = re.compile(
     re.IGNORECASE,
 )
 
-# THE SAME OBJECT THE ROUTER USES. Crisis wording had two definitions -
-# this one, and a much narrower cue in agents/router.py - and the
-# narrower one decided ROUTING. The result: "عايزة أموت" raised this
-# directive but never moved the conversation to the medical specialist,
-# which is the only one carrying the crisis rules. One pattern now, so
-# a phrasing added in either place is recognised by both.
-_CRISIS_RE = agents.router.CRISIS_RE
+# A HIGH-RECALL SAFETY BACKSTOP, NOT THE DECISION. The router's reading
+# (`turn_reading["health"] == "crisis"`) is what recognises a crisis and
+# routes it to the medical specialist. This pattern can only ADD the
+# crisis directive when the reading missed or was unavailable: it never
+# routes, never suppresses anything, never overrides the reading.
+_CRISIS_RE = re.compile(
+    # Arabic, including the colloquial future prefix ("هنتحر").
+    r"(?:ه|ح|سا|سأ)?انتحر|(?:ه|ح)نتحر|الانتحار|"
+    r"(?:عايز|عاوز|بدي|ابي|ابغى|نفسي)\s*(?:\w+\s+){0,2}(?:اموت|انهي\s*حياتي|اقتل\s*نفسي)|"
+    r"(?:مش|ما|مو)\s*(?:عايز|عاوز|بدي|ابي)\s*(?:\w+\s+){0,2}(?:اعيش|اكمل)|"
+    r"(?:اذي|أذي|اؤذي|أؤذي|اجرح|أجرح)\s*نفسي|"
+    r"(?:انهي|أنهي|اخلص\s*من)\s*حيات|"
+    r"(?:تعبت|زهقت|مليت)\s*من\s*(?:ال)?حياه|"
+    # English.
+    r"\bkill\s+my\s?self\b|\bsuicid\w*|\bend\s+(?:my|it\s+all)\b[^.\n]{0,12}\blife\b|"
+    r"\bend\s+my\s+life\b|\bwant\s+to\s+die\b|\bhurt\s+my\s?self\b|"
+    r"\bself[\s-]?harm\b|\bdon'?t\s+want\s+to\s+(?:live|be\s+here)\b|"
+    r"\bno\s+reason\s+to\s+live\b",
+    re.IGNORECASE,
+)
 
 
 def _latest_human_text(messages: list) -> str:
@@ -11539,12 +11590,16 @@ def _asks_for_medication(messages: list) -> bool:
     return bool(text) and bool(_MEDICATION_REQUEST_RE.search(_norm_ar(text)))
 
 
-def _signals_crisis(messages: list) -> bool:
+def _signals_crisis(messages: list, reading: Optional[dict] = None) -> bool:
+    """The reading decides; the pattern can only add a missed crisis."""
+
+    if (reading or {}).get("health") == "crisis":
+        return True
     text = _latest_human_text(messages)
     return bool(text) and bool(_CRISIS_RE.search(_norm_ar(text)))
 
 
-def _build_crisis_directive(messages: list, templates: dict) -> str:
+def _build_crisis_directive(messages: list, templates: dict, reading: Optional[dict] = None) -> str:
     """A patient has said they want to harm themselves. Nothing else
     this turn matters.
 
@@ -11554,7 +11609,7 @@ def _build_crisis_directive(messages: list, templates: dict) -> str:
     that had never been given the crisis rules and answered with the
     service menu."""
 
-    if not _signals_crisis(messages):
+    if not _signals_crisis(messages, reading):
         return ""
 
     clinic = (templates or {}).get("_clinic_name_ar") or (templates or {}).get("_clinic_name") or ""
@@ -11591,7 +11646,7 @@ def _build_crisis_directive(messages: list, templates: dict) -> str:
     )
 
 
-def _build_medication_request_directive(messages: list, templates: dict) -> str:
+def _build_medication_request_directive(messages: list, templates: dict, reading: Optional[dict] = None) -> str:
     """They asked what medicine, or how much of it, to take.
 
     The refusal itself was never in doubt - the medication ban is
@@ -11606,7 +11661,7 @@ def _build_medication_request_directive(messages: list, templates: dict) -> str:
     # A crisis message wins outright; two competing "override
     # everything" blocks in one prompt is exactly the failure mode this
     # file keeps having to design around.
-    if _signals_crisis(messages):
+    if _signals_crisis(messages, reading):
         return ""
 
     clinic = (templates or {}).get("_clinic_name_ar") or (templates or {}).get("_clinic_name") or ""
@@ -11685,13 +11740,12 @@ def _reply_scope_refuses_a_health_message(reply_text: str, state: AgentState) ->
     # CONFIRMED IN A REAL CONVERSATION: "رجلي وقعت عليها" was answered
     # with the service menu ("مختصة بمساعدتك في خدمات المستشفى مثل حجز
     # أو تعديل المواعيد..."). The patient repeated the identical message
-    # and only then got a proper reply. The routing cue that missed it
-    # is fixed too (agents/router.INJURY_RE), but a routing miss must
-    # not be able to produce THIS reply again - so the check now covers
-    # the whole class rather than the two known members of it.
+    # and only then got a proper reply. Whether a message is about the
+    # patient's health is the router's reading (`health`), not a word list.
+    reading = _current_turn_reading(state)
     if not (_asks_for_medication(messages)
-            or _signals_crisis(messages)
-            or _message_is_about_health(messages)):
+            or _signals_crisis(messages, reading)
+            or _message_is_about_health(messages, reading)):
         return False
 
     return _is_scope_refusal(reply_text, state.get("templates") or {})
@@ -11863,29 +11917,20 @@ def _answered_our_question_correction_directive(reply_text: str, state: AgentSta
     )
 
 
-def _message_is_about_health(messages: list) -> bool:
-    """Whether the patient's latest message is about their own body.
+def _message_is_about_health(messages: list, reading: Optional[dict] = None) -> bool:
+    """Whether the patient's latest message is about their own body -
+    the router's reading of it, so this cannot disagree with routing."""
 
-    Delegates to agents.router.looks_like_health_message, which reads
-    the router's own medical cues - so this can never fall behind them
-    the way a second hand-written list would."""
-
-    text = _latest_human_text(messages)
-    if not text:
-        return False
-
-    try:
-        return agents.router.looks_like_health_message(text)
-    except Exception:  # pragma: no cover - never worth failing a turn for
-        logger.warning("health-message check failed", exc_info=True)
-        return False
+    return bool(_latest_human_text(messages)) and \
+        (reading or {}).get("health") in ("health", "crisis")
 
 
 def _health_message_refusal_correction(reply_text: str, state: AgentState) -> str:
     messages = state.get("messages") or []
     templates = state.get("templates") or {}
+    reading = _current_turn_reading(state)
 
-    if _signals_crisis(messages):
+    if _signals_crisis(messages, reading):
         return (
             "============================================================\n"
             "YOU SENT THE SERVICE MENU TO SOMEONE IN CRISIS\n"
@@ -11894,7 +11939,7 @@ def _health_message_refusal_correction(reply_text: str, state: AgentState) -> st
             "to harm themselves with the out-of-scope refusal - a list "
             "of the things you are able to help with instead.\n\n"
             "Rewrite it completely.\n\n"
-        ) + _build_crisis_directive(messages, templates)
+        ) + _build_crisis_directive(messages, templates, reading)
 
     return (
         "============================================================\n"
@@ -11906,7 +11951,7 @@ def _health_message_refusal_correction(reply_text: str, state: AgentState) -> st
         "list of your own capabilities was not - it drops the reason, "
         "the comfort, and the offer of an appointment.\n\n"
         "Rewrite it as the three parts below.\n\n"
-    ) + _build_medication_request_directive(messages, templates)
+    ) + _build_medication_request_directive(messages, templates, reading)
 
 
 # ============================================================
@@ -18003,6 +18048,35 @@ def _break_repeated_tool_loop(response, state: AgentState, agent_name: str,
     return retry
 
 
+def _clarification_update(state: AgentState, agent_name: str, target_language: Optional[str]) -> dict:
+    """The turn when the router could not read the message and no flow
+    was open: one short clarifying question, no model call, no guess.
+
+    The existing recovery ladder is reused, so a second failure in a row
+    offers a member of staff instead of asking again. On the first turn
+    of a conversation the clinic's greeting (which ends in "how can I
+    help?") is the whole reply."""
+
+    messages = state.get("messages") or []
+    if state.get("greeted"):
+        text = _soft_recovery_reply(target_language, messages)
+    else:
+        first_user_message = messages[0].content if messages else ""
+        text = _build_greeting(
+            state.get("templates") or {}, first_user_message, target_language or "ar",
+        ).strip() or _soft_recovery_reply(target_language, messages)
+
+    logger.warning(
+        "agent[%s]: turn reading unavailable and no open flow - asking the patient "
+        "to clarify instead of guessing", agent_name,
+    )
+    return {
+        "target_language": target_language,
+        "greeted": True,
+        "messages": [_tag_author(AIMessage(content=text), agent_name)],
+    }
+
+
 def _run_agent(state: AgentState, agent_name: str) -> dict:
     """The body every specialist runs. Calls the LLM with that
     specialist's SCOPED system prompt + the full chat history, and
@@ -18049,6 +18123,18 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
 
     target_language = _detect_target_language(state["messages"])
     language_directive = _LANGUAGE_DIRECTIVE.get(target_language, "")
+
+    # WHAT THE PATIENT MEANT THIS TURN - the router's reading, the single
+    # source of truth. {} when there is none (single-agent mode).
+    turn_reading = _current_turn_reading(state)
+
+    # THE READING FAILED AND NO FLOW WAS OPEN - so nobody knows what this
+    # message wants, and nothing may guess. One short clarifying
+    # question, written in code (the model behind the reader may be the
+    # one that is down). On the very first turn the greeting is that
+    # question already.
+    if agent_name == agents.CONCIERGE and turn_reading.get("status") == "unavailable":
+        return _clarification_update(state, agent_name, target_language)
 
     latest_user_message = ""
     for msg in reversed(state["messages"]):
@@ -18218,8 +18304,11 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     # another. A patient still inside their original booking is already
     # owned by this specialist from the previous turn, so nothing is
     # reset underneath them mid-flow.
+    # Only when the reading says the patient changed subject - the same
+    # condition `_clear_abandoned_booking_context` wipes the session on.
     abandoned_booking_directive = ""
-    if agent_name == "booking" and state.get("active_agent") == "booking":
+    if (agent_name == "booking" and state.get("active_agent") == "booking"
+            and turn_reading.get("topic_changed")):
         previous_owner = state.get("previous_agent")
         if previous_owner and previous_owner != "booking":
             abandoned_booking_directive = _build_abandoned_booking_directive(
@@ -18307,10 +18396,10 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     )
 
     crisis_directive = _build_crisis_directive(
-        state["messages"], state.get("templates") or {},
+        state["messages"], state.get("templates") or {}, turn_reading,
     )
     medication_directive = _build_medication_request_directive(
-        state["messages"], state.get("templates") or {},
+        state["messages"], state.get("templates") or {}, turn_reading,
     )
     review_phone_directive = _build_review_card_phone_directive(state, state.get("session_id"))
 
@@ -18611,8 +18700,8 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     # the patient is actually worried about.
     # SCOPED TO THE `booking` SPECIALIST, NOT ALSO TO `concierge`.
     #
-    # A clear "عايز أحجز موعد" scores 10 on the booking cues, well over
-    # _START_THRESHOLD, so the router hands it to `booking` - this rung
+    # A clear "عايز أحجز موعد" is read as booking, so the router hands
+    # it to `booking` - this rung
     # is never reached through `concierge` in a real conversation.
     # `concierge` is the full legacy agent and the fallback for messages
     # nothing else claimed; skipping a model call there would change
@@ -18706,9 +18795,9 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     # two questions in one sentence, one of them already answered).
     #
     # SCOPED TO `cancel` AND `reschedule`, NOT `concierge` - identical
-    # reasoning to the booking rung above. A real "عايز ألغي حجزي" scores
-    # 11 and a real "عاوزه اعدل الحجز" scores 10, both far above
-    # _START_THRESHOLD, so the router hands these to a specialist; the
+    # reasoning to the booking rung above. A real "عايز ألغي حجزي"
+    # and a real "عاوزه اعدل الحجز" are read as cancel/reschedule, so
+    # the router hands these to a specialist; the
     # legacy full-access `concierge` path is deliberately left composing
     # its own reply from the directive.
     if deterministic_reply is None and agent_name in ("cancel", "reschedule"):
@@ -19406,19 +19495,22 @@ def router(state: AgentState) -> dict:
     still routes exactly once and cannot change owner half way through
     its own tool sequence.
 
-    Costs nothing in the default configuration: routing is pure pattern
-    matching over the latest human message (see agents/router.py for why
-    that is a feature rather than a shortcut), so no LLM call and no
-    added latency."""
+    One structured call to the router model reads the message in context
+    (see agents/router.py). Its reading is published as `turn_reading`,
+    the single source of truth for what the patient meant this turn."""
 
     previous = state.get("active_agent")
+    session_id = state.get("session_id")
 
-    chosen, reason = agents.route_turn(state["messages"], previous)
+    chosen, reason, reading = agents.route_turn(
+        state["messages"], previous,
+        facts=agents.router.compact_facts(tools._BOOKING_SESSIONS.get(session_id)),
+    )
 
     # Once per turn, from the node - never from the conditional edge,
     # which LangGraph may call more than once. See _clear_stale_branch_context.
-    _clear_stale_branch_context(chosen, state.get("session_id"))
-    _clear_abandoned_booking_context(chosen, previous, reason, state.get("session_id"))
+    _clear_stale_branch_context(chosen, session_id)
+    _clear_abandoned_booking_context(chosen, previous, reading, session_id)
 
     if chosen != previous:
         logger.info(
@@ -19435,10 +19527,26 @@ def router(state: AgentState) -> dict:
         "active_agent": chosen,
         "routing_reason": reason,
         "previous_agent": previous,
+        "turn_reading": reading,
     }
 
 
-def _clear_abandoned_booking_context(chosen: Optional[str], previous: Optional[str], reason: Optional[str], session_id: Optional[str]) -> None:
+def _current_turn_reading(state) -> dict:
+    """The router's reading of the patient's LATEST message, or {} when
+    there is none or it belongs to an older message - so a reading can
+    never be applied to a turn it was not made for."""
+
+    reading = (state or {}).get("turn_reading") or {}
+    messages = (state or {}).get("messages") or []
+    index = _latest_human_index(messages)
+    if not reading or index < 0:
+        return {}
+    if reading.get("message_id") != getattr(messages[index], "id", None):
+        return {}
+    return reading
+
+
+def _clear_abandoned_booking_context(chosen: Optional[str], previous: Optional[str], reading: Optional[dict], session_id: Optional[str]) -> None:
     """Deterministically drops a stale doctor/specialty from a booking
     attempt the patient has clearly walked away from, the moment the
     router hands the turn to `booking` from a DIFFERENT specialist.
@@ -19470,14 +19578,14 @@ def _clear_abandoned_booking_context(chosen: Optional[str], previous: Optional[s
     neither does the ordinary medical -> booking handoff, which never
     populates these session fields until real booking tools run.
 
-    EXCEPTION - A BARE "YES" CONTINUING THE SAME BOOKING IS NOT AN
-    ABANDONMENT, EVEN THOUGH IT SWITCHES AGENTS. `route_turn` itself
-    already recognises this exact case - see its own reason string,
-    "bare affirmation answering the assistant's own booking offer" -
-    for a patient who said "اه" to the booking flow's own offer while a
-    DIFFERENT specialist (e.g. reschedule) happened to own the
-    immediately preceding turn. Clearing doctor_id/branch_id here would
-    delete the very appointment being confirmed, not an abandoned one.
+    ONLY WHEN THE READING SAYS THE PATIENT CHANGED SUBJECT. A switch of
+    agents is not by itself an abandonment: "اه" to an offer made by a
+    DIFFERENT specialist (medical offering a doctor, reschedule offering
+    another day) continues the same booking, and the router's reading
+    marks it `topic_changed=False`. Clearing doctor_id/branch_id then
+    would delete the very appointment being confirmed. (This used to
+    compare a reason string the LLM router never produced, so the
+    exception below never fired in ROUTER_MODE=llm.)
 
     CONFIRMED REAL PRODUCTION FAILURE this exception fixes: doctor and
     branch were confirmed, the patient declined a day ("مش مناسب السبت
@@ -19494,7 +19602,7 @@ def _clear_abandoned_booking_context(chosen: Optional[str], previous: Optional[s
     if chosen != "booking" or not previous or previous == "booking" or not session_id:
         return
 
-    if reason == "bare affirmation answering the assistant's own booking offer":
+    if not (reading or {}).get("topic_changed"):
         return
 
     session = tools._BOOKING_SESSIONS.get(session_id)
@@ -19959,8 +20067,8 @@ if config.MULTI_AGENT_ENABLED:
     builder.add_conditional_edges("tools", route_after_tools, specialist_nodes)
 
     logger.info(
-        "graph: multi-agent mode - specialists: %s (tool scoping=%s, router=%s)",
-        ", ".join(agents.AGENT_NAMES), config.AGENT_TOOL_SCOPING, config.ROUTER_MODE,
+        "graph: multi-agent mode - specialists: %s (tool scoping=%s, router=llm reading on %s)",
+        ", ".join(agents.AGENT_NAMES), config.AGENT_TOOL_SCOPING, config.OPENAI_MODEL_ROUTER,
     )
 else:
     # ------------------------------------------------------

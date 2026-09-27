@@ -726,33 +726,27 @@ BRANCH_NAME_ADJUDICATOR: bool = _flag("BRANCH_NAME_ADJUDICATOR", False)
 # is the first thing to flip.
 CONCIERGE_FULL_PROMPT: bool = _flag("CONCIERGE_FULL_PROMPT", False)
 
-# "deterministic" (default) -> routing is pure code: weighted intent
-#     cues + stickiness. Costs zero extra LLM calls and zero extra
-#     latency, and is 100% reproducible - the same message always routes
-#     to the same agent.
-# "llm" -> ambiguous messages (and only those) additionally get a small
-#     classification call. More flexible, but adds a call per ambiguous
-#     turn and makes routing non-deterministic.
+# NO LONGER READ. Routing is always the router model's structured
+# reading of each message (agents/router.py) - there is no keyword path
+# left to switch to. Kept so an existing ROUTER_MODE setting does not
+# break config loading.
 ROUTER_MODE: str = os.getenv("ROUTER_MODE", "llm").strip().lower()
 
-# How long the LLM router (ROUTER_MODE=llm) may take to classify one
-# message. Deliberately much shorter than OPENAI_TIMEOUT_SECONDS: this
-# call happens BEFORE the turn's real work, and a slow classification
-# would delay a reply the deterministic cues could have routed
-# instantly. On timeout the router falls back to those cues, so the
-# only cost of a short limit is occasionally not getting the LLM's
-# opinion - never a stalled conversation. See graph._router_llm.
+# How long the router model may take to read one message. Deliberately
+# much shorter than OPENAI_TIMEOUT_SECONDS: this call happens BEFORE the
+# turn's real work. On timeout nothing is guessed - an open flow keeps
+# its owner, otherwise the patient is asked one clarifying question. See
+# graph._router_llm.
 ROUTER_LLM_TIMEOUT_SECONDS: float = float(
     os.getenv("ROUTER_LLM_TIMEOUT_SECONDS", "8")
 )
 
-# WHICH MODEL CLASSIFIES ONE MESSAGE INTO ONE WORD.
+# WHICH MODEL READS EACH MESSAGE FOR THE ROUTER.
 #
-# The router picks one of seven agent names. There is no prose to write,
-# no tool to choose and no judgement to defend - the cheap model does
-# this as well as the primary one, and this call sits BEFORE the turn's
-# real work, so it is the one call whose latency the patient feels
-# directly on top of everything else.
+# Three small structured fields (intent, topic_changed, health), no prose
+# and no tools - the cheap model does this as well as the primary one,
+# and this call sits BEFORE the turn's real work, so it is the one call
+# whose latency the patient feels directly on top of everything else.
 #
 # Set OPENAI_MODEL_ROUTER=gpt-4.1 to put it back on the primary model.
 OPENAI_MODEL_ROUTER: str = os.getenv("OPENAI_MODEL_ROUTER", OPENAI_MODEL_CHEAP)

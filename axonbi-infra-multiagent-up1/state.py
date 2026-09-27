@@ -163,3 +163,7 @@ class AgentState(TypedDict):
     # NotRequired for the same reason as the fields above: threads
     # checkpointed before it existed must keep resuming cleanly.
     previous_agent: NotRequired[Optional[str]]
+    # The router's structured reading of the latest patient message -
+    # {intent, topic_changed, health, status, message_id}. The ONE place
+    # the patient's meaning is recorded for the turn; see agents/router.py.
+    turn_reading: NotRequired[Optional[dict]]
