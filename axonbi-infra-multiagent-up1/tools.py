@@ -3589,6 +3589,111 @@ def _specialty_named_by(state, base_url: str, text: str) -> Optional[dict]:
 _SPECIALTY_STOPWORDS = {"طب", "جراحه", "امراض", "علاج", "قسم", "عام", "عامه", "استشارات"}
 
 
+# PSYCHIATRY AND PSYCHOLOGY ARE NOT SIBLINGS.
+#
+# "طب نفسي" is a medical DOCTOR (psychiatrist). "علاج نفسي" is a
+# psychologist/therapist - an أخصائي, not a طبيب. They share the word
+# "نفسي", so `_expand_specialty_ids` used to link them like "طب الباطنة"
+# and "باطنه عام", and a psychiatry search came back with every
+# psychologist too.
+#
+# CONFIRMED REAL PRODUCTION FAILURE (tanasuq): the patient asked for
+# "طب نفسي" and got 18 names - the psychologists mixed in with the 5
+# psychiatrists they had actually asked for.
+_PSYCHIATRY_WORDS = frozenset({
+    "طب", "الطب", "طبيب", "الطبيب", "طبيبه", "دكتور", "الدكتور", "دكتوره",
+    "دكاتره", "الدكاتره", "psychiatry", "psychiatrist", "psychiatrists",
+    "psychiatric",
+})
+_PSYCHOLOGY_PREFIXES = (
+    "علاج", "العلاج", "معالج", "المعالج", "اخصائي", "الاخصائي", "اخصائيه",
+    "الاخصائيه", "اخصائيين", "الاخصائيين", "ارشاد", "الارشاد",
+    "استشارات", "الاستشارات",
+)
+_PSYCHOLOGY_ENGLISH = ("psycholog", "psychotherap", "therapist", "therapy", "counsel")
+
+
+def _psych_discipline(text: Optional[str]) -> Optional[str]:
+    """"psychiatry", "psychology", or None when `text` is not about a
+    mental-health specialty or does not say which of the two it means
+    (a bare "نفسي" does not)."""
+
+    folded = _normalize_arabic(text or "")
+    if not folded or ("نفس" not in folded and "psych" not in folded):
+        return None
+
+    words = re.findall(r"[\w]+", folded)
+    if any(w.startswith(_PSYCHOLOGY_PREFIXES) for w in words) or any(
+        marker in folded for marker in _PSYCHOLOGY_ENGLISH
+    ):
+        return "psychology"
+    if any(w in _PSYCHIATRY_WORDS for w in words) or "psychiatr" in folded:
+        return "psychiatry"
+    return None
+
+
+def _specialty_psych_discipline(item: dict) -> Optional[str]:
+    """The discipline of a specialty row - read from its own name first,
+    and from altName only when the name alone does not say."""
+
+    return (_psych_discipline(item.get("name"))
+            or _psych_discipline(item.get("altName")))
+
+
+def _requested_psych_discipline(state, specialty_name: str = "") -> Optional[str]:
+    """Which of psychiatry/psychology the PATIENT asked for, from their
+    own recent messages (newest first), then the model's `specialty_name`.
+    None when they never said - a symptom, or a bare "نفسي", keeps both."""
+
+    seen = 0
+    for message in reversed((state or {}).get("messages") or []):
+        if getattr(message, "type", None) != "human":
+            continue
+        content = message.content if isinstance(message.content, str) else str(message.content or "")
+        found = _psych_discipline(content)
+        if found:
+            return found
+        seen += 1
+        if seen >= 4:
+            break
+    return _psych_discipline(specialty_name)
+
+
+def _apply_psych_discipline(state, base_url: str, specialty_ids: list,
+                            specialty_name: str = "") -> list:
+    """Drop the OTHER mental-health discipline's ids when the patient
+    named one of them. Never empties the list, and returns it unchanged
+    on any failure or when the patient did not say which one."""
+
+    if not specialty_ids:
+        return specialty_ids
+
+    wanted = _requested_psych_discipline(state, specialty_name)
+    if not wanted:
+        return specialty_ids
+
+    try:
+        result = api.get_specialties(base_url, language=conversation_language(state))
+        if not result["success"]:
+            return specialty_ids
+        by_id = {i.get("id"): i for i in (result["data"] or {}).get("items", []) if i.get("id")}
+    except Exception:
+        logger.exception("_apply_psych_discipline: failed - using the original ids")
+        return specialty_ids
+
+    kept = [
+        sid for sid in specialty_ids
+        if _specialty_psych_discipline(by_id.get(sid) or {}) in (None, wanted)
+    ]
+    if kept and len(kept) != len(specialty_ids):
+        logger.info(
+            "_apply_psych_discipline: patient asked for %s - dropped %s",
+            wanted, [sid for sid in specialty_ids if sid not in kept],
+        )
+        return kept
+    return specialty_ids
+
+
 def _expand_specialty_ids(state, base_url: str, specialty_ids: list) -> list:
     """Add SIBLING specialties whose names share a real medical stem
     with the ones chosen.
@@ -3644,6 +3749,11 @@ def _expand_specialty_ids(state, base_url: str, specialty_ids: list) -> list:
             if sid in by_id:
                 chosen_tokens |= _tokens(by_id[sid])
 
+        chosen_disciplines = {
+            _specialty_psych_discipline(by_id[sid])
+            for sid in specialty_ids if sid in by_id
+        } - {None}
+
         if not chosen_tokens:
             return specialty_ids
 
@@ -3653,6 +3763,11 @@ def _expand_specialty_ids(state, base_url: str, specialty_ids: list) -> list:
             if sid in expanded:
                 continue
             if _tokens(item) & chosen_tokens:
+                # طب نفسي and علاج نفسي share "نفسي" but are different
+                # professions - see _PSYCHIATRY_WORDS.
+                discipline = _specialty_psych_discipline(item)
+                if discipline and chosen_disciplines and discipline not in chosen_disciplines:
+                    continue
                 expanded.append(sid)
                 added.append(_preferred_name(item, conversation_language(state)))
 
@@ -4058,6 +4173,17 @@ def find_available_doctors(
     # are not silently invisible. See _expand_specialty_ids.
     if specialty_ids:
         specialty_ids = _expand_specialty_ids(state, base_url, specialty_ids)
+        # "طب نفسي" means the psychiatrists only, "علاج نفسي" the
+        # psychologists only - even when the model passed both ids.
+        narrowed = _apply_psych_discipline(state, base_url, specialty_ids, specialty_name)
+        if narrowed != specialty_ids:
+            # The session may already remember the other discipline from
+            # an earlier search; merging would bring it straight back.
+            session["specialty_ids"] = [
+                sid for sid in (session.get("specialty_ids") or [])
+                if sid in narrowed
+            ]
+            specialty_ids = narrowed
 
     # Remember which specialties this search used, so later steps
     # (list_branches_for_specialty, "who's soonest?") reuse exactly the
@@ -5910,6 +6036,12 @@ def _strip_entity_filler(text: str) -> str:
 
     stripped = str(text)
     for filler in (
+        # WHAT THEY WANT FROM THE DOCTOR, NOT THE NAME. Confirmed real
+        # failure (tanasuq): "د. ماضي جلسات عن بعد" came back as
+        # "ما لقيت دكتور اسمه ماضي جلسات عن بعد". Longest first.
+        "جلسات عن بعد", "جلسة عن بعد", "جلسه عن بعد", "جلسات عن بُعد", "جلسة عن بُعد",
+        "عن بعد", "عن بُعد", "اون لاين", "أون لاين", "اونلاين", "أونلاين", "online",
+        "جلسات", "جلسة", "جلسه",
         "فرع", "فروع", "الفرع", "مستشفى", "المستشفى", "مستشفي", "عيادة", "العيادة",
         "مركز", "المركز", "دكتور", "الدكتور", "دكتوره", "دكتورة", "د.", "د", "طبيب", "الطبيب",
         # PROFESSIONAL TITLES. The clinic stores them as part of the
