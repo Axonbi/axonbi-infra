@@ -4165,26 +4165,46 @@ def _remote_session_doctor_name(state: AgentState, text: str) -> str:
     if len(candidate) < 2:
         return ""
 
+    # What the patient typed ("د. ماضي") - used whenever the roster
+    # cannot name exactly one doctor, so the reply still says who.
+    typed = f"د. {candidate}"
+
     try:
         base_url = tools._doctors_base_url(state)
         if not base_url:
-            return ""
+            logger.info("_remote_session_doctor_name: no doctors_base_url - using %r", typed)
+            return typed
         language = tools.conversation_language(state)
         result = tools.api.get_doctors(
-            base_url, has_published_service=None, has_service_schedule=None,
+            base_url, page_size=200,
+            has_published_service=None, has_service_schedule=None,
             language=language,
         )
         if not result.get("success"):
-            return ""
+            logger.info(
+                "_remote_session_doctor_name: roster call failed (status_code=%s) - using %r",
+                result.get("status_code"), typed,
+            )
+            return typed
         roster = tools._shape_doctor_list(
             (result.get("data") or {}).get("items", []), language,
         )
         match = tools._fuzzy_match(candidate, roster, ["name", "formatedName", "altName"])
         if match.get("result") == "matched":
-            return str(match["item"].get("name") or "").strip()
+            name = str(match["item"].get("name") or "").strip()
+            logger.info("_remote_session_doctor_name: %r matched %r", candidate, name)
+            return name or typed
+        if match.get("result") == "ambiguous":
+            names = {str(i.get("name") or "").strip() for i in match.get("items") or []}
+            if len(names) == 1:
+                return names.pop() or typed
+        logger.info(
+            "_remote_session_doctor_name: %r -> %s among %d doctor(s) - using %r",
+            candidate, match.get("result"), len(roster), typed,
+        )
     except Exception:
         logger.exception("_remote_session_doctor_name: roster lookup failed for %r", candidate)
-    return ""
+    return typed
 
 
 def _remote_session_message(state: AgentState, target_language: Optional[str],
@@ -18886,8 +18906,12 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     # ONLINE / REMOTE SESSIONS. Always the hospital's own channels - see
     # `_REMOTE_SESSION_RE`. Not for a complaint or a cancellation, where
     # "I booked online" is context, not a question.
-    if (deterministic_reply is None
-            and agent_name not in ("complaint", "cancel")
+    #
+    # WINS OVER THE BOOKING-ENTRY QUESTION. Confirmed real failure
+    # (tanasuq, 2026-09-27): "عاوزه احجز مع د ماضي جلسات عن بعد" got
+    # "عندك دكتور أو تخصص معيّن في بالك؟" - the entry question had
+    # already been picked, and this check only ran when nothing had.
+    if (agent_name not in ("complaint", "cancel")
             and _is_remote_session_request(latest_user_message)):
         deterministic_reply = _remote_session_message(
             state, target_language, latest_user_message,
