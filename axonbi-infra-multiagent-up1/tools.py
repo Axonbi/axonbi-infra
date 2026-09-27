@@ -8236,22 +8236,76 @@ def resolve_available_day(
             language=conversation_language(state),
         )
         if schedule_result["success"]:
-            english_weekday_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-            target_name_en = english_weekday_names[target_weekday]
-            matching_branch_ids = set()
-            for item in (schedule_result["data"] or {}).get("items", []):
-                raw_days = item.get("recurringDaysNames") or []
-                if isinstance(raw_days, str):
-                    raw_days = [raw_days]
-                for raw_day in raw_days:
-                    day_token = str(raw_day).split(":")[-1].strip()
-                    if day_token.lower() == target_name_en.lower() and item.get("branchId"):
-                        matching_branch_ids.add(item.get("branchId"))
-            if len(matching_branch_ids) == 1:
-                branch_id = next(iter(matching_branch_ids))
+            schedule_items = (schedule_result["data"] or {}).get("items", [])
+
+            # CONFIRMED REAL PRODUCTION FAILURE (session 201000625084):
+            # weekday_name arrived as "المنار الاثنين" - the branch name
+            # the patient actually typed, glued onto the day by an
+            # upstream slip rather than passed via branch_id. The
+            # "unique match" logic below only ever looks at the DAY
+            # token inside weekday_name; it has no way to notice that
+            # the rest of the same string already names a specific
+            # branch, so it silently confirmed a DIFFERENT branch
+            # (النزهة, the only one with a Monday) while the reply later
+            # named the branch the patient actually asked for (المنار,
+            # Saturday-only) - a real appointment silently booked at the
+            # wrong branch under the right branch's name.
+            #
+            # So: before falling back to "which branch uniquely has this
+            # weekday", check whether weekday_name itself already names
+            # one of THIS doctor's branches explicitly. If it does, that
+            # branch wins outright - even if it turns out NOT to have
+            # the requested day, in which case the correct outcome is
+            # "not_found at that branch", never a quiet switch to a
+            # branch the patient never named.
+            normalized_weekday_text = _normalize_arabic(weekday_name)
+            named_branch_id = None
+            seen_branch_ids_for_name_check = set()
+            for item in schedule_items:
+                candidate_branch_id = item.get("branchId")
+                candidate_branch_name = item.get("branchName")
+                if not candidate_branch_id or not candidate_branch_name:
+                    continue
+                if candidate_branch_id in seen_branch_ids_for_name_check:
+                    continue
+                seen_branch_ids_for_name_check.add(candidate_branch_id)
+                normalized_branch_name = _normalize_arabic(candidate_branch_name)
+                if len(normalized_branch_name) >= 2 and normalized_branch_name in normalized_weekday_text:
+                    if named_branch_id is not None and named_branch_id != candidate_branch_id:
+                        # Two different branch names both appear in the
+                        # text (e.g. one name is a substring of another) -
+                        # too ambiguous to pick one silently.
+                        named_branch_id = None
+                        break
+                    named_branch_id = candidate_branch_id
+
+            if named_branch_id:
+                branch_id = named_branch_id
                 session["branch_id"] = branch_id
                 session["branch_auto_resolved"] = True
-                logger.info("resolve_available_day: auto-resolved branch_id=%s from weekday=%s (unique match in doctor's schedule)", branch_id, weekday_name)
+                logger.info(
+                    "resolve_available_day: branch_id=%s named explicitly inside weekday_name=%r - using it as-is, skipping the weekday-uniqueness guess",
+                    branch_id, weekday_name,
+                )
+            else:
+                english_weekday_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+                target_name_en = english_weekday_names[target_weekday]
+                matching_branch_ids = set()
+                for item in schedule_items:
+                    raw_days = item.get("recurringDaysNames") or []
+                    if isinstance(raw_days, str):
+                        raw_days = [raw_days]
+                    for raw_day in raw_days:
+                        day_token = str(raw_day).split(":")[-1].strip()
+                        if day_token.lower() == target_name_en.lower() and item.get("branchId"):
+                            matching_branch_ids.add(item.get("branchId"))
+                if len(matching_branch_ids) == 1:
+                    branch_id = next(iter(matching_branch_ids))
+                    session["branch_id"] = branch_id
+                    session["branch_auto_resolved"] = True
+                    logger.info("resolve_available_day: auto-resolved branch_id=%s from weekday=%s (unique match in doctor's schedule)", branch_id, weekday_name)
+
+            if branch_id:
                 try:
                     branches_result = api.get_branches(base_url, page_size=200, language=conversation_language(state))
                     if branches_result["success"]:
