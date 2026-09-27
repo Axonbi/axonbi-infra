@@ -28,6 +28,7 @@ from langchain_core.messages import HumanMessage
 from config import GRAPH_RECURSION_LIMIT, POST_SUCCESS_TIMEOUT_SECONDS, SESSION_TIMEOUT_SECONDS, THREAD_ID_PREFIX, configure_logging, get_messages
 from graph import graph, soft_recovery_reply, upstream_api_failed
 
+import llm_usage
 import progress
 import tools
 
@@ -392,7 +393,14 @@ def send_message_with_signals(
                 # call made before agent() writes the detected value.
                 state["target_language"] = None
 
-            result = graph.invoke(state, config=thread_config)
+            # One `llm_call` log line per model call and one `turn_usage`
+            # summary per patient message - see llm_usage.py.
+            meter = llm_usage.LLMUsageMeter()
+            meter.start_turn(session_id)
+            try:
+                result = graph.invoke(state, config={**thread_config, "callbacks": [meter]})
+            finally:
+                meter.end_turn()
 
             # End the turn for progress.py IMMEDIATELY once the real
             # answer exists - not only in the `finally` block below.

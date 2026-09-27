@@ -56,13 +56,10 @@ def _log_startup_banner() -> None:
     logger.info("=" * 62)
     logger.info("cancel-agent-api starting")
     logger.info("  graph.py         md5 %s", digest("graph.py"))
-    logger.info("  agents/router.py md5 %s", digest(os.path.join("agents", "router.py")))
+    logger.info("  agent_prompt.py  md5 %s", digest("agent_prompt.py"))
     logger.info("  model            %s (temperature=%s, timeout=%ss)",
                 config.OPENAI_MODEL, config.OPENAI_TEMPERATURE, config.OPENAI_TIMEOUT_SECONDS)
-    logger.info("  router           mode=%s (llm timeout=%ss)",
-                config.ROUTER_MODE, config.ROUTER_LLM_TIMEOUT_SECONDS)
-    logger.info("  multi-agent      enabled=%s tool_scoping=%s",
-                config.MULTI_AGENT_ENABLED, config.AGENT_TOOL_SCOPING)
+    logger.info("  architecture     load_config -> conversation_agent <-> tools")
     logger.info("=" * 62)
 
 

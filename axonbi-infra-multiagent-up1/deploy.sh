@@ -41,10 +41,9 @@ KEEP_BACKUPS="${KEEP_BACKUPS:-10}"
 # is how a clinic loses its own configuration. Add them here if you
 # ever decide the branch is authoritative for those too.
 FILES=(
-  graph.py tools.py prompts.py rag.py main.py app.py config.py
-  state.py api.py progress.py start.py
-  agents/__init__.py agents/router.py agents/registry.py
-  agents/sections.py agents/response_contract.py agents/hard_rules.py
+  graph.py tools.py rag.py main.py app.py config.py state.py api.py
+  progress.py start.py agent_prompt.py flow_context.py gates.py replies.py
+  safety.py llm_usage.py
 )
 
 RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; DIM=$'\033[2m'; OFF=$'\033[0m'
