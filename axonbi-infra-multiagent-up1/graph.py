@@ -4047,6 +4047,170 @@ def _booking_entry_message(templates: dict, target_language: Optional[str]) -> s
     return _BOOKING_ENTRY_MESSAGE["en" if is_english else "ar"]
 
 
+# ==========================================================
+# Online / remote sessions -> the hospital's own channels
+# ==========================================================
+#
+# This assistant cannot book or run an online / remote (عن بعد) session.
+# Those are handled by the hospital directly, so the answer is always the
+# same: they are available through the hospital, here is the unified
+# number, or shall I transfer you to customer service?
+#
+# CONFIRMED REAL PRODUCTION FAILURE (tanasuq): "د. ماضي جلسات عن بعد"
+# went into a doctor-NAME match as one string and came back as
+# "ما لقيت دكتور اسمه ماضي جلسات عن بعد". The doctor's name is ماضي; the
+# rest is the thing they wanted, which belongs to the hospital's own
+# channels.
+_REMOTE_SESSION_RE = re.compile(
+    r"عن\s*بعد|اون\s*لاين|اونلاين|اونلين|اون\s*لين|"
+    r"(?:جلسه|جلسات|استشاره|استشارات|كشف|موعد|مكالمه)\s+(?:مرئيه|فيديو|افتراضيه)|"
+    r"فيديو\s*كول|زووم|"
+    r"\bonline\b|\bremote(?:ly)?\b|\bvideo\s*(?:call|session|consultation)s?\b|"
+    r"\btele\s*-?\s*(?:medicine|health|consultation|therapy)\b|\bzoom\b|\bvirtual\s+(?:session|visit|consultation)s?\b",
+    re.IGNORECASE,
+)
+
+# Words to peel off a "د. ماضي جلسات عن بعد" message to leave the name.
+_REMOTE_SESSION_STRIP_RE = re.compile(
+    r"عن\s*بعد|اون\s*لاين|اونلاين|اونلين|(?<!\S)(?:جلسات|جلسه|استشارات|استشاره|مرئيه|فيديو|"
+    r"كول|زووم|online|remote|video|call|sessions?|consultations?|"
+    r"هل|فيه|في|عندكم|عندك|يوجد|ممكن|ينفع|مع|عايز|عاوز|عايزه|عاوزه|ابغى|ابغي|ابي|"
+    r"احجز|حجز|اريد|ودي|بدي|لو\s*سمحت)(?!\S)|\?|؟",
+    re.IGNORECASE,
+)
+_DOCTOR_TITLE_RE = re.compile(
+    r"(?:^|\s)(?:د\s*\.|د(?=\s)|دكتور|الدكتور|دكتوره|اخصائي|الاخصائي|اخصائيه|استاذ|الاستاذ|ا\s*\.|dr\.?)\s*",
+    re.IGNORECASE,
+)
+
+_REMOTE_SESSION_MESSAGE = {
+    "ar": (
+        "خدمات الجلسات عن بُعد والحجز الأونلاين{doctor} متوفرة من خلال المستشفى مباشرة 🌐\n"
+        "{phone_line}"
+        "تحب أحوّلك لخدمة العملاء؟"
+    ),
+    "en": (
+        "Remote sessions and online booking{doctor} are available directly "
+        "through the hospital 🌐\n"
+        "{phone_line}"
+        "Would you like me to transfer you to customer service?"
+    ),
+}
+_REMOTE_PHONE_LINE = {
+    "ar": "تقدر تتواصل مع المستشفى على الرقم الموحد: {phone} 📞\n",
+    "en": "You can reach the hospital on the unified number: {phone} 📞\n",
+}
+_PHONE_RE = re.compile(r"\+?\d[\d\s\-]{6,}\d")
+
+
+def _is_remote_session_request(text: str) -> bool:
+    """Whether the patient is asking about an online / remote session."""
+
+    folded = tools._normalize_arabic(text or "")
+    return bool(folded and _REMOTE_SESSION_RE.search(folded))
+
+
+@lru_cache(maxsize=32)
+def _unified_phone_from_kb(kb_file: str, mtime: float) -> str:
+    """The clinic's unified number as its own knowledge base writes it -
+    the "الرقم الموحد" line first, then the first phone-number line.
+    `mtime` is only part of the cache key, so an edited file is re-read."""
+
+    try:
+        with open(kb_file, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return ""
+
+    for wanted in ("الرقم الموحد", "unified", "الهاتف", "هاتف", "phone"):
+        for line in lines:
+            if wanted in line.lower():
+                match = _PHONE_RE.search(line)
+                if match:
+                    return " ".join(match.group(0).split())
+    return ""
+
+
+def _clinic_unified_phone(templates: dict) -> str:
+    """client config `unified_phone` first, else the knowledge base."""
+
+    configured = str((templates or {}).get("_unified_phone") or "").strip()
+    if configured:
+        return configured
+
+    kb_file = str((templates or {}).get("_knowledge_base_file") or "").strip()
+    if not kb_file:
+        return ""
+    try:
+        mtime = os.path.getmtime(kb_file)
+    except OSError:
+        return ""
+    return _unified_phone_from_kb(kb_file, mtime)
+
+
+def _remote_session_doctor_name(state: AgentState, text: str) -> str:
+    """The clinic's own spelling of the doctor the patient named next to
+    the remote-session request ("د. ماضي جلسات عن بعد" -> د. ماضي ...),
+    or "" when no doctor was named or the name matches nobody on the
+    roster. Never invents a name: only a clean fuzzy match is used."""
+
+    folded = tools._normalize_arabic(text or "")
+    if not _DOCTOR_TITLE_RE.search(folded):
+        return ""
+
+    candidate = _REMOTE_SESSION_STRIP_RE.sub(" ", folded)
+    candidate = _DOCTOR_TITLE_RE.sub(" ", candidate)
+    candidate = re.sub(r"[^\w\s]", " ", candidate)
+    candidate = " ".join(candidate.split())
+    if len(candidate) < 2:
+        return ""
+
+    try:
+        base_url = tools._doctors_base_url(state)
+        if not base_url:
+            return ""
+        language = tools.conversation_language(state)
+        result = tools.api.get_doctors(
+            base_url, has_published_service=None, has_service_schedule=None,
+            language=language,
+        )
+        if not result.get("success"):
+            return ""
+        roster = tools._shape_doctor_list(
+            (result.get("data") or {}).get("items", []), language,
+        )
+        match = tools._fuzzy_match(candidate, roster, ["name", "formatedName", "altName"])
+        if match.get("result") == "matched":
+            return str(match["item"].get("name") or "").strip()
+    except Exception:
+        logger.exception("_remote_session_doctor_name: roster lookup failed for %r", candidate)
+    return ""
+
+
+def _remote_session_message(state: AgentState, target_language: Optional[str],
+                            text: str) -> str:
+    """The fixed reply to an online / remote-session question.
+
+    A clinic can author its own wording in `msg_remote_sessions`
+    ({phone} and {doctor} are filled in when present)."""
+
+    templates = state.get("templates") or {}
+    lang = "en" if (target_language or "").strip().lower().startswith("en") else "ar"
+    phone = _clinic_unified_phone(templates)
+    doctor = _remote_session_doctor_name(state, text)
+
+    authored = str(templates.get("msg_remote_sessions") or "").strip()
+    if authored and lang == "ar":
+        message = authored.replace("\r\n", "\n").replace("\r", "\n")
+        return message.replace("{phone}", phone).replace("{doctor}", doctor).strip()
+
+    doctor_part = ""
+    if doctor:
+        doctor_part = f" مع {doctor}" if lang == "ar" else f" with {doctor}"
+    phone_line = _REMOTE_PHONE_LINE[lang].format(phone=phone) if phone else ""
+    return _REMOTE_SESSION_MESSAGE[lang].format(doctor=doctor_part, phone_line=phone_line)
+
+
 def _build_symptom_in_booking_directive(messages: list, agent_name: str) -> str:
     """Fires when a symptom answers the booking flow's opening question.
 
@@ -18718,6 +18882,20 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                 deterministic_reply = _identifier_choice_message(
                     state.get("templates") or {}, target_language, intent,
                 )
+
+    # ONLINE / REMOTE SESSIONS. Always the hospital's own channels - see
+    # `_REMOTE_SESSION_RE`. Not for a complaint or a cancellation, where
+    # "I booked online" is context, not a question.
+    if (deterministic_reply is None
+            and agent_name not in ("complaint", "cancel")
+            and _is_remote_session_request(latest_user_message)):
+        deterministic_reply = _remote_session_message(
+            state, target_language, latest_user_message,
+        )
+        logger.info(
+            "agent[%s]: online/remote-session request - sending the fixed "
+            "hospital-channels reply", agent_name,
+        )
 
     if deterministic_reply is not None:
         logger.info(
