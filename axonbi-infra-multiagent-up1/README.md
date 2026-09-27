@@ -7,12 +7,14 @@ deterministic-router version.
 
 ## Architecture (current)
 
-    load_config -> conversation_agent <-> tools -> END
+    load_config -> agent_<active specialist> <-> tools -> END
 
-One conversation model, one stable prompt, structured state. See
-**[ARCHITECTURE.md](ARCHITECTURE.md)**. The multi-agent router and the
-per-turn directives described in older notes below are gone; the `/chat`
-contract, `api.py` and the CSVs are unchanged.
+Six specialists (coordinator, booking, reschedule, cancel, medical, info)
+that hand over to each other by the model's own transfer decision -
+no router, no keyword cues. Structured state, small stable prompts. See
+**[ARCHITECTURE.md](ARCHITECTURE.md)**. The old router and the per-turn
+directives described in older notes below are gone; the `/chat` contract,
+`api.py` and the CSVs are unchanged.
 
 ## What changed
 

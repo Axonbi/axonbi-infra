@@ -173,7 +173,7 @@ def test_flow_and_language_are_the_models_decisions(g, monkeypatch):
 
 def test_show_options_renders_the_stored_list_in_order(g, hospital, monkeypatch):
     llm = ScriptedLLM(call("list_specialties"), say("اختر التخصص:", flow="booking", show_options=True))
-    result = run(g, llm, monkeypatch, "وش التخصصات؟", "opts-1", greeted=True)
+    result = run(g, llm, monkeypatch, "وش التخصصات؟", "opts-1", greeted=True, active_agent="booking")
     reply = result["messages"][-1].content
     assert reply.startswith("اختر التخصص:\n1️⃣")
 
@@ -199,7 +199,7 @@ def test_success_is_rendered_by_code_without_a_second_call(g, monkeypatch):
             content=json.dumps(payload), name="cancel_appointment",
             tool_call_id=state["messages"][-1].tool_calls[0]["id"])]})
 
-    result = run(g, llm, monkeypatch, "اه الغيه", "succ-1", greeted=True, target_language="ar")
+    result = run(g, llm, monkeypatch, "اه الغيه", "succ-1", greeted=True, target_language="ar", active_agent="cancel")
     assert len(llm.calls) == 1
     assert "تم إلغاء موعدك بنجاح" in result["messages"][-1].content
 
@@ -262,7 +262,7 @@ def _seed_lookup(g, monkeypatch, thread):
     model looks it up and replies."""
     llm = ScriptedLLM(call("lookup_appointment", use_channel_identity=True),
                       say("موعدك مع د. أحمد سامي يوم الأربعاء. وش تحب تسوي؟", flow="general"))
-    run(g, llm, monkeypatch, "ابي اعرف موعدي", thread, greeted=True, target_language="ar")
+    run(g, llm, monkeypatch, "ابي اعرف موعدي", thread, greeted=True, target_language="ar", active_agent="cancel")
 
 
 @pytest.mark.parametrize("asked, pending, cancelled", [
@@ -318,7 +318,8 @@ def test_review_card_is_rendered_by_code_and_arms_the_booking_gate(g, hospital, 
         call("match_entity_for_booking", entity_type="branch", name="النزهة"),
         call("get_available_slots_for_booking", from_date="2026-09-29", to_date="2026-09-29"),
         say("اختار الموعد:", flow="booking", show_options=True))
-    run(g, llm, monkeypatch, "ابي احجز مع د. أحمد سامي في النزهة بكرة", thread, greeted=True, target_language="ar")
+    run(g, llm, monkeypatch, "ابي احجز مع د. أحمد سامي في النزهة بكرة", thread, greeted=True, target_language="ar",
+        active_agent="booking")
 
     llm = ScriptedLLM(call("select_appointment_slot", option_number=1),
                       call("compare_phone", provided_phone="+966500000001"),

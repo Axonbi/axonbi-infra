@@ -34,6 +34,10 @@ class AgentState(TypedDict):
     greeted: bool
 
     flow: NotRequired[Optional[str]]
+    # The specialist that owns the conversation (specialists.py); changed
+    # only by a specialist's own transfer decision or a finished flow.
+    active_agent: NotRequired[Optional[str]]
+    handoff_to: NotRequired[Optional[str]]
     step: NotRequired[Optional[str]]
     # {action, target, turn}: the irreversible action the assistant's last
     # reply asked the patient to confirm. Read by gates.py.
@@ -43,3 +47,4 @@ class AgentState(TypedDict):
     turn: NotRequired[int]
     turn_calls: NotRequired[int]
     turn_corrections: NotRequired[int]
+    turn_handoffs: NotRequired[int]

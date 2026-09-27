@@ -59,7 +59,7 @@ def _log_startup_banner() -> None:
     logger.info("  agent_prompt.py  md5 %s", digest("agent_prompt.py"))
     logger.info("  model            %s (temperature=%s, timeout=%ss)",
                 config.OPENAI_MODEL, config.OPENAI_TEMPERATURE, config.OPENAI_TIMEOUT_SECONDS)
-    logger.info("  architecture     load_config -> conversation_agent <-> tools")
+    logger.info("  architecture     load_config -> agent_<specialist> <-> tools (hand-over by transfer_to_*)")
     logger.info("=" * 62)
 
 

@@ -1,13 +1,19 @@
 """
-The conversation graph.
+The conversation graph - specialists that hand over to each other.
 
-    START -> load_config -> conversation_agent <-> tools -> END
+    START -> load_config -> agent_<active specialist> <-> tools -> END
+                                     |  transfer_to_<other>
+                                     v
+                             agent_<other specialist>  (same message, same turn)
 
-ONE model call per step. The conversation agent reads the patient's
-message in context, decides what they want, calls tools with structured
-arguments, reads the results and writes the reply. There is no router,
-no keyword classifier, no per-turn prose directives and no second
-"understanding" call.
+The conversation is owned by one specialist at a time (specialists.py:
+coordinator, booking, reschedule, cancel, medical, info). The owner reads
+the patient's message in context and answers, calls its own tools, or
+hands over by calling another specialist's transfer tool. The hand-over
+is the model's decision from meaning; there is no router, no keyword
+classifier, no per-turn prose directives and no second "understanding"
+call. A normal turn is one model call; a change of specialist costs one
+more.
 
 What the model decides is returned as STRUCTURED data through the
 `respond` tool (the reply, the flow the patient is in, the language, and
@@ -30,13 +36,14 @@ from langchain_core.messages import AIMessage, SystemMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, create_model
 
 import agent_prompt
 import config
 import flow_context
 import replies
 import safety
+import specialists
 import tools
 from replies import parse_tool_content, soft_recovery_reply, upstream_api_failed  # noqa: F401 (public API)
 from state import AgentState
@@ -50,6 +57,8 @@ logger = logging.getLogger(__name__)
 
 FLOWS = ("booking", "cancel", "reschedule", "medical", "faq", "complaint", "general")
 MAX_LLM_CALLS_PER_TURN = 8
+MAX_HANDOFFS_PER_TURN = 2
+COORDINATOR = specialists.COORDINATOR
 HISTORY_MESSAGES = config.MAX_HISTORY_MESSAGES   # earlier-turn text messages kept for context
 
 
@@ -89,11 +98,40 @@ class respond(BaseModel):
         None, description="First reply only: a reply in kind to a time-of-day greeting, e.g. 'صباح النور! 😊'.")
 
 
+def _transfer_tool(name: str):
+    spec = specialists.SPECIALISTS[name]
+    return create_model(
+        f"transfer_to_{name}",
+        __doc__=f"Hand this message over to the part of the assistant that handles: {spec.handles}",
+        reason=(Optional[str], Field(None, description="One line: what the patient wants.")),
+    )
+
+
+TRANSFERS = {name: _transfer_tool(name) for name in specialists.NAMES}
+_TRANSFER_TARGETS = {f"transfer_to_{name}": name for name in specialists.NAMES}
+
+specialists.check_registry(tools.ALL_TOOLS)
+
 _llm = _make_llm(config.OPENAI_MODEL, timeout=config.OPENAI_TIMEOUT_SECONDS,
                  temperature=config.OPENAI_TEMPERATURE)
 
-# Tests replace this with a scripted model.
-_llm_with_tools = _llm.bind_tools(list(tools.ALL_TOOLS) + [respond], tool_choice="required")
+# One binding per specialist: its own tools, respond, and a transfer to
+# every other specialist. Built once; binding makes no network call.
+_BOUND = {
+    name: _llm.bind_tools(
+        specialists.tools_for(name, tools.ALL_TOOLS) + [respond]
+        + [TRANSFERS[other] for other in specialists.NAMES if other != name],
+        tool_choice="required",
+    )
+    for name in specialists.NAMES
+}
+
+# Tests set this to a scripted model that then plays every specialist.
+_llm_with_tools = None
+
+
+def _model_for(agent: str):
+    return _llm_with_tools if _llm_with_tools is not None else _BOUND[agent]
 
 _LLM_FAILURE_TEXT = {
     "ar": "عذرًا، حصل تأخير مؤقت في الرد. ممكن تبعت رسالتك تاني؟ 🌷",
@@ -101,15 +139,15 @@ _LLM_FAILURE_TEXT = {
 }
 
 
-def _invoke(messages, purpose: str):
+def _invoke(agent: str, messages, purpose: str):
     """One model call; a timeout is retried once, then reported as None."""
 
     for attempt in (1, 2):
         try:
-            return _llm_with_tools.invoke(
-                messages, config={"metadata": {"purpose": purpose, "agent": "conversation_agent"}})
+            return _model_for(agent).invoke(
+                messages, config={"metadata": {"purpose": purpose, "agent": agent}})
         except (_APITimeoutError, _APIConnectionError, TimeoutError) as exc:
-            logger.warning("conversation_agent: %s call failed (attempt %d): %s", purpose, attempt, exc)
+            logger.warning("agent[%s]: %s call failed (attempt %d): %s", agent, purpose, attempt, exc)
     return None
 
 
@@ -151,7 +189,11 @@ def load_config(state: AgentState) -> dict:
     session_id = state.get("session_id")
     if session_id and state.get("booking"):
         tools.restore_session(session_id, state["booking"])
-    return {"templates": templates}
+    updates = {"templates": templates}
+    messages = state.get("messages") or []
+    if messages and getattr(messages[-1], "type", None) == "human":
+        updates.update(_turn_start_updates(state))
+    return updates
 
 
 def _session(state) -> dict:
@@ -181,15 +223,21 @@ def _turn_start_updates(state) -> dict:
     # A confirmation question only counts for the reply that follows it.
     if not (isinstance(pending, dict) and pending.get("turn") == turn - 1):
         pending = None
-    return {"turn": turn, "pending_confirmation": pending, "turn_calls": 0, "turn_corrections": 0}
+    agent = state.get("active_agent") if state.get("active_agent") in specialists.NAMES else COORDINATOR
+    return {"turn": turn, "pending_confirmation": pending, "turn_calls": 0, "turn_corrections": 0,
+            "turn_handoffs": 0, "handoff_to": None, "active_agent": agent}
 
 
-def conversation_agent(state: AgentState) -> dict:
+def _specialist_node(agent: str):
+    def node(state: AgentState) -> dict:
+        return _run_specialist(state, agent)
+    node.__name__ = f"agent_{agent}"
+    return node
+
+
+def _run_specialist(state: AgentState, agent: str) -> dict:
     messages = state.get("messages") or []
-    updates: dict = {}
-
-    if messages and getattr(messages[-1], "type", None) == "human":
-        updates.update(_turn_start_updates(state))
+    updates: dict = {"handoff_to": None, "active_agent": agent}
     view = {**state, **updates}
     session = _session(view)
     language = view.get("target_language") or _script_language(messages_latest_human_text(messages))
@@ -199,31 +247,42 @@ def conversation_agent(state: AgentState) -> dict:
     if messages and getattr(messages[-1], "type", None) == "tool":
         rendered = _rendered_outcome(view, session, language)
         if rendered is not None:
-            text, pending = rendered
-            return {**updates, **_finish(view, text, language, pending, flow=view.get("flow"))}
+            text, pending, release = rendered
+            done = _finish(view, text, language, pending, flow=view.get("flow"))
+            if release:   # the flow is over; the next message starts at the front desk
+                done["active_agent"] = COORDINATOR
+            return {**updates, **done}
 
     calls = int(view.get("turn_calls") or 0)
     if calls >= MAX_LLM_CALLS_PER_TURN:
-        logger.error("conversation_agent: %d calls this turn - ending with a recovery line", calls)
+        logger.error("agent[%s]: %d calls this turn - ending with a recovery line", agent, calls)
         return {**updates, **_finish(view, soft_recovery_reply(language, messages), language, None)}
 
-    prompt = [SystemMessage(content=agent_prompt.build(view.get("templates") or {}))]
+    prompt = [SystemMessage(content=agent_prompt.build(view.get("templates") or {}, agent))]
     prompt += _recent_history(messages)
     prompt.append(SystemMessage(content=_state_block(view, session)))
 
-    response = _invoke(prompt, "reason")
+    response = _invoke(agent, prompt, "reason")
     updates["turn_calls"] = calls + 1
     if response is None:
         return {**updates, **_finish(view, _LLM_FAILURE_TEXT["en" if language == "en" else "ar"],
                                      language, None)}
 
-    step = _next_step(response, view)
+    step = _next_step(response, view, agent)
+    if step["kind"] == "handoff":
+        handoffs = int(view.get("turn_handoffs") or 0)
+        if handoffs < MAX_HANDOFFS_PER_TURN:
+            logger.info("handoff: %s -> %s (%s)", agent, step["target"], step.get("reason") or "")
+            return {**updates, "active_agent": step["target"], "handoff_to": step["target"],
+                    "turn_handoffs": handoffs + 1}
+        logger.error("agent[%s]: handoff limit reached this turn - answering with a recovery line", agent)
+        return {**updates, **_finish(view, soft_recovery_reply(language, messages), language, None)}
     if step["kind"] == "tools":
         return {**updates, "messages": [step["message"]]}
 
     decision = step["decision"]
     text = _compose(decision, session)
-    text, decision, extra_calls = _check_and_correct(text, decision, view, session, prompt)
+    text, decision, extra_calls = _check_and_correct(agent, text, decision, view, session, prompt)
     updates["turn_calls"] = updates["turn_calls"] + extra_calls.get("calls", 0)
     if extra_calls.get("tools_message") is not None:
         return {**updates, "turn_corrections": 1, "messages": [extra_calls["tools_message"]]}
@@ -258,11 +317,16 @@ def messages_latest_human_text(messages: list) -> str:
     return str(messages[index].content or "") if index >= 0 else ""
 
 
-def _next_step(response, view) -> dict:
-    """Tool calls to run, or the model's final structured decision."""
+def _next_step(response, view, agent: str = COORDINATOR) -> dict:
+    """A hand-over, tool calls to run, or the final structured decision."""
 
     tool_calls = list(getattr(response, "tool_calls", None) or [])
-    work = [c for c in tool_calls if c.get("name") != "respond"]
+    handoff = next((c for c in tool_calls if c.get("name") in _TRANSFER_TARGETS
+                    and _TRANSFER_TARGETS[c["name"]] != agent), None)
+    if handoff is not None:
+        return {"kind": "handoff", "target": _TRANSFER_TARGETS[handoff["name"]],
+                "reason": (handoff.get("args") or {}).get("reason")}
+    work = [c for c in tool_calls if c.get("name") != "respond" and c.get("name") not in _TRANSFER_TARGETS]
     if work:
         # A reply written before seeing these results is discarded.
         return {"kind": "tools", "message": AIMessage(content="", tool_calls=work)}
@@ -292,7 +356,7 @@ def _compose(decision: "respond", session: dict) -> str:
     return replies.emojify_numbered_lines(text)
 
 
-def _check_and_correct(text, decision, view, session, prompt):
+def _check_and_correct(agent, text, decision, view, session, prompt):
     """Deterministic output check; at most ONE correction call."""
 
     extra = {"calls": 0, "tools_message": None}
@@ -310,12 +374,14 @@ def _check_and_correct(text, decision, view, session, prompt):
     correction = SystemMessage(content=(
         f"Your draft reply was:\n{text}\n\nIt cannot be sent as is:\n{notes}\n"
         "Call the tool you need, or send a corrected reply."))
-    response = _invoke(prompt + [correction], "correction")
+    response = _invoke(agent, prompt + [correction], "correction")
     extra["calls"] = 1
     if response is None:
         return _after_failed_correction(text, decision, view, violations), decision, extra
 
-    step = _next_step(response, view)
+    step = _next_step(response, view, agent)
+    if step["kind"] == "handoff":
+        return _after_failed_correction(text, decision, view, violations), decision, extra
     if step["kind"] == "tools":
         extra["tools_message"] = step["message"]
         return text, decision, extra
@@ -340,15 +406,15 @@ def _after_failed_correction(text, decision, view, violations) -> str:
 
 
 def _rendered_outcome(view, session, language) -> Optional[tuple]:
-    """(text, pending_confirmation) when this step's tool result has a
-    fixed, code-written reply - or None."""
+    """(text, pending_confirmation, flow_is_over) when this step's tool
+    result has a fixed, code-written reply - or None."""
 
     messages = view.get("messages") or []
     templates = view.get("templates") or {}
 
     text = replies.success_reply(messages, templates, language, session)
     if text:
-        return text, None
+        return text, None, True
 
     last = messages[-1]
     data = parse_tool_content(last) or {}
@@ -356,7 +422,7 @@ def _rendered_outcome(view, session, language) -> Optional[tuple]:
         review = data.get("review") or {}
         card = replies.render_review_card(templates, review) if language == "ar" else None
         if card:
-            return card, {"action": "book", "target": review.get("slotStart")}
+            return card, {"action": "book", "target": review.get("slotStart")}, False
     return None
 
 
@@ -395,14 +461,48 @@ _base_tool_node = ToolNode(list(tools.ALL_TOOLS))
 
 
 def tools_node(state: AgentState, config=None) -> dict:
-    result = _base_tool_node.invoke(state, config)
-    updates = dict(result) if isinstance(result, dict) else {"messages": result}
+    """Runs the owner's tool calls. A call to a tool the active specialist
+    does not own is refused here as well as at binding time."""
+
+    import json
+    from langchain_core.messages import ToolMessage
+
+    agent = state.get("active_agent") if state.get("active_agent") in specialists.NAMES else COORDINATOR
+    allowed = set(specialists.SPECIALISTS[agent].tools)
+    last = (state.get("messages") or [None])[-1]
+    calls = list(getattr(last, "tool_calls", None) or [])
+    refused = [c for c in calls if c.get("name") not in allowed]
+    refusals = [ToolMessage(
+        content=json.dumps({"status": "not_available",
+                            "hint": "Not your job: transfer to the part of the assistant that handles it."}),
+        name=c.get("name"), tool_call_id=c.get("id")) for c in refused]
+
+    updates: dict = {"messages": refusals}
+    if len(refused) < len(calls):
+        run_state = state
+        if refused:
+            allowed_calls = [c for c in calls if c.get("name") in allowed]
+            run_state = {**state, "messages": list(state["messages"][:-1])
+                         + [last.model_copy(update={"tool_calls": allowed_calls})]}
+        result = _base_tool_node.invoke(run_state, config)
+        ran = result.get("messages", []) if isinstance(result, dict) else list(result)
+        updates["messages"] = refusals + list(ran)
     if state.get("session_id"):
         updates["booking"] = tools.export_session(state["session_id"])
     return updates
 
 
+def _node_of(agent: Optional[str]) -> str:
+    return f"agent_{agent if agent in specialists.NAMES else COORDINATOR}"
+
+
+def route_to_owner(state: AgentState) -> str:
+    return _node_of(state.get("active_agent"))
+
+
 def route_after_agent(state: AgentState) -> str:
+    if state.get("handoff_to"):
+        return _node_of(state["handoff_to"])
     last = (state.get("messages") or [None])[-1]
     return "tools" if getattr(last, "tool_calls", None) else END
 
@@ -413,12 +513,15 @@ def route_after_agent(state: AgentState) -> str:
 
 builder = StateGraph(AgentState)
 builder.add_node("load_config", load_config)
-builder.add_node("conversation_agent", conversation_agent)
 builder.add_node("tools", tools_node)
+_AGENT_NODES = {_node_of(name): _node_of(name) for name in specialists.NAMES}
+for _name in specialists.NAMES:
+    builder.add_node(_node_of(_name), _specialist_node(_name))
+    builder.add_conditional_edges(_node_of(_name), route_after_agent,
+                                  {"tools": "tools", END: END, **_AGENT_NODES})
 builder.set_entry_point("load_config")
-builder.add_edge("load_config", "conversation_agent")
-builder.add_conditional_edges("conversation_agent", route_after_agent, {"tools": "tools", END: END})
-builder.add_edge("tools", "conversation_agent")
+builder.add_conditional_edges("load_config", route_to_owner, _AGENT_NODES)
+builder.add_conditional_edges("tools", route_to_owner, _AGENT_NODES)
 
 if "langgraph_api" in sys.modules:   # the LangGraph server brings its own persistence
     graph = builder.compile()
