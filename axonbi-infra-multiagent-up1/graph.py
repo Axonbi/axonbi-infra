@@ -4070,27 +4070,14 @@ _REMOTE_SESSION_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Words to peel off a "د. ماضي جلسات عن بعد" message to leave the name.
-_REMOTE_SESSION_STRIP_RE = re.compile(
-    r"عن\s*بعد|اون\s*لاين|اونلاين|اونلين|(?<!\S)(?:جلسات|جلسه|استشارات|استشاره|مرئيه|فيديو|"
-    r"كول|زووم|online|remote|video|call|sessions?|consultations?|"
-    r"هل|فيه|في|عندكم|عندك|يوجد|ممكن|ينفع|مع|عايز|عاوز|عايزه|عاوزه|ابغى|ابغي|ابي|"
-    r"احجز|حجز|اريد|ودي|بدي|لو\s*سمحت)(?!\S)|\?|؟",
-    re.IGNORECASE,
-)
-_DOCTOR_TITLE_RE = re.compile(
-    r"(?:^|\s)(?:د\s*\.|د(?=\s)|دكتور|الدكتور|دكتوره|اخصائي|الاخصائي|اخصائيه|استاذ|الاستاذ|ا\s*\.|dr\.?)\s*",
-    re.IGNORECASE,
-)
-
 _REMOTE_SESSION_MESSAGE = {
     "ar": (
-        "خدمات الجلسات عن بُعد والحجز الأونلاين{doctor} متوفرة من خلال المستشفى مباشرة 🌐\n"
+        "خدمات الجلسات عن بُعد والحجز الأونلاين متوفرة من خلال المستشفى مباشرة 🌐\n"
         "{phone_line}"
         "تحب أحوّلك لخدمة العملاء؟"
     ),
     "en": (
-        "Remote sessions and online booking{doctor} are available directly "
+        "Remote sessions and online booking are available directly "
         "through the hospital 🌐\n"
         "{phone_line}"
         "Would you like me to transfer you to customer service?"
@@ -4148,87 +4135,24 @@ def _clinic_unified_phone(templates: dict) -> str:
     return _unified_phone_from_kb(kb_file, mtime)
 
 
-def _remote_session_doctor_name(state: AgentState, text: str) -> str:
-    """The clinic's own spelling of the doctor the patient named next to
-    the remote-session request ("د. ماضي جلسات عن بعد" -> د. ماضي ...),
-    or "" when no doctor was named or the name matches nobody on the
-    roster. Never invents a name: only a clean fuzzy match is used."""
-
-    folded = tools._normalize_arabic(text or "")
-    if not _DOCTOR_TITLE_RE.search(folded):
-        return ""
-
-    candidate = _REMOTE_SESSION_STRIP_RE.sub(" ", folded)
-    candidate = _DOCTOR_TITLE_RE.sub(" ", candidate)
-    candidate = re.sub(r"[^\w\s]", " ", candidate)
-    candidate = " ".join(candidate.split())
-    if len(candidate) < 2:
-        return ""
-
-    # What the patient typed ("د. ماضي") - used whenever the roster
-    # cannot name exactly one doctor, so the reply still says who.
-    typed = f"د. {candidate}"
-
-    try:
-        base_url = tools._doctors_base_url(state)
-        if not base_url:
-            logger.info("_remote_session_doctor_name: no doctors_base_url - using %r", typed)
-            return typed
-        language = tools.conversation_language(state)
-        result = tools.api.get_doctors(
-            base_url, page_size=200,
-            has_published_service=None, has_service_schedule=None,
-            language=language,
-        )
-        if not result.get("success"):
-            logger.info(
-                "_remote_session_doctor_name: roster call failed (status_code=%s) - using %r",
-                result.get("status_code"), typed,
-            )
-            return typed
-        roster = tools._shape_doctor_list(
-            (result.get("data") or {}).get("items", []), language,
-        )
-        match = tools._fuzzy_match(candidate, roster, ["name", "formatedName", "altName"])
-        if match.get("result") == "matched":
-            name = str(match["item"].get("name") or "").strip()
-            logger.info("_remote_session_doctor_name: %r matched %r", candidate, name)
-            return name or typed
-        if match.get("result") == "ambiguous":
-            names = {str(i.get("name") or "").strip() for i in match.get("items") or []}
-            if len(names) == 1:
-                return names.pop() or typed
-        logger.info(
-            "_remote_session_doctor_name: %r -> %s among %d doctor(s) - using %r",
-            candidate, match.get("result"), len(roster), typed,
-        )
-    except Exception:
-        logger.exception("_remote_session_doctor_name: roster lookup failed for %r", candidate)
-    return typed
-
-
-def _remote_session_message(state: AgentState, target_language: Optional[str],
-                            text: str) -> str:
-    """The fixed reply to an online / remote-session question.
+def _remote_session_message(state: AgentState, target_language: Optional[str]) -> str:
+    """The fixed reply to an online / remote-session question - the same
+    words every time, with no doctor name even when one was mentioned.
 
     A clinic can author its own wording in `msg_remote_sessions`
-    ({phone} and {doctor} are filled in when present)."""
+    ({phone} is filled in)."""
 
     templates = state.get("templates") or {}
     lang = "en" if (target_language or "").strip().lower().startswith("en") else "ar"
     phone = _clinic_unified_phone(templates)
-    doctor = _remote_session_doctor_name(state, text)
 
     authored = str(templates.get("msg_remote_sessions") or "").strip()
     if authored and lang == "ar":
         message = authored.replace("\r\n", "\n").replace("\r", "\n")
-        return message.replace("{phone}", phone).replace("{doctor}", doctor).strip()
+        return message.replace("{phone}", phone).strip()
 
-    doctor_part = ""
-    if doctor:
-        doctor_part = f" مع {doctor}" if lang == "ar" else f" with {doctor}"
     phone_line = _REMOTE_PHONE_LINE[lang].format(phone=phone) if phone else ""
-    return _REMOTE_SESSION_MESSAGE[lang].format(doctor=doctor_part, phone_line=phone_line)
+    return _REMOTE_SESSION_MESSAGE[lang].format(phone_line=phone_line)
 
 
 def _build_symptom_in_booking_directive(messages: list, agent_name: str) -> str:
@@ -18913,9 +18837,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     # already been picked, and this check only ran when nothing had.
     if (agent_name not in ("complaint", "cancel")
             and _is_remote_session_request(latest_user_message)):
-        deterministic_reply = _remote_session_message(
-            state, target_language, latest_user_message,
-        )
+        deterministic_reply = _remote_session_message(state, target_language)
         logger.info(
             "agent[%s]: online/remote-session request - sending the fixed "
             "hospital-channels reply", agent_name,
