@@ -1112,6 +1112,8 @@ def get_messages(client_id: str, dialect: Optional[str] = None, client_row_overr
     merged["_cms_base_url"] = (
         _ENV_CMS_BASE_URL_OVERRIDE
         or client_row.get("cms_base_url")
+        # n8n's data table names the column after the env var.
+        or client_row.get("CMS_API_BASE_URL")
     )
     merged["_phone_example"] = client_row.get("phone_example")
     # COMPATIBILITY ONLY. `bsuid` identifies the SENDER, not the clinic,
