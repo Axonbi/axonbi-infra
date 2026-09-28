@@ -458,6 +458,35 @@ def to_local_wallclock(value: Optional[str], timezone_name: str = DEFAULT_TIMEZO
 # that acts on it.
 
 
+def to_wire_utc(value: Optional[str], timezone_name: str = DEFAULT_TIMEZONE) -> Optional[str]:
+    """A slot timestamp from the API -> the WIRE format: naive UTC.
+
+    Every `slotStart` this file stores is read back as UTC by
+    `create_new_booking` / `_same_instant`. Dropping the offset was only
+    correct while the API stamped "+00:00". It now stamps "+03:00" on
+    local wall clock, so dropping it stored 16:00 local as 16:00 UTC -
+    three hours out - and every booking failed its re-verification with
+    "slot_unavailable" (production, 2026-09-28). Converting to UTC gives
+    the same bytes as before for "+00:00" and the right instant for any
+    other offset."""
+
+    if not value:
+        return None
+
+    if not SCHEDULE_TIMES_ARE_UTC:
+        return to_local_wallclock(value, timezone_name)
+
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+
+    if dt.tzinfo is None:
+        return dt.isoformat()  # already naive UTC
+
+    return dt.astimezone(timezone.utc).replace(tzinfo=None).isoformat()
+
+
 def to_clinic_local(value: Optional[str], timezone_name: str = DEFAULT_TIMEZONE) -> Optional[str]:
     """A real instant from the booking API -> the clinic's own wall
     clock, as a NAIVE ISO string ready for `_display_time_12h` and
@@ -5135,8 +5164,8 @@ def get_available_reschedule_slots(
         # changing them would move every appointment this system writes.
         # `local_start` is the same instant on the clinic's clock, and is
         # the only one the patient ever sees. See `to_clinic_local`.
-        slot_start = to_local_wallclock(item.get("slotStart"), timezone_name)
-        slot_end = to_local_wallclock(item.get("slotEnd"), timezone_name)
+        slot_start = to_wire_utc(item.get("slotStart"), timezone_name)
+        slot_end = to_wire_utc(item.get("slotEnd"), timezone_name)
         local_start = to_clinic_local(item.get("slotStart"), timezone_name)
         slots.append({
             "slotStart": slot_start,
@@ -8586,7 +8615,7 @@ def resolve_available_day(
         if item.get("isBooked"):
             continue
         slot_start_local = to_clinic_local(item.get("slotStart"), timezone_name)
-        slot_start_wire = to_local_wallclock(item.get("slotStart"), timezone_name)
+        slot_start_wire = to_wire_utc(item.get("slotStart"), timezone_name)
         if not slot_start_local or not slot_start_wire:
             continue
         try:
@@ -9673,6 +9702,14 @@ def _remember_failed_slot(session: dict, doctor_id, branch_id, slot_start: str) 
             entry["count"] = entry.get("count", 1) + 1
             return
     failed.append({"doctor_id": str(doctor_id), "branch_id": str(branch_id), "slotStart": slot_start, "count": 1})
+    # A dead slot must not stay locked: `_deterministic_slot_lock` skips
+    # while any slot is locked, so the patient's next pick from the fresh
+    # list was never locked and the booking retried the failed time
+    # (production, 2026-09-28: picked 1:00, booked 4:00 again).
+    locked = session.get("selected_slot") or {}
+    if _same_instant(locked.get("slotStart"), slot_start):
+        session.pop("selected_slot", None)
+        session["review_shown"] = False
 
 
 def _is_failed_slot(session: dict, doctor_id, branch_id, slot_start: str) -> bool:
@@ -10443,8 +10480,8 @@ def get_available_slots_for_booking(
         # `local_start` is the same instant on the clinic's clock, and
         # every field the patient reads is built from it. See
         # `to_clinic_local` for why the two differ at all.
-        slot_start = to_local_wallclock(item.get("slotStart"), timezone_name)
-        slot_end = to_local_wallclock(item.get("slotEnd"), timezone_name)
+        slot_start = to_wire_utc(item.get("slotStart"), timezone_name)
+        slot_end = to_wire_utc(item.get("slotEnd"), timezone_name)
         local_start = to_clinic_local(item.get("slotStart"), timezone_name)
         slots.append({
             "slotStart": slot_start,
@@ -10827,8 +10864,8 @@ def find_best_doctor_in_specialty(
                 # WIRE VALUE, like every other `slotStart` in this file -
                 # `dt` above is the clinic's clock and is used only for
                 # the three display fields below it.
-                "slotStart": to_local_wallclock(item.get("slotStart"), timezone_name),
-                "slotEnd": to_local_wallclock(item.get("slotEnd"), timezone_name),
+                "slotStart": to_wire_utc(item.get("slotStart"), timezone_name),
+                "slotEnd": to_wire_utc(item.get("slotEnd"), timezone_name),
                 "date_display": _display_date(dt.isoformat()),
                 "weekday_display": _display_weekday(dt.isoformat(), conversation_language(state)),
                 "time_display": _display_time_12h(dt.isoformat(), conversation_language(state)),
