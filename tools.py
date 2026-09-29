@@ -9487,7 +9487,12 @@ def create_new_booking(
                 "(session_id=%s)",
                 slot_start, locked_slot.get("slotStart"), session_id,
             )
-            slot_start = locked_slot["slotStart"]
+        # ALWAYS the locked slot's own value, not only when the instants
+        # differ. A model-supplied slot_start that names the same instant
+        # but is formatted differently (e.g. "...+03:00" while slot_end is
+        # the locked naive "...15:30:00") sent the two times to Reservation
+        # in different formats, which the API rejected with an empty 400.
+        slot_start = locked_slot["slotStart"]
         # The locked slot's own slotEnd always wins, independent of
         # whether slot_start needed correcting above - slot_end is
         # never something the model derives correctly on its own (see
