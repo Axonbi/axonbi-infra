@@ -152,9 +152,13 @@ _ENV_DOCTORS_BASE_URL_OVERRIDE: Optional[str] = os.getenv("DOCTORS_API_BASE_URL"
 # token from the SSO login. Credentials come from the environment ONLY -
 # this repo is public.
 _ENV_CMS_BASE_URL_OVERRIDE: Optional[str] = os.getenv("CMS_API_BASE_URL") or None
+_DEFAULT_CMS_BASE_URL: str = "https://cms-api.tanasuq.med.sa"
 
 SSO_LOGIN_URL: str = os.getenv("SSO_LOGIN_URL", "https://sso.tanasuq.med.sa/api/Auth/Login")
 SSO_EMAIL: str = os.getenv("SSO_EMAIL", "")
+# The clinic's organizationId, sent with the login when set (the integration
+# account is scoped to one organization).
+SSO_ORGANIZATION_ID: str = os.getenv("SSO_ORGANIZATION_ID", "")
 SSO_PASSWORD: str = os.getenv("SSO_PASSWORD", "")
 # Used when the login response doesn't say how long the token lasts.
 SSO_TOKEN_TTL_SECONDS: int = int(os.getenv("SSO_TOKEN_TTL_SECONDS", "1440"))
@@ -777,22 +781,6 @@ OPENAI_MODEL_ROUTER: str = os.getenv("OPENAI_MODEL_ROUTER", OPENAI_MODEL_CHEAP)
 # run, as before.
 REPLY_NORMALIZATION_ENABLED: bool = _flag("REPLY_NORMALIZATION_ENABLED", True)
 
-# HOW TO READ THE "+00:00" ON EVERY TIMESTAMP THE BOOKING API RETURNS.
-#
-# True (the default, and what the clinics' own websites do): it is a
-# real UTC instant, so a slot is shown to the patient in the clinic's
-# own zone - 07:00+00:00 becomes 10:00 in Asia/Riyadh.
-#
-# False: the offset is decoration on a value that was already local, so
-# it is simply dropped. This was the behaviour until 2026-09-06, and it
-# told patients a time three hours earlier than the website did.
-#
-# The full evidence, and why this is a flag rather than a constant, is
-# in tools.to_clinic_local. Only ever set this to False for a
-# deployment whose API is confirmed to store local time.
-SCHEDULE_TIMES_ARE_UTC: bool = _flag("SCHEDULE_TIMES_ARE_UTC", True)
-
-
 # ==========================================================
 # INTERIM "PLEASE WAIT" MESSAGES (progress.py)
 # ==========================================================
@@ -1108,12 +1096,14 @@ def get_messages(client_id: str, dialect: Optional[str] = None, client_row_overr
         or merged["_base_url"]
     )
     # No fallback to base_url on purpose: portal-api has no /api/Bookings,
-    # so a missing cms URL should fail visibly, not silently hit the wrong server.
+    # so it must never silently hit the wrong server. The last resort is the
+    # cms-api host itself.
     merged["_cms_base_url"] = (
         _ENV_CMS_BASE_URL_OVERRIDE
         or client_row.get("cms_base_url")
         # n8n's data table names the column after the env var.
         or client_row.get("CMS_API_BASE_URL")
+        or _DEFAULT_CMS_BASE_URL
     )
     merged["_phone_example"] = client_row.get("phone_example")
     # COMPATIBILITY ONLY. `bsuid` identifies the SENDER, not the clinic,
