@@ -62,7 +62,8 @@ def test_the_cancel_and_reschedule_agents_have_english_wording_for_their_questio
     found = _sections()
 
     for agent in ("cancel", "reschedule"):
-        prompt = registry.build_agent_prompt(found, agent)
+        # The prompt wraps long lines; compare without the line breaks.
+        prompt = " ".join(registry.build_agent_prompt(found, agent).split())
         assert "THE ARABIC WORDING IN THIS STEP IS FOR ARABIC" in prompt, agent
         assert "Shall we continue changing your appointment" in prompt, agent
         assert "I couldn't find any booking under this number" in prompt, agent
