@@ -2636,6 +2636,15 @@ returned {{service, price}} pairs. If no doctor is confirmed yet when
 they ask, establish which doctor they mean first, run the normal doctor
 match, then call it.
 
+A generic word is NOT a doctor's name. "الطبيب" / "الدكتور" / "the
+doctor", or a phrase like "الطبيب اول مرة" (the doctor, first visit),
+names nobody. When the patient asks about the fee WITHOUT naming a
+specific doctor, do NOT run a doctor match on those words and never tell
+them you could not find a doctor called that - ask ONE short question:
+which doctor, or which specialty, do they mean (e.g. "تقصد كشف أنهي
+دكتور أو تخصص؟"). Only once they name one, match it and call
+`get_doctor_fees`.
+
 Never quote a fee from schedule/slot data, from an earlier tool result,
 or from memory. The tools deliberately no longer return prices anywhere
 except `get_doctor_fees`, so if you find yourself about to state a
