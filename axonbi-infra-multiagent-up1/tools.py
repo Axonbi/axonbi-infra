@@ -44,7 +44,6 @@ import intent
 import rag
 from config import (
     DEFAULT_TIMEZONE,
-    SCHEDULE_TIMES_ARE_UTC,
     CANCELLABLE_STATUS_CODES,
     CANCELLED_STATUS_NAME,
     DEFAULT_COUNTRY_CODE,
@@ -310,6 +309,9 @@ def _is_valid_phone_format(phone: Optional[str]) -> bool:
     return bool(re.match(r"^\+\d{7,15}$", phone.strip()))
 
 
+_CLINIC_TZ = ZoneInfo(DEFAULT_TIMEZONE)
+
+
 def to_riyadh(utc_string: Optional[str], timezone_name: str = DEFAULT_TIMEZONE) -> Optional[str]:
     """ISO string -> the CLIENT'S OWN local time zone, as an ISO string.
 
@@ -448,86 +450,38 @@ def to_local_wallclock(value: Optional[str], timezone_name: str = DEFAULT_TIMEZO
 #     at four in the morning. Read as UTC they are 07:00 -> 10:00 and
 #     08:00 -> 15:00, which is what a clinic day actually looks like.
 #
-# THE FLAG EXISTS BECAUSE THIS IS PER-DEPLOYMENT, NOT UNIVERSAL. The
-# original (a) finding came from a different tenant. If any
-# deployment genuinely does store local time with a decorative offset,
-# set SCHEDULE_TIMES_ARE_UTC=false for it and every reading below
-# reverts to the old behaviour in one step.
-# Imported from config at the top of this module, alongside every other
-# setting - named here only so the reasoning above sits next to the code
-# that acts on it.
+# The API now stamps the clinic's real offset (+03:00), and an offset-less
+# value is read as UTC. There is no per-deployment flag any more.
 
 
 def to_wire_utc(value: Optional[str], timezone_name: str = DEFAULT_TIMEZONE) -> Optional[str]:
-    """A slot timestamp from the API -> the WIRE format: naive UTC.
+    """A slot timestamp from the API -> the value sent back to it.
 
-    Every `slotStart` this file stores is read back as UTC by
-    `create_new_booking` / `_same_instant`. Dropping the offset was only
-    correct while the API stamped "+00:00". It now stamps "+03:00" on
-    local wall clock, so dropping it stored 16:00 local as 16:00 UTC -
-    three hours out - and every booking failed its re-verification with
-    "slot_unavailable" (production, 2026-09-28). Converting to UTC gives
-    the same bytes as before for "+00:00" and the right instant for any
-    other offset."""
+    The API returns the clinic's own local time with its offset (+03:00
+    for Saudi), ready to use, so it is passed through untouched. (Name
+    kept from when this converted to UTC.)"""
 
-    if not value:
-        return None
-
-    if not SCHEDULE_TIMES_ARE_UTC:
-        return to_local_wallclock(value, timezone_name)
-
-    try:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return value
-
-    if dt.tzinfo is None:
-        return dt.isoformat()  # already naive UTC
-
-    return dt.astimezone(timezone.utc).replace(tzinfo=None).isoformat()
+    return value or None
 
 
 def to_clinic_local(value: Optional[str], timezone_name: str = DEFAULT_TIMEZONE) -> Optional[str]:
-    """A real instant from the booking API -> the clinic's own wall
-    clock, as a NAIVE ISO string ready for `_display_time_12h` and
-    friends.
+    """A timestamp from the booking API -> the clinic's wall clock, as a
+    NAIVE ISO string ready for `_display_time_12h` and friends.
 
-    Naive on purpose: everything downstream compares these against
-    `_local_now_naive`, and mixing aware and naive datetimes raises
-    TypeError - a real production crash this file has already had once.
-
-    USE THIS FOR ANYTHING THE PATIENT READS. Do NOT use it for a value
-    that goes back to the API: see the comment on `slotStart` in
-    `get_available_slots_for_booking` for why the wire format is left
-    exactly as it was.
-    """
+    The API already returns local time (+03:00 for Saudi), so nothing is
+    converted - the offset is only dropped. Naive on purpose: everything
+    downstream compares these against `_local_now_naive`, and mixing aware
+    and naive datetimes raises TypeError."""
 
     if not value:
         return None
-
-    if not SCHEDULE_TIMES_ARE_UTC:
-        return to_local_wallclock(value, timezone_name)
-
-    try:
-        target_tz = ZoneInfo(timezone_name)
-    except Exception:
-        logger.warning(
-            "to_clinic_local: unknown timezone %r, falling back to %s",
-            timezone_name, DEFAULT_TIMEZONE,
-        )
-        target_tz = ZoneInfo(DEFAULT_TIMEZONE)
 
     try:
         dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return value
 
-    if dt.tzinfo is None:
-        # No offset at all - the only sane assumption is UTC, which is
-        # what every timestamp this API has ever returned carries.
-        dt = dt.replace(tzinfo=timezone.utc)
-
-    return dt.astimezone(target_tz).replace(tzinfo=None).isoformat()
+    return dt.replace(tzinfo=None).isoformat()
 
 
 def _local_now_naive(timezone_name: str = DEFAULT_TIMEZONE) -> datetime:
@@ -633,9 +587,12 @@ _FIELD_MAP = (
     # servicePrice deliberately NOT mapped - fees are private by default
     # and only ever revealed via `get_doctor_fees` on an explicit user
     # request (see prompts.py's FEES rule).
-    ("patientFullName", ("patientFullName",)),
-    ("mobileNumber", ("mobileNumber",)),
-    ("email", ("email",)),
+    # cms-api names: patientName / patientMobile / patientEmail (the
+    # portal-api names are kept as fallbacks). Output keys are unchanged so
+    # graph.py and the prompts keep reading patientFullName etc.
+    ("patientFullName", ("patientName", "patientFullName")),
+    ("mobileNumber", ("patientMobile", "mobileNumber")),
+    ("email", ("patientEmail", "email")),
     ("statusName", ("statusName",)),
     ("branchName", ("branchName",)),
     ("branchId", ("branchId",)),
@@ -750,8 +707,8 @@ def _filter_active(items: list) -> list:
             try:
                 dt = datetime.fromisoformat(raw_from.replace("Z", "+00:00"))
                 if dt.tzinfo is None:
-                    # Naive - assume UTC, same as this function always did.
-                    dt = dt.replace(tzinfo=timezone.utc)
+                    # Naive - the API's times are clinic-local (Saudi).
+                    dt = dt.replace(tzinfo=_CLINIC_TZ)
                 if dt <= now:
                     continue  # has a scheduled date, and it's already passed
             except ValueError:
@@ -1230,8 +1187,7 @@ def cancel_appointment(
         )
         return {"status": "needs_confirmation", "booking": booking_summary.get("fields", {})}
 
-    base_url = _base_url(state)
-    result = api.cancel_booking_by_guid(base_url, booking_id)
+    result = api.cancel_booking_by_guid(_cms_base_url(state), booking_id)
 
     if result["success"]:
         return {"status": "success"}
@@ -1920,7 +1876,7 @@ def _same_instant(left: Optional[str], right: Optional[str]) -> bool:
         except (ValueError, TypeError):
             return None
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
+            parsed = parsed.replace(tzinfo=_CLINIC_TZ)
         return parsed.timestamp()
 
     a, b = instant(left), instant(right)
@@ -5070,38 +5026,17 @@ def get_available_reschedule_slots(
 
     # MUST STAY WITHIN THE ORIGINAL BOOKING'S OWN BRANCH.
     #
-    # CONFIRMED REAL PRODUCTION FAILURE (session 201000625084, patient
-    # خوله عائض الدوسري, 2026-09-26): a booking made at فرع المنار was
-    # "rescheduled" by offering this doctor's slots at فرع النزهة too -
-    # a different branch, with different working hours (المنار: Saturday
-    # only; النزهة: Monday/Sunday). The patient picked a النزهة slot and
-    # `reschedule_appointment` wrote it through - but `api.reschedule_booking`
-    # (PUT GuestBookings/Update) only ever sends {id, fromBookingTime,
-    # toBookingTime}; it has NO branchId field at all, so it cannot
-    # actually move a booking to a different branch. The write either
-    # silently keeps the OLD branch (المنار) with a time that branch
-    # never operates at, or the branch and time end up mismatched some
-    # other way - and the final confirmation, having no branch data back
-    # from `reschedule_appointment` either, fell back to repeating the
-    # ORIGINAL branch name from earlier context, so the patient was told
-    # "المنار" for an appointment actually keyed to a النزهة time slot.
-    # Either reading is broken; the only safe fix is to never present a
-    # cross-branch slot as a reschedule option in the first place - a
-    # branch change is a different booking, not a reschedule.
+    # HISTORY: this used to restrict slots to the booking's own branch,
+    # because the old GuestBookings/Update had no branchId and could not
+    # move a booking between branches (a cross-branch pick was written with
+    # the wrong branch, session 201000625084). cms-api's Bookings/Update
+    # takes a branchId, so slots from every branch of the doctor are offered
+    # and the picked slot's branch is written and confirmed to the patient.
     #
     # `branch_id` may be None for an older API response shape that
     # doesn't carry it on the booking item; in that case we cannot
     # enforce this and fall back to the previous (unsafe) doctor-wide
     # behavior, logged loudly so it's visible rather than silent.
-    reschedule_branch_id = resolved.get("branch_id")
-    if not reschedule_branch_id:
-        logger.warning(
-            "get_available_reschedule_slots: ref_number=%r has no branch_id on file - "
-            "cannot restrict candidate slots to the booking's own branch, so slots from "
-            "OTHER branches of this doctor may be offered (session_id=%s)",
-            ref_number, state.get("session_id"),
-        )
-
     # Safety net: if the range came in backwards (from_date after
     # to_date), swap them. Confirmed directly in production: the LLM
     # passed from_date=09:00 and to_date=07:00 (inverted) - the real API
@@ -5131,8 +5066,8 @@ def get_available_reschedule_slots(
         from_date=from_date, to_date=to_date, is_booked=False,
         language=conversation_language(state),
     )
-    if reschedule_branch_id:
-        slots_kwargs["branch_ids"] = [reschedule_branch_id]
+    # No branch filter: cms-api's Bookings/Update takes a branchId, so the
+    # booking can move to any of the doctor's branches.
 
     result = api.get_doctor_schedule_slots(base_url, **slots_kwargs)
 
@@ -5175,6 +5110,14 @@ def get_available_reschedule_slots(
             "weekday_display": _display_weekday(local_start, language),
             "time_display": _display_time_12h(local_start, language),
             "doctorName": item.get("doctorName"),
+            # Ids cms-api's Bookings/Update needs to move the booking to
+            # this slot - carried on the slot so the locked slot has them.
+            "branchId": item.get("branchId"),
+            "branchName": item.get("branchName"),
+            "doctorId": item.get("doctorId"),
+            "serviceId": item.get("serviceId"),
+            "spaceId": item.get("spaceId"),
+            "scheduleId": item.get("scheduleId"),
             "serviceName": _service_name(item, language),
             # servicePrice is deliberately NOT returned: fees are private
             # by default and must only ever be revealed through
@@ -5214,7 +5157,7 @@ def get_available_reschedule_slots(
     seen_starts = set()
     deduped = []
     for s in slots:
-        key = s["slotStart"]
+        key = (s["slotStart"], s.get("branchId"))
         if key in seen_starts:
             continue
         seen_starts.add(key)
@@ -5403,10 +5346,8 @@ def reschedule_appointment(
     and it's gone - show the patient a fresh slot list, don't retry the
     same time), or {"status": "error"}."""
 
-    # NOTE: confirmed directly from the user's own curl - GuestBookings/Update
-    # lives on the SAME port as Doctors/Specialties (1302), NOT the regular
-    # GuestBookings port used for cancellation (1101), despite the "GuestBookings"
-    # name. Trusting the confirmed URL over the path-name convention.
+    # base_url is the Doctors/Slots host, used only to re-verify the slot.
+    # The write itself goes to cms-api (Bookings/Update).
     base_url = _doctors_base_url(state)
 
     if not base_url:
@@ -5507,11 +5448,9 @@ def reschedule_appointment(
     # exactly as given and the API itself does not appear to reject it
     # either. Both matter independently; this closes our side of it.
     doctor_id = None
-    original_branch_id = None
     for record in _looked_up_bookings(state):
         if str(record.get("id") or "").strip() == booking_id:
             doctor_id = record.get("doctorId")
-            original_branch_id = record.get("branchId")
             break
 
     if not doctor_id:
@@ -5534,10 +5473,8 @@ def reschedule_appointment(
             requested_start_dt = None
 
         if requested_start_dt is not None:
-            # SAME BRANCH-LOCK AS `get_available_reschedule_slots` -
-            # `api.reschedule_booking` (GuestBookings/Update) only ever
-            # writes {id, fromBookingTime, toBookingTime}, so it cannot
-            # move a booking to a different branch. Re-verifying WITHOUT
+            # NO BRANCH FILTER - Bookings/Update takes a branchId, so the
+            # picked slot may be at another branch. (Old note: Re-verifying WITHOUT
             # this filter would let a cross-branch time re-pass this
             # check even if the slot list upstream had been fixed, or if
             # this tool is ever called directly with a hand-picked time -
@@ -5548,15 +5485,7 @@ def reschedule_appointment(
                 from_date=day_start, to_date=day_end, is_booked=False, page_size=200,
                 language=conversation_language(state),
             )
-            if original_branch_id:
-                reverify_kwargs["branch_ids"] = [original_branch_id]
-            else:
-                logger.warning(
-                    "reschedule_appointment: no branchId on file for booking_id=%s - "
-                    "cannot confirm the new time is still within this booking's own "
-                    "branch (session_id=%s)",
-                    booking_id, state.get("session_id"),
-                )
+            # No branch filter - the slot may be at another branch.
             slots_result = api.get_doctor_schedule_slots(base_url, **reverify_kwargs)
 
             if not slots_result["success"]:
@@ -5572,7 +5501,7 @@ def reschedule_appointment(
             # naive wire format, so a naive `.timestamp()` would assume
             # the PROCESS's own timezone rather than UTC.
             if requested_start_dt.tzinfo is None:
-                requested_start_dt = requested_start_dt.replace(tzinfo=timezone.utc)
+                requested_start_dt = requested_start_dt.replace(tzinfo=_CLINIC_TZ)
             requested_ms = requested_start_dt.timestamp()
 
             raw_items = (slots_result["data"] or {}).get("items", [])
@@ -5602,7 +5531,24 @@ def reschedule_appointment(
                 )
                 return {"status": "slot_unavailable"}
 
-    result = api.reschedule_booking(base_url, booking_id, new_time_from, new_time_to)
+    # The slot whose ids go into the Update body: the locked one, or the
+    # remembered one the fallback above matched.
+    chosen_slot = locked_slot if (locked_slot and locked_slot.get("slotStart")) else (
+        _reschedule_slot_from_remembered(state, new_time_from) or {}
+    )
+    if not chosen_slot.get("scheduleId"):
+        logger.error(
+            "reschedule_appointment: slot has no scheduleId - cannot build the "
+            "Bookings/Update body (session_id=%s)", state.get("session_id"),
+        )
+        return {"status": "slot_not_locked"}
+
+    # Slot times are the API's own local values (+03:00), sent back as-is.
+    result = api.reschedule_booking(
+        _cms_base_url(state), booking_id, chosen_slot,
+        new_time_from, new_time_to,
+        language=conversation_language(state),
+    )
 
     if not result["success"]:
         logger.error(
@@ -5638,6 +5584,11 @@ def reschedule_appointment(
         "new_date_display": _display_date(local_new_from),
         "new_time_display": _display_time_12h(local_new_from, language),
         "new_weekday_display": _display_weekday(local_new_from, language),
+        # THE BRANCH THE BOOKING IS NOW AT - the picked slot's own. The
+        # lookup record (the source of {branchName}) still names the OLD
+        # branch, so without this a cross-branch move would be confirmed
+        # with the branch the patient just left.
+        "new_branch_name": chosen_slot.get("branchName"),
     }
 
 
@@ -10013,7 +9964,7 @@ def create_new_booking(
     # The wire format IS UTC wall clock (see to_clinic_local), so saying
     # so explicitly makes this independent of where it runs.
     if requested_start_dt.tzinfo is None:
-        requested_start_dt = requested_start_dt.replace(tzinfo=timezone.utc)
+        requested_start_dt = requested_start_dt.replace(tzinfo=_CLINIC_TZ)
 
     try:
         requested_ms = requested_start_dt.timestamp()
