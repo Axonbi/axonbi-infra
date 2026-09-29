@@ -8218,6 +8218,18 @@ def get_patient_info(state: Annotated[AgentState, InjectedState], mobile_number:
 
     result = api.get_patient_info(base_url, mobile_number)
 
+    if not result["success"] and result.get("error") == "endpoint_not_found":
+        # The patient lookup endpoint is gone (404 from portal-api). It only
+        # saves re-asking a returning patient for their name, and Reservation
+        # creates the patient from the name and mobile number, so treat it as
+        # "not registered" instead of failing the whole booking.
+        logger.warning(
+            "get_patient_info: lookup endpoint not found (404) - treating as "
+            "not registered so the booking can continue (session_id=%s)",
+            state.get("session_id"),
+        )
+        return {"status": "not_found"}
+
     if not result["success"]:
         logger.error("get_patient_info API call failed: status_code=%s error=%s", result.get("status_code"), result.get("error"))
         return _api_error(result)
