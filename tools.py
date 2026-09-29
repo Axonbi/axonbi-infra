@@ -4712,6 +4712,7 @@ def get_next_weekday_date(
             weekday_name, relative["date"], relative["weekday_name"],
         )
         return {"status": "found", "date": relative["date"],
+                "date_display": _display_date(relative["date"]),
                 "weekday_name": relative["weekday_name"]}
 
     target_weekday = resolve_weekday_index(weekday_name)
@@ -4741,7 +4742,12 @@ def get_next_weekday_date(
     target_date = reference + timedelta(days=days_ahead)
     english_name = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][target_weekday]
 
-    return {"status": "found", "date": target_date.isoformat(), "weekday_name": english_name}
+    # `date_display` is what the patient is shown ("04/10/2026"): the reply
+    # guard matches the dates a reply states against the tool results, and
+    # this is the form a reply states them in.
+    return {"status": "found", "date": target_date.isoformat(),
+            "date_display": _display_date(target_date.isoformat()),
+            "weekday_name": english_name}
 
 
 @tool

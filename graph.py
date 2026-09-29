@@ -7587,6 +7587,10 @@ _WEEKDAY_WORD_RES = {
 _AVAILABILITY_TOOLS = (
     "list_available_days_for_booking", "get_available_slots_for_booking",
     "get_available_reschedule_slots", "resolve_available_day",
+    # The reschedule prompt (STEP R4) tells the model to suggest the date
+    # this tool resolves ("the nearest Sunday is 04/10/2026 - does that
+    # work?"); without it here that suggestion was rejected as invented.
+    "get_next_weekday_date",
     "get_doctor_schedule", "get_doctor_schedule_for_booking",
     "find_best_doctor_in_specialty", "lookup_appointment",
     "check_booking_status", "create_new_booking",
@@ -12620,6 +12624,7 @@ _LEDGER_ENTITY_DISPATCH_TOOLS = ("match_entity_for_booking", "match_entity_info"
 _LEDGER_AVAILABILITY_TOOLS = (
     "list_available_days_for_booking", "get_available_slots_for_booking",
     "get_available_reschedule_slots", "resolve_available_day",
+    "get_next_weekday_date",
     "select_appointment_slot", "get_doctor_schedule",
     "get_doctor_schedule_for_booking",
 )
