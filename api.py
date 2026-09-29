@@ -271,6 +271,32 @@ def _get_sso_token(force_refresh: bool = False, sso: Optional[dict] = None) -> O
             return None
 
         token = data.get("access_token") or data.get("accessToken") or data.get("token")
+        orgs = data.get("organizations") if isinstance(data.get("organizations"), list) else []
+        if not token and data.get("requiresOrganizationSelection") and not cfg["organization_id"]:
+            # An account that belongs to ONE organization can be logged in
+            # without configuring it. With several the choice is the
+            # clinic's, so it is never guessed.
+            only = orgs[0] if len(orgs) == 1 and isinstance(orgs[0], dict) else None
+            org_id = (only or {}).get("id") or (only or {}).get("organizationId")
+            if org_id:
+                try:
+                    retry = requests.post(
+                        cfg["login_url"], json={**login_body, "organizationId": org_id},
+                        headers={"accept": "*/*", "Content-Type": "application/json"},
+                        timeout=REQUEST_TIMEOUT_SECONDS,
+                    )
+                    retry_body = retry.json() if retry.status_code == 200 else {}
+                    retry_data = retry_body.get("data") if isinstance(retry_body.get("data"), dict) else retry_body
+                    token = retry_data.get("access_token") or retry_data.get("accessToken") or retry_data.get("token")
+                    if token:
+                        data = retry_data
+                except (requests.RequestException, ValueError, AttributeError) as exc:
+                    logger.error("SSO login retry with the only organization failed: %s", exc)
+            elif len(orgs) > 1:
+                logger.error(
+                    "SSO account belongs to %d organizations - set SSO_ORGANIZATION_ID in the client config. Options: %s",
+                    len(orgs), [(o.get("id") or o.get("organizationId"), o.get("name") or o.get("displayName")) for o in orgs if isinstance(o, dict)],
+                )
         if not token:
             logger.error("SSO login response has no access_token, keys=%s", sorted(data.keys()))
             return None

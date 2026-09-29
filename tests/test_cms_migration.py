@@ -194,3 +194,38 @@ def test_tool_flow_lookup_reschedule_cancel(monkeypatch):
     assert cancelled["status"] == "success", cancelled
     put = [c for c in http.calls if c[0] == "PUT"][0]
     assert put[1].endswith("/api/Bookings/UpdateStatus") and put[2]["status"] == 6
+
+
+class _Resp:
+    def __init__(self, body, status=200):
+        self._b, self.status_code, self.text, self.headers = body, status, "{}", {}
+
+    def json(self):
+        return self._b
+
+
+def _login(monkeypatch, orgs):
+    calls = []
+
+    def post(url, json=None, **kw):
+        calls.append(json)
+        if "organizationId" in json:
+            return _Resp({"access_token": "TOK", "expires_in": 3600})
+        return _Resp({"access_token": None, "requiresOrganizationSelection": True, "organizations": orgs})
+
+    monkeypatch.setattr(api.requests, "post", post)
+    api._SSO_TOKENS.clear()
+    sso = {"login_url": "http://sso/login", "email": "a@b", "password": "p"}
+    return api._get_sso_token(sso=sso), calls
+
+
+def test_login_picks_the_only_organization(monkeypatch):
+    token, calls = _login(monkeypatch, [{"id": "org-1", "name": "Lab"}])
+
+    assert token == "TOK" and calls[-1]["organizationId"] == "org-1"
+
+
+def test_login_never_guesses_between_organizations(monkeypatch):
+    token, calls = _login(monkeypatch, [{"id": "1"}, {"id": "2"}])
+
+    assert token is None and len(calls) == 1
