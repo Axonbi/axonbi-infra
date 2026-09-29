@@ -18,10 +18,14 @@ from langchain_core.messages import HumanMessage, ToolMessage
 
 import tools
 
-SLOT = {"slotStart": "2026-09-30T13:00:00", "slotEnd": "2026-09-30T13:12:00",
-        "date_display": "30/09/2026", "time_display": "4:00 مساءً"}
+# The API now returns clinic-local time with its offset (+03:00), so a slot
+# time without an offset is read as Saudi time, not UTC.
+SLOT = {"slotStart": "2026-09-30T13:00:00+03:00", "slotEnd": "2026-09-30T13:12:00+03:00",
+        "date_display": "30/09/2026", "time_display": "1:00 مساءً",
+        "branchId": "B-1", "branchName": "الدقي", "doctorId": "D-SLOT",
+        "serviceId": "S-1", "spaceId": "SP-1", "scheduleId": "SC-1"}
 LIVE_FREE = {"success": True, "status_code": 200, "error": None,
-             "data": {"items": [{"slotStart": "2026-09-30T13:00:00Z", "isBooked": False}]}}
+             "data": {"items": [{"slotStart": "2026-09-30T13:00:00+03:00", "isBooked": False}]}}
 LIVE_TAKEN = {"success": True, "status_code": 200, "error": None, "data": {"items": []}}
 MOVED = {"success": True, "status_code": 200, "error": None, "data": {"isSuccess": True}}
 
@@ -119,7 +123,7 @@ def test_an_unreadable_time_is_not_written():
 def test_the_listing_remembers_the_doctor_but_never_shows_it():
     state = _state("rs-6")
     listed = {"success": True, "status_code": 200, "error": None,
-              "data": {"items": [{"slotStart": "2026-09-30T13:00:00Z", "slotEnd": "2026-09-30T13:12:00Z",
+              "data": {"items": [{"slotStart": "2026-09-30T13:00:00+03:00", "slotEnd": "2026-09-30T13:12:00+03:00",
                                   "isBooked": False, "doctorName": "د. عمر"}]}}
     try:
         with patch("tools._resolve_doctor_id", return_value={"status": "found", "doctor_id": "D-LIST"}), \

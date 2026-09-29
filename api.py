@@ -18,6 +18,7 @@ need a try/except around a tool call.
 """
 
 import logging
+import threading
 import time
 from typing import Optional
 
@@ -32,6 +33,11 @@ from config import (
     DOCTORS_API_MAX_RETRIES,
     DOCTORS_API_RETRY_BACKOFF_SECONDS,
     REQUEST_TIMEOUT_SECONDS,
+    SSO_EMAIL,
+    SSO_LOGIN_URL,
+    SSO_ORGANIZATION_ID,
+    SSO_PASSWORD,
+    SSO_TOKEN_TTL_SECONDS,
 )
 
 logger = logging.getLogger(__name__)
@@ -166,16 +172,91 @@ def _request_with_retry(method: str, url: str, **kwargs):
     return response, last_timeout, last_exc
 
 
+# ==========================================================
+# SSO token for cms-api
+# ==========================================================
+# One token is shared by the whole process and reused until shortly
+# before it expires, so the login isn't called on every message.
+
+_SSO_TOKEN: Optional[str] = None
+_SSO_TOKEN_EXPIRES_AT: float = 0.0
+_SSO_LOCK = threading.Lock()
+
+
+def _get_sso_token(force_refresh: bool = False) -> Optional[str]:
+    """Bearer token for cms-api, logging in only when there is no cached
+    token or it is about to expire. Returns None if the login failed."""
+
+    global _SSO_TOKEN, _SSO_TOKEN_EXPIRES_AT
+
+    with _SSO_LOCK:
+        if not force_refresh and _SSO_TOKEN and time.time() < _SSO_TOKEN_EXPIRES_AT:
+            return _SSO_TOKEN
+
+        if not SSO_EMAIL or not SSO_PASSWORD:
+            logger.error("SSO_EMAIL / SSO_PASSWORD are not set - cannot call cms-api")
+            return None
+
+        login_body = {"email": SSO_EMAIL, "password": SSO_PASSWORD}
+        if SSO_ORGANIZATION_ID:
+            login_body["organizationId"] = SSO_ORGANIZATION_ID
+
+        try:
+            response = requests.post(
+                SSO_LOGIN_URL,
+                json=login_body,
+                headers={"accept": "*/*", "Content-Type": "application/json"},
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            logger.error("SSO login request failed: %s", exc)
+            return None
+
+        if response.status_code != 200:
+            logger.error("SSO login failed status=%s body=%s", response.status_code, response.text[:300])
+            return None
+
+        try:
+            body = response.json()
+        except ValueError:
+            logger.error("SSO login returned a non-JSON body")
+            return None
+
+        # The token may be top-level or inside the usual "data" envelope.
+        data = body.get("data") if isinstance(body, dict) and isinstance(body.get("data"), dict) else body
+        if not isinstance(data, dict):
+            logger.error("SSO login returned an unexpected body shape")
+            return None
+
+        token = data.get("access_token") or data.get("accessToken") or data.get("token")
+        if not token:
+            logger.error("SSO login response has no access_token, keys=%s", sorted(data.keys()))
+            return None
+
+        expires_in = data.get("expires_in") or data.get("expiresIn")
+        ttl = int(expires_in) if expires_in else SSO_TOKEN_TTL_SECONDS
+        _SSO_TOKEN = token
+        _SSO_TOKEN_EXPIRES_AT = time.time() + max(60, ttl - 60)
+        return token
+
+
 def get_bookings_by_ref(base_url: str, ref_number: str, language: Optional[str] = None, client_id: Optional[str] = None) -> dict:
-    """POST {base_url}/api/GuestBookings/GetList with bookingRefNum.
+    """POST {cms base_url}/api/Bookings/GetList with bookingRefNum.
+    (Moved from portal-api /api/GuestBookings/GetList.)"""
 
-    Mirrors f_lookup_appointment.json "HTTP Request" / f_cancel_appointment.json "HTTP Request".
-    """
+    result = _cms_request("post", base_url, "/api/Bookings/GetList", language=language,
+                          json={"pageNumber": 1, "pageSize": 10, "bookingRefNum": ref_number})
 
-    url = f"{base_url}/api/GuestBookings/GetList"
-    payload = {"bookingRefNum": ref_number}
+    # bookingRefNum is a "contains" match on cms-api, so BK-123 also
+    # returns BK-1234. Keep only the booking whose reference is exactly
+    # the one asked for.
+    if result["success"] and isinstance(result["data"], dict):
+        wanted = str(ref_number).strip().lower()
+        items = result["data"].get("items") or []
+        exact = [i for i in items if str(i.get("bookingRefNum") or "").strip().lower() == wanted]
+        result["data"] = {**result["data"], "items": exact, "totalCount": len(exact)}
 
-    return _post_bookings(url, payload, language, client_id)
+    return result
 
 
 def get_bookings_by_phone(
@@ -186,25 +267,20 @@ def get_bookings_by_phone(
     page_size: int = 1000,
     status_list: Optional[list] = None,
 ) -> dict:
-    """POST {base_url}/api/GuestBookings/GetList with mobileNumber + pageSize.
+    """POST {cms base_url}/api/Bookings/GetList with patientMobile + pageSize.
+    (Moved from portal-api /api/GuestBookings/GetList. cms-api renamed the
+    filter mobileNumber -> patientMobile and rejects unknown fields with
+    400 "Data Was Not Valid".)
 
-    Mirrors f_lookup_appointment.json "HTTP Request2" (pageSize: 1000).
+    `status_list`, when given, is sent as the API's "statusList" filter
+    (e.g. [1, 2] for New+Confirmed). tools.py's _filter_active still runs
+    afterwards as a second layer."""
 
-    `status_list`, when given, is sent as the API's own "statusList"
-    filter field (confirmed from the Booking API's documented request
-    schema) - e.g. [1, 2] for New+Confirmed only. This lets the server
-    do the active-status filtering directly. tools.py's own client-side
-    filtering (_filter_active) still runs afterward as a second,
-    defense-in-depth layer regardless of whether this is used.
-    """
-
-    url = f"{base_url}/api/GuestBookings/GetList"
-    payload = {"mobileNumber": phone, "pageSize": page_size}
-
+    payload = {"pageNumber": 1, "pageSize": page_size, "patientMobile": phone}
     if status_list:
         payload["statusList"] = status_list
 
-    return _post_bookings(url, payload, language, client_id)
+    return _cms_request("post", base_url, "/api/Bookings/GetList", language=language, json=payload)
 
 
 def _post_bookings(url: str, payload: dict, language: Optional[str], client_id: Optional[str]) -> dict:
@@ -256,34 +332,52 @@ def _post_bookings(url: str, payload: dict, language: Optional[str], client_id: 
     return _result(True, response.status_code, data=body.get("data", {}))
 
 
-def cancel_booking_by_guid(base_url: str, booking_guid: str, client_id: Optional[str] = None) -> dict:
-    """PUT {base_url}/api/GuestBookings/Cancel/{booking_guid}.
+def _cms_request(method: str, base_url: Optional[str], path: str, language: Optional[str] = None, **kwargs) -> dict:
+    """GET/POST to cms-api with the SSO bearer token. A 401 means the
+    token expired early or was revoked: log in again once and retry."""
 
-    Mirrors f_cancel_appointment.json "HTTP Request1"/"HTTP Request3"
-    (onError: continueErrorOutput -> here, a structured failure result
-    instead of a raised exception achieves the same thing).
-    """
+    if not base_url:
+        logger.error("cms-api base URL is not configured (CMS_API_BASE_URL / cms_base_url) - cannot call %s", path)
+        return _result(False, error="not_configured")
 
-    url = f"{base_url}/api/GuestBookings/Cancel/{booking_guid}"
+    url = f"{base_url}{path}"
+    response, last_timeout, last_exc = None, False, None
 
-    logger.debug("PUT %s", url)
+    for attempt in (1, 2):
+        token = _get_sso_token(force_refresh=(attempt == 2))
+        if not token:
+            return _result(False, error="authentication_error")
 
-    response, last_timeout, last_exc = _request_with_retry(
-        "put", url, headers=_headers(client_id=client_id),
-    )
+        headers = _headers(language=language)
+        headers["Authorization"] = f"Bearer {token}"
+
+        logger.debug("%s %s %s", method.upper(), url, kwargs)
+        response, last_timeout, last_exc = _request_with_retry(method, url, headers=headers, **kwargs)
+        if response is None or response.status_code != 401:
+            break
 
     if response is None:
         if last_timeout:
-            logger.warning("Cancel request timed out: %s", url)
+            logger.warning("cms-api request timed out: %s", url)
             return _result(False, error="timeout")
-        logger.exception("Cancel request failed: %s", url)
+        logger.error("cms-api request failed: %s error=%s", url, last_exc)
         return _result(False, error=str(last_exc) if last_exc else "request_failed")
 
     if response.status_code >= 500:
+        logger.error("cms-api server error: %s status=%s body=%s", url, response.status_code, response.text[:500])
         return _result(False, response.status_code, error="server_error")
 
+    if response.status_code in (401, 403):
+        logger.error("cms-api AUTHENTICATION/AUTHORIZATION error (%s) even after a fresh login: %s body=%s",
+                     response.status_code, url, response.text[:500])
+        return _result(False, response.status_code, error="authentication_error")
+
     if response.status_code >= 400:
-        return _result(False, response.status_code, error="validation_error")
+        details = _validation_details(response)
+        logger.error("cms-api validation error: %s status=%s body=%s rejected_fields=%s",
+                     url, response.status_code, response.text[:500],
+                     [d["field"] for d in details] or "unknown")
+        return _result(False, response.status_code, error="validation_error", details=details)
 
     try:
         body = response.json()
@@ -296,7 +390,21 @@ def cancel_booking_by_guid(base_url: str, booking_guid: str, client_id: Optional
     if not body.get("isSuccess"):
         return _result(False, response.status_code, data=body, error="api_reported_failure")
 
-    return _result(True, response.status_code, data=body)
+    return _result(True, response.status_code, data=body.get("data", {}))
+
+
+BOOKING_STATUS_CANCELLED = 6
+
+
+def cancel_booking_by_guid(base_url: str, booking_guid: str, client_id: Optional[str] = None) -> dict:
+    """PUT {cms base_url}/api/Bookings/UpdateStatus with status 6 (Cancelled).
+    (Moved from portal-api PUT /api/GuestBookings/Cancel/{id}: cancel now
+    lives inside cms-api and needs the SSO bearer token.)"""
+
+    return _cms_request(
+        "put", base_url, "/api/Bookings/UpdateStatus",
+        json={"id": booking_guid, "isConfirmed": True, "status": BOOKING_STATUS_CANCELLED},
+    )
 
 
 # ==========================================================
@@ -881,25 +989,54 @@ def _put_json(url: str, payload: dict, client_id: Optional[str] = None) -> dict:
 def reschedule_booking(
     base_url: str,
     booking_id: str,
+    slot: dict,
     new_from: str,
     new_to: str,
-    client_id: Optional[str] = None,
+    language: Optional[str] = None,
 ) -> dict:
-    """PUT {base_url}/api/GuestBookings/Update.
+    """PUT {cms base_url}/api/Bookings/Update.
+    (Moved from portal-api PUT /api/GuestBookings/Update.)
 
-    Changes an EXISTING booking's time. `booking_id` is the booking's own
-    GUID `id` field (NOT the human-readable bookingRefNum) - confirmed
-    directly from the API's real request schema: {"id", "fromBookingTime",
-    "toBookingTime"}."""
+    cms-api updates the WHOLE booking, so the body is built from the
+    booking's current state (GetById: rowVersion, bookingRefNum, patientId,
+    guestPatientId - exactly one of the two patient ids is null and both
+    are sent back as returned) plus the slot the patient picked
+    (`slot`: branchId, doctorId, serviceId, spaceId, scheduleId).
 
-    url = f"{base_url}/api/GuestBookings/Update"
-    payload = {
-        "id": booking_id,
-        "fromBookingTime": new_from,
-        "toBookingTime": new_to,
-    }
+    A stale rowVersion (the booking changed in between) is retried once
+    with a fresh GetById."""
 
-    return _put_json(url, payload, client_id=client_id)
+    result = _result(False, error="request_failed")
+
+    for attempt in (1, 2):
+        current = get_booking_by_id(base_url, booking_id)
+        if not current["success"]:
+            return current
+
+        booking = current["data"] or {}
+        payload = {
+            "id": booking_id,
+            "rowVersion": booking.get("rowVersion"),
+            "bookingRefNum": booking.get("bookingRefNum"),
+            "patientId": booking.get("patientId"),
+            "guestPatientId": booking.get("guestPatientId"),
+            "branchId": slot.get("branchId") or booking.get("branchId"),
+            "spaceId": slot.get("spaceId"),
+            "doctorId": slot.get("doctorId") or booking.get("doctorId"),
+            "doctorScheduleId": slot.get("scheduleId"),
+            "serviceId": slot.get("serviceId"),
+            "bookingTimeFrom": new_from,
+            "bookingTimeTo": new_to,
+        }
+
+        result = _cms_request("put", base_url, "/api/Bookings/Update", language=language, json=payload)
+
+        # 4xx here is either a stale rowVersion (worth one more read) or a
+        # real rejection (a second try gets the same answer, harmlessly).
+        if result["success"] or result.get("status_code") is None or result["status_code"] < 400 or result["status_code"] >= 500:
+            break
+
+    return result
 
 
 def create_booking(
@@ -949,15 +1086,10 @@ def create_booking(
 
 
 def get_booking_by_id(base_url: str, booking_id: str, client_id: Optional[str] = None) -> dict:
-    """POST {base_url}/api/GuestBookings/Get.
+    """GET {cms base_url}/api/Bookings/GetById?Id={id}.
+    (Moved from portal-api POST /api/GuestBookings/Get.)
 
-    Fetches a single booking's full details by its own GUID id (as
-    opposed to get_bookings_by_ref, which looks up by the human-readable
-    bookingRefNum/phone) - confirmed directly from the production n8n
-    reference. Used right after create_booking succeeds, to read back
-    the new booking's bookingRefNum to show the user."""
+    Fetches one booking by its GUID id. Used right after create_booking
+    succeeds, to read back the new booking's bookingRefNum."""
 
-    url = f"{base_url}/api/GuestBookings/Get"
-    payload = {"id": booking_id}
-
-    return _post_json(url, payload, client_id=client_id)
+    return _cms_request("get", base_url, "/api/Bookings/GetById", params={"Id": booking_id})
