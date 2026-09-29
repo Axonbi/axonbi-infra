@@ -1171,13 +1171,23 @@ def get_messages(client_id: str, dialect: Optional[str] = None, client_row_overr
     # No fallback to base_url on purpose: portal-api has no /api/Bookings,
     # so it must never silently hit the wrong server. The last resort is the
     # cms-api host itself.
+    # The n8n client config wins (per clinic); the environment and then the
+    # built-in default fill in what it leaves out.
     merged["_cms_base_url"] = (
-        _ENV_CMS_BASE_URL_OVERRIDE
-        or client_row.get("cms_base_url")
-        # n8n's data table names the column after the env var.
-        or client_row.get("CMS_API_BASE_URL")
+        (client_row.get("CMS_API_BASE_URL") or "").strip()
+        or (client_row.get("cms_base_url") or "").strip()
+        or _ENV_CMS_BASE_URL_OVERRIDE
         or _DEFAULT_CMS_BASE_URL
     )
+    # SSO account for cms-api, also per client. Keys are named after the env
+    # vars, like CMS_API_BASE_URL. Anything missing falls back to the
+    # environment (api._sso_settings).
+    merged["_sso"] = {
+        "login_url": (client_row.get("SSO_LOGIN_URL") or client_row.get("sso_login_url") or "").strip(),
+        "email": (client_row.get("SSO_EMAIL") or client_row.get("sso_email") or "").strip(),
+        "password": client_row.get("SSO_PASSWORD") or client_row.get("sso_password") or "",
+        "organization_id": (client_row.get("SSO_ORGANIZATION_ID") or client_row.get("sso_organization_id") or "").strip(),
+    }
     merged["_phone_example"] = client_row.get("phone_example")
     # COMPATIBILITY ONLY. `bsuid` identifies the SENDER, not the clinic,
     # so it properly belongs in the request body next to channel_phone

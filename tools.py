@@ -784,6 +784,12 @@ def _cms_base_url(state: AgentState) -> Optional[str]:
     return (state.get("templates") or {}).get("_cms_base_url")
 
 
+def _sso(state: AgentState) -> dict:
+    """The SSO account this client's config supplies for cms-api (empty
+    values fall back to the environment, see api._sso_settings)."""
+    return (state.get("templates") or {}).get("_sso") or {}
+
+
 def _base_url(state: AgentState) -> str:
     return state.get("templates", {}).get("_base_url") or "https://demo.catalystsystems.io:1102"
 
@@ -954,11 +960,11 @@ def lookup_appointment(
     base_url = _base_url(state)
 
     if ref_number:
-        result = api.get_bookings_by_ref(_cms_base_url(state), ref_number, language=language)
+        result = api.get_bookings_by_ref(_cms_base_url(state), ref_number, language=language, sso=_sso(state))
     elif phone:
         result = api.get_bookings_by_phone(
             _cms_base_url(state), normalize_phone_number(phone, state), language=language,
-            status_list=list(CANCELLABLE_STATUS_CODES),
+            status_list=list(CANCELLABLE_STATUS_CODES), sso=_sso(state),
         )
     else:
         return {"status": "not_found"}
@@ -1143,7 +1149,7 @@ def check_booking_status(
         )
         return {"status": "no_list_shown"}
 
-    result = api.get_bookings_by_ref(_cms_base_url(state), ref_number, language=language)
+    result = api.get_bookings_by_ref(_cms_base_url(state), ref_number, language=language, sso=_sso(state))
 
     if not result["success"]:
         logger.error(
@@ -1236,7 +1242,7 @@ def cancel_appointment(
 
     booking_id = resolved["booking_id"]
 
-    result = api.cancel_booking_by_guid(_cms_base_url(state), booking_id)
+    result = api.cancel_booking_by_guid(_cms_base_url(state), booking_id, sso=_sso(state))
 
     if result["success"]:
         return {"status": "success"}
@@ -4407,7 +4413,7 @@ def _resolve_doctor_id(state: AgentState, ref_number: str, language: Optional[st
     status matching lookup_appointment's own conventions."""
 
     base_url = _base_url(state)
-    result = api.get_bookings_by_ref(_cms_base_url(state), ref_number, language=language)
+    result = api.get_bookings_by_ref(_cms_base_url(state), ref_number, language=language, sso=_sso(state))
 
     if not result["success"]:
         logger.error("_resolve_doctor_id: API call failed for ref_number=%s error=%s", ref_number, result.get("error"))
@@ -5425,7 +5431,7 @@ def reschedule_appointment(
         _cms_base_url(state), booking_id, chosen_slot,
         to_api_time(new_time_from, (state.get("templates") or {}).get("_timezone") or DEFAULT_TIMEZONE),
         to_api_time(new_time_to, (state.get("templates") or {}).get("_timezone") or DEFAULT_TIMEZONE),
-        language=conversation_language(state),
+        language=conversation_language(state), sso=_sso(state),
     )
 
     if not result["success"]:
@@ -9772,7 +9778,7 @@ def create_new_booking(
     booking_ref = None
 
     if new_booking_id:
-        lookup_result = api.get_booking_by_id(_cms_base_url(state), new_booking_id)
+        lookup_result = api.get_booking_by_id(_cms_base_url(state), new_booking_id, sso=_sso(state))
         if lookup_result["success"]:
             booking_ref = (lookup_result["data"] or {}).get("bookingRefNum")
         else:

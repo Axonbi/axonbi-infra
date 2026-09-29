@@ -178,42 +178,59 @@ def _request_with_retry(method: str, url: str, **kwargs):
 # One token is shared by the whole process and reused until shortly
 # before it expires, so the login isn't called on every message.
 
-_SSO_TOKEN: Optional[str] = None
-_SSO_TOKEN_EXPIRES_AT: float = 0.0
+# One token per (login URL, account, organization), so each client can log in
+# with its own account when the n8n client config supplies one.
+_SSO_TOKENS: dict = {}
 _SSO_LOCK = threading.Lock()
 
 
-def _get_sso_token(force_refresh: bool = False) -> Optional[str]:
+def _sso_settings(sso: Optional[dict]) -> dict:
+    """The SSO account to log in with: the client config's values
+    (`sso`, from templates["_sso"]) win, config.py / the environment fill
+    in whatever the client config leaves out."""
+
+    sso = sso or {}
+    return {
+        "login_url": (sso.get("login_url") or SSO_LOGIN_URL or "").strip(),
+        "email": (sso.get("email") or SSO_EMAIL or "").strip(),
+        "password": sso.get("password") or SSO_PASSWORD or "",
+        "organization_id": (sso.get("organization_id") or SSO_ORGANIZATION_ID or "").strip(),
+    }
+
+
+def _get_sso_token(force_refresh: bool = False, sso: Optional[dict] = None) -> Optional[str]:
     """Bearer token for cms-api, logging in only when there is no cached
     token or it is about to expire. Returns None if the login failed."""
 
-    global _SSO_TOKEN, _SSO_TOKEN_EXPIRES_AT
+    cfg = _sso_settings(sso)
+    key = (cfg["login_url"], cfg["email"], cfg["organization_id"])
 
     with _SSO_LOCK:
-        if not force_refresh and _SSO_TOKEN and time.time() < _SSO_TOKEN_EXPIRES_AT:
-            return _SSO_TOKEN
+        cached = _SSO_TOKENS.get(key)
+        if not force_refresh and cached and time.time() < cached[1]:
+            return cached[0]
 
-        if not SSO_EMAIL or not SSO_PASSWORD:
-            logger.error("SSO_EMAIL / SSO_PASSWORD are not set - cannot call cms-api")
+        if not cfg["email"] or not cfg["password"]:
+            logger.error("SSO email / password are not set (client config SSO_EMAIL / SSO_PASSWORD or the environment) - cannot call cms-api")
             return None
 
-        login_body = {"email": SSO_EMAIL, "password": SSO_PASSWORD}
-        if SSO_ORGANIZATION_ID:
-            login_body["organizationId"] = SSO_ORGANIZATION_ID
+        login_body = {"email": cfg["email"], "password": cfg["password"]}
+        if cfg["organization_id"]:
+            login_body["organizationId"] = cfg["organization_id"]
 
         try:
             response = requests.post(
-                SSO_LOGIN_URL,
+                cfg["login_url"],
                 json=login_body,
                 headers={"accept": "*/*", "Content-Type": "application/json"},
                 timeout=REQUEST_TIMEOUT_SECONDS,
             )
         except requests.RequestException as exc:
-            logger.error("SSO login request failed: %s", exc)
+            logger.error("SSO login request failed (%s): %s", cfg["login_url"], exc)
             return None
 
         if response.status_code != 200:
-            logger.error("SSO login failed status=%s body=%s", response.status_code, response.text[:300])
+            logger.error("SSO login failed url=%s status=%s body=%s", cfg["login_url"], response.status_code, response.text[:300])
             return None
 
         try:
@@ -235,16 +252,15 @@ def _get_sso_token(force_refresh: bool = False) -> Optional[str]:
 
         expires_in = data.get("expires_in") or data.get("expiresIn")
         ttl = int(expires_in) if expires_in else SSO_TOKEN_TTL_SECONDS
-        _SSO_TOKEN = token
-        _SSO_TOKEN_EXPIRES_AT = time.time() + max(60, ttl - 60)
+        _SSO_TOKENS[key] = (token, time.time() + max(60, ttl - 60))
         return token
 
 
-def get_bookings_by_ref(base_url: str, ref_number: str, language: Optional[str] = None, client_id: Optional[str] = None) -> dict:
+def get_bookings_by_ref(base_url: str, ref_number: str, language: Optional[str] = None, client_id: Optional[str] = None, sso: Optional[dict] = None) -> dict:
     """POST {cms base_url}/api/Bookings/GetList with bookingRefNum.
     (Moved from portal-api /api/GuestBookings/GetList.)"""
 
-    result = _cms_request("post", base_url, "/api/Bookings/GetList", language=language,
+    result = _cms_request("post", base_url, "/api/Bookings/GetList", language=language, sso=sso,
                           json={"pageNumber": 1, "pageSize": 10, "bookingRefNum": ref_number})
 
     # bookingRefNum is a "contains" match on cms-api, so BK-123 also
@@ -266,6 +282,7 @@ def get_bookings_by_phone(
     client_id: Optional[str] = None,
     page_size: int = 1000,
     status_list: Optional[list] = None,
+    sso: Optional[dict] = None,
 ) -> dict:
     """POST {cms base_url}/api/Bookings/GetList with patientMobile + pageSize.
     (Moved from portal-api /api/GuestBookings/GetList. cms-api renamed the
@@ -280,7 +297,7 @@ def get_bookings_by_phone(
     if status_list:
         payload["statusList"] = status_list
 
-    return _cms_request("post", base_url, "/api/Bookings/GetList", language=language, json=payload)
+    return _cms_request("post", base_url, "/api/Bookings/GetList", language=language, sso=sso, json=payload)
 
 
 def _post_bookings(url: str, payload: dict, language: Optional[str], client_id: Optional[str]) -> dict:
@@ -332,7 +349,7 @@ def _post_bookings(url: str, payload: dict, language: Optional[str], client_id: 
     return _result(True, response.status_code, data=body.get("data", {}))
 
 
-def _cms_request(method: str, base_url: Optional[str], path: str, language: Optional[str] = None, **kwargs) -> dict:
+def _cms_request(method: str, base_url: Optional[str], path: str, language: Optional[str] = None, sso: Optional[dict] = None, **kwargs) -> dict:
     """GET/POST to cms-api with the SSO bearer token. A 401 means the
     token expired early or was revoked: log in again once and retry."""
 
@@ -344,7 +361,7 @@ def _cms_request(method: str, base_url: Optional[str], path: str, language: Opti
     response, last_timeout, last_exc = None, False, None
 
     for attempt in (1, 2):
-        token = _get_sso_token(force_refresh=(attempt == 2))
+        token = _get_sso_token(force_refresh=(attempt == 2), sso=sso)
         if not token:
             return _result(False, error="authentication_error")
 
@@ -396,13 +413,13 @@ def _cms_request(method: str, base_url: Optional[str], path: str, language: Opti
 BOOKING_STATUS_CANCELLED = 6
 
 
-def cancel_booking_by_guid(base_url: str, booking_guid: str, client_id: Optional[str] = None) -> dict:
+def cancel_booking_by_guid(base_url: str, booking_guid: str, client_id: Optional[str] = None, sso: Optional[dict] = None) -> dict:
     """PUT {cms base_url}/api/Bookings/UpdateStatus with status 6 (Cancelled).
     (Moved from portal-api PUT /api/GuestBookings/Cancel/{id}: cancel now
     lives inside cms-api and needs the SSO bearer token.)"""
 
     return _cms_request(
-        "put", base_url, "/api/Bookings/UpdateStatus",
+        "put", base_url, "/api/Bookings/UpdateStatus", sso=sso,
         json={"id": booking_guid, "isConfirmed": True, "status": BOOKING_STATUS_CANCELLED},
     )
 
@@ -993,6 +1010,7 @@ def reschedule_booking(
     new_from: str,
     new_to: str,
     language: Optional[str] = None,
+    sso: Optional[dict] = None,
 ) -> dict:
     """PUT {cms base_url}/api/Bookings/Update.
     (Moved from portal-api PUT /api/GuestBookings/Update.)
@@ -1009,7 +1027,7 @@ def reschedule_booking(
     result = _result(False, error="request_failed")
 
     for attempt in (1, 2):
-        current = get_booking_by_id(base_url, booking_id)
+        current = get_booking_by_id(base_url, booking_id, sso=sso)
         if not current["success"]:
             return current
 
@@ -1029,7 +1047,7 @@ def reschedule_booking(
             "bookingTimeTo": new_to,
         }
 
-        result = _cms_request("put", base_url, "/api/Bookings/Update", language=language, json=payload)
+        result = _cms_request("put", base_url, "/api/Bookings/Update", language=language, sso=sso, json=payload)
 
         # 4xx here is either a stale rowVersion (worth one more read) or a
         # real rejection (a second try gets the same answer, harmlessly).
@@ -1085,11 +1103,11 @@ def create_booking(
     return _post_json(url, payload, client_id=client_id)
 
 
-def get_booking_by_id(base_url: str, booking_id: str, client_id: Optional[str] = None) -> dict:
+def get_booking_by_id(base_url: str, booking_id: str, client_id: Optional[str] = None, sso: Optional[dict] = None) -> dict:
     """GET {cms base_url}/api/Bookings/GetById?Id={id}.
     (Moved from portal-api POST /api/GuestBookings/Get.)
 
     Fetches one booking by its GUID id. Used right after create_booking
     succeeds, to read back the new booking's bookingRefNum."""
 
-    return _cms_request("get", base_url, "/api/Bookings/GetById", params={"Id": booking_id})
+    return _cms_request("get", base_url, "/api/Bookings/GetById", sso=sso, params={"Id": booking_id})
