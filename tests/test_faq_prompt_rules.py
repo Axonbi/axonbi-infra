@@ -52,3 +52,17 @@ def test_the_agents_that_can_be_asked_who_the_best_doctor_is_get_the_rule():
     for agent in ("faq", "concierge", "booking", "medical"):
         prompt = registry.build_agent_prompt(found, agent)
         assert "WHO IS THE BEST DOCTOR - NEVER RANK, ALWAYS REASSURE" in prompt, agent
+
+
+def test_the_cancel_and_reschedule_agents_have_english_wording_for_their_questions():
+    """The same-number and not-found questions of the cancel/reschedule step
+    are quoted in Arabic in the prompt, and the model copied them for a
+    patient writing English. The step now carries English equivalents."""
+
+    found = _sections()
+
+    for agent in ("cancel", "reschedule"):
+        prompt = registry.build_agent_prompt(found, agent)
+        assert "THE ARABIC WORDING IN THIS STEP IS FOR ARABIC" in prompt, agent
+        assert "Shall we continue changing your appointment" in prompt, agent
+        assert "I couldn't find any booking under this number" in prompt, agent
