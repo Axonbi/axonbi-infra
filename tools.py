@@ -8216,7 +8216,7 @@ def get_patient_info(state: Annotated[AgentState, InjectedState], mobile_number:
         logger.warning("get_patient_info called but no doctors_base_url is configured for client_id=%s", state.get("client_id"))
         return {"status": "not_configured"}
 
-    result = api.get_patient_info(base_url, mobile_number)
+    result = api.get_patient_info(_cms_base_url(state), mobile_number, sso=_sso(state))
 
     if not result["success"] and result.get("error") == "endpoint_not_found":
         # The patient lookup endpoint is gone (404 from portal-api). It only

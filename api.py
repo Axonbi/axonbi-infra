@@ -393,6 +393,10 @@ def _cms_request(method: str, base_url: Optional[str], path: str, language: Opti
                      response.status_code, url, response.text[:500])
         return _result(False, response.status_code, error="authentication_error")
 
+    if response.status_code == 404:
+        logger.error("cms-api endpoint NOT FOUND (404): %s body=%s", url, response.text[:300])
+        return _result(False, response.status_code, error="endpoint_not_found")
+
     if response.status_code >= 400:
         details = _validation_details(response)
         logger.error("cms-api validation error: %s status=%s body=%s rejected_fields=%s",
@@ -938,25 +942,26 @@ def get_services(
 def get_patient_info(
     base_url: str,
     mobile_number: str,
-    page_size: int = 1000,
+    page_size: int = 50,
     client_id: Optional[str] = None,
+    sso: Optional[dict] = None,
 ) -> dict:
-    """POST {base_url}/api/GuestPatients/GetList.
+    """POST {cms base_url}/api/GuestPatients/GetList.
+    (Moved from portal-api: it answers 404 there since the 2026-09-28 API
+    change. cms-api takes the same body and returns the same items -
+    patientFullName / mobileNumber / email - but needs the SSO token.)
 
-    Looks up whether a patient is already registered by phone number -
-    confirmed directly from a real production n8n workflow. Returns
-    items with patientFullName/mobileNumber/email when found; an empty
-    result (totalCount=0) means this phone number is not registered
-    yet, so the caller should collect name/email fresh."""
+    Looks up whether a patient is already registered by phone number, so a
+    returning patient is not asked for their name again. An empty result
+    (totalCount=0) means this number is not registered yet."""
 
-    url = f"{base_url}/api/GuestPatients/GetList"
     payload = {
         "pageNumber": 1,
         "pageSize": page_size,
         "mobileNumber": mobile_number,
     }
 
-    return _post_json(url, payload, client_id=client_id)
+    return _cms_request("post", base_url, "/api/GuestPatients/GetList", sso=sso, json=payload)
 
 
 def _put_json(url: str, payload: dict, client_id: Optional[str] = None) -> dict:
