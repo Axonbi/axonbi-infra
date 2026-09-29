@@ -2396,6 +2396,11 @@ def _build_terminal_success_directive(messages: list, templates: dict) -> str:
         if data.get(key):
             values[f"_{key}"] = data[key]
 
+    # The booking may have moved to another branch: {branchName} must
+    # name where it is NOW, not the branch on the pre-change lookup.
+    if data.get("new_branch_name"):
+        values["branchName"] = data["new_branch_name"]
+
     block = _fill_success_template(
         template_text.replace("\r\n", "\n").replace("\r", "\n"), values,
     ).strip()
