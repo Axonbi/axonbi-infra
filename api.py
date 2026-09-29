@@ -236,7 +236,11 @@ def _get_sso_token(force_refresh: bool = False, sso: Optional[dict] = None) -> O
         try:
             body = response.json()
         except ValueError:
-            logger.error("SSO login returned a non-JSON body")
+            logger.error(
+                "SSO login returned a non-JSON body: url=%s content_type=%s body=%r "
+                "(is SSO_LOGIN_URL the .../api/Auth/Login endpoint itself?)",
+                cfg["login_url"], response.headers.get("Content-Type"), response.text[:150],
+            )
             return None
 
         # The token may be top-level or inside the usual "data" envelope.
