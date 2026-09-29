@@ -454,6 +454,34 @@ def to_local_wallclock(value: Optional[str], timezone_name: str = DEFAULT_TIMEZO
 # value is read as UTC. There is no per-deployment flag any more.
 
 
+def to_api_time(value: Optional[str], timezone_name: str = DEFAULT_TIMEZONE) -> Optional[str]:
+    """A slot time -> what the booking APIs are sent: the clinic's local
+    time WITH its offset ("2026-10-06T15:20:00+03:00").
+
+    An offset-less value sent to the API is ambiguous - Reservation
+    answered 400 to it. The API itself speaks "+03:00", so it is sent back
+    in the same form. A value that already carries an offset is left
+    alone."""
+
+    if not value:
+        return None
+
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return value
+
+    if dt.tzinfo is not None:
+        return dt.isoformat()
+
+    try:
+        tz = ZoneInfo(timezone_name)
+    except Exception:
+        tz = _CLINIC_TZ
+
+    return dt.replace(tzinfo=tz).isoformat()
+
+
 def to_wire_utc(value: Optional[str], timezone_name: str = DEFAULT_TIMEZONE) -> Optional[str]:
     """A slot timestamp from the API -> the value sent back to it.
 
@@ -749,6 +777,12 @@ def _api_error(result: Optional[dict] = None) -> dict:
     return error
 
 
+def _sso(state: AgentState) -> dict:
+    """The SSO account this client's config supplies for cms-api (empty
+    values fall back to the environment, see api._sso_settings)."""
+    return (state.get("templates") or {}).get("_sso") or {}
+
+
 def _base_url(state: AgentState) -> str:
     return state.get("templates", {}).get("_base_url") or "https://demo.catalystsystems.io:1102"
 
@@ -907,11 +941,11 @@ def lookup_appointment(
     base_url = _base_url(state)
 
     if ref_number:
-        result = api.get_bookings_by_ref(_cms_base_url(state), ref_number, language=language)
+        result = api.get_bookings_by_ref(_cms_base_url(state), ref_number, language=language, sso=_sso(state))
     elif phone:
         result = api.get_bookings_by_phone(
             _cms_base_url(state), normalize_phone_number(phone, state), language=language,
-            status_list=list(CANCELLABLE_STATUS_CODES),
+            status_list=list(CANCELLABLE_STATUS_CODES), sso=_sso(state),
         )
     else:
         return {"status": "not_found"}
@@ -1096,7 +1130,7 @@ def check_booking_status(
         )
         return {"status": "no_list_shown"}
 
-    result = api.get_bookings_by_ref(_cms_base_url(state), ref_number, language=language)
+    result = api.get_bookings_by_ref(_cms_base_url(state), ref_number, language=language, sso=_sso(state))
 
     if not result["success"]:
         logger.error(
@@ -1187,7 +1221,7 @@ def cancel_appointment(
         )
         return {"status": "needs_confirmation", "booking": booking_summary.get("fields", {})}
 
-    result = api.cancel_booking_by_guid(_cms_base_url(state), booking_id)
+    result = api.cancel_booking_by_guid(_cms_base_url(state), booking_id, sso=_sso(state))
 
     if result["success"]:
         return {"status": "success"}
@@ -4494,7 +4528,7 @@ def _resolve_doctor_id(state: AgentState, ref_number: str, language: Optional[st
     matching lookup_appointment's own conventions."""
 
     base_url = _base_url(state)
-    result = api.get_bookings_by_ref(_cms_base_url(state), ref_number, language=language)
+    result = api.get_bookings_by_ref(_cms_base_url(state), ref_number, language=language, sso=_sso(state))
 
     if not result["success"]:
         logger.error("_resolve_doctor_id: API call failed for ref_number=%s error=%s", ref_number, result.get("error"))
@@ -4811,6 +4845,7 @@ def get_next_weekday_date(
             weekday_name, relative["date"], relative["weekday_name"],
         )
         return {"status": "found", "date": relative["date"],
+                "date_display": _display_date(relative["date"]),
                 "weekday_name": relative["weekday_name"]}
 
     target_weekday = resolve_weekday_index(weekday_name)
@@ -4840,7 +4875,11 @@ def get_next_weekday_date(
     target_date = reference + timedelta(days=days_ahead)
     english_name = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][target_weekday]
 
-    return {"status": "found", "date": target_date.isoformat(), "weekday_name": english_name}
+    # `date_display` is what the patient is shown ("04/10/2026"): the reply
+    # guard matches the dates a reply states against the tool results.
+    return {"status": "found", "date": target_date.isoformat(),
+            "date_display": _display_date(target_date.isoformat()),
+            "weekday_name": english_name}
 
 
 @tool
@@ -5546,8 +5585,9 @@ def reschedule_appointment(
     # Slot times are the API's own local values (+03:00), sent back as-is.
     result = api.reschedule_booking(
         _cms_base_url(state), booking_id, chosen_slot,
-        new_time_from, new_time_to,
-        language=conversation_language(state),
+        to_api_time(new_time_from, (state.get("templates") or {}).get("_timezone") or DEFAULT_TIMEZONE),
+        to_api_time(new_time_to, (state.get("templates") or {}).get("_timezone") or DEFAULT_TIMEZONE),
+        language=conversation_language(state), sso=_sso(state),
     )
 
     if not result["success"]:
@@ -9683,7 +9723,7 @@ def _patient_booking_at(state: AgentState, mobile_number: str, slot_start: str, 
     try:
         result = api.get_bookings_by_phone(
             base_url, phone, language=conversation_language(state),
-            status_list=list(CANCELLABLE_STATUS_CODES),
+            status_list=list(CANCELLABLE_STATUS_CODES), sso=_sso(state),
         )
     except Exception:
         logger.exception("_patient_booking_at: lookup raised for session_id=%s", state.get("session_id"))
@@ -9804,7 +9844,12 @@ def create_new_booking(
                 "(session_id=%s)",
                 slot_start, locked_slot.get("slotStart"), session_id,
             )
-            slot_start = locked_slot["slotStart"]
+        # ALWAYS the locked slot's own value, not only when the instants
+        # differ. A model-supplied slot_start naming the same instant but
+        # formatted differently (e.g. "...+03:00" while slot_end is the
+        # locked one) sent the two times in different formats, which the
+        # API rejected with an empty 400.
+        slot_start = locked_slot["slotStart"]
         # The locked slot's own slotEnd always wins, independent of
         # whether slot_start needed correcting above - slot_end is
         # never something the model derives correctly on its own (see
@@ -10038,8 +10083,8 @@ def create_new_booking(
         doctor_id=matched_slot.get("doctorId") or doctor_id,
         service_id=matched_slot.get("serviceId"),
         service_price=matched_slot.get("servicePrice"),
-        booking_time_from=slot_start,
-        booking_time_to=slot_end,
+        booking_time_from=to_api_time(slot_start, (state.get("templates") or {}).get("_timezone") or DEFAULT_TIMEZONE),
+        booking_time_to=to_api_time(slot_end, (state.get("templates") or {}).get("_timezone") or DEFAULT_TIMEZONE),
         specialty_id=matched_slot.get("specialtyId"),
         doctor_schedule_id=matched_slot.get("scheduleId"),
         space_id=matched_slot.get("spaceId"),
@@ -10088,7 +10133,7 @@ def create_new_booking(
     booking_ref = None
 
     if new_booking_id:
-        lookup_result = api.get_booking_by_id(_cms_base_url(state), new_booking_id)
+        lookup_result = api.get_booking_by_id(_cms_base_url(state), new_booking_id, sso=_sso(state))
         if lookup_result["success"]:
             booking_ref = (lookup_result["data"] or {}).get("bookingRefNum")
         else:
