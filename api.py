@@ -600,9 +600,9 @@ def _post_json(url: str, payload: dict, client_id: Optional[str] = None, languag
     if response.status_code >= 400:
         details = _validation_details(response)
         logger.error(
-            "Doctors/Specialties API validation error: %s status=%s body=%s rejected_fields=%s",
+            "Doctors/Specialties API validation error: %s status=%s body=%s rejected_fields=%s payload=%s",
             url, response.status_code, response.text[:1000],
-            [d["field"] for d in details] or "unknown",
+            [d["field"] for d in details] or "unknown", payload,
         )
         return _result(False, response.status_code, error="validation_error", details=details)
 
