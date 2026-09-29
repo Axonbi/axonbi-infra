@@ -172,6 +172,14 @@ def owner(reading: dict, facts: TurnFacts, thresholds: Thresholds = Thresholds()
             return intent, f"semantic: {intent}", None
         if reading.get("changes_intent"):
             return intent, f"semantic: intent changed {flow} -> {intent}", None
+        if flow in ("reschedule", "cancel") and intent == "booking" and answering(reading):
+            # A reply INSIDE a reschedule/cancel flow - a day, a time, a
+            # branch - reads as booking (it carries a doctor and a date),
+            # but it answers reschedule's own question. Moving it to
+            # booking abandoned the reschedule and started a new booking
+            # ("continue on this WhatsApp number?"). Someone who really
+            # wants a new booking says so (changes_intent, handled above).
+            return flow, f"semantic: answering {flow}'s question (a booking-shaped reply stays in {flow})", None
         if answering(reading):
             # "continuation - answer moves" is load-bearing: graph's
             # _clear_abandoned_booking_context must not wipe the doctor

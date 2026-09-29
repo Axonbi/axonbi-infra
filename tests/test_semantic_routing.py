@@ -666,3 +666,29 @@ def test_the_prompt_no_longer_teaches_cant_come_as_cancel():
     # reads it (a general sentence was ignored live, 2026-09-26 16:01).
     ambiguity = understanding.PROMPT.split('"is_ambiguous":', 1)[1].splitlines()[0]
     assert 'alternatives ["cancel", "reschedule"]' in ambiguity
+
+
+def test_a_booking_shaped_answer_inside_a_reschedule_stays_in_reschedule():
+    """Choosing a new day ("الأحد") while rescheduling reads as booking - it
+    carries a doctor and a date - but it answers reschedule's own question.
+    It used to be routed to booking, which started a new booking."""
+    from agents.semantic_router import TurnFacts, owner
+
+    reading = {"intent": "booking", "confidence": 0.9, "is_ambiguous": False,
+               "answer_to_previous_question": True, "changes_intent": False}
+    facts = TurnFacts(previous="reschedule")
+
+    agent, reason, _ = owner(reading, facts)
+
+    assert agent == "reschedule", reason
+
+
+def test_an_explicit_change_to_booking_still_leaves_a_reschedule():
+    from agents.semantic_router import TurnFacts, owner
+
+    reading = {"intent": "booking", "confidence": 1.0, "is_ambiguous": False,
+               "answer_to_previous_question": False, "changes_intent": True}
+
+    agent, _, _ = owner(reading, TurnFacts(previous="reschedule"))
+
+    assert agent == "booking"
