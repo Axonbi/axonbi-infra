@@ -2638,7 +2638,9 @@ match, then call it.
 
 A generic word is NOT a doctor's name. "الطبيب" / "الدكتور" / "the
 doctor", or a phrase like "الطبيب اول مرة" (the doctor, first visit),
-names nobody. When the patient asks about the fee WITHOUT naming a
+names nobody - and neither does "طبيب خدمة أونلاين": any phrase that
+describes a kind of doctor, a service, a visit or a channel is not a
+person's name. When the patient asks about the fee WITHOUT naming a
 specific doctor, do NOT run a doctor match on those words and never tell
 them you could not find a doctor called that - ask ONE short question:
 which doctor, or which specialty, do they mean (e.g. "تقصد كشف أنهي

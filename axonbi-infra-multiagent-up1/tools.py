@@ -6443,6 +6443,41 @@ def _doctor_active_branch_names(state: AgentState, base_url: str, doctor_id: str
     return names
 
 
+# Words that DESCRIBE a doctor, a service, a visit or a channel instead of
+# naming a person. "طبيب خدمة أونلاين" or "الطبيب اول مرة" is a description:
+# searching the doctor list for it can only fail (or worse, fuzzy-match an
+# unrelated name). Compared after `_normalize_arabic`, so spelling variants
+# (ة/ه, أ/ا, ى/ي) do not need listing twice.
+_GENERIC_DOCTOR_WORDS = frozenset(
+    _normalize_arabic(w) for w in (
+        "طبيب", "الطبيب", "طبيبه", "الطبيبه", "اطباء", "الاطباء",
+        "دكتور", "الدكتور", "دكتوره", "الدكتوره", "دكاتره", "الدكاتره",
+        "دكتر", "الدكتر", "د", "دك",
+        "اونلاين", "الاونلاين", "اون", "لاين", "انترنت", "اونلين",
+        "خدمه", "الخدمه", "خدمات", "الخدمات", "خدمتكم", "خدمتك",
+        "عن", "بعد", "عندكم", "عندك", "لديكم", "فيديو", "مكالمه", "مكالمة",
+        "حضوري", "زياره", "زيارة", "استشاره", "الاستشاره", "كشف", "الكشف",
+        "مقابله", "موعد", "جلسه", "الجلسه", "اول", "الاول", "اولى", "الاولى",
+        "مره", "مرا", "مرات", "جديد", "الجديد", "جديده", "الجديده",
+        "قديم", "القديم", "اي", "اى", "اى", "أي", "ايه", "ليا", "لي", "ل",
+        "في", "من", "مع", "او", "و", "هل", "فيه", "يوجد", "توجد",
+        "doctor", "doctors", "dr", "the", "a", "an", "online", "service",
+        "services", "first", "time", "visit", "new", "any", "with", "for",
+        "consultation", "video", "remote", "appointment",
+    )
+)
+
+
+def _is_generic_doctor_phrase(text: Optional[str]) -> bool:
+    """True when EVERY word of `text` is a generic word (see
+    `_GENERIC_DOCTOR_WORDS`), i.e. the patient described a kind of doctor
+    or service and named nobody. A single word outside the list - a real
+    name, a typo of one - makes this False, so real lookups are untouched."""
+
+    words = re.findall(r"[^\W\d_]+", _normalize_arabic((text or "").strip()), re.UNICODE)
+    return bool(words) and all(w in _GENERIC_DOCTOR_WORDS for w in words)
+
+
 @tool
 def match_entity_info(
     state: Annotated[AgentState, InjectedState],
@@ -6477,6 +6512,7 @@ def match_entity_info(
     {"status": "possible_match", "item": {...}}
     {"status": "ambiguous", "candidates": [...]}
     {"status": "not_matched"}
+    {"status": "not_a_name"}
     {"status": "not_matched", "available_branches": [...]}
     {"status": "out_of_range", "list_size": N}
     {"status": "no_list_shown"}
@@ -6517,6 +6553,14 @@ def match_entity_info(
     entity_type = (entity_type or "").strip().lower()
     if entity_type not in ("doctor", "branch"):
         return {"status": "error"}
+
+    if entity_type == "doctor" and _is_generic_doctor_phrase(user_input):
+        logger.info(
+            "match_entity_info: %r only describes a kind of doctor/service - "
+            "not searching the doctor list for it (session_id=%s)",
+            user_input, state.get("session_id"),
+        )
+        return {"status": "not_a_name"}
 
     base_url = _doctors_base_url(state)
     if not base_url:
