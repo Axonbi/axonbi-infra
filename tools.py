@@ -11435,6 +11435,90 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return r_earth_km * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
+def _geocode_candidates(address: str, country_code: Optional[str],
+                        viewbox: Optional[str] = None, language: Optional[str] = None,
+                        limit: int = 5) -> list:
+    """Up to `limit` Nominatim results for `address`, best first; an empty
+    list on no match or failure. A place name that exists more than once
+    (a store chain, a mall, a common neighbourhood name) comes back as
+    several results - taking only the first one, as this used to, meant
+    silently choosing one of them for the patient."""
+
+    params = {"q": address, "format": "json", "limit": limit}
+    if country_code:
+        params["countrycodes"] = country_code
+    if viewbox:
+        params["viewbox"] = viewbox
+    if language:
+        params["accept-language"] = language
+
+    try:
+        response = requests.get(
+            _NOMINATIM_URL, params=params,
+            headers={"User-Agent": _NOMINATIM_USER_AGENT}, timeout=8,
+        )
+        response.raise_for_status()
+        results = response.json()
+    except Exception:
+        logger.exception("geocode_address: Nominatim request failed for address=%r", address)
+        return []
+
+    return [r for r in (results or []) if isinstance(r, dict)]
+
+
+# Two results closer than this are the same place for the patient's purpose
+# (the same building listed twice, two entrances of one mall).
+_GEOCODE_SAME_PLACE_KM = 1.5
+
+
+def _distinct_places(results: list) -> list:
+    """The results as distinct places: coordinates parsed, results that
+    are within `_GEOCODE_SAME_PLACE_KM` of an earlier (better) one dropped."""
+
+    places = []
+    for result in results:
+        try:
+            latitude = float(result["lat"])
+            longitude = float(result["lon"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if any(
+            _haversine_km(latitude, longitude, place["latitude"], place["longitude"])
+            < _GEOCODE_SAME_PLACE_KM
+            for place in places
+        ):
+            continue
+        places.append({
+            "latitude": latitude,
+            "longitude": longitude,
+            "display_name": result.get("display_name") or "",
+        })
+    return places
+
+
+def _short_place_label(display_name: str, parts: int = 3) -> str:
+    """"Carrefour, Road 9, Maadi, Cairo, Egypt" -> "Carrefour, Road 9, Maadi":
+    enough for a patient to tell two of them apart."""
+
+    pieces = [p.strip() for p in (display_name or "").split(",") if p.strip()]
+    return ", ".join(pieces[:parts]) or (display_name or "")
+
+
+def _nearest_geo_branch_name(latitude: float, longitude: float) -> Optional[str]:
+    """Name of the configured branch closest to a point (branches_geo.csv
+    only - no API call), or None when no branch has coordinates."""
+
+    best = None
+    for name, geo in load_branches_geo().items():
+        lat, lon = geo.get("latitude"), geo.get("longitude")
+        if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+            continue
+        distance = _haversine_km(latitude, longitude, lat, lon)
+        if best is None or distance < best[0]:
+            best = (distance, name)
+    return best[1] if best else None
+
+
 @tool
 def geocode_address(
     state: Annotated[AgentState, InjectedState],
@@ -11451,13 +11535,20 @@ def geocode_address(
 
     `address`: the patient's own address text, close to verbatim (drop
     filler like "أنا في..." but do not translate, reformat, or add
-    detail to it - e.g. "عمارة 4 شارع القصر العيني، وسط البلد، القاهرة").
+    detail to it - e.g. "عمارة 4 شارع القصر العيني، وسط البلد، القاهرة",
+    or a landmark such as "كارفور" / "سيتي ستارز").
 
     Returns:
     {"status": "found", "latitude": ..., "longitude": ...,
      "display_name": "..."}   # display_name is Nominatim's own resolved
                                # address text, for you to double-check
                                # against what the patient meant
+    {"status": "ambiguous", "candidates": [{"option", "label",
+      "latitude", "longitude"}, ...]}
+                              # the place exists in several different
+                              # locations (a store chain, a mall) and the
+                              # nearest branch is not the same for all of
+                              # them - ask which one; see `_guidance`
     {"status": "not_found"}  # Nominatim could not resolve this address at all -
                               # a genuine, normal outcome for a very short or
                               # informal address; ask the patient for a
@@ -11473,44 +11564,69 @@ def geocode_address(
     timezone_name = str((state.get("templates") or {}).get("_timezone") or "").strip().lower()
     country_code = _TIMEZONE_ISO_COUNTRY.get(timezone_name)
     viewbox = _client_branches_viewbox()
+    language = conversation_language(state)
 
     # First try biased to the clinic's own country AND its own branches'
     # real geographic area (both more accurate AND, for a short/ambiguous
     # local name Nominatim's global index would otherwise miss entirely
     # or resolve to a same-named place elsewhere, more likely to match
     # the right one at all).
-    top = _geocode_once(address, country_code, viewbox) if country_code else None
+    candidates = _geocode_candidates(address, country_code, viewbox, language) if country_code else []
 
     # Unbiased retry: either there was no country to bias with, or the
     # biased search itself found nothing - a plain free-text retry is a
     # different query to Nominatim, not a guess, so it's still real
     # data if it succeeds.
-    if top is None:
-        top = _geocode_once(address, None)
+    if not candidates:
+        candidates = _geocode_candidates(address, None, None, language)
 
-    if top is None:
+    places = _distinct_places(candidates)
+
+    if not places:
         logger.info("geocode_address: Nominatim returned no match for address=%r", address)
         return {"status": "not_found"}
 
-    try:
-        latitude = float(top["lat"])
-        longitude = float(top["lon"])
-    except (KeyError, TypeError, ValueError):
-        logger.warning(
-            "geocode_address: malformed Nominatim result for address=%r: %r", address, top,
-        )
-        return {"status": "error"}
+    # A PLACE THAT EXISTS MORE THAN ONCE IS NOT ONE PLACE. "أقرب فرع
+    # لكارفور" has several Carrefour stores across the city; picking the
+    # first result names the branch nearest to a store the patient may not
+    # have meant. It only matters when the answer would differ: if every
+    # match is closest to the same branch, the choice cannot change what
+    # the patient is told, so no question is asked.
+    if len(places) > 1:
+        nearest_names = {
+            _nearest_geo_branch_name(p["latitude"], p["longitude"]) for p in places
+        }
+        nearest_names.discard(None)
+        if len(nearest_names) > 1:
+            options = [
+                {
+                    "option": index,
+                    "label": _short_place_label(place["display_name"]),
+                    "latitude": place["latitude"],
+                    "longitude": place["longitude"],
+                }
+                for index, place in enumerate(places, 1)
+            ]
+            logger.info(
+                "geocode_address: address=%r matches %d different places with different "
+                "nearest branches - asking which one: %s",
+                address, len(options), [o["label"] for o in options],
+            )
+            return {"status": "ambiguous", "candidates": options}
+
+    top = places[0]
 
     logger.info(
-        "geocode_address: address=%r -> lat=%s lon=%s (%s)",
-        address, latitude, longitude, top.get("display_name"),
+        "geocode_address: address=%r -> lat=%s lon=%s (%s)%s",
+        address, top["latitude"], top["longitude"], top["display_name"],
+        f" [{len(places)} matches, all closest to the same branch]" if len(places) > 1 else "",
     )
 
     return {
         "status": "found",
-        "latitude": latitude,
-        "longitude": longitude,
-        "display_name": top.get("display_name"),
+        "latitude": top["latitude"],
+        "longitude": top["longitude"],
+        "display_name": top["display_name"],
     }
 
 

@@ -22,6 +22,20 @@ GUIDANCE_KEY = "_guidance"
 # missing - see the note above - so this grows entry by entry, never by
 # inventing text for a status nobody has specified.
 _GUIDANCE = {
+    "geocode_address": {
+        "ambiguous": (
+            "The place the patient named exists in SEVERAL different "
+            "locations (a store chain, a mall, a common area name) and the "
+            "nearest branch is not the same for all of them, so do NOT pick "
+            "one. Show `candidates` as a short numbered list using each "
+            "`label` exactly as returned, in the patient's language, and ask "
+            "ONE short question: which one do they mean (or which area are "
+            "they in)? When they answer - a number, or the area's name - "
+            "call `find_nearest_branch` with THAT candidate's `latitude` and "
+            "`longitude` exactly as returned. Never guess which one they "
+            "meant, and never name a nearest branch before that call."
+        ),
+    },
     "list_hospital_services": {
         "not_found": (
             "The knowledge-base FILE has no services section - that does not "
