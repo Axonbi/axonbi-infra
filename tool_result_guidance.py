@@ -22,18 +22,33 @@ GUIDANCE_KEY = "_guidance"
 # missing - see the note above - so this grows entry by entry, never by
 # inventing text for a status nobody has specified.
 _GUIDANCE = {
+    "match_entity_info": {
+        "not_a_name": (
+            "What the patient wrote describes a KIND of doctor, test or "
+            "service (online, first visit, \"the test\", \"the doctor\"...) - "
+            "it is NOT a name, so nothing was searched. Do NOT call this tool "
+            "again with those words and NEVER say you could not find a doctor "
+            "or test called that. To show the tests call `search_lab_services` "
+            "with an EMPTY query; if they asked about an online / home "
+            "service answer it from `answer_hospital_faq`; otherwise ask ONE "
+            "short question: which doctor or test (by name) do they mean?"
+        ),
+    },
     "geocode_address": {
         "ambiguous": (
             "The place the patient named exists in SEVERAL different "
-            "locations (a store chain, a mall, a common area name) and the "
-            "nearest branch is not the same for all of them, so do NOT pick "
-            "one. Show `candidates` as a short numbered list using each "
-            "`label` exactly as returned, in the patient's language, and ask "
-            "ONE short question: which one do they mean (or which area are "
-            "they in)? When they answer - a number, or the area's name - "
-            "call `find_nearest_branch` with THAT candidate's `latitude` and "
-            "`longitude` exactly as returned. Never guess which one they "
-            "meant, and never name a nearest branch before that call."
+            "locations (a store chain, a mall, a common area name) and they "
+            "did not say which, so do NOT pick one. Show `candidates` as a "
+            "short numbered list using each `label` exactly as returned, in "
+            "the patient's language, and ask ONE short question: which one "
+            "do they mean - or which area/neighbourhood are they in? When "
+            "they answer with a number, call `find_nearest_branch` with THAT "
+            "candidate's `latitude` and `longitude` exactly as returned. If "
+            "none of the candidates is theirs and they give an area or "
+            "street instead, call `geocode_address` again with the place "
+            "name plus that area (e.g. \"كارفور المعادي\"). Never guess which "
+            "one they meant, and never name a nearest branch before "
+            "`find_nearest_branch` has been called."
         ),
     },
     "list_hospital_services": {

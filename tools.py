@@ -4887,6 +4887,7 @@ def get_next_weekday_date(
             weekday_name, relative["date"], relative["weekday_name"],
         )
         return {"status": "found", "date": relative["date"],
+                "date_display": _display_date(relative["date"]),
                 "weekday_name": relative["weekday_name"]}
 
     target_weekday = resolve_weekday_index(weekday_name)
@@ -4916,7 +4917,11 @@ def get_next_weekday_date(
     target_date = reference + timedelta(days=days_ahead)
     english_name = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][target_weekday]
 
-    return {"status": "found", "date": target_date.isoformat(), "weekday_name": english_name}
+    # `date_display` is what the patient is shown ("04/10/2026"): the reply
+    # guard matches the dates a reply states against the tool results.
+    return {"status": "found", "date": target_date.isoformat(),
+            "date_display": _display_date(target_date.isoformat()),
+            "weekday_name": english_name}
 
 
 @tool
@@ -6308,6 +6313,48 @@ def _input_names_the_clinic_itself(user_input: str, state) -> str:
     return ""
 
 
+# Words that DESCRIBE a doctor, a test, a service, a visit or a channel
+# instead of naming one. "الطبيب اول مرة", "طبيب خدمة أونلاين" or "تحليل دم
+# منزلي" is a description: searching the doctor list for it can only fail
+# (or, worse, fuzzy-match an unrelated name). Compared after
+# `_normalize_arabic`, so spelling variants (ة/ه, أ/ا, ى/ي) need no
+# separate entry.
+_GENERIC_DOCTOR_WORDS = frozenset(
+    _normalize_arabic(w) for w in (
+        "طبيب", "الطبيب", "طبيبه", "الطبيبه", "اطباء", "الاطباء",
+        "دكتور", "الدكتور", "دكتوره", "الدكتوره", "دكاتره", "الدكاتره",
+        "دكتر", "الدكتر", "د", "دك",
+        "تحليل", "التحليل", "تحاليل", "التحاليل", "فحص", "الفحص", "فحوصات",
+        "الفحوصات", "اشعه", "الاشعه", "معمل", "المعمل", "مختبر", "المختبر",
+        "منزلي", "منزليه", "المنزلي", "بيت", "البيت", "سحب", "عينه", "العينه",
+        "دم", "الدم", "نتيجه", "نتيجة",
+        "اونلاين", "الاونلاين", "اون", "لاين", "انترنت", "اونلين",
+        "خدمه", "الخدمه", "خدمات", "الخدمات", "خدمتكم", "خدمتك",
+        "عن", "بعد", "عندكم", "عندك", "لديكم", "فيديو", "مكالمه",
+        "حضوري", "زياره", "استشاره", "الاستشاره", "كشف", "الكشف",
+        "مقابله", "موعد", "جلسه", "الجلسه", "اول", "الاول", "اولى", "الاولى",
+        "مره", "مرا", "مرات", "جديد", "الجديد", "جديده", "الجديده",
+        "قديم", "القديم", "اي", "اى", "أي", "ايه", "ليا", "لي", "ل",
+        "في", "من", "مع", "او", "و", "هل", "فيه", "يوجد", "توجد",
+        "doctor", "doctors", "dr", "the", "a", "an", "online", "service",
+        "services", "first", "time", "visit", "new", "any", "with", "for",
+        "consultation", "video", "remote", "appointment", "test", "tests",
+        "lab", "home", "blood",
+    )
+)
+
+
+def _is_generic_doctor_phrase(text: Optional[str]) -> bool:
+    """True when EVERY word of `text` is a generic word (see
+    `_GENERIC_DOCTOR_WORDS`): the patient described a kind of doctor,
+    test or service and named nothing. A single word outside the list - a
+    real name, a test such as "CBC", a typo of one - makes this False, so
+    real lookups are untouched."""
+
+    words = re.findall(r"[^\W\d_]+", _normalize_arabic((text or "").strip()), re.UNICODE)
+    return bool(words) and all(w in _GENERIC_DOCTOR_WORDS for w in words)
+
+
 @tool
 def match_entity_info(
     state: Annotated[AgentState, InjectedState],
@@ -6342,6 +6389,7 @@ def match_entity_info(
     {"status": "possible_match", "item": {...}}
     {"status": "ambiguous", "candidates": [...]}
     {"status": "not_matched"}
+    {"status": "not_a_name"}
     {"status": "not_matched", "available_branches": [...]}
     {"status": "looks_like_stray_word", "word": "..."}
         # entity_type="branch" only: `user_input` looks like a fragment
@@ -6396,6 +6444,14 @@ def match_entity_info(
     entity_type = (entity_type or "").strip().lower()
     if entity_type not in ("doctor", "branch"):
         return {"status": "error"}
+
+    if entity_type == "doctor" and _is_generic_doctor_phrase(user_input):
+        logger.info(
+            "match_entity_info: %r only describes a kind of doctor/test/service - "
+            "not searching the doctor list for it (session_id=%s)",
+            user_input, state.get("session_id"),
+        )
+        return {"status": "not_a_name"}
 
     base_url = _doctors_base_url(state)
     if not base_url:
@@ -8179,35 +8235,66 @@ def _preferred_name(entity: dict, language: str = "ar") -> str:
 
 
 @tool
-def get_doctor_fees(state: Annotated[AgentState, InjectedState]) -> dict:
-    """Get the currently-confirmed doctor's published services and
-    prices for a NEW BOOKING. Reads the doctor from the booking session
-    automatically - you never pass an ID. A doctor MUST already be
-    confirmed (via `match_entity_for_booking`, needsConfirmation=false)
-    before calling this - if none is confirmed yet, this returns
-    {"status": "no_doctor_confirmed"} and you should ask which doctor
-    they're asking about first.
+def get_doctor_fees(state: Annotated[AgentState, InjectedState], doctor_name: str = "") -> dict:
+    """Get a doctor's published services and prices. In this clinic each
+    test is registered as a doctor under the test's own name (e.g. "CBC"),
+    so a test's price is its doctor's fee.
+
+    `doctor_name`: the doctor / test the patient asked about, as they wrote
+    it ("بكام CBC" -> "CBC"). Pass it whenever the patient names one - no
+    booking, collection mode or branch needs to be confirmed first. Leave
+    it empty to use the doctor already confirmed in the current booking.
+    With neither, this returns {"status": "no_doctor_confirmed"} and you
+    should ask which test they mean.
 
     IMPORTANT: fees are PRIVATE BY DEFAULT - only call this when the
     user EXPLICITLY asks about price/cost/fee. Never mention a fee
     proactively, and never quote one from schedule/slot data instead of
     this tool. Returns:
-    {"status": "found", "fees": [{"service": ..., "price": ...}, ...]}
+    {"status": "found", "doctor": "<name>", "fees": [{"service": ..., "price": ...}, ...]}
+    {"status": "ambiguous", "candidates": ["<name>", ...]}  # ask which one
+    {"status": "doctor_not_found"}  # no doctor / test by that name
     {"status": "no_doctor_confirmed"}
-    {"status": "not_found"}  # doctor has no published services
+    {"status": "not_found"}  # no published services / price
     {"status": "not_configured"} / {"status": "error"}"""
 
-    session_id = state.get("session_id")
-    session = _get_booking_session(session_id)
-    doctor_id = session.get("doctor_id")
-
-    if not doctor_id:
-        return {"status": "no_doctor_confirmed"}
-
+    # A PRICE QUESTION IS NOT A BOOKING. The doctor used to be read only
+    # from the booking session, which is filled in by the booking flow's
+    # own match, so "بكام CBC" asked outside a booking got
+    # no_doctor_confirmed and the patient was told there was no price
+    # information for a test whose price the API had all along.
     base_url = _doctors_base_url(state)
     if not base_url:
         logger.warning("get_doctor_fees called but no doctors_base_url is configured for client_id=%s", state.get("client_id"))
         return {"status": "not_configured"}
+
+    doctor_display = None
+    doctor_id = None
+
+    if (doctor_name or "").strip():
+        roster = api.get_doctors(
+            base_url, page_size=200,
+            has_service_schedule=None, has_published_service=None,
+            language=conversation_language(state),
+        )
+        if not roster["success"]:
+            return _api_error(roster)
+        items = (roster["data"] or {}).get("items", [])
+        match = _fuzzy_match(doctor_name, items, ["formatedName", "altName", "name"])
+        if match["result"] == "ambiguous":
+            return {"status": "ambiguous", "candidates": [
+                _arabic_preferred_name(i) or i.get("formatedName") for i in match["items"]
+            ]}
+        if match["result"] != "matched":
+            return {"status": "doctor_not_found"}
+        doctor_id = match["item"].get("id")
+        doctor_display = _arabic_preferred_name(match["item"]) or match["item"].get("formatedName")
+    else:
+        session = _get_booking_session(state.get("session_id"))
+        doctor_id = session.get("doctor_id")
+
+    if not doctor_id:
+        return {"status": "no_doctor_confirmed"}
 
     result = api.get_doctor_fees(base_url, doctor_ids=[doctor_id], language=conversation_language(state))
 
@@ -8220,7 +8307,10 @@ def get_doctor_fees(state: Annotated[AgentState, InjectedState]) -> dict:
         return {"status": "not_found"}
 
     fees = [{"service": i.get("serviceName"), "price": i.get("price")} for i in items]
-    return {"status": "found", "fees": fees}
+    result = {"status": "found", "fees": fees}
+    if doctor_display:
+        result["doctor"] = doctor_display
+    return result
 
 
 # A phone number shared by a family genuinely has several patients on
@@ -8350,6 +8440,18 @@ def get_patient_info(state: Annotated[AgentState, InjectedState], mobile_number:
         return {"status": "not_configured"}
 
     result = api.get_patient_info(base_url, mobile_number)
+
+    if not result["success"] and result.get("error") == "endpoint_not_found":
+        # The patient lookup endpoint answers 404. It is only a convenience
+        # (it saves re-asking a returning patient for their name) and
+        # Reservation creates the patient from the name and mobile number,
+        # so treat it as "not registered" instead of failing the booking.
+        logger.warning(
+            "get_patient_info: lookup endpoint not found (404) - treating as "
+            "not registered so the booking can continue (session_id=%s)",
+            state.get("session_id"),
+        )
+        return {"status": "not_found"}
 
     if not result["success"]:
         logger.error("get_patient_info API call failed: status_code=%s error=%s", result.get("status_code"), result.get("error"))
@@ -9817,9 +9919,14 @@ def create_new_booking(
                 "(session_id=%s)",
                 slot_start, locked_slot.get("slotStart"), session_id,
             )
-            slot_start = locked_slot["slotStart"]
-            if locked_slot.get("slotEnd"):
-                slot_end = locked_slot["slotEnd"]
+        # ALWAYS the locked slot's own start and end, not only when the
+        # instants differ: a model-supplied slot_start naming the same
+        # instant but formatted differently would reach the API in a
+        # different format from slot_end, which it rejected with an empty
+        # 400. (slot_end is never something the model derives correctly.)
+        slot_start = locked_slot["slotStart"]
+        if locked_slot.get("slotEnd"):
+            slot_end = locked_slot["slotEnd"]
 
     # SERVER-SIDE ENFORCEMENT, NOT JUST A PROMPT RULE. STEP NB6 already
     # instructs asking for the patient's full name (at least two parts)
@@ -11546,9 +11653,9 @@ def geocode_address(
     {"status": "ambiguous", "candidates": [{"option", "label",
       "latitude", "longitude"}, ...]}
                               # the place exists in several different
-                              # locations (a store chain, a mall) and the
-                              # nearest branch is not the same for all of
-                              # them - ask which one; see `_guidance`
+                              # locations (a store chain, a mall, a common
+                              # area name) and the patient did not say which
+                              # - ask which one; see `_guidance`
     {"status": "not_found"}  # Nominatim could not resolve this address at all -
                               # a genuine, normal outcome for a very short or
                               # informal address; ask the patient for a
@@ -11587,39 +11694,33 @@ def geocode_address(
         return {"status": "not_found"}
 
     # A PLACE THAT EXISTS MORE THAN ONCE IS NOT ONE PLACE. "أقرب فرع
-    # لكارفور" has several Carrefour stores across the city; picking the
-    # first result names the branch nearest to a store the patient may not
-    # have meant. It only matters when the answer would differ: if every
-    # match is closest to the same branch, the choice cannot change what
-    # the patient is told, so no question is asked.
+    # لكارفور" - there are dozens of Carrefour stores and the patient did
+    # not say which. Picking the first result names the branch nearest to
+    # a store they may not have meant, so whenever the name resolves to
+    # more than one distinct place the patient is asked which one. (No
+    # shortcut for "they would all get the same branch": the patient did
+    # not choose, and the list may be only the first few of many.)
     if len(places) > 1:
-        nearest_names = {
-            _nearest_geo_branch_name(p["latitude"], p["longitude"]) for p in places
-        }
-        nearest_names.discard(None)
-        if len(nearest_names) > 1:
-            options = [
-                {
-                    "option": index,
-                    "label": _short_place_label(place["display_name"]),
-                    "latitude": place["latitude"],
-                    "longitude": place["longitude"],
-                }
-                for index, place in enumerate(places, 1)
-            ]
-            logger.info(
-                "geocode_address: address=%r matches %d different places with different "
-                "nearest branches - asking which one: %s",
-                address, len(options), [o["label"] for o in options],
-            )
-            return {"status": "ambiguous", "candidates": options}
+        options = [
+            {
+                "option": index,
+                "label": _short_place_label(place["display_name"]),
+                "latitude": place["latitude"],
+                "longitude": place["longitude"],
+            }
+            for index, place in enumerate(places, 1)
+        ]
+        logger.info(
+            "geocode_address: address=%r matches %d different places - asking which one: %s",
+            address, len(options), [o["label"] for o in options],
+        )
+        return {"status": "ambiguous", "candidates": options}
 
     top = places[0]
 
     logger.info(
-        "geocode_address: address=%r -> lat=%s lon=%s (%s)%s",
+        "geocode_address: address=%r -> lat=%s lon=%s (%s)",
         address, top["latitude"], top["longitude"], top["display_name"],
-        f" [{len(places)} matches, all closest to the same branch]" if len(places) > 1 else "",
     )
 
     return {
