@@ -48,7 +48,6 @@ import api
 import rag
 from config import (
     DEFAULT_TIMEZONE,
-    SCHEDULE_TIMES_ARE_UTC,
     CANCELLABLE_STATUS_CODES,
     CANCELLED_STATUS_NAME,
     DEFAULT_COUNTRY_CODE,
@@ -278,6 +277,9 @@ def _is_valid_phone_format(phone: Optional[str]) -> bool:
     return bool(re.match(r"^\+\d{7,15}$", phone.strip()))
 
 
+_CLINIC_TZ = ZoneInfo(DEFAULT_TIMEZONE)
+
+
 def to_local_wallclock(value: Optional[str], timezone_name: str = DEFAULT_TIMEZONE) -> Optional[str]:
     """For WORKING-HOURS rows (a doctor's weekly rota), not instants.
 
@@ -322,85 +324,71 @@ def to_local_wallclock(value: Optional[str], timezone_name: str = DEFAULT_TIMEZO
 
 
 # ==========================================================
-# WHICH READING OF "+00:00" IS RIGHT
+# TIMES: THE API SPEAKS THE CLINIC'S OWN CLOCK WITH ITS OFFSET
 # ==========================================================
 #
-# Every timestamp this booking API returns is stamped "+00:00", and the
-# system has now been told both possible things about it:
-#
-#   (a) it is DECORATION on a value that was already local wall clock,
-#       so the offset must be dropped  -> `to_local_wallclock`
-#   (b) it is a GENUINE UTC instant, so it must be converted into the
-#       clinic's own zone             -> `to_clinic_local`, below
-#
-# (a) was implemented first, from a comparison against an admin UI. It
-# is wrong, at least for the tenants running today, and (b) is what the
-# patient-facing site does. THE EVIDENCE, gathered directly from
-# tanasuq-saudi's own API on 2026-09-06:
-#
-#   - Reported by the clinic: the assistant offers 7:00 for a slot the
-#     website lists at 10:00. Asia/Riyadh is UTC+3, exactly.
-#   - Dr Mohammed Zayed, الدقي, Saturday 2026-09-12: the slots endpoint
-#     returns 07:00/07:15/07:30/07:45 "+00:00", and the rota row for the
-#     same branch returns 07:00 -> 08:00 "+00:00". The two agree, so
-#     this is not one endpoint disagreeing with another - it is the
-#     whole API speaking UTC.
-#   - Across all 38 rota rows for that tenant, the raw windows include
-#     04:00 -> 07:00 (three doctors) and 05:00 -> 12:00. No clinic opens
-#     at four in the morning. Read as UTC they are 07:00 -> 10:00 and
-#     08:00 -> 15:00, which is what a clinic day actually looks like.
-#
-# THE FLAG EXISTS BECAUSE THIS IS PER-DEPLOYMENT, NOT UNIVERSAL. The
-# original (a) finding came from a different tenant. If any
-# deployment genuinely does store local time with a decorative offset,
-# set SCHEDULE_TIMES_ARE_UTC=false for it and every reading below
-# reverts to the old behaviour in one step.
-# Imported from config at the top of this module, alongside every other
-# setting - named here only so the reasoning above sits next to the code
-# that acts on it.
+# The API stamps the clinic's real offset (+03:00), so a timestamp is
+# already local time. Nothing is converted: the offset is only dropped for
+# display, and put back (`to_api_time`) when a time is sent to the API.
+# An offset-less value is read as the clinic's local time.
 
 
-def to_clinic_local(value: Optional[str], timezone_name: str = DEFAULT_TIMEZONE) -> Optional[str]:
-    """A real instant from the booking API -> the clinic's own wall
-    clock, as a NAIVE ISO string ready for `_display_time_12h` and
-    friends.
+def to_api_time(value: Optional[str], timezone_name: str = DEFAULT_TIMEZONE) -> Optional[str]:
+    """A slot time -> what the booking APIs are sent: the clinic's local
+    time WITH its offset ("2026-10-06T15:20:00+03:00").
 
-    Naive on purpose: everything downstream compares these against
-    `_local_now_naive`, and mixing aware and naive datetimes raises
-    TypeError - a real production crash this file has already had once.
-
-    USE THIS FOR ANYTHING THE PATIENT READS. Do NOT use it for a value
-    that goes back to the API: see the comment on `slotStart` in
-    `get_available_slots_for_booking` for why the wire format is left
-    exactly as it was.
-    """
+    Slots are stored as offset-less local wall clock, and an offset-less
+    value sent to the API is ambiguous - Reservation answered 400 to it.
+    The API itself speaks "+03:00", so it is sent back in the same form.
+    A value that already carries an offset is left alone."""
 
     if not value:
         return None
 
-    if not SCHEDULE_TIMES_ARE_UTC:
-        return to_local_wallclock(value, timezone_name)
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return value
+
+    if dt.tzinfo is not None:
+        return dt.isoformat()
 
     try:
-        target_tz = ZoneInfo(timezone_name)
+        tz = ZoneInfo(timezone_name)
     except Exception:
-        logger.warning(
-            "to_clinic_local: unknown timezone %r, falling back to %s",
-            timezone_name, DEFAULT_TIMEZONE,
-        )
-        target_tz = ZoneInfo(DEFAULT_TIMEZONE)
+        tz = _CLINIC_TZ
+
+    return dt.replace(tzinfo=tz).isoformat()
+
+
+def to_wire_utc(value: Optional[str], timezone_name: str = DEFAULT_TIMEZONE) -> Optional[str]:
+    """A slot timestamp from the API -> the value sent back to it.
+
+    The API returns the clinic's own local time with its offset (+03:00
+    for Saudi), ready to use, so it is passed through untouched. (Name
+    kept from when this converted to UTC.)"""
+
+    return value or None
+
+
+def to_clinic_local(value: Optional[str], timezone_name: str = DEFAULT_TIMEZONE) -> Optional[str]:
+    """A timestamp from the booking API -> the clinic's wall clock, as a
+    NAIVE ISO string ready for `_display_time_12h` and friends.
+
+    The API already returns local time (+03:00 for Saudi), so nothing is
+    converted - the offset is only dropped. Naive on purpose: everything
+    downstream compares these against `_local_now_naive`, and mixing aware
+    and naive datetimes raises TypeError."""
+
+    if not value:
+        return None
 
     try:
         dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return value
 
-    if dt.tzinfo is None:
-        # No offset at all - the only sane assumption is UTC, which is
-        # what every timestamp this API has ever returned carries.
-        dt = dt.replace(tzinfo=timezone.utc)
-
-    return dt.astimezone(target_tz).replace(tzinfo=None).isoformat()
+    return dt.replace(tzinfo=None).isoformat()
 
 
 def _local_now_naive(timezone_name: str = DEFAULT_TIMEZONE) -> datetime:
@@ -506,9 +494,12 @@ _FIELD_MAP = (
     # servicePrice deliberately NOT mapped - fees are private by default
     # and only ever revealed via `get_doctor_fees` on an explicit user
     # request (see prompts.py's FEES rule).
-    ("patientFullName", ("patientFullName",)),
-    ("mobileNumber", ("mobileNumber",)),
-    ("email", ("email",)),
+    # cms-api names: patientName / patientMobile / patientEmail (the
+    # portal-api names are kept as fallbacks). Output keys are unchanged so
+    # graph.py and the prompts keep reading patientFullName etc.
+    ("patientFullName", ("patientName", "patientFullName")),
+    ("mobileNumber", ("patientMobile", "mobileNumber")),
+    ("email", ("patientEmail", "email")),
     ("statusName", ("statusName",)),
     ("branchName", ("branchName",)),
     ("doctorName", ("doctorName",)),
@@ -622,8 +613,8 @@ def _filter_active(items: list) -> list:
             try:
                 dt = datetime.fromisoformat(raw_from.replace("Z", "+00:00"))
                 if dt.tzinfo is None:
-                    # Naive - assume UTC, same as this function always did.
-                    dt = dt.replace(tzinfo=timezone.utc)
+                    # Naive - the API's times are clinic-local (Saudi).
+                    dt = dt.replace(tzinfo=_CLINIC_TZ)
                 if dt <= now:
                     continue  # has a scheduled date, and it's already passed
             except ValueError:
@@ -662,6 +653,18 @@ def _api_error(result: Optional[dict] = None) -> dict:
         error["status_code"] = status_code
 
     return error
+
+
+def _cms_base_url(state: AgentState) -> Optional[str]:
+    """cms-api base URL - where Bookings/GetList, GetById, Update and
+    UpdateStatus live."""
+    return (state.get("templates") or {}).get("_cms_base_url")
+
+
+def _sso(state: AgentState) -> dict:
+    """The SSO account this client's config supplies for cms-api (empty
+    values fall back to the environment, see api._sso_settings)."""
+    return (state.get("templates") or {}).get("_sso") or {}
 
 
 def _base_url(state: AgentState) -> str:
@@ -837,14 +840,12 @@ def lookup_appointment(
             )
             return {"status": "phone_not_verified"}
 
-    base_url = _base_url(state)
-
     if ref_number:
-        result = api.get_bookings_by_ref(base_url, ref_number, language=language)
+        result = api.get_bookings_by_ref(_cms_base_url(state), ref_number, language=language, sso=_sso(state))
     elif phone:
         result = api.get_bookings_by_phone(
-            base_url, normalize_phone_number(phone, state), language=language,
-            status_list=list(CANCELLABLE_STATUS_CODES),
+            _cms_base_url(state), normalize_phone_number(phone, state), language=language,
+            status_list=list(CANCELLABLE_STATUS_CODES), sso=_sso(state),
         )
     else:
         return {"status": "not_found"}
@@ -858,8 +859,8 @@ def lookup_appointment(
         # "error" status so the LLM (per prompts.py) tells the user
         # there was a technical problem instead of "no booking found".
         logger.error(
-            "lookup_appointment API call failed: base_url=%s ref=%r phone=%r status_code=%s error=%s",
-            base_url, ref_number, phone, result.get("status_code"), result.get("error"),
+            "lookup_appointment API call failed: cms_base_url=%s ref=%r phone=%r status_code=%s error=%s",
+            _cms_base_url(state), ref_number, phone, result.get("status_code"), result.get("error"),
         )
         # The REASON, not a bare "error" - same as every other tool in
         # this file. `graph.upstream_api_failed` reads it to decide
@@ -1029,7 +1030,7 @@ def check_booking_status(
         )
         return {"status": "no_list_shown"}
 
-    result = api.get_bookings_by_ref(base_url, ref_number, language=language)
+    result = api.get_bookings_by_ref(_cms_base_url(state), ref_number, language=language, sso=_sso(state))
 
     if not result["success"]:
         logger.error(
@@ -1145,8 +1146,7 @@ def cancel_appointment(
         )
         return {"status": "not_confirmed"}
 
-    base_url = _base_url(state)
-    result = api.cancel_booking_by_guid(base_url, booking_id)
+    result = api.cancel_booking_by_guid(_cms_base_url(state), booking_id, sso=_sso(state))
 
     if result["success"]:
         return {"status": "success"}
@@ -1986,8 +1986,8 @@ def _same_instant(left: Optional[str], right: Optional[str]) -> bool:
     """Do two slot timestamps name the same moment?
 
     Compared as instants, not strings, so "2026-09-14T07:24:00" and
-    "2026-09-14T07:24:00+00:00" are equal. A naive value is UTC - that is
-    what the wire format is (see `to_clinic_local`). Unparsable on either
+    "2026-09-14T07:24:00+00:00" are equal. A naive value is the clinic's
+    local time, like the API's own values (see `to_clinic_local`). Unparsable on either
     side returns False, which makes the caller prefer the session's own
     value."""
 
@@ -1999,7 +1999,7 @@ def _same_instant(left: Optional[str], right: Optional[str]) -> bool:
         except (ValueError, TypeError):
             return None
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
+            parsed = parsed.replace(tzinfo=_CLINIC_TZ)
         return parsed.timestamp()
 
     a, b = instant(left), instant(right)
@@ -4573,8 +4573,7 @@ def _resolve_doctor_id(state: AgentState, ref_number: str, language: Optional[st
     directly. Returns {"status": "found", "doctor_id": ...} or an error
     status matching lookup_appointment's own conventions."""
 
-    base_url = _base_url(state)
-    result = api.get_bookings_by_ref(base_url, ref_number, language=language)
+    result = api.get_bookings_by_ref(_cms_base_url(state), ref_number, language=language, sso=_sso(state))
 
     if not result["success"]:
         logger.error("_resolve_doctor_id: API call failed for ref_number=%s error=%s", ref_number, result.get("error"))
@@ -5189,6 +5188,14 @@ def get_available_reschedule_slots(
             "weekday_display": _display_weekday(local_start, language),
             "time_display": _display_time_12h(local_start, language),
             "doctorName": item.get("doctorName"),
+            # Ids cms-api's Bookings/Update needs to move the booking to
+            # this slot - carried on the slot so the chosen slot has them.
+            "branchId": item.get("branchId"),
+            "branchName": item.get("branchName"),
+            "doctorId": item.get("doctorId"),
+            "serviceId": item.get("serviceId"),
+            "spaceId": item.get("spaceId"),
+            "scheduleId": item.get("scheduleId"),
             "serviceName": _service_name(item, language),
             # servicePrice is deliberately NOT returned: fees are private
             # by default and must only ever be revealed through
@@ -5228,7 +5235,7 @@ def get_available_reschedule_slots(
     seen_starts = set()
     deduped = []
     for s in slots:
-        key = s["slotStart"]
+        key = (s["slotStart"], s.get("branchId"))
         if key in seen_starts:
             continue
         seen_starts.add(key)
@@ -5285,14 +5292,9 @@ def reschedule_appointment(
     Returns one of: {"status": "success"},
     {"status": "not_looked_up"}, or {"status": "error"}."""
 
-    # NOTE: confirmed directly from the user's own curl - GuestBookings/Update
-    # lives on the SAME port as Doctors/Specialties (1302), NOT the regular
-    # GuestBookings port used for cancellation (1101), despite the "GuestBookings"
-    # name. Trusting the confirmed URL over the path-name convention.
-    base_url = _doctors_base_url(state)
-
-    if not base_url:
-        logger.warning("reschedule_appointment called but no doctors_base_url is configured for client_id=%s", state.get("client_id"))
+    # The write goes to cms-api (Bookings/Update), which needs its own URL.
+    if not _cms_base_url(state):
+        logger.warning("reschedule_appointment called but no cms_base_url is configured for client_id=%s", state.get("client_id"))
         return {"status": "error"}
 
     # THE SAME GATE AND THE SAME RESOLUTION AS CANCELLING.
@@ -5347,7 +5349,25 @@ def reschedule_appointment(
             new_time_from, state.get("session_id"),
         )
 
-    result = api.reschedule_booking(base_url, booking_id, new_time_from, new_time_to)
+    # The slot whose ids go into the Update body: the one the patient picked
+    # (remembered above, shown by get_available_reschedule_slots), with its
+    # own start AND end. Without it there is nothing to book into.
+    chosen_slot = remembered if (remembered and remembered.get("slotStart")) else {}
+    if not chosen_slot.get("scheduleId"):
+        logger.error(
+            "reschedule_appointment: slot has no scheduleId - cannot build the "
+            "Bookings/Update body (session_id=%s)", state.get("session_id"),
+        )
+        return {"status": "error"}
+
+    # Slot times are the API's own local values (+03:00), sent back as-is.
+    _tz_name = (state.get("templates") or {}).get("_timezone") or DEFAULT_TIMEZONE
+    result = api.reschedule_booking(
+        _cms_base_url(state), booking_id, chosen_slot,
+        to_api_time(new_time_from, _tz_name),
+        to_api_time(new_time_to, _tz_name),
+        language=conversation_language(state), sso=_sso(state),
+    )
 
     if not result["success"]:
         logger.error(
@@ -5358,11 +5378,8 @@ def reschedule_appointment(
 
     language = conversation_language(state)
     timezone_name = (state.get("templates") or {}).get("_timezone")
-    # `new_time_from` is the WIRE slotStart the patient picked - a UTC
-    # instant - so it has to be put on the clinic's clock before it is
-    # read back to them, exactly like the slot list they picked it from.
-    # Confirming "7:00" for a slot the list offered as "10:00" is the
-    # same three-hour error, at the worst possible moment.
+    # `new_time_from` is the slotStart the patient picked (clinic local
+    # wall clock); read back exactly like the slot list they picked it from.
     local_new_from = to_clinic_local(new_time_from, timezone_name)
 
     # THE NEW TIME, READY TO DISPLAY.
@@ -5383,6 +5400,9 @@ def reschedule_appointment(
         "new_date_display": _display_date(local_new_from),
         "new_time_display": _display_time_12h(local_new_from, language),
         "new_weekday_display": _display_weekday(local_new_from, language),
+        # THE BRANCH THE BOOKING IS NOW AT - the picked slot's own. The
+        # lookup record still names the OLD branch.
+        "new_branch_name": chosen_slot.get("branchName"),
     }
 
 
@@ -8439,7 +8459,7 @@ def get_patient_info(state: Annotated[AgentState, InjectedState], mobile_number:
         logger.warning("get_patient_info called but no doctors_base_url is configured for client_id=%s", state.get("client_id"))
         return {"status": "not_configured"}
 
-    result = api.get_patient_info(base_url, mobile_number)
+    result = api.get_patient_info(_cms_base_url(state), mobile_number, sso=_sso(state))
 
     if not result["success"] and result.get("error") == "endpoint_not_found":
         # The patient lookup endpoint answers 404. It is only a convenience
@@ -10070,7 +10090,7 @@ def create_new_booking(
     # The wire format IS UTC wall clock (see to_clinic_local), so saying
     # so explicitly makes this independent of where it runs.
     if requested_start_dt.tzinfo is None:
-        requested_start_dt = requested_start_dt.replace(tzinfo=timezone.utc)
+        requested_start_dt = requested_start_dt.replace(tzinfo=_CLINIC_TZ)
 
     try:
         requested_ms = requested_start_dt.timestamp()
@@ -10132,8 +10152,8 @@ def create_new_booking(
         doctor_id=matched_slot.get("doctorId") or doctor_id,
         service_id=matched_slot.get("serviceId"),
         service_price=matched_slot.get("servicePrice"),
-        booking_time_from=slot_start,
-        booking_time_to=slot_end,
+        booking_time_from=to_api_time(slot_start, (state.get("templates") or {}).get("_timezone") or DEFAULT_TIMEZONE),
+        booking_time_to=to_api_time(slot_end, (state.get("templates") or {}).get("_timezone") or DEFAULT_TIMEZONE),
         specialty_id=matched_slot.get("specialtyId"),
         doctor_schedule_id=matched_slot.get("scheduleId"),
         space_id=matched_slot.get("spaceId"),
@@ -10161,7 +10181,7 @@ def create_new_booking(
     booking_ref = None
 
     if new_booking_id:
-        lookup_result = api.get_booking_by_id(base_url, new_booking_id)
+        lookup_result = api.get_booking_by_id(_cms_base_url(state), new_booking_id, sso=_sso(state))
         if lookup_result["success"]:
             booking_ref = (lookup_result["data"] or {}).get("bookingRefNum")
         else:

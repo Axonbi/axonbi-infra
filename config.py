@@ -145,6 +145,25 @@ DOCTORS_API_RETRY_BACKOFF_SECONDS: float = float(
 
 _ENV_DOCTORS_BASE_URL_OVERRIDE: Optional[str] = os.getenv("DOCTORS_API_BASE_URL") or None
 
+# ==========================================================
+# CMS API (Bookings/GetList, GetById, Update, UpdateStatus) + SSO login
+# ==========================================================
+# Booking lookup / reschedule / cancel live on cms-api, which needs a bearer
+# token from the SSO login. The client's own n8n config row supplies the URL
+# and the SSO account (keys CMS_API_BASE_URL, SSO_LOGIN_URL, SSO_EMAIL,
+# SSO_PASSWORD, SSO_ORGANIZATION_ID) and wins; the environment below is only
+# the fallback. There is deliberately NO built-in default host: a fallback
+# to another clinic's server would send this client's bookings there.
+_ENV_CMS_BASE_URL_OVERRIDE: Optional[str] = os.getenv("CMS_API_BASE_URL") or None
+
+SSO_LOGIN_URL: str = os.getenv("SSO_LOGIN_URL", "")
+SSO_EMAIL: str = os.getenv("SSO_EMAIL", "")
+# The clinic's organizationId, sent with the login when set.
+SSO_ORGANIZATION_ID: str = os.getenv("SSO_ORGANIZATION_ID", "")
+SSO_PASSWORD: str = os.getenv("SSO_PASSWORD", "")
+# Used when the login response doesn't say how long the token lasts.
+SSO_TOKEN_TTL_SECONDS: int = int(os.getenv("SSO_TOKEN_TTL_SECONDS", "1440"))
+
 # How many days ahead to search for doctor availability by default, when
 # the user doesn't specify a particular day - see
 # tools.find_available_doctors().
@@ -749,20 +768,8 @@ OPENAI_MODEL_ROUTER: str = os.getenv("OPENAI_MODEL_ROUTER", OPENAI_MODEL_CHEAP)
 # run, as before.
 REPLY_NORMALIZATION_ENABLED: bool = _flag("REPLY_NORMALIZATION_ENABLED", True)
 
-# HOW TO READ THE "+00:00" ON EVERY TIMESTAMP THE BOOKING API RETURNS.
-#
-# True (the default, and what the clinics' own websites do): it is a
-# real UTC instant, so a slot is shown to the patient in the clinic's
-# own zone - 07:00+00:00 becomes 10:00 in Asia/Riyadh.
-#
-# False: the offset is decoration on a value that was already local, so
-# it is simply dropped. This was the behaviour until 2026-09-06, and it
-# told patients a time three hours earlier than the website did.
-#
-# The full evidence, and why this is a flag rather than a constant, is
-# in tools.to_clinic_local. Only ever set this to False for a
-# deployment whose API is confirmed to store local time.
-SCHEDULE_TIMES_ARE_UTC: bool = _flag("SCHEDULE_TIMES_ARE_UTC", True)
+# Timestamps from the booking API carry the clinic's own offset (+03:00 for
+# Saudi) and are used as they are: there is no UTC-conversion setting.
 
 
 # ==========================================================
@@ -1383,6 +1390,24 @@ def get_messages(client_id: str, dialect: Optional[str] = None, client_row_overr
         or _lab_overrides.get("lab_service_type_id_radiology")
         or ""
     )
+    # No fallback to base_url on purpose: portal-api has no /api/Bookings,
+    # so it must never silently hit the wrong server. 
+    # The n8n client config wins (per clinic); the environment fills in what it
+    # leaves out.
+    merged["_cms_base_url"] = (
+        (client_row.get("CMS_API_BASE_URL") or "").strip()
+        or (client_row.get("cms_base_url") or "").strip()
+        or _ENV_CMS_BASE_URL_OVERRIDE
+    )
+    # SSO account for cms-api, also per client. Keys are named after the env
+    # vars, like CMS_API_BASE_URL. Anything missing falls back to the
+    # environment (api._sso_settings).
+    merged["_sso"] = {
+        "login_url": (client_row.get("SSO_LOGIN_URL") or client_row.get("sso_login_url") or "").strip(),
+        "email": (client_row.get("SSO_EMAIL") or client_row.get("sso_email") or "").strip(),
+        "password": client_row.get("SSO_PASSWORD") or client_row.get("sso_password") or "",
+        "organization_id": (client_row.get("SSO_ORGANIZATION_ID") or client_row.get("sso_organization_id") or "").strip(),
+    }
     merged["_phone_example"] = client_row.get("phone_example")
     # COMPATIBILITY ONLY. `bsuid` identifies the SENDER, not the clinic,
     # so it properly belongs in the request body next to channel_phone
