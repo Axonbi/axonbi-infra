@@ -550,6 +550,11 @@ def route_turn_with_intent(
         # and carry on, while `faq` cannot finish the booking it would
         # take over. A health message still moves - booking has no
         # medical-guidance rules.
+        # A reply inside a reschedule/cancel flow (a date, a time, a doctor,
+        # a yes) looks like booking input. It answers the flow's own question,
+        # so it must not turn the change into a new booking.
+        if active_agent in ("reschedule", "cancel") and choice == "booking" and answering:
+            return active_agent, f"an answer inside {active_agent} - not a new booking", intent
         if active_agent == "booking" and choice == "faq":
             return "booking", "an information question mid-booking - booking answers it and carries on", intent
 
