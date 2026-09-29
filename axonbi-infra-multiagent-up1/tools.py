@@ -8220,35 +8220,66 @@ def _preferred_name(entity: dict, language: str = "ar") -> str:
 
 
 @tool
-def get_doctor_fees(state: Annotated[AgentState, InjectedState]) -> dict:
-    """Get the currently-confirmed doctor's published services and
-    prices for a NEW BOOKING. Reads the doctor from the booking session
-    automatically - you never pass an ID. A doctor MUST already be
-    confirmed (via `match_entity_for_booking`, needsConfirmation=false)
-    before calling this - if none is confirmed yet, this returns
-    {"status": "no_doctor_confirmed"} and you should ask which doctor
-    they're asking about first.
+def get_doctor_fees(state: Annotated[AgentState, InjectedState], doctor_name: str = "") -> dict:
+    """Get a doctor's published services and prices.
+
+    `doctor_name`: the doctor the patient asked about, as they wrote it
+    ("كم سعر الجلسة عند سعد الماضي" -> "سعد الماضي"). Pass it whenever
+    the patient names a doctor - no booking needs to be in progress.
+    Leave it empty to use the doctor already confirmed in the current
+    booking. With neither, this returns {"status": "no_doctor_confirmed"}
+    and you should ask which doctor they mean.
 
     IMPORTANT: fees are PRIVATE BY DEFAULT - only call this when the
     user EXPLICITLY asks about price/cost/fee. Never mention a fee
     proactively, and never quote one from schedule/slot data instead of
     this tool. Returns:
-    {"status": "found", "fees": [{"service": ..., "price": ...}, ...]}
+    {"status": "found", "doctor": "<name>", "fees": [{"service": ..., "price": ...}, ...]}
+    {"status": "ambiguous", "candidates": ["<name>", ...]}  # ask which one
+    {"status": "doctor_not_found"}  # no doctor by that name
     {"status": "no_doctor_confirmed"}
     {"status": "not_found"}  # doctor has no published services
     {"status": "not_configured"} / {"status": "error"}"""
 
-    session_id = state.get("session_id")
-    session = _get_booking_session(session_id)
-    doctor_id = session.get("doctor_id")
-
-    if not doctor_id:
-        return {"status": "no_doctor_confirmed"}
-
+    # A PRICE QUESTION IS NOT A BOOKING. The doctor used to be read only
+    # from the booking session, which is filled in by the booking flow's
+    # own doctor match. A patient asking the FAQ agent "كم سعر الكشف عند
+    # مشاعل الشعلان" had matched the doctor with `match_entity_info`
+    # (which does not touch the booking session), so this returned
+    # no_doctor_confirmed and the patient was told "ما عندي معلومات عن
+    # السعر" about a doctor whose fees the API had all along.
     base_url = _doctors_base_url(state)
     if not base_url:
         logger.warning("get_doctor_fees called but no doctors_base_url is configured for client_id=%s", state.get("client_id"))
         return {"status": "not_configured"}
+
+    doctor_display = None
+    doctor_id = None
+
+    if (doctor_name or "").strip():
+        roster = api.get_doctors(
+            base_url, page_size=200,
+            has_service_schedule=None, has_published_service=None,
+            language=conversation_language(state),
+        )
+        if not roster["success"]:
+            return _api_error(roster)
+        items = (roster["data"] or {}).get("items", [])
+        match = _fuzzy_match(doctor_name, items, ["formatedName", "altName", "name"])
+        if match["result"] == "ambiguous":
+            return {"status": "ambiguous", "candidates": [
+                _arabic_preferred_name(i) or i.get("formatedName") for i in match["items"]
+            ]}
+        if match["result"] != "matched":
+            return {"status": "doctor_not_found"}
+        doctor_id = match["item"].get("id")
+        doctor_display = _arabic_preferred_name(match["item"]) or match["item"].get("formatedName")
+    else:
+        session = _get_booking_session(state.get("session_id"))
+        doctor_id = session.get("doctor_id")
+
+    if not doctor_id:
+        return {"status": "no_doctor_confirmed"}
 
     result = api.get_doctor_fees(base_url, doctor_ids=[doctor_id], language=conversation_language(state))
 
@@ -8261,7 +8292,11 @@ def get_doctor_fees(state: Annotated[AgentState, InjectedState]) -> dict:
         return {"status": "not_found"}
 
     fees = [{"service": i.get("serviceName"), "price": i.get("price")} for i in items]
-    return {"status": "found", "fees": fees}
+    result = {"status": "found", "fees": fees}
+    if doctor_display:
+        result["doctor"] = doctor_display
+    return result
+
 
 
 # A phone number shared by a family genuinely has several patients on
