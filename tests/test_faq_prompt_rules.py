@@ -40,3 +40,15 @@ def test_the_faq_agent_gets_the_doctor_name_rule():
     prompt = registry.build_agent_prompt(_sections(), "faq")
 
     assert "A DESCRIPTION IS NOT A DOCTOR'S NAME" in prompt
+
+
+def test_the_agents_that_can_be_asked_who_the_best_doctor_is_get_the_rule():
+    """Asked "مين احسن دكتور" the assistant listed doctors without saying
+    it does not rank them, so the first name read as the recommended one.
+    The rule tells it to say all the doctors are competent, then list."""
+
+    found = _sections()
+
+    for agent in ("faq", "concierge", "booking", "medical"):
+        prompt = registry.build_agent_prompt(found, agent)
+        assert "WHO IS THE BEST DOCTOR - NEVER RANK, ALWAYS REASSURE" in prompt, agent
