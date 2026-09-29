@@ -454,6 +454,22 @@ OPENAI_MODEL_BY_AGENT: dict = _agent_models(os.getenv("OPENAI_MODEL_BY_AGENT", "
 #                                    instead of a model.
 LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "openai").strip().lower()
 
+# LLM_PROVIDER=openrouter -> ChatOpenAI pointed at OpenRouter's
+# OpenAI-compatible endpoint. Model names are OpenRouter slugs
+# ("openai/gpt-4.1", "anthropic/claude-sonnet-4.5", ...); a bare name with
+# no "/" (like the gpt-4.1 defaults above) gets "openai/" put in front.
+# Key: OPENROUTER_API_KEY (falls back to OPENAI_API_KEY).
+OPENROUTER_BASE_URL: str = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "") or OPENAI_API_KEY
+OPENROUTER_EMBEDDINGS_MODEL: str = os.getenv("OPENROUTER_EMBEDDINGS_MODEL", "openai/text-embedding-3-small")
+
+
+def openrouter_model(name: str) -> str:
+    """OpenRouter slug for a configured model name."""
+    name = (name or "").strip()
+    return name if "/" in name else f"openai/{name}"
+
+
 AZURE_OPENAI_ENDPOINT: str = os.getenv("AZURE_OPENAI_ENDPOINT", "")
 AZURE_OPENAI_API_VERSION: str = os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview")
 

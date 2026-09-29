@@ -66,6 +66,17 @@ def _get_embeddings_model() -> OpenAIEmbeddings:
                 api_version=config.AZURE_OPENAI_API_VERSION,
                 api_key=config.OPENAI_API_KEY,
             )
+        elif getattr(config, "LLM_PROVIDER", "") == "openrouter":
+            # OpenRouter's OpenAI-compatible embeddings endpoint.
+            # check_embedding_ctx_length=False: the tiktoken-based length
+            # splitting is OpenAI-specific and sends token ids, which
+            # OpenRouter does not accept - send plain text instead.
+            _embeddings_model = OpenAIEmbeddings(
+                model=config.OPENROUTER_EMBEDDINGS_MODEL,
+                api_key=config.OPENROUTER_API_KEY,
+                base_url=config.OPENROUTER_BASE_URL,
+                check_embedding_ctx_length=False,
+            )
         else:
             _embeddings_model = OpenAIEmbeddings(model=_EMBEDDING_MODEL_NAME)
     return _embeddings_model

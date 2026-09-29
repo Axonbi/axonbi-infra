@@ -120,6 +120,15 @@ def _classifier_llm():
             api_key=config.OPENAI_API_KEY or "sk-not-configured",
             **kwargs,
         )
+    elif config.LLM_PROVIDER == "openrouter":
+        from langchain_openai import ChatOpenAI
+
+        base = ChatOpenAI(
+            model=config.openrouter_model(config.OPENAI_MODEL_ROUTER),
+            api_key=config.OPENROUTER_API_KEY or "sk-not-configured",
+            base_url=config.OPENROUTER_BASE_URL,
+            **kwargs,
+        )
     else:
         from langchain_openai import ChatOpenAI
 

@@ -101,6 +101,14 @@ def _make_llm(model: str, **kwargs):
             **kwargs,
         )
 
+    if config.LLM_PROVIDER == "openrouter":
+        return ChatOpenAI(
+            model=config.openrouter_model(model),
+            api_key=config.OPENROUTER_API_KEY or "sk-not-configured",
+            base_url=config.OPENROUTER_BASE_URL,
+            **kwargs,
+        )
+
     return ChatOpenAI(model=model, api_key=config.OPENAI_API_KEY or "sk-not-configured", **kwargs)
 
 
