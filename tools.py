@@ -11680,12 +11680,14 @@ def geocode_address(
     # the right one at all).
     candidates = _geocode_candidates(address, country_code, viewbox, language) if country_code else []
 
-    # Unbiased retry: either there was no country to bias with, or the
-    # biased search itself found nothing - a plain free-text retry is a
-    # different query to Nominatim, not a guess, so it's still real
-    # data if it succeeds.
+    # Wider retry: the search biased to the branches' own area found
+    # nothing. Drop the area bias but KEEP the country: with no country
+    # at all Nominatim answers with same-named places anywhere in the world
+    # ("سيتي ستارز" -> a laundromat in New York), and now that every result
+    # may be shown to the patient as a choice, that would be nonsense. Only
+    # when the clinic's country is unknown is the search left fully open.
     if not candidates:
-        candidates = _geocode_candidates(address, None, None, language)
+        candidates = _geocode_candidates(address, country_code, None, language)
 
     places = _distinct_places(candidates)
 
