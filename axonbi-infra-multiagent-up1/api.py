@@ -8,7 +8,7 @@ mirroring the n8n HTTP Request nodes 1:1:
                                          f_cancel_appointment.json "HTTP Request"
   - GuestBookings/GetList (by phone)  <- f_lookup_appointment.json "HTTP Request2"
                                          f_cancel_appointment.json "HTTP Request2"
-  - GuestBookings/Cancel/{id}         <- f_cancel_appointment.json "HTTP Request1"/"HTTP Request3"/"HTTP Request4"
+  - Bookings/UpdateStatus (cancel)    <- was GuestBookings/Cancel/{id}; now cms-api
   - Authentica send-otp / verify-otp  <- langchain_cancellation.json "send_otp5"/"verify_otp5"
 
 No business logic (filtering, selection, formatting) lives here - that's
@@ -35,6 +35,7 @@ from config import (
     REQUEST_TIMEOUT_SECONDS,
     SSO_EMAIL,
     SSO_LOGIN_URL,
+    SSO_ORGANIZATION_ID,
     SSO_PASSWORD,
     SSO_TOKEN_TTL_SECONDS,
 )
@@ -196,10 +197,14 @@ def _get_sso_token(force_refresh: bool = False) -> Optional[str]:
             logger.error("SSO_EMAIL / SSO_PASSWORD are not set - cannot call cms-api")
             return None
 
+        login_body = {"email": SSO_EMAIL, "password": SSO_PASSWORD}
+        if SSO_ORGANIZATION_ID:
+            login_body["organizationId"] = SSO_ORGANIZATION_ID
+
         try:
             response = requests.post(
                 SSO_LOGIN_URL,
-                json={"email": SSO_EMAIL, "password": SSO_PASSWORD},
+                json=login_body,
                 headers={"accept": "*/*", "Content-Type": "application/json"},
                 timeout=REQUEST_TIMEOUT_SECONDS,
             )
@@ -239,8 +244,19 @@ def get_bookings_by_ref(base_url: str, ref_number: str, language: Optional[str] 
     """POST {cms base_url}/api/Bookings/GetList with bookingRefNum.
     (Moved from portal-api /api/GuestBookings/GetList.)"""
 
-    return _cms_request("post", base_url, "/api/Bookings/GetList", language=language,
-                        json={"bookingRefNum": ref_number})
+    result = _cms_request("post", base_url, "/api/Bookings/GetList", language=language,
+                          json={"pageNumber": 1, "pageSize": 10, "bookingRefNum": ref_number})
+
+    # bookingRefNum is a "contains" match on cms-api, so BK-123 also
+    # returns BK-1234. Keep only the booking whose reference is exactly
+    # the one asked for.
+    if result["success"] and isinstance(result["data"], dict):
+        wanted = str(ref_number).strip().lower()
+        items = result["data"].get("items") or []
+        exact = [i for i in items if str(i.get("bookingRefNum") or "").strip().lower() == wanted]
+        result["data"] = {**result["data"], "items": exact, "totalCount": len(exact)}
+
+    return result
 
 
 def get_bookings_by_phone(
@@ -251,14 +267,16 @@ def get_bookings_by_phone(
     page_size: int = 1000,
     status_list: Optional[list] = None,
 ) -> dict:
-    """POST {cms base_url}/api/Bookings/GetList with mobileNumber + pageSize.
-    (Moved from portal-api /api/GuestBookings/GetList.)
+    """POST {cms base_url}/api/Bookings/GetList with patientMobile + pageSize.
+    (Moved from portal-api /api/GuestBookings/GetList. cms-api renamed the
+    filter mobileNumber -> patientMobile and rejects unknown fields with
+    400 "Data Was Not Valid".)
 
     `status_list`, when given, is sent as the API's "statusList" filter
     (e.g. [1, 2] for New+Confirmed). tools.py's _filter_active still runs
     afterwards as a second layer."""
 
-    payload = {"mobileNumber": phone, "pageSize": page_size}
+    payload = {"pageNumber": 1, "pageSize": page_size, "patientMobile": phone}
     if status_list:
         payload["statusList"] = status_list
 
@@ -326,47 +344,18 @@ def _cms_request(method: str, base_url: Optional[str], path: str, language: Opti
     return _result(True, response.status_code, data=body.get("data", {}))
 
 
+BOOKING_STATUS_CANCELLED = 6
+
+
 def cancel_booking_by_guid(base_url: str, booking_guid: str, client_id: Optional[str] = None) -> dict:
-    """PUT {base_url}/api/GuestBookings/Cancel/{booking_guid}.
+    """PUT {cms base_url}/api/Bookings/UpdateStatus with status 6 (Cancelled).
+    (Moved from portal-api PUT /api/GuestBookings/Cancel/{id}: cancel now
+    lives inside cms-api and needs the SSO bearer token.)"""
 
-    Mirrors f_cancel_appointment.json "HTTP Request1"/"HTTP Request3"
-    (onError: continueErrorOutput -> here, a structured failure result
-    instead of a raised exception achieves the same thing).
-    """
-
-    url = f"{base_url}/api/GuestBookings/Cancel/{booking_guid}"
-
-    logger.debug("PUT %s", url)
-
-    response, last_timeout, last_exc = _request_with_retry(
-        "put", url, headers=_headers(client_id=client_id),
+    return _cms_request(
+        "put", base_url, "/api/Bookings/UpdateStatus",
+        json={"id": booking_guid, "isConfirmed": True, "status": BOOKING_STATUS_CANCELLED},
     )
-
-    if response is None:
-        if last_timeout:
-            logger.warning("Cancel request timed out: %s", url)
-            return _result(False, error="timeout")
-        logger.exception("Cancel request failed: %s", url)
-        return _result(False, error=str(last_exc) if last_exc else "request_failed")
-
-    if response.status_code >= 500:
-        return _result(False, response.status_code, error="server_error")
-
-    if response.status_code >= 400:
-        return _result(False, response.status_code, error="validation_error")
-
-    try:
-        body = response.json()
-    except ValueError:
-        return _result(False, response.status_code, error="invalid_json_response")
-
-    if not body:
-        return _result(False, response.status_code, error="empty_response")
-
-    if not body.get("isSuccess"):
-        return _result(False, response.status_code, data=body, error="api_reported_failure")
-
-    return _result(True, response.status_code, data=body)
 
 
 # ==========================================================
@@ -983,25 +972,54 @@ def _put_json(url: str, payload: dict, client_id: Optional[str] = None) -> dict:
 def reschedule_booking(
     base_url: str,
     booking_id: str,
+    slot: dict,
     new_from: str,
     new_to: str,
-    client_id: Optional[str] = None,
+    language: Optional[str] = None,
 ) -> dict:
-    """PUT {base_url}/api/GuestBookings/Update.
+    """PUT {cms base_url}/api/Bookings/Update.
+    (Moved from portal-api PUT /api/GuestBookings/Update.)
 
-    Changes an EXISTING booking's time. `booking_id` is the booking's own
-    GUID `id` field (NOT the human-readable bookingRefNum) - confirmed
-    directly from the API's real request schema: {"id", "fromBookingTime",
-    "toBookingTime"}."""
+    cms-api updates the WHOLE booking, so the body is built from the
+    booking's current state (GetById: rowVersion, bookingRefNum, patientId,
+    guestPatientId - exactly one of the two patient ids is null and both
+    are sent back as returned) plus the slot the patient picked
+    (`slot`: branchId, doctorId, serviceId, spaceId, scheduleId).
 
-    url = f"{base_url}/api/GuestBookings/Update"
-    payload = {
-        "id": booking_id,
-        "fromBookingTime": new_from,
-        "toBookingTime": new_to,
-    }
+    A stale rowVersion (the booking changed in between) is retried once
+    with a fresh GetById."""
 
-    return _put_json(url, payload, client_id=client_id)
+    result = _result(False, error="request_failed")
+
+    for attempt in (1, 2):
+        current = get_booking_by_id(base_url, booking_id)
+        if not current["success"]:
+            return current
+
+        booking = current["data"] or {}
+        payload = {
+            "id": booking_id,
+            "rowVersion": booking.get("rowVersion"),
+            "bookingRefNum": booking.get("bookingRefNum"),
+            "patientId": booking.get("patientId"),
+            "guestPatientId": booking.get("guestPatientId"),
+            "branchId": slot.get("branchId") or booking.get("branchId"),
+            "spaceId": slot.get("spaceId"),
+            "doctorId": slot.get("doctorId") or booking.get("doctorId"),
+            "doctorScheduleId": slot.get("scheduleId"),
+            "serviceId": slot.get("serviceId"),
+            "bookingTimeFrom": new_from,
+            "bookingTimeTo": new_to,
+        }
+
+        result = _cms_request("put", base_url, "/api/Bookings/Update", language=language, json=payload)
+
+        # 4xx here is either a stale rowVersion (worth one more read) or a
+        # real rejection (a second try gets the same answer, harmlessly).
+        if result["success"] or result.get("status_code") is None or result["status_code"] < 400 or result["status_code"] >= 500:
+            break
+
+    return result
 
 
 def create_booking(
