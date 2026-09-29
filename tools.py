@@ -456,6 +456,34 @@ def to_local_wallclock(value: Optional[str], timezone_name: str = DEFAULT_TIMEZO
 # value is read as UTC. There is no per-deployment flag any more.
 
 
+def to_api_time(value: Optional[str], timezone_name: str = DEFAULT_TIMEZONE) -> Optional[str]:
+    """A slot time -> what the booking APIs are sent: the clinic's local
+    time WITH its offset ("2026-10-06T15:20:00+03:00").
+
+    Slots are stored as offset-less local wall clock, and an offset-less
+    value sent to the API is ambiguous - Reservation answered 400 to it.
+    The API itself speaks "+03:00", so it is sent back in the same form.
+    A value that already carries an offset is left alone."""
+
+    if not value:
+        return None
+
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return value
+
+    if dt.tzinfo is not None:
+        return dt.isoformat()
+
+    try:
+        tz = ZoneInfo(timezone_name)
+    except Exception:
+        tz = _CLINIC_TZ
+
+    return dt.replace(tzinfo=tz).isoformat()
+
+
 def to_wire_utc(value: Optional[str], timezone_name: str = DEFAULT_TIMEZONE) -> Optional[str]:
     """A slot timestamp from the API -> the value sent back to it.
 
@@ -5395,7 +5423,8 @@ def reschedule_appointment(
     # Slot times are the API's own local values (+03:00), sent back as-is.
     result = api.reschedule_booking(
         _cms_base_url(state), booking_id, chosen_slot,
-        new_time_from, new_time_to,
+        to_api_time(new_time_from, (state.get("templates") or {}).get("_timezone") or DEFAULT_TIMEZONE),
+        to_api_time(new_time_to, (state.get("templates") or {}).get("_timezone") or DEFAULT_TIMEZONE),
         language=conversation_language(state),
     )
 
@@ -9714,8 +9743,8 @@ def create_new_booking(
         doctor_id=matched_slot.get("doctorId") or doctor_id,
         service_id=matched_slot.get("serviceId"),
         service_price=matched_slot.get("servicePrice"),
-        booking_time_from=slot_start,
-        booking_time_to=slot_end,
+        booking_time_from=to_api_time(slot_start, (state.get("templates") or {}).get("_timezone") or DEFAULT_TIMEZONE),
+        booking_time_to=to_api_time(slot_end, (state.get("templates") or {}).get("_timezone") or DEFAULT_TIMEZONE),
         specialty_id=matched_slot.get("specialtyId"),
         doctor_schedule_id=matched_slot.get("scheduleId"),
         space_id=matched_slot.get("spaceId"),
