@@ -195,6 +195,15 @@ RESULT_GUIDANCE: dict = {
         "not_matched":
             "No match: doctors, or a branch with no viable alternative "
             "at all.",
+        "not_a_name":
+            "What the patient wrote describes a KIND of doctor, service or "
+            "visit (online, first visit, \"the doctor\"...) - it is NOT a "
+            "doctor's name, so nothing was searched. Do NOT call this tool "
+            "again with those words and NEVER say you could not find a "
+            "doctor called that. If they are asking about an online / "
+            "remote service, answer it from the hospital information "
+            "(`answer_hospital_faq`). Otherwise ask ONE short question: "
+            "which doctor (by name) or which specialty do they mean?",
         "not_matched_with_branches":
             "Branches only: no confident match (or the only guesses had "
             "zero doctors, which are never offered even as a guess). "
