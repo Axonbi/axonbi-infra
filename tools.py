@@ -11646,6 +11646,13 @@ def _nearest_geo_branch_name(latitude: float, longitude: float) -> Optional[str]
     return best[1] if best else None
 
 
+# The places offered to a patient for an ambiguous name, per session. The
+# option coordinates in the tool result get shortened by history compaction,
+# so the model could not pass the chosen place's coordinates on and used a
+# generic city centre instead.
+_PENDING_PLACES: dict = {}
+
+
 @tool
 def geocode_address(
     state: Annotated[AgentState, InjectedState],
@@ -11710,6 +11717,7 @@ def geocode_address(
         candidates = _geocode_candidates(address, country_code, None, language)
 
     places = _distinct_places(candidates)
+    _PENDING_PLACES.pop(str(state.get("session_id")), None)
 
     if not places:
         logger.info("geocode_address: Nominatim returned no match for address=%r", address)
@@ -11736,6 +11744,7 @@ def geocode_address(
             "geocode_address: address=%r matches %d different places - asking which one: %s",
             address, len(options), [o["label"] for o in options],
         )
+        _PENDING_PLACES[str(state.get("session_id"))] = options
         return {"status": "ambiguous", "candidates": options}
 
     top = places[0]
@@ -11756,11 +11765,15 @@ def geocode_address(
 @tool
 def find_nearest_branch(
     state: Annotated[AgentState, InjectedState],
-    latitude: float,
-    longitude: float,
+    latitude: float = 0.0,
+    longitude: float = 0.0,
+    place_option: int = 0,
 ) -> dict:
     """Find the clinic's real branches physically closest to a real
-    coordinate pair. ALWAYS call `geocode_address` first to turn the
+    coordinate pair. After `geocode_address` returned "ambiguous" and the
+    patient chose one place, pass that number as `place_option` (the
+    coordinates are then taken from the offered list; leave them out).
+    ALWAYS call `geocode_address` first to turn the
     patient's own typed address into `latitude`/`longitude` - never
     estimate coordinates, a distance, or "the closest branch" yourself.
 
@@ -11784,6 +11797,16 @@ def find_nearest_branch(
     {"status": "not_found"}  # no branch has geo data configured at all
     {"status": "not_configured"} / {"status": "error"}
     """
+
+    pending = _PENDING_PLACES.get(str(state.get("session_id")))
+    if pending:
+        chosen = next((o for o in pending if o["option"] == place_option), None)
+        if chosen:
+            latitude, longitude = chosen["latitude"], chosen["longitude"]
+        elif not any(_haversine_km(latitude, longitude, o["latitude"], o["longitude"]) < 1
+                     for o in pending):
+            return {"status": "needs_place_choice",
+                    "candidates": [{"option": o["option"], "label": o["label"]} for o in pending]}
 
     base_url = _doctors_base_url(state)
     if not base_url:
