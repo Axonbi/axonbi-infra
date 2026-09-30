@@ -396,11 +396,11 @@ RESULT_GUIDANCE: dict = {
             "describe any booking, and do NOT search by their phone number "
             "instead.",
         "reference_needs_correction":
-            "The booking reference the patient typed matched nothing, and "
-            "looking further turned up SEVERAL bookings. That means the "
-            "reference is wrong or incomplete. Do NOT show, list, count or "
-            "describe those bookings. Ask the patient, in ONE short "
-            "message, to write the correct booking reference number.",
+            "The booking reference the patient typed is not a complete, "
+            "exact reference - other bookings merely contain it. It is "
+            "wrong or incomplete. Do NOT show, list, count or describe any "
+            "booking. Ask the patient, in ONE short message, to write the "
+            "correct booking reference number.",
         "found_but_inactive":
             "A booking exists under this ref/phone but is already "
             "cancelled, completed, or its own date/time has passed - it "

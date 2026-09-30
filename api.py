@@ -274,7 +274,12 @@ def get_bookings_by_ref(base_url: str, ref_number: str, language: Optional[str] 
         wanted = str(ref_number).strip().lower()
         items = result["data"].get("items") or []
         exact = [i for i in items if str(i.get("bookingRefNum") or "").strip().lower() == wanted]
-        result["data"] = {**result["data"], "items": exact, "totalCount": len(exact)}
+        # `partial_count` is what the contains-match returned BEFORE the
+        # exact filter: 0 means nothing carries this text at all, more
+        # means the reference is incomplete or wrong and other bookings
+        # merely contain it.
+        result["data"] = {**result["data"], "items": exact, "totalCount": len(exact),
+                          "partial_count": len(items)}
 
     return result
 

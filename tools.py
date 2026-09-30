@@ -870,16 +870,6 @@ def compare_phone(
     return {"status": "no_match"}
 
 
-# Sessions where the patient gave a booking reference and NO booking matched
-# it exactly. While set, a lookup by phone must not put a list of bookings
-# on screen: a mistyped reference should end in "please type it correctly",
-# not in whatever else the phone number happens to be attached to.
-# CONFIRMED (2026-09-30 20:21): "APT-CL01-20260922-48" (incomplete) matched
-# nothing, the flow fell back to the patient's own number and listed six
-# appointments with two different doctors.
-_REFERENCE_LOOKUP_FAILED: Dict[str, bool] = {}
-
-
 @tool
 def lookup_appointment(
     state: Annotated[AgentState, InjectedState],
@@ -999,15 +989,18 @@ def lookup_appointment(
 
     items = (result["data"] or {}).get("items", [])
 
-    session_key = state.get("session_id")
-
-    if ref_number:
-        if not items:
-            if session_key:
-                _REFERENCE_LOOKUP_FAILED[session_key] = True
-            return {"status": "reference_not_found"}
-        if session_key:
-            _REFERENCE_LOOKUP_FAILED.pop(session_key, None)
+    if ref_number and not items:
+        # Nothing carries EXACTLY this reference. What the search found
+        # around it says which of two different things happened:
+        #  - other bookings merely CONTAIN what was typed: the reference
+        #    is incomplete or wrong. They belong to other people and must
+        #    not be shown - the patient is asked to write it correctly;
+        #  - nothing contains it: the reference may well be right and
+        #    simply have no booking.
+        # CONFIRMED (2026-09-30 20:21): an incomplete reference
+        # ("APT-CL01-20260922-48") ended with six appointments on screen.
+        partial = (result["data"] or {}).get("partial_count") or 0
+        return {"status": "reference_needs_correction" if partial else "reference_not_found"}
 
     if not items:
         return {"status": "not_found"}
@@ -1050,14 +1043,6 @@ def lookup_appointment(
     # picking the wrong row destroys the wrong appointment and nothing
     # undoes it - which makes this the highest-stakes list of the lot,
     # and it was the only unprotected one.
-    if not ref_number and session_key and _REFERENCE_LOOKUP_FAILED.get(session_key):
-        logger.info(
-            "lookup_appointment: %d bookings found by phone but the patient's booking "
-            "reference matched nothing - not listing them (session_id=%s)",
-            len(shaped), session_key,
-        )
-        return {"status": "reference_needs_correction"}
-
     _remember_list(state, "appointment", shaped)
 
     return {"status": "found_many", "appointments": shaped}
