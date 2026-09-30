@@ -507,7 +507,7 @@ def _entity_list_family(messages: list) -> Optional[str]:
         if name in ("find_available_doctors", "find_best_doctor_in_specialty"):
             return "entity_doctor"
         if name == "list_specialties":
-            return "entity_specialty"
+            return "entity_specialty" if _patient_asked_for_specialty_list(messages) else None
         if name in ("list_branches_for_specialty", "list_available_days_for_booking"):
             # `list_branches_for_specialty` collapses to that branch's
             # DOCTORS when there is exactly one branch, and
@@ -1751,6 +1751,57 @@ def _build_available_days_directive(messages: list, session_id: str) -> str:
     )
 
 
+# THE SPECIALTY CATALOGUE IS FOR THE MODEL, NOT FOR THE PATIENT.
+#
+# `list_specialties` returns everything the clinic has registered. It used
+# to be pre-built into a numbered list the model had to copy verbatim, so
+# every time it was called the patient got "التخصصات المتاحة: 1..4 - أي
+# تخصص تفضل؟" - even when they had already said what they needed.
+# CONFIRMED IN test-production-mu1:
+#   - a patient asked for dental ("أسنان") at a clinic with no dentistry
+#     and was handed the psychiatry list to pick from, instead of being
+#     told plainly that the clinic has no such specialty;
+#   - a patient described their brother's symptoms (ADHD) and was asked to
+#     choose among four specialties instead of being matched to one.
+# The list is only shown when the patient explicitly asks what specialties
+# exist.
+_ASKS_FOR_SPECIALTY_LIST_RE = re.compile(
+    r"(?:ايه|اي|ايش|وش|شو|ما\s*هي|كم|عندكم|عندك|فيه|في)\s*(?:هي\s*)?(?:ال)?(?:تخصصات|اقسام)"
+    r"|(?:ال)?(?:تخصصات|اقسام)\s*(?:المتاح|الموجود|عندكم|اللي|ايه|اي|ايش|وش)"
+    r"|(?:اعرض|وريني|ورني|ابغى\s*اشوف|عايز\s*اشوف|اريد\s*ان?\s*اري?)\s*(?:لي\s*)?(?:ال)?(?:تخصصات|اقسام)"
+    r"|\b(?:what|which|list|show)\b[^.?!]{0,30}\b(?:specialt(?:y|ies)|departments)\b",
+    re.IGNORECASE,
+)
+
+
+def _patient_asked_for_specialty_list(messages: list) -> bool:
+    text = _latest_human_text(messages)
+    return bool(text) and bool(_ASKS_FOR_SPECIALTY_LIST_RE.search(_norm_ar(text)))
+
+
+_SPECIALTY_CATALOGUE_DIRECTIVE = (
+    "============================================================\n"
+    "THE SPECIALTY LIST IS FOR YOU - DO NOT SHOW IT TO THE PATIENT\n"
+    "============================================================\n"
+    "`list_specialties` just returned this clinic's catalogue. It is "
+    "your reference, not a menu. Do NOT print it, do NOT number it, and "
+    "do NOT ask the patient to pick a specialty from it - the patient "
+    "did not ask what specialties exist.\n\n"
+    "Match what the patient said to it, silently:\n"
+    "- A specialty or symptom that fits one or more entries -> in THIS "
+    "SAME TURN call `find_available_doctors` with every plausibly-matching "
+    "id and carry on (this includes symptoms they describe for someone "
+    "else, e.g. a brother or a child).\n"
+    "- Nothing in the catalogue fits what they asked for (e.g. they want "
+    "dentistry and the clinic has none) -> say so plainly and warmly, "
+    "naming what THEY asked for (\"للأسف ما عندنا تخصص أسنان\"), and "
+    "offer a human staff member. Never substitute the nearest-sounding "
+    "specialty and never show the catalogue as \"here is what we have\".\n"
+    "- Too vague to match -> ask ONE short question about what is wrong, "
+    "not for a specialty name.\n\n"
+)
+
+
 # The three list-returning tools whose output the model used to format
 # freehand, and the key each one puts its items under.
 #
@@ -1960,6 +2011,15 @@ def _build_entity_list_directive(messages: list) -> str:
     else:
         spec = _ENTITY_LIST_TOOLS.get(tool_name)
         if not spec:
+            return ""
+
+        if tool_name == "list_specialties" and not _patient_asked_for_specialty_list(messages):
+            try:
+                catalogue = json.loads(last.content)
+            except (ValueError, TypeError):
+                return ""
+            if isinstance(catalogue, dict) and catalogue.get("status") == "found":
+                return _SPECIALTY_CATALOGUE_DIRECTIVE
             return ""
 
         items_key, heading = spec
@@ -20060,8 +20120,23 @@ def clarify(state: AgentState) -> dict:
 OUT_OF_SCOPE_NODE = "out_of_scope"
 
 
+# A prescription change is not "outside what I can help with" - it is
+# something the treating doctor does, and saying "I have no information"
+# reads as the assistant not understanding the request. CONFIRMED IN
+# test-production-mu1: "تعديل وصفة" -> "ما عندي معلومات عن هذا الموضوع".
+_PRESCRIPTION_RE = re.compile(r"وصف[هة]|روشت[هة]|prescription|refill", re.IGNORECASE)
+
+_PRESCRIPTION_OFFER = {
+    "ar": ("تعديل الوصفة يتم من خلال الطبيب المعالج 🌷 "
+           "تحب أحوّلك لخدمة العملاء؟"),
+    "en": ("A prescription can only be changed by your treating doctor 🌷 "
+           "Would you like me to transfer you to customer service?"),
+}
+
+
 def _out_of_scope_offer(reading: Optional[dict], english: bool,
-                        templates: Optional[dict] = None) -> str:
+                        templates: Optional[dict] = None,
+                        messages: Optional[list] = None) -> str:
     """"Not something I have information on - customer service, or a
     contact number?" The offer's wording is what makes the next turn work:
     "حوّلني" accepts a transfer the assistant really offered (the router's
@@ -20071,6 +20146,8 @@ def _out_of_scope_offer(reading: Optional[dict], english: bool,
 
     topic = ((reading or {}).get("entities") or {}).get("topic")
     templates = templates or {}
+    if _PRESCRIPTION_RE.search(_norm_ar(f"{topic or ''} {_latest_human_text(messages or [])}")):
+        return _PRESCRIPTION_OFFER["en" if english else "ar"]
     if english:
         subject = topic or "this"
         default = ("I'm sorry, I don't have information about {topic} - it's outside what I can "
@@ -20102,7 +20179,7 @@ def out_of_scope(state: AgentState) -> dict:
     reading = state.get("understanding") or {}
 
     if reading.get("about_this_hospital"):
-        text = _out_of_scope_offer(reading, english, templates)
+        text = _out_of_scope_offer(reading, english, templates, messages)
     elif state.get("greeted"):
         text = _build_out_of_scope_block(templates, "en" if english else "ar").strip()
     else:
