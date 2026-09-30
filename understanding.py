@@ -68,7 +68,7 @@ _BOOL_FIELDS = (
     "wants_human", "cancel_request", "cancel_confirmed", "crisis",
     "asks_price", "is_ambiguous", "answer_to_previous_question",
     "changes_intent", "declines", "confirms", "asks_location",
-    "about_this_hospital",
+    "about_this_hospital", "wants_options",
 )
 _TEXT_FIELDS = ("doctor_name", "specialty")
 ENTITY_KEYS = ("doctor", "branch", "date", "time", "booking_reference", "phone", "service", "topic")
@@ -113,6 +113,7 @@ Return ONLY a JSON object with these keys:
 "cancel_request": this message asks for an existing appointment to be cancelled.
 "cancel_confirmed": ONLY when the previous message asked to confirm cancelling a specific appointment and this clearly says yes. "تم تاكيد الموعد مسبقا" (already confirmed) is not.
 "crisis": suicidal thoughts, wanting to die or "end it", self-harm, or danger to self or others, direct or indirect, including someone with them. Anxiety, sadness, insomnia or asking for a psychiatrist are not.
+"wants_options": cannot choose or does not know (which doctor, which specialty, which day) or asks to be shown everything that is available, in any wording ("مش عارف", "اعرض لي الكل", "what do you have?"). False when they simply name or pick something.
 "asks_price": asks about a price, fee or cost.
 "asks_location": asks where a branch is, its address or map.
 "about_this_hospital": only for intent "other" - true when it concerns THIS hospital although it is not patient care (a job, training, an interview, a supplier, administration); false when it has nothing to do with the hospital (a party, event tickets, food prices, general chat).
@@ -314,6 +315,7 @@ def log_view(reading: Optional[dict]) -> dict:
         "answer_to_previous_question", "changes_intent", "wants_human",
         "cancel_request", "cancel_confirmed", "crisis", "asks_price",
         "confirms", "declines", "asks_location", "about_this_hospital",
+        "wants_options",
     )}
     view["entities_present"] = sorted(
         key for key, value in (reading.get("entities") or {}).items() if value

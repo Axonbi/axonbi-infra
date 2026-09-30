@@ -4286,7 +4286,7 @@ def _build_booking_entry_directive(messages: list, session_id: str, agent_name: 
     # "مش عارف" only means "I can't choose" when it ANSWERS the
     # specialty-or-doctor question. Said anywhere else it is an ordinary
     # negative and this rung has nothing to do with it.
-    if _DONT_KNOW_RE.match(text.strip()) or _DONT_KNOW_RE.match(folded):
+    if (reading is not None and reading.get("wants_options")) or _DONT_KNOW_RE.match(text.strip()) or _DONT_KNOW_RE.match(folded):
         last_ai = _norm_ar(_last_ai_reply_text(messages))
         if last_ai and _ASKED_SPECIALTY_OR_DOCTOR_RE.search(last_ai):
             return _BOOKING_ENTRY_DONT_KNOW_DIRECTIVE
@@ -9272,7 +9272,11 @@ def _reply_ignores_a_refusal(reply_text: str, state: AgentState) -> bool:
         return False
 
     folded_human = _norm_ar(text)
-    if not (_BARE_NEGATION_RE.match(folded_human) or _LEADING_REFUSAL_RE.match(folded_human)):
+    reading = state.get("understanding")
+    if reading is not None:
+        if not reading.get("declines"):
+            return False
+    elif not (_BARE_NEGATION_RE.match(folded_human) or _LEADING_REFUSAL_RE.match(folded_human)):
         return False
 
     offered = _entities_offered_in_previous_reply(state)
@@ -14590,7 +14594,7 @@ _SHOW_ALL_DOCTORS_AFTER_ASK_DIRECTIVE = (
 )
 
 
-def _build_show_all_doctors_after_ask_directive(messages: list) -> str:
+def _build_show_all_doctors_after_ask_directive(messages: list, reading: Optional[dict] = None) -> str:
     """Fires the turn right after the assistant asked the patient to
     name a specific doctor (per _BARE_DOCTOR_ANSWER_DIRECTIVE), when the
     patient's reply says they don't know one / asks to see everyone
@@ -14608,7 +14612,7 @@ def _build_show_all_doctors_after_ask_directive(messages: list) -> str:
 
     content = getattr(last, "content", "")
     text = content if isinstance(content, str) else str(content)
-    if not _DONT_KNOW_DOCTOR_NAME_RE.search(_norm_ar(text)):
+    if not ((reading is not None and reading.get("wants_options")) or _DONT_KNOW_DOCTOR_NAME_RE.search(_norm_ar(text))):
         return ""
 
     previous_ai = None
@@ -17916,7 +17920,7 @@ def _reply_reshows_review_card_after_explicit_yes(reply_text: str, state: AgentS
         if isinstance(msg, _HumanMessage):
             content = getattr(msg, "content", "")
             text = content if isinstance(content, str) else str(content)
-            saw_bare_yes = bool(_BARE_AFFIRMATION_RE.match(_norm_ar(text)))
+            saw_bare_yes = _patient_confirms(text, state.get("understanding"))
             break
 
     if not saw_bare_yes:
@@ -18932,7 +18936,9 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         state["messages"], state.get("session_id"), agent_name,
         reading=state.get("understanding"),
     )
-    show_all_doctors_directive = _build_show_all_doctors_after_ask_directive(state["messages"])
+    show_all_doctors_directive = _build_show_all_doctors_after_ask_directive(
+        state["messages"], reading=state.get("understanding"),
+    )
     doctor_branches_directive = _build_doctor_branches_directive(
         state["messages"], state.get("session_id"),
     )
