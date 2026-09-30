@@ -83,6 +83,9 @@ class TurnFacts:
     list_on_screen: Optional[str] = None
     # The previous specialist holds no tool that can finish a booking.
     previous_cannot_book: bool = False
+    # The message is a file (PDF, image, voice note...). The assistant
+    # cannot open files, so a person is the only useful next step.
+    media_received: bool = False
 
 
 @dataclass
@@ -194,6 +197,10 @@ def owner(reading: dict, facts: TurnFacts, thresholds: Thresholds = Thresholds()
     return CONCIERGE, f"semantic: {intent}", None
 
 
+def in_crisis_now(crisis_now: bool, facts: TurnFacts) -> bool:
+    return bool(crisis_now or facts.crisis_active)
+
+
 def decide(reading: Optional[dict], facts: TurnFacts,
            thresholds: Thresholds = Thresholds()) -> Decision:
     """The whole routing decision for one turn."""
@@ -202,6 +209,10 @@ def decide(reading: Optional[dict], facts: TurnFacts,
     if crisis_now and not facts.crisis_active:
         return Decision(CONCIERGE, "crisis: immediate human handoff", ROUTING_SAFETY,
                         handoff=True, override_reason="crisis", reading=reading)
+
+    if facts.media_received and not in_crisis_now(crisis_now, facts):
+        return Decision(CONCIERGE, "media: a file was sent - hand off to staff", ROUTING_SAFETY,
+                        handoff=True, override_reason="media", reading=reading)
 
     if reading is None:
         return Decision(None, "understanding unavailable (technical failure)", ROUTING_FALLBACK)

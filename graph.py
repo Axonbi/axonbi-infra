@@ -20224,6 +20224,7 @@ def _turn_facts(state: AgentState, previous: Optional[str] = None,
         flow_completed=bool(messages) and agents.router._flow_just_completed(messages),
         crisis_active=bool(state.get("crisis_active")),
         crisis_signal=_signals_crisis(messages),
+        media_received=_message_is_media(messages),
         transfer_offered=_assistant_offered_a_transfer(messages),
         bare_list_position=bool(_BARE_LIST_POSITION_RE.match(
             understanding.latest_human_text(messages) or "")),
@@ -20232,7 +20233,21 @@ def _turn_facts(state: AgentState, previous: Optional[str] = None,
     )
 
 
+# The channel writes a file into the conversation as text:
+#   "[Client sent a document: CV.pdf] https://... [media attached]"
+_MEDIA_MARKER_RE = re.compile(r"\[Client sent an? [^\]]*\]|\[media attached\]", re.IGNORECASE)
+
+
+def _message_is_media(messages: list) -> bool:
+    text = understanding.latest_human_text(messages) or ""
+    return bool(_MEDIA_MARKER_RE.search(text))
+
+
 def _understand_turn(state: AgentState) -> Optional[dict]:
+    if _message_is_media(state.get("messages") or []):
+        # Nothing to interpret in a file link, and the decision does not
+        # depend on it - skip the model call.
+        return None
     if not config.UNDERSTANDING_ENABLED:
         return None
     return understanding.understand_turn(
@@ -20548,7 +20563,10 @@ def handoff(state: AgentState) -> dict:
         text = templates.get("msg_handoff_confirmation") or _HANDOFF_TEXT_AR
 
     call_id = f"handoff_{uuid.uuid4().hex[:12]}"
-    reason = "crisis detected" if crisis else "patient asked for / accepted a person"
+    media = str(state.get("routing_reason") or "").startswith("media")
+    reason = ("crisis detected" if crisis else
+              "patient sent a file the assistant cannot open" if media else
+              "patient asked for / accepted a person")
     logger.warning(
         "handoff: raising human handoff in code for session_id=%s (%s)",
         state.get("session_id"), reason,

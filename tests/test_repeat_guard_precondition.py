@@ -164,3 +164,18 @@ def test_a_named_doctor_is_matched_even_when_a_neighbour_shares_the_family_name(
     # a bare given name is still a genuine choice
     people = [{"name": "احمد عبدالرحمن"}, {"name": "احمد عقيل"}]
     assert tools._fuzzy_match("احمد", people, ["name"])["result"] == "ambiguous"
+
+
+def test_a_file_sent_by_the_patient_is_handed_to_staff():
+    import agents.semantic_router as sr
+    from langchain_core.messages import HumanMessage
+    cv = "[Client sent a document: CV.pdf] https://x.example/y?id=1 [media attached]"
+    assert graph._message_is_media([HumanMessage(content=cv)]) is True
+    assert graph._message_is_media([HumanMessage(content="عايز احجز")]) is False
+    facts = sr.TurnFacts(media_received=True)
+    decision = sr.decide(None, facts)
+    assert decision.handoff is True and decision.mode == sr.ROUTING_SAFETY
+    # with a reading too
+    assert sr.decide({"intent": "booking", "confidence": 1.0}, facts).handoff is True
+    # a normal message is untouched
+    assert sr.decide({"intent": "booking", "confidence": 1.0}, sr.TurnFacts()).handoff is False
