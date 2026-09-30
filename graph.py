@@ -20148,6 +20148,9 @@ def router(state: AgentState) -> dict:
     messages = state["messages"]
 
     reading = _understand_turn(state)
+    if reading is not None and not reading.get("wants_human") and _types_the_word_we_asked_for(state.get("messages") or []):
+        reading = {**reading, "wants_human": True, "intent": "human", "confidence": 1.0,
+                   "is_ambiguous": False, "answer_to_previous_question": True}
     decision = agents.semantic_router.decide(reading, _turn_facts(state), _routing_thresholds())
 
     if decision.agent is None:
@@ -20280,6 +20283,34 @@ _MEDIA_MARKER_RE = re.compile(r"\[Client sent an? [^\]]*\]|\[media attached\]", 
 def _message_is_media(messages: list) -> bool:
     text = understanding.latest_human_text(messages) or ""
     return bool(_MEDIA_MARKER_RE.search(text))
+
+
+_INVITED_WORD_RE = re.compile(r"[«\"]([^»\"\n]{2,20})[»\"]")
+
+
+def _types_the_word_we_asked_for(messages: list) -> bool:
+    """The assistant told the patient to type a word to reach a person
+    («موظف»), and that word is their whole message.
+
+    The word is quoted from OUR OWN previous message, so this is not a
+    guess about the patient: we invited exactly this text. Without it,
+    «موظف» (employee) was read as a question about jobs - the
+    patient had just sent a CV - and answered "no information about an
+    employee".
+    CONFIRMED (2026-09-30 13:47): the media reply said "اكتب لي «موظف»
+    وأحوّلك فوراً"; the patient wrote "موظف" and was told it was outside
+    the assistant's services."""
+
+    if not messages:
+        return False
+    typed = _norm_ar((understanding.latest_human_text(messages) or "").strip(" .!؟?،,"))
+    if not typed or len(typed.split()) > 2:
+        return False
+    previous = _norm_ar(understanding.last_ai_text_before_latest_human(messages) or "")
+    if not previous or not _TRANSFER_OFFER_RE.search(previous):
+        return False
+    return any(_norm_ar(m).strip() == typed for m in _INVITED_WORD_RE.findall(
+        understanding.last_ai_text_before_latest_human(messages) or ""))
 
 
 def _understand_turn(state: AgentState) -> Optional[dict]:

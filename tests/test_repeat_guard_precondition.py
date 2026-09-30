@@ -217,3 +217,14 @@ def test_asking_for_today_gets_the_same_day_answer_not_todays_times():
     # tomorrow is still an ordinary date request
     msgs[-1] = HumanMessage(content="بكره")
     assert "SAME-DAY" not in graph._build_relative_date_directive(msgs, "s-sameday", {"_timezone": "Asia/Riyadh"})
+
+
+def test_typing_the_word_the_assistant_asked_for_is_a_request_for_a_person():
+    from langchain_core.messages import AIMessage, HumanMessage
+    canned = ("وصلني الملف اللي أرسلته 📎\nحالياً ما أقدر أفتح الصور أو الملفات مباشرة، لكن أقدر أحوّلك "
+              "لموظف خدمة العملاء يطّلع عليه ويساعدك — بس اكتب لي «موظف» وأحوّلك فوراً 👤")
+    assert graph._types_the_word_we_asked_for([AIMessage(content=canned), HumanMessage(content="موظف")]) is True
+    assert graph._types_the_word_we_asked_for([AIMessage(content=canned), HumanMessage(content="موظف.")]) is True
+    # not the invited word / no invitation -> untouched
+    assert graph._types_the_word_we_asked_for([AIMessage(content=canned), HumanMessage(content="عايز وظيفة")]) is False
+    assert graph._types_the_word_we_asked_for([AIMessage(content="أهلا"), HumanMessage(content="موظف")]) is False
