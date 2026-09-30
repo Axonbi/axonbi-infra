@@ -14619,6 +14619,70 @@ def _patient_confirms(text: str, reading: Optional[dict] = None) -> bool:
     return bool(_BARE_AFFIRMATION_RE.match(_norm_ar(text or "")))
 
 
+def _single_offered_doctor_name(item: dict, last_ai: str) -> str:
+    """The name under which the assistant's last reply named this doctor,
+    or "". Every stored name is tried: `formatedName` is the booking
+    system's own spelling (often English, or with a title glued on),
+    while the reply uses the display `name` - checking only the first
+    key made "اه" to "تحبين أحجز لك عند د. ليلى الحربي؟" ask for the
+    doctor's name (test-production-mu1, 2026-09-30 17:15)."""
+
+    folded_ai = _norm_ar(last_ai or "")
+    if not folded_ai:
+        return ""
+    for key in ("name", "formatedName", "altName", "doctorName"):
+        value = str(item.get(key) or "").strip()
+        if value and _norm_ar(value) in folded_ai:
+            return value
+        words = [w for w in tools._ordered_name_tokens(value)] if value else []
+        if len(words) >= 2 and all(w in folded_ai for w in words):
+            return value
+    return ""
+
+
+def _deterministic_single_doctor_confirmation(state: AgentState, agent_name: str) -> list:
+    """The assistant offered exactly ONE doctor and the patient said yes:
+    confirm that doctor in code (position 1 of the list just shown, so
+    nothing is guessed) and fetch their schedule, instead of trusting the
+    model to do it - it asked "اكتب اسم الدكتور" twice in a row."""
+
+    if agent_name not in _NEW_BOOKING_AGENTS:
+        return []
+
+    session = tools._get_booking_session(state.get("session_id"))
+    if session.get("doctor_id"):
+        return []
+    last_list = session.get("last_list") or {}
+    items = last_list.get("items") or []
+    if last_list.get("entity_type") != "doctor" or len(items) != 1 or not isinstance(items[0], dict):
+        return []
+
+    messages = state.get("messages") or []
+    if not _patient_confirms(_latest_human_text(messages), state.get("understanding")):
+        return []
+    if _tool_results_since_latest_human(messages, ("match_entity_for_booking",)):
+        return []
+    if not _single_offered_doctor_name(items[0], _last_ai_reply_text(messages)):
+        return []
+
+    try:
+        payload = tools.match_entity_for_booking.func(state, user_input="1", entity_type="doctor")
+    except Exception:  # noqa: BLE001
+        logger.warning("_deterministic_single_doctor_confirmation: match raised", exc_info=True)
+        return []
+    if not (isinstance(payload, dict) and payload.get("matched")):
+        return []
+
+    logger.info(
+        "_deterministic_single_doctor_confirmation: patient accepted the one doctor offered "
+        "- confirmed in code (session_id=%s)", state.get("session_id"),
+    )
+    pairs = list(_forge_tool_pair("match_entity_for_booking",
+                                  {"user_input": "1", "entity_type": "doctor"}, payload))
+    follow_up = _deterministic_doctor_schedule_lookup({**state, "messages": messages + pairs}, agent_name)
+    return pairs + list(follow_up)
+
+
 def _build_single_doctor_affirmation_directive(
     messages: list, session_id: str, agent_name: str,
     reading: Optional[dict] = None,
@@ -14669,13 +14733,7 @@ def _build_single_doctor_affirmation_directive(
         return ""
 
     item = items[0] if isinstance(items[0], dict) else {}
-    name = ""
-    for key in ("formatedName", "altName", "name", "doctorName"):
-        value = item.get(key)
-        if value and str(value).strip():
-            name = str(value).strip()
-            break
-
+    name = _single_offered_doctor_name(item, _last_ai_reply_text(messages))
     if not name:
         return ""
 
@@ -19511,7 +19569,9 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     if slot_lock_pair is not None:
         deterministic_pairs.extend(slot_lock_pair)
         history = history + list(slot_lock_pair)
-    schedule_pairs = _deterministic_doctor_schedule_lookup(state, agent_name)
+    schedule_pairs = _deterministic_single_doctor_confirmation(state, agent_name)
+    if not schedule_pairs:
+        schedule_pairs = _deterministic_doctor_schedule_lookup(state, agent_name)
     if schedule_pairs:
         deterministic_pairs.extend(schedule_pairs)
         history = history + list(schedule_pairs)
