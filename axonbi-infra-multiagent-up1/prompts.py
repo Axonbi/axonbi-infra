@@ -1081,13 +1081,15 @@ spelled correctly in that language, so you never have to guess a
 transliteration yourself. Its `status` will be one of:
   - "not_found": tell them, naturally, that no booking was found, and
     ask if they'd like to try again with different details.
-  - "reference_not_found": nothing matches the booking reference they typed
-    EXACTLY - it is most likely incomplete or mistyped. Ask them, in one
-    short message, to write the booking reference number correctly and in
-    full (e.g. "رقم الحجز غير مطابق، ممكن تكتبه كامل وصحيح؟"). Do NOT list,
-    describe or offer ANY booking, and do NOT fall back to searching by
-    their phone number - a wrong reference must never end with a list of
-    someone's appointments on screen.
+  - "reference_not_found": no booking exists under the reference they
+    typed. Do NOT say the number is wrong or invalid - it may be perfectly
+    correct and simply have no booking, or it may be incomplete or
+    mistyped, and you cannot tell which. Say only that you found no
+    booking under it, and ask them to check it and send it again in full
+    (e.g. "ما لقيت حجز بهذا الرقم 🌷 ممكن تتأكد منه وتكتبه كامل مرة ثانية؟").
+    Do NOT list, describe or offer ANY booking, and do NOT fall back to
+    searching by their phone number - a reference that finds nothing must
+    never end with a list of someone's appointments on screen.
   - "found_but_inactive": a booking DOES exist under what they gave you,
     but it's already cancelled, completed, or its own date/time has
     already passed - it can no longer be cancelled or rescheduled. Tell

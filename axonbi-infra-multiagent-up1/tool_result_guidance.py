@@ -389,12 +389,14 @@ RESULT_GUIDANCE: dict = {
     # ------------------------------------------------------------------
     "lookup_appointment": {
         "reference_not_found":
-            "No booking has EXACTLY the reference the patient typed. It is "
-            "probably incomplete or mistyped. Ask them, in ONE short "
-            "message, to write the booking reference number correctly and "
-            "in full. Do NOT show, list or describe ANY booking, do NOT "
-            "search by their phone number instead, and do NOT guess which "
-            "reference they meant.",
+            "No booking exists under the reference the patient typed. The "
+            "number may be perfectly correct and simply have no booking, "
+            "or it may be incomplete or mistyped - you cannot tell which, "
+            "so NEVER call it wrong or invalid. Say you found no booking "
+            "under it and ask them, in ONE short message, to check it and "
+            "send it again in full. Do NOT show, list or describe ANY "
+            "booking, do NOT search by their phone number instead, and do "
+            "NOT guess which reference they meant.",
         "found_but_inactive":
             "A booking exists under this ref/phone but is already "
             "cancelled, completed, or its own date/time has passed - it "
