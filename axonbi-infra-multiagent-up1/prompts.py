@@ -1086,11 +1086,11 @@ transliteration yourself. Its `status` will be one of:
     number wrong or invalid - it may be correct and simply have no
     booking. Do NOT list or describe any booking, and do NOT fall back to
     searching by their phone number.
-  - "reference_needs_correction": the reference they typed matched nothing
-    and further searching turned up SEVERAL bookings, so the reference is
-    wrong or incomplete. Do NOT show, count or describe those bookings.
-    Ask them, in one short message, to write the correct booking
-    reference number (e.g. "ممكن تكتب رقم الحجز الصحيح؟").
+  - "reference_needs_correction": the reference they typed is not a
+    complete, exact reference - other bookings merely contain it, so it is
+    wrong or incomplete. Do NOT show, count or describe any booking. Ask
+    them, in one short message, to write the correct booking reference
+    number (e.g. "ممكن تكتب رقم الحجز الصحيح؟").
   - "found_but_inactive": a booking DOES exist under what they gave you,
     but it's already cancelled, completed, or its own date/time has
     already passed - it can no longer be cancelled or rescheduled. Tell
