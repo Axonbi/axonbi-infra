@@ -488,6 +488,10 @@ def llm_model_id(model: str) -> str:
 # convert itself into unverified output.
 OPENAI_TIMEOUT_SECONDS: float = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "45"))
 
+# Booking or moving an appointment TO the same calendar day is not offered:
+# the clinic needs notice. Set ALLOW_SAME_DAY_BOOKING=true to lift it.
+ALLOW_SAME_DAY_BOOKING: bool = os.getenv("ALLOW_SAME_DAY_BOOKING", "false").strip().lower() in ("1", "true", "yes", "on")
+
 # Pinned rather than left to the API default of 1.0 - see the comment
 # on graph._llm. Every task this agent performs is closer to
 # transcription than to composition: copy the clinic's template, copy

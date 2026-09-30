@@ -541,6 +541,28 @@ def to_clinic_local(value: Optional[str], timezone_name: str = DEFAULT_TIMEZONE)
     return dt.replace(tzinfo=None).isoformat()
 
 
+def _drop_same_day_slots(slots: list, timezone_name: str) -> tuple:
+    """(kept, removed_count): the slots minus those on TODAY's calendar
+    date in the clinic's timezone, unless same-day booking is allowed.
+
+    Booking for the same day is not offered - the clinic needs notice.
+    CONFIRMED (2026-09-30 05:26): a patient wrote "ابي اليوم" and was
+    shown that afternoon's times."""
+
+    import config
+
+    if getattr(config, "ALLOW_SAME_DAY_BOOKING", False):
+        return slots, 0
+    try:
+        today = _local_now_naive(timezone_name).date()
+        kept = [s for s in slots
+                if not s.get("_localStart") or datetime.fromisoformat(s["_localStart"]).date() != today]
+    except Exception:
+        logger.exception("_drop_same_day_slots: failed - keeping every slot")
+        return slots, 0
+    return kept, len(slots) - len(kept)
+
+
 def _local_now_naive(timezone_name: str = DEFAULT_TIMEZONE) -> datetime:
     """"Now", as a NAIVE local datetime.
 
@@ -5190,8 +5212,9 @@ def get_available_reschedule_slots(
     except Exception:
         logger.exception("get_available_reschedule_slots: failed to filter past slots, showing all")
 
+    slots, same_day_removed = _drop_same_day_slots(slots, timezone_name)
     if not slots:
-        return {"status": "not_found"}
+        return {"status": "same_day_not_allowed" if same_day_removed else "not_found"}
 
     # Always chronological - the API's own return order was observed to
     # be scrambled in production (slots came back neither ascending nor
@@ -10548,6 +10571,11 @@ def get_available_slots_for_booking(
         slots = [s for s in slots if s["_localStart"] and datetime.fromisoformat(s["_localStart"]) > now_local]
     except Exception:
         logger.exception("get_available_slots_for_booking: failed to filter past slots, showing all")
+
+    slots, same_day_removed = _drop_same_day_slots(slots, timezone_name)
+    if not slots and same_day_removed:
+        logger.info("get_available_slots_for_booking: same_day_not_allowed - only today's slots were open")
+        return {"status": "same_day_not_allowed"}
 
     if not slots:
         logger.info("get_available_slots_for_booking: not_found - all slots were in the past relative to now")

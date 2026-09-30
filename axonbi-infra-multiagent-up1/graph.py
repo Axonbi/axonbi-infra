@@ -3315,6 +3315,29 @@ def _build_relative_date_directive(messages: list, session_id: str,
         named["offset_days"], "THAT DAY"
     )
 
+    # SAME-DAY BOOKING IS NOT OFFERED. "اليوم" / "النهارده" is answered with
+    # that fact, and no availability tool is called for today.
+    # CONFIRMED (2026-09-30 05:26): "ابي اليوم" was answered with the
+    # afternoon's times.
+    if named["offset_days"] == 0 and not config.ALLOW_SAME_DAY_BOOKING:
+        line = "=" * 60
+        return chr(10).join([
+            line,
+            "THEY ASKED FOR TODAY - SAME-DAY BOOKING IS NOT AVAILABLE",
+            line,
+            "Their latest message says \"" + named["matched"] + "\", which is TODAY. "
+            "The clinic does not book or move an appointment to the same day.",
+            "",
+            "Do NOT call any availability tool for today and do NOT show today's "
+            "times. Tell them, plainly and warmly, that booking on the same day "
+            "is not available (e.g. \"للأسف ما نقدر نحجز في نفس اليوم 🌷\"), and "
+            "in the SAME reply offer the next days that ARE open by calling the "
+            "day-list tool (`list_available_days_for_booking`, or for a "
+            "reschedule the days from the doctor's schedule) - one question: "
+            "which of those days.",
+            "", "",
+        ])
+
     return (
         "============================================================\n"
         "THEY NAMED A DATE - IT IS ALREADY WORKED OUT FOR YOU\n"
@@ -14971,6 +14994,22 @@ def _build_negation_directive(messages: list, reading: Optional[dict] = None) ->
     # (routing already moved it) and the second is a symptom.
     if reading is not None:
         refuses = bool(reading.get("declines")) and not reading.get("changes_intent")
+        # A DAY NAMED ON ITS OWN IS AN ANSWER, NOT A REFUSAL. After "does
+        # Wednesday 07/10 work?", a patient who writes "اليوم" or
+        # "الخميس" is choosing another day. The reading can flag that as
+        # declining the offer (it does turn the offer down), and the
+        # refusal directive then made the assistant ask "which day
+        # instead?" - a question the patient had just answered.
+        # CONFIRMED (2026-09-30 05:26): "اليوم" -> "وش اليوم تفضل تحجز
+        # بدال الأربعاء؟". A message with a refusal word in it ("لا",
+        # "مش مناسب") is still a refusal.
+        if refuses and not (_BARE_NEGATION_RE.search(folded) or _LEADING_REFUSAL_RE.search(folded)):
+            bare = folded.strip(" .!؟?،,")
+            if len(bare.split()) <= 3 and (
+                tools.resolve_relative_date(text, tools.DEFAULT_TIMEZONE)
+                or tools.resolve_weekday_index(text) is not None
+            ):
+                refuses = False
     else:
         refuses = bool(
             _BARE_NEGATION_RE.match(folded)

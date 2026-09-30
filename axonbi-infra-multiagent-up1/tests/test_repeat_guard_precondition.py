@@ -179,3 +179,41 @@ def test_a_file_sent_by_the_patient_is_handed_to_staff():
     assert sr.decide({"intent": "booking", "confidence": 1.0}, facts).handoff is True
     # a normal message is untouched
     assert sr.decide({"intent": "booking", "confidence": 1.0}, sr.TurnFacts()).handoff is False
+
+
+def test_a_day_named_on_its_own_after_an_offer_is_not_treated_as_a_refusal():
+    from langchain_core.messages import AIMessage, HumanMessage
+    offer = AIMessage(content="المواعيد المتاحة ليوم الأربعاء 07/10/2026: 1 4:00 مساءً. أي رقم أو وقت تفضل؟")
+    declines = {"declines": True, "changes_intent": False}
+    for said in ("اليوم", "بكره", "الخميس"):
+        assert graph._build_negation_directive([offer, HumanMessage(content=said)], declines) == ""
+    # a real refusal still fires, even when it names a day
+    assert graph._build_negation_directive([offer, HumanMessage(content="لا مش مناسب")], declines) != ""
+
+
+def test_same_day_slots_are_dropped_unless_allowed(monkeypatch):
+    import config, tools
+    from datetime import datetime
+    today = tools._local_now_naive("Asia/Riyadh").date().isoformat()
+    slots = [{"_localStart": today + "T23:30:00"}, {"_localStart": "2099-01-01T10:00:00"}]
+    monkeypatch.setattr(config, "ALLOW_SAME_DAY_BOOKING", False)
+    kept, removed = tools._drop_same_day_slots(list(slots), "Asia/Riyadh")
+    assert removed == 1 and kept == [slots[1]]
+    monkeypatch.setattr(config, "ALLOW_SAME_DAY_BOOKING", True)
+    assert tools._drop_same_day_slots(list(slots), "Asia/Riyadh") == (slots, 0)
+
+
+def test_asking_for_today_gets_the_same_day_answer_not_todays_times():
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+    import json
+    msgs = [HumanMessage(content="عايز اعدل موعدي"),
+            AIMessage(content="", tool_calls=[{"id": "1", "name": "lookup_appointment", "args": {}}]),
+            ToolMessage(content=json.dumps({"status": "found_one", "appointment": {"ref": "X"}}),
+                        name="lookup_appointment", tool_call_id="1"),
+            AIMessage(content="أي يوم تفضل؟"), HumanMessage(content="ابي اليوم")]
+    directive = graph._build_relative_date_directive(msgs, "s-sameday", {"_timezone": "Asia/Riyadh"})
+    assert "SAME-DAY BOOKING IS NOT AVAILABLE" in directive
+    assert "get_available_slots_for_booking(" not in directive
+    # tomorrow is still an ordinary date request
+    msgs[-1] = HumanMessage(content="بكره")
+    assert "SAME-DAY" not in graph._build_relative_date_directive(msgs, "s-sameday", {"_timezone": "Asia/Riyadh"})
