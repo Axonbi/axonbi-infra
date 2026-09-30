@@ -254,3 +254,48 @@ def test_a_generic_offer_naming_no_doctor_is_not_a_stale_doctor():
     assert graph._reply_shows_doctor_for_service_with_no_lookup_this_turn(offer, {"messages": []}) is False
     listed = "الدكاترة المتاحين في تخصص الطب النفسي:\n1️⃣ د. ليلى الحربي"
     assert graph._reply_shows_doctor_for_service_with_no_lookup_this_turn(listed, {"messages": []}) is True
+
+
+def test_yes_to_the_one_day_offered_fetches_that_days_slots(monkeypatch):
+    import tools
+    from langchain_core.messages import AIMessage, HumanMessage
+    sid = "sess-accept-day"
+    tools._BOOKING_SESSIONS.pop(sid, None)
+    session = tools._get_booking_session(sid)
+    session.update({"doctor_id": "D", "branch_id": "B", "last_list": {"entity_type": "day", "items": [
+        {"date": "2026-10-07", "from_date": "2026-10-07T00:00:00", "to_date": "2026-10-07T23:59:59"}]}})
+    seen = {}
+
+    def fake_slots(state, from_date, to_date):
+        seen["range"] = (from_date, to_date)
+        return {"status": "found", "slots": [{"slotStart": "2026-10-07T15:00:00"}]}
+
+    monkeypatch.setattr(tools.get_available_slots_for_booking, "func", fake_slots)
+    state = {"session_id": sid, "understanding": {"confirms": True}, "messages": [
+        AIMessage(content="أقرب موعد متاح: الأربعاء 07/10/2026 — من 3:00 مساءً إلى 6:00 مساءً. أي يوم يناسبك للحجز؟"),
+        HumanMessage(content="نعم")]}
+    pairs = graph._deterministic_slots_for_accepted_day(state, "booking")
+    assert seen["range"] == ("2026-10-07T00:00:00", "2026-10-07T23:59:59") and len(pairs) == 2
+    # a slot already locked -> nothing to do
+    session["selected_slot"] = {"slotStart": "x"}
+    assert graph._deterministic_slots_for_accepted_day(state, "booking") == []
+
+
+def test_review_cannot_be_confirmed_without_a_locked_slot(monkeypatch):
+    import tools
+    sid = "sess-review-noslot"
+    tools._BOOKING_SESSIONS.pop(sid, None)
+    monkeypatch.setattr(tools, "_review_card_was_shown", lambda state: True)
+    fn = getattr(tools.confirm_booking_review, "func", tools.confirm_booking_review)
+    assert fn({"session_id": sid, "messages": []}, patient_full_name="فهد خالد")["status"] == "slot_not_selected"
+    tools._get_booking_session(sid)["selected_slot"] = {"slotStart": "2026-10-07T15:00:00"}
+    assert fn({"session_id": sid, "messages": []}, patient_full_name="فهد خالد")["status"] == "confirmed"
+
+
+def test_an_answer_inside_a_new_booking_stays_in_booking():
+    import agents.semantic_router as sr
+    facts = sr.TurnFacts(previous="booking")
+    reading = {"intent": "reschedule", "confidence": 0.9, "answer_to_previous_question": True}
+    assert sr.decide(reading, facts).agent == "booking"
+    # a patient who really wants to move an appointment says so
+    assert sr.decide({**reading, "changes_intent": True}, facts).agent == "reschedule"

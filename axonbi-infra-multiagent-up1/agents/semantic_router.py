@@ -175,6 +175,14 @@ def owner(reading: dict, facts: TurnFacts, thresholds: Thresholds = Thresholds()
             return intent, f"semantic: {intent}", None
         if reading.get("changes_intent"):
             return intent, f"semantic: intent changed {flow} -> {intent}", None
+        if flow == "booking" and intent in ("reschedule", "cancel") and answering(reading):
+            # A time or a correction given while a NEW booking is being
+            # built ("الساعه 7" on the review card) reads as a change of
+            # an appointment, but there is no appointment yet - it answers
+            # booking's own question. CONFIRMED IN PRODUCTION
+            # (2026-09-30 12:23): it was moved into reschedule, which asked
+            # "برقم الجوال ولا برقم الحجز؟".
+            return flow, "semantic: answering booking's question (a change-shaped reply stays in booking)", None
         if flow in ("reschedule", "cancel") and intent == "booking" and answering(reading):
             # A reply INSIDE a reschedule/cancel flow - a day, a time, a
             # branch - reads as booking (it carries a doctor and a date),
