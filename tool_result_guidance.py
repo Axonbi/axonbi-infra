@@ -319,6 +319,12 @@ RESULT_GUIDANCE: dict = {
 
     # ------------------------------------------------------------------
     "confirm_booking_review": {
+        "slot_not_selected":
+            "No specific appointment time has been chosen yet - a day's "
+            "working hours are not a time. Call "
+            "`get_available_slots_for_booking` for the day already agreed, "
+            "show its numbered times, and let the patient pick one. Do NOT "
+            "show the review card again until a time is locked.",
         "card_not_shown":
             "This was refused - `review_shown` was NOT set, and "
             "`patient_full_name` was NOT confirmed. No consolidated "

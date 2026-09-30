@@ -1182,6 +1182,53 @@ def _deterministic_doctor_schedule_lookup(state: AgentState, agent_name: str) ->
     return pairs
 
 
+def _deterministic_slots_for_accepted_day(state: AgentState, agent_name: str) -> list:
+    """The assistant offered ONE day ("أقرب موعد ... الأربعاء 07/10 - أي
+    يوم يناسبك؟") and the patient said yes: fetch that day's real slots
+    in code. The model used to skip this step and go straight to the
+    phone question, so no slot was ever chosen and the review card showed
+    the doctor's hours ("من 3:00 إلى 6:00") as if they were a time.
+    CONFIRMED IN PRODUCTION (2026-09-30 12:20)."""
+
+    if not config.DETERMINISTIC_DAY_RESOLUTION or agent_name != "booking":
+        return []
+
+    session = tools._get_booking_session(state.get("session_id"))
+    if not session.get("doctor_id") or not session.get("branch_id") or session.get("selected_slot"):
+        return []
+
+    last_list = session.get("last_list") or {}
+    items = last_list.get("items") or []
+    if last_list.get("entity_type") != "day" or len(items) != 1 or not isinstance(items[0], dict):
+        return []
+
+    messages = state.get("messages") or []
+    if not _patient_confirms(_latest_human_text(messages), state.get("understanding")):
+        return []
+    if _tool_results_since_latest_human(messages, (
+            "get_available_slots_for_booking", "select_appointment_slot", "resolve_available_day")):
+        return []
+
+    from_date, to_date = items[0].get("from_date"), items[0].get("to_date")
+    if not from_date or not to_date:
+        return []
+
+    try:
+        payload = tools.get_available_slots_for_booking.func(state, from_date=from_date, to_date=to_date)
+    except Exception:  # noqa: BLE001
+        logger.warning("_deterministic_slots_for_accepted_day: slot lookup raised", exc_info=True)
+        return []
+    if not isinstance(payload, dict):
+        return []
+
+    logger.info(
+        "_deterministic_slots_for_accepted_day: patient accepted %s - fetched its slots in code (status=%s)",
+        items[0].get("date"), payload.get("status"),
+    )
+    return _forge_tool_pair("get_available_slots_for_booking",
+                            {"from_date": from_date, "to_date": to_date}, payload)
+
+
 def _deterministic_day_and_slot_resolution(state: AgentState, agent_name: str) -> list:
     """When a doctor is confirmed and the patient's OWN message named a
     weekday - and, in the same message, a clock time - resolve as much
@@ -19345,6 +19392,8 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         deterministic_pairs.extend(schedule_pairs)
         history = history + list(schedule_pairs)
     day_and_slot_pairs = _deterministic_day_and_slot_resolution(state, agent_name)
+    if not day_and_slot_pairs:
+        day_and_slot_pairs = _deterministic_slots_for_accepted_day(state, agent_name)
     if day_and_slot_pairs:
         deterministic_pairs.extend(day_and_slot_pairs)
         history = history + list(day_and_slot_pairs)

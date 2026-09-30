@@ -9582,6 +9582,15 @@ def confirm_booking_review(
         return {"status": "card_not_shown"}
 
     session = _get_booking_session(session_id)
+    if not session.get("selected_slot"):
+        # CONFIRMED IN PRODUCTION (2026-09-30 12:22): a review card was
+        # built with the doctor's working hours as the "time" because no
+        # slot had ever been picked.
+        logger.warning(
+            "confirm_booking_review: refusing for session_id=%s - no time slot is "
+            "locked (select_appointment_slot never succeeded)", session_id,
+        )
+        return {"status": "slot_not_selected"}
     session["review_shown"] = True
     logger.info(
         "confirm_booking_review: patient confirmed the reviewed summary for "
