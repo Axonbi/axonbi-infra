@@ -43,7 +43,7 @@ import logging
 import re
 import uuid
 import ast
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from functools import lru_cache
 from typing import Dict, Optional
@@ -9835,6 +9835,34 @@ def _reply_invents_availability(reply_text, state) -> bool:
         tool_text, (state.get("templates") or {}).get("_timezone") or tools.DEFAULT_TIMEZONE,
     )
 
+    # A DATE THAT IS SIMPLY "THE NEAREST <WEEKDAY>" IS CALENDAR ARITHMETIC,
+    # NOT AN INVENTED APPOINTMENT. The reschedule flow (STEP R4) has the
+    # assistant suggest the nearest matching date to a bare weekday and
+    # then fetch the real slots for it (STEP R5), so the date is stated
+    # BEFORE any availability tool has been asked about it. The model
+    # often works the date out itself rather than calling
+    # `get_next_weekday_date`, and the correction pass does not change
+    # that - it was rejected twice and the patient got "couldn't verify
+    # an available appointment" for a date that was simply correct.
+    # CONFIRMED IN test-production-mu1 (2026-09-29 12:07 and 12:14):
+    # "أقرب يوم أحد متاح هو 04/10/2026" (4 Oct 2026 IS a Sunday, the next
+    # one) and "أقرب يوم ثلاثاء ... 29/09/2026" (that day was a Tuesday).
+    # The code can check this arithmetic itself, so it does - a date is
+    # accepted only if it is the nearest or the following occurrence of a
+    # weekday the reply itself names. Times are never accepted this way.
+    if dates:
+        # "أقرب يوم أحد" has no "ال", which `_weekdays_claimed_in` needs,
+        # so the day named right after the word "يوم" is read here too.
+        named = set(weekdays)
+        for word in re.findall(r"يوم\s+(?:ال)?([^\s،.:؟?\-–]+)", reply_text):
+            for candidate in ("ال" + word, word):
+                if candidate in _WEEKDAY_WORDS:
+                    named.add(candidate)
+        if named:
+            known_dates = set(known_dates) | _nearest_dates_of_weekdays(
+                named, (state.get("templates") or {}).get("_timezone") or tools.DEFAULT_TIMEZONE,
+            )
+
     for value in dates:
         if _normalize_date_token(value) not in known_dates:
             return True
@@ -9863,6 +9891,30 @@ def _reply_invents_availability(reply_text, state) -> bool:
         return True
 
     return False
+
+
+_WEEKDAY_INDEX = {"Monday": 0, "Tuesday": 1, "Wednesday": 2, "Thursday": 3,
+                  "Friday": 4, "Saturday": 5, "Sunday": 6}
+
+
+def _nearest_dates_of_weekdays(weekdays, timezone_name: str) -> set:
+    """`D/M/YYYY` for the nearest occurrence of each weekday (today
+    included) and the one after it."""
+
+    try:
+        today = datetime.now(ZoneInfo(timezone_name)).date()
+    except Exception:
+        today = date.today()
+
+    found = set()
+    for day in weekdays or ():
+        index = _WEEKDAY_INDEX.get(_WEEKDAY_WORDS.get(day, ""))
+        if index is None:
+            continue
+        first = today + timedelta(days=(index - today.weekday()) % 7)
+        for candidate in (first, first + timedelta(days=7)):
+            found.add(f"{candidate.day}/{candidate.month}/{candidate.year}")
+    return found
 
 
 def _weekdays_of_dates(known_dates) -> set:
@@ -16199,7 +16251,16 @@ _ASKS_FOR_PHONE_RE = re.compile(
 # recognized by its own fixed confirmation phrasing and excluded here -
 # only a reply with NEITHER of these cues is treated as a genuine
 # re-ask.
+#
+# THE BOOKING-SUCCESS MESSAGE IS ONE TOO. It says "رقم الحجز راح يصلك
+# قريبًا على جوالك برسالة نصية" - the words "booking number" and "your
+# mobile" in a sentence that asks for nothing. CONFIRMED IN
+# test-production-mu1 (2026-09-29 11:38): a correct "تم تأكيد موعدك
+# بنجاح" reply was flagged as asking for a phone number and re-drafted
+# once before being sent unchanged.
 _SUMMARY_OR_CONFIRMATION_CUE_RE = re.compile(
+    r"تم\s*تاكيد\s*(?:ال)?(?:موعد|حجز)|تم\s*(?:ال)?حجز|"
+    r"booking\s*(?:is\s*)?confirmed|"
     r"تاكيد\s*(?:ال)?ارسال|تاكيد\s*(?:ال)?حجز|"
     r"هل\s*(?:جميع\s*)?(?:ال)?بيانات\s*صحيح|"
     r"confirm\s*(?:the\s*)?(?:sending\s*(?:the\s*)?)?(?:complaint|booking)|"
