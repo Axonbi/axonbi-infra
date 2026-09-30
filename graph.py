@@ -18265,10 +18265,34 @@ def _tool_calls_made_this_turn(messages: list) -> dict:
 
     start = _latest_human_index(messages)
     counts: dict = {}
+    turn = messages[start + 1:] if start >= 0 else messages or []
 
-    for message in (messages[start + 1:] if start >= 0 else messages or []):
+    # A CALL THAT FAILED ONLY BECAUSE A PRECONDITION WAS NOT MET IS NOT A
+    # CALL THAT "ALREADY ANSWERED". "missing_doctor" means the tool ran
+    # before the doctor was confirmed; a later call with the same
+    # arguments, after the doctor IS confirmed, is a different question.
+    # CONFIRMED IN test-production-mu1 (2026-09-30 08:19): the schedule
+    # was requested before match_entity_for_booking saved the doctor,
+    # came back missing_doctor, and the retry after the doctor was saved
+    # was blocked as a repeat - so the patient was told a doctor who has
+    # 13 bookable days "has no schedule".
+    precondition_failed = set()
+    for message in turn:
+        if getattr(message, "type", None) != "tool":
+            continue
+        content = getattr(message, "content", "")
+        try:
+            payload = json.loads(content) if isinstance(content, str) else None
+        except (ValueError, TypeError):
+            payload = None
+        if isinstance(payload, dict) and str(payload.get("status") or "").startswith("missing_"):
+            precondition_failed.add(getattr(message, "tool_call_id", None))
+
+    for message in turn:
         for call in getattr(message, "tool_calls", None) or []:
             if not isinstance(call, dict):
+                continue
+            if call.get("id") in precondition_failed:
                 continue
             key = _tool_call_key(call)
             counts[key] = counts.get(key, 0) + 1
