@@ -110,3 +110,46 @@ def test_yes_after_a_price_answer_keeps_the_doctor():
 def test_no_directive_when_the_reply_did_not_offer_booking():
     messages = _fees_conversation("د. أحمد يوسف جلسة الاستشارة النفسية سعرها ٢٥٠ ريال.", "نعم")
     assert graph._build_priced_doctor_affirmation_directive(messages, "s-none", "booking") == ""
+
+
+def test_ambiguous_name_shows_only_the_candidates_and_remembers_them():
+    import tools
+    session_id = "sess-ambiguous-1"
+    tools._BOOKING_SESSIONS.pop(session_id, None)
+    candidates = [{"name": "العنود الخليفة"}, {"name": "نجود الخليفي"}]
+    roster = {"status": "found", "doctors": [{"name": f"دكتور {i}"} for i in range(14)]}
+    messages = [
+        HumanMessage(content="نجود"),
+        _call("1", "match_entity_for_booking", {"user_input": "نجود", "entity_type": "doctor"}),
+        ToolMessage(content=json.dumps({"matched": False, "ambiguous": True, "candidates": candidates}),
+                    name="match_entity_for_booking", tool_call_id="1"),
+        _call("2", "find_available_doctors", {}),
+        ToolMessage(content=json.dumps(roster), name="find_available_doctors", tool_call_id="2"),
+    ]
+    directive = graph._build_entity_list_directive(messages, session_id)
+    assert "نجود الخليفي" in directive and "دكتور 5" not in directive
+    assert "Print NO other list" in directive
+    remembered = tools._get_booking_session(session_id)["last_list"]["items"]
+    assert [i["name"] for i in remembered] == ["العنود الخليفة", "نجود الخليفي"]
+
+
+def test_affirmation_is_read_by_meaning_when_the_turn_reading_says_so():
+    assert graph._patient_confirms("ياريت يا دكتور بكرا الصبح", {"confirms": True}) is True
+    assert graph._patient_confirms("ياريت يا دكتور بكرا الصبح", {"confirms": False}) is False
+    assert graph._patient_confirms("اه", None) is True
+    assert graph._patient_confirms("بكرا", None) is False
+
+
+def test_single_doctor_yes_in_any_wording():
+    session_id = "sess-single-1"
+    import tools
+    tools._BOOKING_SESSIONS.pop(session_id, None)
+    tools._get_booking_session(session_id)["last_list"] = {"entity_type": "doctor", "items": [{"name": "ليلى الحربي"}]}
+    messages = [
+        HumanMessage(content="عاوز اسنان"),
+        AIMessage(content="الدكتورة المتاحة هي د. ليلى الحربي - تحب أحجز لك عندها؟"),
+        HumanMessage(content="تمام خلاص احجزي لي بكرا"),
+    ]
+    assert "ليلى الحربي" in graph._build_single_doctor_affirmation_directive(
+        messages, session_id, "booking", reading={"confirms": True})
+    assert graph._build_single_doctor_affirmation_directive(messages, session_id, "booking") == ""

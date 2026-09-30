@@ -1962,7 +1962,22 @@ def _build_branches_only_no_doctors_directive(messages: list) -> str:
     )
 
 
-def _build_entity_list_directive(messages: list) -> str:
+def _ambiguous_candidates_this_turn(messages: list) -> list:
+    """The candidates of a `match_entity_for_booking` result that said
+    "several doctors/branches match that name", if one came back since
+    the patient's latest message. Empty otherwise."""
+
+    for message in _tool_results_since_latest_human(messages, ("match_entity_for_booking",)):
+        try:
+            data = json.loads(getattr(message, "content", "") or "")
+        except (ValueError, TypeError):
+            continue
+        if isinstance(data, dict) and data.get("ambiguous") and isinstance(data.get("candidates"), list):
+            return [c for c in data["candidates"] if isinstance(c, dict)]
+    return []
+
+
+def _build_entity_list_directive(messages: list, session_id: Optional[str] = None) -> str:
     """
     If the LAST message is a ToolMessage from one of the list-returning
     tools with status "found", pre-build the exact numbered list in code -
@@ -1975,6 +1990,47 @@ def _build_entity_list_directive(messages: list) -> str:
 
     last = messages[-1]
     tool_name = getattr(last, "name", None)
+
+    # ONE QUESTION, ONE LIST. When the name the patient typed matched
+    # several doctors, THAT choice is the only thing to ask this turn.
+    # A roster fetched by another tool in the same turn must not be
+    # printed underneath it: both lists number from 1, so the patient's
+    # "2" could mean two different people, and `last_list` (what "2" is
+    # resolved against) belongs to whichever tool ran last.
+    # CONFIRMED (2026-09-30 10:11): "فيه أكثر من دكتور قريب من الاسم -
+    # 1 العنود 2 نجود" followed in the SAME message by "الدكاترة
+    # المتاحين في المنار: 1 ... 14" and "أي رقم من الأسماء اللي فوق؟".
+    candidates = _ambiguous_candidates_this_turn(messages)
+    if candidates and tool_name in (set(_ENTITY_LIST_TOOLS) | {"match_entity_for_booking"}):
+        lines = []
+        for item in candidates:
+            text = _entity_list_line(item)
+            if text:
+                lines.append(f"{_numbered_prefix(len(lines) + 1)} {text}")
+        if len(lines) >= 2:
+            if session_id:
+                # "2" must resolve against THESE names, not the roster.
+                tools._get_booking_session(session_id)["last_list"] = {
+                    "entity_type": "doctor", "items": list(candidates),
+                }
+            block = "فيه أكثر من دكتور قريب من الاسم اللي قلته، هل تقصد:" + chr(10) + chr(10).join(lines)
+            return (
+                "[INTERNAL INSTRUCTION - NOT FOR THE USER - READ CAREFULLY]" + chr(10) +
+                "The name the patient typed matches several people. Your "
+                "ENTIRE reply must be the exact text between the START/END "
+                "markers below (translate the wording only if the "
+                "conversation is in another language), followed by exactly "
+                "ONE question: which one they mean." + chr(10) + chr(10) +
+                "Print NO other list in this reply - not a branch's doctors, "
+                "not a specialty's doctors, even though other tool results "
+                "this turn contain them. Two numbered lists in one message "
+                "both start at 1, and the patient cannot tell which 2 "
+                "they are choosing. The other list comes AFTER they have "
+                "answered this one." + chr(10) + chr(10) +
+                "[BEGIN-EXACT-TEXT]" + chr(10) +
+                block + chr(10) +
+                "[END-EXACT-TEXT]" + chr(10) + chr(10)
+            )
 
     # `match_entity_for_booking` IN LIST MODE WAS THE ONE LIST-PRODUCING
     # PATH NEVER WIRED INTO THIS BLOCK, AND IT WAS DANGEROUS TO MISS.
@@ -4462,7 +4518,8 @@ def _build_specialty_picked_directive(messages: list, agent_name: str) -> str:
     )
 
 
-def _build_established_specialty_directive(messages: list, session_id: str, agent_name: str) -> str:
+def _build_established_specialty_directive(messages: list, session_id: str, agent_name: str,
+                                           reading: Optional[dict] = None) -> str:
     """Fires when a settled specialty meets a booking request."""
 
     if agent_name not in ("booking", "concierge", "medical") or not messages:
@@ -4482,7 +4539,7 @@ def _build_established_specialty_directive(messages: list, session_id: str, agen
     # Either an explicit booking request, or a bare "yes" answering the
     # assistant's own offer to book.
     wants_booking = bool(_BOOKING_INTENT_RE.search(folded))
-    if not wants_booking and _BARE_AFFIRMATION_RE.match(folded):
+    if not wants_booking and _patient_confirms(text, reading):
         last_ai = _norm_ar(_last_ai_reply_text(messages))
         wants_booking = bool(last_ai and _BOOKING_OFFER_RE.search(last_ai))
 
@@ -14323,8 +14380,20 @@ _SINGLE_DOCTOR_AFFIRMED_DIRECTIVE = (
 )
 
 
+def _patient_confirms(text: str, reading: Optional[dict] = None) -> bool:
+    """Whether the patient said yes - by MEANING when the turn's reading
+    is available (any wording, any dialect, "نعم بكرا ان شاء الله"), and
+    by the bare yes-words otherwise. The word list alone made every
+    directive that waits for "yes" deaf to everything else."""
+
+    if reading is not None and reading.get("confirms"):
+        return True
+    return bool(_BARE_AFFIRMATION_RE.match(_norm_ar(text or "")))
+
+
 def _build_single_doctor_affirmation_directive(
     messages: list, session_id: str, agent_name: str,
+    reading: Optional[dict] = None,
 ) -> str:
     """A bare "yes" to an offer that named exactly ONE doctor.
 
@@ -14353,7 +14422,7 @@ def _build_single_doctor_affirmation_directive(
 
     content = getattr(messages[index], "content", "")
     text = (content if isinstance(content, str) else str(content)).strip()
-    if not text or not _BARE_AFFIRMATION_RE.match(_norm_ar(text)):
+    if not text or not _patient_confirms(text, reading):
         return ""
 
     session = tools._BOOKING_SESSIONS.get(session_id) or {}
@@ -14426,6 +14495,7 @@ _LEADING_AFFIRMATION_RE = re.compile(
 
 def _build_priced_doctor_affirmation_directive(
     messages: list, session_id: str, agent_name: str,
+    reading: Optional[dict] = None,
 ) -> str:
     """"Yes" (possibly with more words) to "shall I book with Dr X?"
     asked right after `get_doctor_fees` answered a price question about
@@ -14443,7 +14513,7 @@ def _build_priced_doctor_affirmation_directive(
 
     content = getattr(messages[index], "content", "")
     text = (content if isinstance(content, str) else str(content)).strip()
-    if not text or not _LEADING_AFFIRMATION_RE.match(_norm_ar(text)):
+    if not text or not (_LEADING_AFFIRMATION_RE.match(_norm_ar(text)) or _patient_confirms(text, reading)):
         return ""
 
     if (tools._BOOKING_SESSIONS.get(session_id) or {}).get("doctor_id"):
@@ -16359,7 +16429,8 @@ _BRANCH_SERVICES_OFFER_RE = re.compile(
 )
 
 
-def _build_branch_services_affirmation_directive(messages: list, session_id: str) -> str:
+def _build_branch_services_affirmation_directive(messages: list, session_id: str,
+                                                 reading: Optional[dict] = None) -> str:
     """Fires when the patient answers a bare "yes" to an offer to show a
     BRANCH's services.
 
@@ -16390,7 +16461,7 @@ def _build_branch_services_affirmation_directive(messages: list, session_id: str
     content = getattr(last, "content", "")
     text = content if isinstance(content, str) else str(content)
 
-    if not _BARE_AFFIRMATION_RE.match(_norm_ar(text)):
+    if not _patient_confirms(text, reading):
         return ""
 
     previous_ai = None
@@ -18688,6 +18759,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     )
     branch_services_yes_directive = _build_branch_services_affirmation_directive(
         state["messages"], state.get("session_id"),
+        reading=state.get("understanding"),
     )
     empty_branch_booking_directive = _build_empty_branch_booking_intent_directive(
         state["messages"], state.get("session_id"),
@@ -18788,6 +18860,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     )
     established_specialty_directive = _build_established_specialty_directive(
         state["messages"], state.get("session_id"), agent_name,
+        reading=state.get("understanding"),
     )
     booking_entry_directive = (
         "" if established_specialty_directive
@@ -18814,7 +18887,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     # by the model, which is exactly where its output shape varied from
     # one patient to the next.
     resolved_day_directive = _build_resolved_day_directive(state["messages"], state.get("session_id"))
-    entity_list_directive = _build_entity_list_directive(state["messages"])
+    entity_list_directive = _build_entity_list_directive(state["messages"], state.get("session_id"))
     terminal_success_directive = _build_terminal_success_directive(state["messages"], state.get("templates"))
 
     # Only the booking specialist is told to clear a half-finished
@@ -18853,9 +18926,11 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     # never confirmed in the session; this carries it across.
     single_doctor_directive = _build_single_doctor_affirmation_directive(
         state["messages"], state.get("session_id"), agent_name,
+        reading=state.get("understanding"),
     )
     single_doctor_directive += _build_priced_doctor_affirmation_directive(
         state["messages"], state.get("session_id"), agent_name,
+        reading=state.get("understanding"),
     )
     show_all_doctors_directive = _build_show_all_doctors_after_ask_directive(state["messages"])
     doctor_branches_directive = _build_doctor_branches_directive(
