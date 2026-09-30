@@ -228,3 +228,29 @@ def test_typing_the_word_the_assistant_asked_for_is_a_request_for_a_person():
     # not the invited word / no invitation -> untouched
     assert graph._types_the_word_we_asked_for([AIMessage(content=canned), HumanMessage(content="عايز وظيفة")]) is False
     assert graph._types_the_word_we_asked_for([AIMessage(content="أهلا"), HumanMessage(content="موظف")]) is False
+
+
+def test_schedule_requested_with_the_doctor_match_waits_for_the_match():
+    from langchain_core.messages import AIMessage
+    both = AIMessage(content="", tool_calls=[
+        {"id": "1", "name": "match_entity_for_booking", "args": {"user_input": "نوره الماضي", "entity_type": "doctor"}},
+        {"id": "2", "name": "get_doctor_schedule_for_booking", "args": {}},
+    ])
+    kept = graph._defer_calls_that_need_the_confirmation(both)
+    assert [c["name"] for c in kept.tool_calls] == ["match_entity_for_booking"]
+    alone = AIMessage(content="", tool_calls=[{"id": "3", "name": "get_doctor_schedule_for_booking", "args": {}}])
+    assert graph._defer_calls_that_need_the_confirmation(alone) is alone
+
+
+def test_removing_an_extra_question_removes_the_clause_that_hung_off_it():
+    text = ("الله يشافيك 🌷\nلو سمحت، وش المشكلة؟ عشان أقدر أساعدك وأوجهك للتخصص المناسب.\n"
+            "حاول ترتاح.\nعندنا دكاترة في الطب النفسي، تحب أحجز لك موعد؟")
+    out, removed = graph._strip_extra_questions(text, {})
+    assert removed == 1 and "عشان" not in out and "تحب أحجز لك موعد" in out
+
+
+def test_a_generic_offer_naming_no_doctor_is_not_a_stale_doctor():
+    offer = "عندنا دكاترة في تخصص الطب النفسي، تحب أحجز لك موعد مع واحد منهم؟"
+    assert graph._reply_shows_doctor_for_service_with_no_lookup_this_turn(offer, {"messages": []}) is False
+    listed = "الدكاترة المتاحين في تخصص الطب النفسي:\n1️⃣ د. ليلى الحربي"
+    assert graph._reply_shows_doctor_for_service_with_no_lookup_this_turn(listed, {"messages": []}) is True

@@ -6036,6 +6036,12 @@ _CONDITIONAL_LEADIN_RE = re.compile(
 )
 
 
+_DEPENDENT_PURPOSE_CLAUSE_RE = re.compile(
+    r"\s*(?:عشان|علشان|لكي|كي|حتى|لأجل|لاجل|so\s+(?:that|i|we)|in\s+order)(?=\s)",
+    re.IGNORECASE,
+)
+
+
 def _strip_extra_questions(reply_text: str, templates: dict) -> tuple:
     """Keep the FIRST question in a reply and drop any later ones.
 
@@ -6100,11 +6106,21 @@ def _strip_extra_questions(reply_text: str, templates: dict) -> tuple:
 
     kept = []
     removed = 0
+    just_removed = False
 
     for index, segment in enumerate(segments):
         is_question = any(mark in segment for mark in _QUESTION_MARKS)
 
         if not is_question:
+            # A purpose clause that hangs off the question just removed
+            # ("... وش المشكلة؟ عشان أقدر أساعدك") is nothing without it.
+            # CONFIRMED IN PRODUCTION (2026-09-30 11:52): the patient
+            # received a reply starting " عشان أقدر أساعدك وأوجهك للتخصص
+            # المناسب." - a fragment.
+            if just_removed and _DEPENDENT_PURPOSE_CLAUSE_RE.match(segment):
+                just_removed = False
+                continue
+            just_removed = False
             kept.append(segment)
             continue
 
@@ -6121,6 +6137,7 @@ def _strip_extra_questions(reply_text: str, templates: dict) -> tuple:
             continue
 
         removed += 1
+        just_removed = True
 
     if not removed:
         return reply_text, 0
@@ -7148,6 +7165,9 @@ _NAMES_SERVICE_OR_SPECIALTY_CONTEXT_RE = re.compile(
 )
 
 
+_NUMBERED_LIST_LINE_RE = re.compile(r"(?m)^[ ]*(?:[0-9٠-٩]{1,2}[.)\-]|[0-9٠-٩]{1,2}️?⃣|•|-)[ ]*\S")
+
+
 def _reply_shows_doctor_for_service_with_no_lookup_this_turn(reply_text: str, state: AgentState) -> bool:
     """True when the reply presents a doctor as available for a NAMED
     service or specialty, but no doctor-lookup tool
@@ -7183,6 +7203,16 @@ def _reply_shows_doctor_for_service_with_no_lookup_this_turn(reply_text: str, st
         return False
 
     if not _NAMES_SERVICE_OR_SPECIALTY_CONTEXT_RE.search(_norm_ar(reply_text)):
+        return False
+
+    # A REPLY THAT NAMES NO ONE HAS NOTHING TO VERIFY. "عندنا دكاترة في
+    # تخصص الطب النفسي، تحب أحجز لك؟" mentions doctors and a specialty
+    # but presents no doctor - it was rejected twice and re-drafted, two
+    # model calls for a correct reply (production, 2026-09-30 11:52).
+    # Only a numbered list or a name a tool actually returned is a
+    # doctor being presented.
+    if not (_NUMBERED_LIST_LINE_RE.search(reply_text)
+            or any(name and name in reply_text for name in _doctor_names_from_tools(state))):
         return False
 
     ran_this_turn = _tool_results_since_latest_human(
@@ -18665,6 +18695,44 @@ def _repeated_call_directive(repeats: list, messages: list) -> str:
     )
 
 
+# TOOLS THAT READ THE CONFIRMED DOCTOR/BRANCH FROM THE BOOKING SESSION.
+# When the model asks for one of these in the SAME response as the call
+# that confirms the doctor or branch, the two run together, and the
+# dependent one reads the session BEFORE the confirmation has been saved.
+# CONFIRMED IN PRODUCTION (2026-09-30 12:18:39): "نوره الماضي" was
+# matched (session doctor 00d0538a -> c4ac22de) while
+# `get_doctor_schedule_for_booking` ran for the OLD doctor 00d0538a, and
+# د. فرح's hours and "everything is booked" were shown under
+# د. نورة's name.
+_SESSION_DEPENDENT_TOOLS = frozenset({
+    "get_doctor_schedule_for_booking", "list_available_days_for_booking",
+    "get_available_slots_for_booking", "resolve_available_day",
+    "list_branches_for_specialty", "select_appointment_slot",
+})
+
+
+def _defer_calls_that_need_the_confirmation(response):
+    """`response` without the session-dependent calls that were requested
+    alongside a `match_entity_for_booking`. The model asks for them again
+    on its next step, after the match has been saved."""
+
+    calls = [c for c in (getattr(response, "tool_calls", None) or []) if isinstance(c, dict)]
+    if len(calls) < 2 or not any(c.get("name") == "match_entity_for_booking" for c in calls):
+        return response
+
+    kept = [c for c in calls if c.get("name") not in _SESSION_DEPENDENT_TOOLS]
+    if len(kept) == len(calls):
+        return response
+
+    logger.warning(
+        "deferring %s: they read the booking session and were requested in the same "
+        "response as match_entity_for_booking, which changes it",
+        [c.get("name") for c in calls if c.get("name") in _SESSION_DEPENDENT_TOOLS],
+    )
+    return AIMessage(content=getattr(response, "content", "") or "", tool_calls=kept,
+                     id=getattr(response, "id", None))
+
+
 def _break_repeated_tool_loop(response, state: AgentState, agent_name: str,
                               system_message, history: list,
                               target_language) -> object:
@@ -19457,6 +19525,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
             response, state, agent_name, system_message, history,
             target_language,
         )
+        response = _defer_calls_that_need_the_confirmation(response)
 
     updates: dict = {}
 
