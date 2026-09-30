@@ -34,7 +34,7 @@ def test_incomplete_reference_then_phone_search_never_lists_bookings(monkeypatch
     assert first == {"status": "reference_not_found"}
     fn = getattr(tools.lookup_appointment, "func", tools.lookup_appointment)
     second = fn(state, use_channel_identity=True)
-    assert second == {"status": "reference_not_found"}
+    assert second == {"status": "reference_needs_correction"}
 
 
 def test_phone_search_without_a_failed_reference_still_lists(monkeypatch):

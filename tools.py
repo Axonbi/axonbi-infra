@@ -1056,7 +1056,7 @@ def lookup_appointment(
             "reference matched nothing - not listing them (session_id=%s)",
             len(shaped), session_key,
         )
-        return {"status": "reference_not_found"}
+        return {"status": "reference_needs_correction"}
 
     _remember_list(state, "appointment", shaped)
 
