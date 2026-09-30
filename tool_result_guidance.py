@@ -270,6 +270,28 @@ RESULT_GUIDANCE: dict = {
     },
 
     # ------------------------------------------------------------------
+    "get_available_slots_for_booking": {
+        "same_day_not_allowed":
+            "Only TODAY's times were open, and the clinic does not book or "
+            "move an appointment to the same day. Tell the patient, "
+            "plainly and warmly, that booking on the same day is not "
+            "available (e.g. \"للأسف ما نقدر نحجز في نفس اليوم 🌷\") and "
+            "offer to show the next days that ARE open - then call the "
+            "day-list tool. Never show today's times.",
+    },
+
+    # ------------------------------------------------------------------
+    "get_available_reschedule_slots": {
+        "same_day_not_allowed":
+            "Only TODAY's times were open, and the clinic does not book or "
+            "move an appointment to the same day. Tell the patient, "
+            "plainly and warmly, that booking on the same day is not "
+            "available (e.g. \"للأسف ما نقدر نحجز في نفس اليوم 🌷\") and "
+            "offer to show the next days that ARE open - then call the "
+            "day-list tool. Never show today's times.",
+    },
+
+    # ------------------------------------------------------------------
     "select_appointment_slot": {
         "selected":
             "Confirm it back in ONE short line and move on to STEP NB6 - "

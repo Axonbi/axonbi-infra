@@ -3299,6 +3299,29 @@ def _build_relative_date_directive(messages: list, session_id: str,
         named["offset_days"], "THAT DAY"
     )
 
+    # SAME-DAY BOOKING IS NOT OFFERED. "اليوم" / "النهارده" is answered with
+    # that fact, and no availability tool is called for today.
+    # CONFIRMED (2026-09-30 05:26): "ابي اليوم" was answered with the
+    # afternoon's times.
+    if named["offset_days"] == 0 and not config.ALLOW_SAME_DAY_BOOKING:
+        line = "=" * 60
+        return chr(10).join([
+            line,
+            "THEY ASKED FOR TODAY - SAME-DAY BOOKING IS NOT AVAILABLE",
+            line,
+            "Their latest message says \"" + named["matched"] + "\", which is TODAY. "
+            "The clinic does not book or move an appointment to the same day.",
+            "",
+            "Do NOT call any availability tool for today and do NOT show today's "
+            "times. Tell them, plainly and warmly, that booking on the same day "
+            "is not available (e.g. \"للأسف ما نقدر نحجز في نفس اليوم 🌷\"), and "
+            "in the SAME reply offer the next days that ARE open by calling the "
+            "day-list tool (`list_available_days_for_booking`, or for a "
+            "reschedule the days from the doctor's schedule) - one question: "
+            "which of those days.",
+            "", "",
+        ])
+
     return (
         "============================================================\n"
         "THEY NAMED A DATE - IT IS ALREADY WORKED OUT FOR YOU\n"
