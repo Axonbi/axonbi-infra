@@ -299,3 +299,32 @@ def test_an_answer_inside_a_new_booking_stays_in_booking():
     assert sr.decide(reading, facts).agent == "booking"
     # a patient who really wants to move an appointment says so
     assert sr.decide({**reading, "changes_intent": True}, facts).agent == "reschedule"
+
+
+def test_yes_to_the_one_doctor_offered_confirms_them_in_code(monkeypatch):
+    import tools
+    from langchain_core.messages import AIMessage, HumanMessage
+    sid = "sess-one-doctor"
+    tools._BOOKING_SESSIONS.pop(sid, None)
+    tools._get_booking_session(sid)["last_list"] = {"entity_type": "doctor", "items": [
+        {"id": "L1", "name": "ليلى الحربي", "formatedName": "Dr. Laila Alharbi"}]}
+    calls = {}
+
+    def fake_match(state, user_input, entity_type):
+        calls["match"] = (user_input, entity_type)
+        tools._get_booking_session(sid)["doctor_id"] = "L1"
+        return {"matched": True, "needsConfirmation": False, "item": {"id": "L1"}}
+
+    monkeypatch.setattr(tools.match_entity_for_booking, "func", fake_match)
+    monkeypatch.setattr(graph, "_deterministic_doctor_schedule_lookup", lambda state, agent: ["schedule"])
+    state = {"session_id": sid, "understanding": {"confirms": True}, "messages": [
+        HumanMessage(content="عاوزه طب اسنان"),
+        AIMessage(content="الدكتورة ليلى الحربي متاحة للحجز، تحبين أحجز لك موعد عندها؟"),
+        HumanMessage(content="اه")]}
+    pairs = graph._deterministic_single_doctor_confirmation(state, "booking")
+    assert calls["match"] == ("1", "doctor") and pairs[-1] == "schedule"
+    # the directive recognises the display name too (not only formatedName)
+    tools._get_booking_session(sid).pop("doctor_id")
+    directive = graph._build_single_doctor_affirmation_directive(state["messages"], sid, "booking",
+                                                                  reading={"confirms": True})
+    assert "ليلى الحربي" in directive
