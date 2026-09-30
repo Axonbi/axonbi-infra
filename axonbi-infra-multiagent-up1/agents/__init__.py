@@ -4,7 +4,7 @@ Multi-agent layer for the Guest Booking Agent.
 This package turns the previous SINGLE agent (one 90 KB system prompt +
 28 tools handling six unrelated flows) into a supervisor pattern:
 
-    router (deterministic)  ->  one specialist agent  ->  tools  -> ...
+    understanding (LLM)  ->  semantic router  ->  one specialist agent  ->  tools  -> ...
 
 Nothing in `api.py`, `tools.py`, `config.py`'s CSV loading, `rag.py`, or
 the CSV files themselves is touched. `prompts.py`'s big template is not
@@ -16,7 +16,10 @@ Modules
 -------
 sections          : splits the built system prompt into named sections
 registry          : the specialist definitions (prompt sections + tools)
-router            : the supervisor - decides who owns the current turn
+semantic_router   : the supervisor - decides who owns the current turn from
+                    the understanding reading and conversation state
+router            : the deterministic cue router - FALLBACK ONLY, for a turn
+                    whose understanding call failed technically
 response_contract : the single output format every agent must produce
 """
 
@@ -33,6 +36,7 @@ from agents.response_contract import (
     normalize_reply,
 )
 from agents.router import route_turn
+from agents import semantic_router
 
 __all__ = [
     "AGENT_NAMES",
@@ -44,4 +48,5 @@ __all__ = [
     "RESPONSE_FORMAT_CONTRACT",
     "normalize_reply",
     "route_turn",
+    "semantic_router",
 ]

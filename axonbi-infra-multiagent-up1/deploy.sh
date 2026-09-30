@@ -23,6 +23,11 @@
 #   BRANCH=other ./deploy.sh    deploy a different branch
 #   ./deploy.sh --check         download and verify, change nothing
 #   ./deploy.sh --rollback      restore the most recent backup
+#   SOURCE_DIR=/opt/axonbi-infra ./deploy.sh
+#                               install from a local git checkout instead
+#                               of GitHub raw (no CDN cache at all) - run
+#                               `git fetch && git reset --hard origin/BRANCH`
+#                               in that checkout first
 #
 set -euo pipefail
 
@@ -43,8 +48,20 @@ KEEP_BACKUPS="${KEEP_BACKUPS:-10}"
 FILES=(
   graph.py tools.py prompts.py rag.py main.py app.py config.py
   state.py api.py progress.py start.py
+  understanding.py tool_result_guidance.py llm_usage.py
   agents/__init__.py agents/router.py agents/registry.py
   agents/sections.py agents/response_contract.py agents/hard_rules.py
+  agents/semantic_router.py
+)
+
+# The regression suite. Downloaded and RUN against the new code before
+# anything is installed - never copied into $APP_DIR. A failing test
+# means the deploy stops with production untouched.
+# SKIP_TESTS=1 bypasses it; only for an emergency rollforward.
+TEST_FILES=(
+  tests/conftest.py tests/test_production_scenarios.py tests/test_gates.py tests/test_round2.py
+  tests/test_semantic_routing.py tests/test_reading_first_gates.py
+  tests/test_reschedule_reverification.py tests/test_out_of_scope.py
 )
 
 RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; DIM=$'\033[2m'; OFF=$'\033[0m'
@@ -86,20 +103,41 @@ fi
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 
-step "Downloading $REPO@$BRANCH"
+# fetch_file <path> <dest>: from SOURCE_DIR when set, else GitHub raw.
+fetch_file() {
+  if [[ -n "${SOURCE_DIR:-}" ]]; then
+    [[ -f "$SOURCE_DIR/$1" ]] || return 1
+    cp "$SOURCE_DIR/$1" "$2"
+  else
+    curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' -o "$2" \
+      "https://raw.githubusercontent.com/$REPO/$BRANCH/$1?cb=$(date +%s%N)"
+  fi
+}
+
+if [[ -n "${SOURCE_DIR:-}" ]]; then
+  [[ -d "$SOURCE_DIR/.git" ]] || die "SOURCE_DIR=$SOURCE_DIR is not a git checkout"
+  step "Copying from $SOURCE_DIR @ $(git -C "$SOURCE_DIR" log --oneline -1)"
+else
+  step "Downloading $REPO@$BRANCH"
+fi
 for f in "${FILES[@]}"; do
   # The cache buster is not optional: raw.githubusercontent served a
   # several-minute-old copy of a file that had already been pushed, and
   # the deploy silently installed the previous version.
-  url="https://raw.githubusercontent.com/$REPO/$BRANCH/$f?cb=$(date +%s%N)"
   mkdir -p "$STAGE/$(dirname "$f")"
-  if ! curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' -o "$STAGE/$f" "$url"; then
-    die "could not download $f - is it on branch $BRANCH?"
+  if ! fetch_file "$f" "$STAGE/$f"; then
+    die "could not fetch $f - is it on branch $BRANCH?"
   fi
   [[ -s "$STAGE/$f" ]] || die "$f downloaded empty"
   printf '  %-34s %8s bytes\n' "$f" "$(stat -c%s "$STAGE/$f")"
 done
 ok "${#FILES[@]} file(s) downloaded"
+
+for f in "${TEST_FILES[@]}"; do
+  mkdir -p "$STAGE/$(dirname "$f")"
+  fetch_file "$f" "$STAGE/$f" || die "could not fetch $f - the regression suite must be on branch $BRANCH"
+done
+ok "${#TEST_FILES[@]} test file(s) downloaded"
 
 # ----------------------------------------------------------
 # 2. Verify before touching anything
@@ -112,6 +150,28 @@ for f in "${FILES[@]}"; do
     || die "$f does not parse - nothing has been changed"
 done
 ok "every file parses"
+
+# The new code, run as it will run: a scratch copy of what is deployed
+# (so the CSVs and knowledge base are the server's own), overlaid with
+# every downloaded file, then the regression suite.
+if [[ "${SKIP_TESTS:-0}" == "1" ]]; then
+  warn "SKIP_TESTS=1 - deploying WITHOUT the regression suite"
+else
+  step "Regression tests"
+  "$PY" -c "import pytest" 2>/dev/null || die "pytest is not installed for $PY (pip install pytest) - nothing has been changed"
+  TESTDIR="$(mktemp -d)"
+  trap 'rm -rf "$STAGE" "$TESTDIR"' EXIT
+  (cd "$APP_DIR" && tar --exclude=.venv --exclude=__pycache__ -cf - .) | (cd "$TESTDIR" && tar -xf -)
+  (cd "$STAGE" && tar -cf - .) | (cd "$TESTDIR" && tar -xf -)
+  # Tracing off for the test run: the copied .env enables LangSmith, and
+  # with its quota exhausted the exporter thread kept retrying after the
+  # tests finished - the deploy looked hung and was interrupted (Ctrl-C)
+  # before installing anything. Nothing here needs tracing.
+  if ! (cd "$TESTDIR" && OPENAI_API_KEY= OPENROUTER_API_KEY= LANGSMITH_TRACING=false         LANGCHAIN_TRACING_V2=false LANGCHAIN_TRACING=false         "$PY" -m pytest tests -q -p no:cacheprovider); then
+    die "regression tests failed - nothing has been changed"
+  fi
+  ok "regression suite passed"
+fi
 
 CHANGED=(); for f in "${FILES[@]}"; do
   if [[ ! -f "$APP_DIR/$f" ]] || ! cmp -s "$STAGE/$f" "$APP_DIR/$f"; then CHANGED+=("$f"); fi

@@ -163,3 +163,30 @@ class AgentState(TypedDict):
     # NotRequired for the same reason as the fields above: threads
     # checkpointed before it existed must keep resuming cleanly.
     previous_agent: NotRequired[Optional[str]]
+
+    # This turn's LLM reading of the patient's message (understanding.py):
+    # intent, confidence, is_ambiguous, alternatives,
+    # answer_to_previous_question, changes_intent, wants_human,
+    # cancel_request, cancel_confirmed, crisis, asks_price, doctor_name,
+    # specialty, entities, reason (internal, never shown). Rewritten by the
+    # router on EVERY turn (None when the call failed technically), so a
+    # stale reading can never authorise anything on a later turn. What is
+    # stored is the reading AFTER the router's consent check - a transfer
+    # the router refused reads wants_human=False here too.
+    understanding: NotRequired[Optional[dict]]
+    # Sticky for the whole thread once any message signals a crisis
+    # (self-harm / suicidal thoughts). The crisis rules used to apply only
+    # while the LATEST message matched, so a follow-up "yes" or "i need
+    # help" silently dropped them.
+    crisis_active: NotRequired[Optional[bool]]
+    # Set by the router for ONE turn: hand this patient to a person in
+    # code (graph.handoff), bypassing the model and every consent regex.
+    handoff_now: NotRequired[Optional[bool]]
+    # Set by the router for ONE turn: the reading was genuinely unsure
+    # between intents and no flow in progress settles it, so graph.clarify
+    # asks one short question (no specialist call).
+    clarify_now: NotRequired[Optional[bool]]
+    # Set by the router for ONE turn: a request outside patient care with
+    # no flow in progress - graph.out_of_scope offers customer service or
+    # a contact number (no specialist call).
+    out_of_scope_now: NotRequired[Optional[bool]]

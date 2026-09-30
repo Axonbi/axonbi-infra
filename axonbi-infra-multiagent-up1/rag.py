@@ -66,6 +66,15 @@ def _get_embeddings_model() -> OpenAIEmbeddings:
                 api_version=config.AZURE_OPENAI_API_VERSION,
                 api_key=config.OPENAI_API_KEY,
             )
+        elif getattr(config, "LLM_PROVIDER", "") == "openrouter":
+            _embeddings_model = OpenAIEmbeddings(
+                model=config.OPENROUTER_EMBEDDING_MODEL,
+                api_key=config.llm_api_key() or "sk-not-configured",
+                base_url=config.OPENROUTER_BASE_URL,
+                # OpenRouter takes text, not the token arrays the
+                # client sends to OpenAI by default.
+                check_embedding_ctx_length=False,
+            )
         else:
             _embeddings_model = OpenAIEmbeddings(model=_EMBEDDING_MODEL_NAME)
     return _embeddings_model

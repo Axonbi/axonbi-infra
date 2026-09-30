@@ -21,13 +21,14 @@ import logging
 import re
 import threading
 import time
-from typing import Dict
+from typing import Dict, Optional
 
 from langchain_core.messages import HumanMessage
 
-from config import GRAPH_RECURSION_LIMIT, POST_SUCCESS_TIMEOUT_SECONDS, SESSION_TIMEOUT_SECONDS, THREAD_ID_PREFIX, configure_logging, get_messages
+from config import DUPLICATE_MESSAGE_WINDOW_SECONDS, GRAPH_RECURSION_LIMIT, MESSAGE_ID_MEMORY_SECONDS, POST_SUCCESS_TIMEOUT_SECONDS, SESSION_TIMEOUT_SECONDS, THREAD_ID_PREFIX, configure_logging, get_messages
 from graph import graph, soft_recovery_reply, upstream_api_failed
 
+import llm_usage
 import progress
 import tools
 
@@ -55,11 +56,96 @@ _session_locks: Dict[str, threading.Lock] = {}
 _session_locks_guard = threading.Lock()
 
 
+# The last answered message per session: (text, message_id, result,
+# finished_at). Read under the session lock, so a redelivered copy that
+# was waiting on the first one finds its result here instead of running
+# the whole turn - and every tool in it - a second time.
+_last_answered: Dict[str, tuple] = {}
+# Channel message ids already answered: {(session_id, message_id): (result, finished_at)}
+_answered_ids: Dict[tuple, tuple] = {}
+
+
+def _is_soft_recovery(reply: Optional[str]) -> bool:
+    text = (reply or "").strip()
+    return bool(text) and text in (soft_recovery_reply("ar").strip(), soft_recovery_reply("en").strip())
+
+
+def _duplicate_result(session_id: str, message: str, message_id: Optional[str],
+                      arrived_at: float) -> Optional[Dict]:
+    if message_id:
+        hit = _answered_ids.get((session_id, message_id))
+        if hit and _now() - hit[1] <= MESSAGE_ID_MEMORY_SECONDS:
+            return dict(hit[0])
+        return None
+    last = _last_answered.get(session_id)
+    # A repeat after the soft-recovery reply is the patient retrying, not
+    # a double delivery - replaying the failure told them nothing
+    # (session 201158877175-DEMO1223=23, 2026-09-23 21:56:32: "3" re-sent
+    # 8s after "لم أتمكن من فهم طلبك" got the same line back).
+    if last and _is_soft_recovery(last[2].get("reply")):
+        return None
+    # An exact repeat of the last message this session answered, arriving
+    # while it was still being answered or within the window after - see
+    # the 2026-09-22 incident note below (n8n posted one "اه" twice, the
+    # second request AFTER the first had finished).
+    if last and last[0] == (message or "").strip() and arrived_at <= last[3] + DUPLICATE_MESSAGE_WINDOW_SECONDS:
+        return dict(last[2])
+    return None
+
+
+def _remember_answer(session_id: str, message: str, message_id: Optional[str], result: Dict) -> None:
+    now = _now()
+    _last_answered[session_id] = ((message or "").strip(), message_id, dict(result), now)
+    if message_id:
+        _answered_ids[(session_id, message_id)] = (dict(result), now)
+        if len(_answered_ids) > 5000:
+            cutoff = now - MESSAGE_ID_MEMORY_SECONDS
+            for key in [k for k, v in _answered_ids.items() if v[1] < cutoff]:
+                _answered_ids.pop(key, None)
+
+
 def _lock_for(session_id: str) -> threading.Lock:
     with _session_locks_guard:
         if session_id not in _session_locks:
             _session_locks[session_id] = threading.Lock()
         return _session_locks[session_id]
+
+
+# ==========================================================
+# Short-window duplicate-message guard
+# ==========================================================
+#
+# CONFIRMED REAL PRODUCTION FAILURE (session 201000625084-DEMO1223=23,
+# 2026-09-22 ~14:19): the patient answered "اه" to the booking review
+# card once. n8n called this project's /chat endpoint twice for that
+# one "اه" - two separate, sequential HTTP requests (not a race the
+# lock above would catch), each carrying the identical session_id and
+# message. Each call was indistinguishable from a genuinely new "اه"
+# from the patient, so each independently re-ran the turn from
+# scratch and re-drafted the same review card. The patient saw the
+# card, replied once, and got the card back a second time instead of
+# a confirmation - not because anything in the booking logic looped,
+# but because this project has no memory that the message it just
+# processed is one it has already seen.
+#
+# THIS DOES NOT REPLACE FIXING IT IN n8n. The docstring above already
+# says webhook-level dedup (keyed by the platform's own message "mid")
+# belongs there, and that remains the right place to stop a genuine
+# double-delivery before it ever reaches this service. This is a
+# second, narrower layer directly in front of the graph: if the exact
+# same (session_id, message) pair arrives again within a few seconds,
+# treat it as the same event and return the reply already computed for
+# it, rather than asking the LLM to decide all over again what a
+# message it has already acted on should now cause.
+#
+# DELIBERATELY NARROW. Keyed on the RAW message text, not just
+# session_id + a time window - a patient legitimately repeating
+# themselves ("اه" answered twice on purpose, moments apart, because
+# the first reply was slow to arrive) is a real message and must reach
+# the graph normally. Only an EXACT repeat of text this session's very
+# last processed message counts; anything else always proceeds.
+# Implemented by _duplicate_result / _remember_answer above, with the
+# window in config.DUPLICATE_MESSAGE_WINDOW_SECONDS.
 
 
 # ==========================================================
@@ -104,6 +190,7 @@ def _prune_session_bookkeeping() -> None:
         _last_active.pop(session_id, None)
         _success_at.pop(session_id, None)
         _generation.pop(session_id, None)
+        _last_answered.pop(session_id, None)
         with _session_locks_guard:
             lock = _session_locks.get(session_id)
             # Never discard a lock some thread is currently holding -
@@ -270,7 +357,7 @@ def _turn_signals(messages: list) -> dict:
 
 
 def send_message(client_id: str, session_id: str, message: str, channel_phone: str = None,
-                 bsuid: str = None, client_config: dict = None) -> str:
+                 bsuid: str = None, client_config: dict = None, message_id: str = None) -> str:
     """
     Send one user message for `session_id` and return the agent's reply
     text for this turn.
@@ -300,13 +387,13 @@ def send_message(client_id: str, session_id: str, message: str, channel_phone: s
 
     return send_message_with_signals(
         client_id, session_id, message, channel_phone=channel_phone,
-        bsuid=bsuid, client_config=client_config,
+        bsuid=bsuid, client_config=client_config, message_id=message_id,
     )["reply"]
 
 
 def send_message_with_signals(
     client_id: str, session_id: str, message: str, channel_phone: str = None,
-    bsuid: str = None, client_config: dict = None,
+    bsuid: str = None, client_config: dict = None, message_id: str = None,
 ) -> Dict:
     """
     Same as send_message(), but returns a dict with the reply text PLUS
@@ -335,6 +422,7 @@ def send_message_with_signals(
     is identical here.
     """
 
+    arrived_at = _now()
     logger.info("session_id=%s: sending message", session_id)
 
     # Bracket the whole turn for progress.py. begin_turn arms nothing by
@@ -344,13 +432,19 @@ def send_message_with_signals(
     # guarantees that cancellation happens even if the turn raises, which
     # is what stops a "please wait" message arriving AFTER the answer -
     # or worse, after an error.
+    progress.begin_turn(session_id)
+
     try:
         with _lock_for(session_id):
-            # INSIDE the lock: a duplicate webhook for the same session used
-            # to call begin_turn while the first turn was still running,
-            # resetting its "already sent" flag and letting a second "please
-            # wait" message out (Tanasuq QA report, 2026-09-24).
-            progress.begin_turn(session_id)
+            duplicate = _duplicate_result(session_id, message, message_id, arrived_at)
+            if duplicate is not None:
+                logger.warning(
+                    "session_id=%s: duplicate delivery of %r (message_id=%s) - returning the "
+                    "answer already given instead of running the turn again",
+                    session_id, (message or "")[:60], message_id,
+                )
+                return duplicate
+
             thread_config = _config_for(session_id)
 
             # Snapshot the message count BEFORE this turn, so we can isolate
@@ -392,7 +486,11 @@ def send_message_with_signals(
                 # call made before agent() writes the detected value.
                 state["target_language"] = None
 
-            result = graph.invoke(state, config=thread_config)
+            usage_token = llm_usage.start_turn()
+            try:
+                result = graph.invoke(state, config=thread_config)
+            finally:
+                llm_usage.end_turn(usage_token, session_id=session_id)
 
             # End the turn for progress.py IMMEDIATELY once the real
             # answer exists - not only in the `finally` block below.
@@ -502,6 +600,8 @@ def send_message_with_signals(
             signals = _turn_signals(new_messages_this_turn)
             if signals["escalate"] or signals["location"]:
                 logger.info("session_id=%s: turn signals=%s", session_id, signals)
+
+            _remember_answer(session_id, message, message_id, {"reply": reply, **signals})
 
     finally:
         # Whatever happened above, the turn is over: cancel any interim

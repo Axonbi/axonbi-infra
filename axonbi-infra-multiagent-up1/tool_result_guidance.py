@@ -491,17 +491,21 @@ RESULT_GUIDANCE: dict = {
         "not_looked_up":
             "This booking was never found by a lookup in this "
             "conversation - go and find it first.",
-        "needs_confirmation":
-            "NOTHING HAS BEEN CANCELLED. The patient has not yet clearly "
-            "asked to cancel AND said yes to a question confirming it. Do "
-            "NOT tell them anything was cancelled and do not describe it "
-            "as a technical problem. If they asked to cancel: show this "
-            "appointment (doctor, day, date, time from `booking`) and ask "
-            "ONE direct question - do they want to cancel it? - then call "
-            "this tool again only after their reply. If they did not ask "
-            "to cancel (e.g. they asked to reschedule, or their message "
-            "was unclear), do not bring up cancelling: ask what they "
-            "would like to do.",
+        "not_requested":
+            "NOTHING THE PATIENT SAID ASKS TO CANCEL. Nothing has been "
+            "cancelled and nothing is broken. Do NOT tell them an "
+            "appointment was cancelled, do not retry, and do not "
+            "describe it as a technical problem. Almost always they "
+            "asked to RESCHEDULE (\"تعديل\"/\"تأجيل\") and the flow "
+            "drifted into cancelling: go back and ask which of the two "
+            "they want, or carry on with the reschedule.",
+        "not_confirmed":
+            "NOTHING HAS BEEN CANCELLED. The patient has not clearly "
+            "confirmed cancelling THIS appointment in their latest "
+            "message. Do NOT tell them it was cancelled. Show the "
+            "appointment (doctor, day, date, time) and ask one plain "
+            "question: do they want it cancelled, yes or no? Call "
+            "cancel_appointment again only after a clear yes.",
     },
 
     # ------------------------------------------------------------------
@@ -509,23 +513,37 @@ RESULT_GUIDANCE: dict = {
         "not_looked_up":
             "This booking was never found by a lookup in this "
             "conversation - go and find it first.",
+        "cannot_verify_slot":
+            "The appointment was NOT moved - the chosen time could not be "
+            "re-checked as still free. Do not say it was changed. Fetch "
+            "fresh times with get_available_reschedule_slots, show them, "
+            "and ask the patient to pick again.",
+    },
+
+    # ------------------------------------------------------------------
+    "get_doctor_fees": {
+        "doctor_not_found":
+            "No doctor by that name. Say so plainly and offer the list "
+            "of doctors (match_entity_info in list mode) - do NOT say "
+            "you have no price information.",
+        "ambiguous":
+            "Several doctors match that name - list `candidates` as a "
+            "numbered list and ask which one they mean.",
+        "no_doctor_confirmed":
+            "Ask which doctor they want the price for, then call "
+            "get_doctor_fees again with `doctor_name`.",
+        "not_found":
+            "This doctor has no published prices. Say so, and offer to "
+            "connect them with customer service for the price.",
     },
 
     # ------------------------------------------------------------------
     "request_human_handoff": {
         "not_requested":
-            "No handoff was raised: the patient has not asked for a "
-            "person, and has not said yes to an offer of one. Do not tell "
-            "them they are being transferred. Keep helping with what they "
-            "actually asked (a complaint topic means: continue the "
-            "complaint flow). Only if they seem to want a person, ask ONCE "
-            "whether they would like to be connected.",
-        "already_requested":
-            "A handoff was ALREADY raised a moment ago in this "
-            "conversation - do not raise another and do not repeat the "
-            "handoff confirmation. Tell them briefly that the team has "
-            "their request and will reply here, and help meanwhile with "
-            "anything you can.",
+            "`patient_agreed` was False, or the patient's own message "
+            "named a complaint without separately naming a person - no "
+            "handoff was raised. Ask them whether they want a staff "
+            "member first.",
     },
 }
 

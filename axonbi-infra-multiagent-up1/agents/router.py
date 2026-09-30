@@ -1,5 +1,32 @@
 """
-The supervisor.
+The DETERMINISTIC FALLBACK router.
+
+STATUS: FALLBACK ONLY. The supervisor is now agents/semantic_router.py,
+which routes on the understanding reading (understanding.py) and the
+conversation state. `route_turn` below runs only for a turn whose
+understanding call failed TECHNICALLY (timeout, error, unparseable
+answer), and graph.router logs that turn as
+routing_mode=deterministic_fallback. It is never consulted to
+second-guess a reading that exists, and no new cue should be added here
+to fix a phrasing - a missed phrasing is an understanding problem
+(evals/understanding_cases.json), not a routing one.
+
+WHAT IN THIS FILE IS STILL LIVE ON THE SEMANTIC PATH, AND WHY
+  CRISIS_RE             SAFETY (A). Unioned with reading.crisis - it can
+                        only add a crisis, never remove one.
+  normalize/_fold_arabic DATA normalisation (B), shared helpers.
+  _flow_just_completed  STATE: reads tool results, not language.
+  _CANNOT_COMPLETE_A_BOOKING  STATE: derived from the registry's tools.
+  looks_like_health_message / INJURY_RE / medical cues
+                        OUTPUT VALIDATION (D): graph's guard that the
+                        out-of-scope refusal never answers a health
+                        message. Not used to route.
+Everything else - `_CUES` and its weights, the stickiness thresholds,
+the bare-affirmation / list-pick / booking-entry-question heuristics and
+the optional LLM classifier - is NATURAL-LANGUAGE INTENT CLASSIFICATION
+(E) and ROUTING HEURISTIC (F): fallback only.
+
+The notes below describe the fallback as it was designed.
 
 Decides which specialist owns the current turn. It runs ONCE per user
 turn, at the top of the graph - never inside the agent<->tools loop - so
@@ -1113,7 +1140,8 @@ def _looks_like_an_answer(text: str) -> bool:
     return False
 
 
-def route_turn(messages: List, active_agent: Optional[str] = None) -> Tuple[str, str]:
+def route_turn(messages: List, active_agent: Optional[str] = None,
+               allow_llm: bool = True) -> Tuple[str, str]:
     """
     Returns `(agent_name, reason)`. The reason is logged, never shown to
     the patient.
@@ -1150,6 +1178,9 @@ def route_turn(messages: List, active_agent: Optional[str] = None) -> Tuple[str,
     if not text.strip():
         return (active_agent or CONCIERGE), "no user message - kept current specialist"
 
+    if active_agent != "booking" and _affirms_previous_booking_offer(messages, text):
+        return "booking", "bare affirmation answering the assistant's own booking offer"
+
     # Picking a DOCTOR or a SPECIALTY out of a list is a BOOKING action,
     # wherever the list was shown.
     #
@@ -1183,40 +1214,6 @@ def route_turn(messages: List, active_agent: Optional[str] = None) -> Tuple[str,
     # because the whole point is that the score is misleading here.
     if active_agent in ("booking", "concierge") and _answers_booking_entry_question(messages, text):
         return "booking", "answered the booking flow's own doctor-or-specialty question"
-
-    # THE LLM DECIDES WHAT THE PATIENT MEANT - KEYWORDS ARE ONLY THE FALLBACK.
-    #
-    # Owner's directive after the 2026-09-23/24 incidents: patient text is
-    # understood by the LLM, not by regex. The keyword cues below used to
-    # OVERRIDE the classifier whenever they scored high, and the cue lists
-    # misread plain messages ("اهلا" contains "لا"; "الغد" starts like
-    # "الغاء"). Now, in ROUTER_MODE=llm, the classifier reads every
-    # message against the assistant's last reply and returns a structured
-    # decision. The deterministic path runs only when it is unavailable.
-    if config.ROUTER_MODE == "llm":
-        decision = _classify_with_llm_structured(text, active_agent, messages)
-        if decision is not None:
-            llm_choice, answers_last_question = decision
-            specialist_flow_open = (
-                active_agent not in (None, CONCIERGE)
-                and not _flow_just_completed(messages)
-            )
-            # A reply to the specialist's own question stays with it. A new
-            # subject does NOT - even when the LLM files it under
-            # `concierge`. CONFIRMED REAL PRODUCTION FAILURE (2026-09-24):
-            # "كنت مقدمه علي تدريب عندكم" was classified concierge with
-            # answers_last_question=False, but the booking agent kept the
-            # turn and answered with booking/out-of-scope text.
-            if specialist_flow_open and answers_last_question:
-                return active_agent, (
-                    f"llm router: reply to {active_agent}'s own question"
-                    if answers_last_question else
-                    f"llm router: unclear ('concierge') - {active_agent} keeps its flow"
-                )
-            return llm_choice, "llm router"
-
-    if active_agent != "booking" and _affirms_previous_booking_offer(messages, text):
-        return "booking", "bare affirmation answering the assistant's own booking offer"
 
     scores = score_message(text)
     candidate, score = _best(scores)
@@ -1256,9 +1253,10 @@ def route_turn(messages: List, active_agent: Optional[str] = None) -> Tuple[str,
     # So the two rules below. Between them the classifier keeps every
     # decision it is actually able to make, and loses only the one it
     # cannot: guessing who owns a bare "اه".
-    # Reached only when the structured classifier above was unavailable -
-    # the same model would fail here too, so this legacy call is skipped.
-    if False and config.ROUTER_MODE == "llm" and score < _START_THRESHOLD:
+    # `allow_llm=False` when graph.py already has this turn's LLM reading
+    # (understanding.py) - asking a second model the same question adds
+    # latency and cost for no new information.
+    if config.ROUTER_MODE == "llm" and allow_llm and score < _START_THRESHOLD:
         llm_choice = _classify_with_llm(text, active_agent, messages)
 
         if llm_choice:
@@ -1428,74 +1426,6 @@ def _router_context(messages: List) -> str:
     return last_reply
 
 
-_STRUCTURED_ROUTER_RULES = """
-If the assistant's last message OFFERED something (e.g. "تبي أحجز لك موعد؟")
-and the patient accepts, route to the specialist that does it.
-Right after a booking was completed, a message that does not clearly ask to
-cancel or reschedule is NOT a cancellation or reschedule - "تم تأكيد الموعد"
-/ "شكرا" / "تمام" mean the patient is satisfied (concierge).
-answers_last_question is FALSE when the message raises a different topic
-than the assistant's question (e.g. the assistant asked about the WhatsApp
-number and the patient says they applied for training) - even mid-booking."""
-
-
-def _classify_with_llm_structured(text: str, active_agent: Optional[str],
-                                  messages: Optional[List] = None):
-    """(agent_name, answers_last_question) from a structured LLM call, or
-    None on any failure (the deterministic cues then decide)."""
-
-    try:
-        from typing import Literal
-
-        from langchain_core.messages import HumanMessage
-        from pydantic import BaseModel, Field
-        import graph  # imported lazily: graph imports this package
-
-        llm = getattr(graph, "_router_llm", None)
-        if llm is None:
-            return None
-
-        class RouteDecision(BaseModel):
-            agent: Literal["cancel", "reschedule", "booking", "medical", "faq", "complaint", "concierge"] = Field(
-                description="The specialist that owns this patient message."
-            )
-            answers_last_question: bool = Field(
-                description=(
-                    "True if the message is the patient ANSWERING the assistant's last "
-                    "message (a yes/no, a number from a list, a day, a time, a name, a "
-                    "phone number, a code) rather than opening a new subject."
-                )
-            )
-
-        prompt = (
-            _LLM_ROUTER_PROMPT.replace(
-                "Reply with EXACTLY ONE of these words and nothing else:",
-                "Choose ONE of these specialists:",
-            ).format(
-                active=active_agent or "none",
-                last_reply=_router_context(messages),
-                message=text[:500],
-            )
-            + _STRUCTURED_ROUTER_RULES
-        )
-        decision = llm.with_structured_output(RouteDecision).invoke([HumanMessage(content=prompt)])
-        if decision is None or decision.agent not in AGENT_NAMES:
-            logger.warning("router: structured llm returned %r - using the deterministic result", decision)
-            return None
-        logger.info(
-            "router: llm classified %r as %s (answers_last_question=%s)",
-            text[:60], decision.agent, decision.answers_last_question,
-        )
-        return decision.agent, bool(decision.answers_last_question)
-
-    except Exception as exc:
-        logger.warning(
-            "router: structured llm classification failed (%s: %s) - using the "
-            "deterministic result", type(exc).__name__, exc,
-        )
-        return None
-
-
 def _classify_with_llm(text: str, active_agent: Optional[str],
                        messages: Optional[List] = None) -> Optional[str]:
     """Only reached when ROUTER_MODE=llm AND the deterministic cues found
@@ -1519,6 +1449,8 @@ def _classify_with_llm(text: str, active_agent: Optional[str],
             message=text[:500],
         )
         answer = llm.invoke([HumanMessage(content=prompt)])
+        import llm_usage
+        llm_usage.record("router_fallback_llm", answer)
         choice = str(getattr(answer, "content", "")).strip().lower()
 
         for name in AGENT_NAMES:

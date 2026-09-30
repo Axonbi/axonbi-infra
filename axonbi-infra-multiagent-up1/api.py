@@ -8,7 +8,7 @@ mirroring the n8n HTTP Request nodes 1:1:
                                          f_cancel_appointment.json "HTTP Request"
   - GuestBookings/GetList (by phone)  <- f_lookup_appointment.json "HTTP Request2"
                                          f_cancel_appointment.json "HTTP Request2"
-  - Bookings/UpdateStatus (cancel)    <- was GuestBookings/Cancel/{id}; now cms-api
+  - GuestBookings/Cancel/{id}         <- f_cancel_appointment.json "HTTP Request1"/"HTTP Request3"/"HTTP Request4"
   - Authentica send-otp / verify-otp  <- langchain_cancellation.json "send_otp5"/"verify_otp5"
 
 No business logic (filtering, selection, formatting) lives here - that's
@@ -309,6 +309,55 @@ def get_bookings_by_phone(
     return _cms_request("post", base_url, "/api/Bookings/GetList", language=language, sso=sso, json=payload)
 
 
+def _post_bookings(url: str, payload: dict, language: Optional[str], client_id: Optional[str]) -> dict:
+    logger.debug("POST %s payload=%s", url, payload)
+
+    response, last_timeout, last_exc = _request_with_retry(
+        "post", url, json=payload, headers=_headers(client_id=client_id, language=language),
+    )
+
+    if response is None:
+        if last_timeout:
+            logger.warning("Booking lookup timed out: %s", url)
+            return _result(False, error="timeout")
+        logger.exception("Booking lookup request failed: %s", url)
+        return _result(False, error=str(last_exc) if last_exc else "request_failed")
+
+    if response.status_code >= 500:
+        logger.error("GuestBookings API server error: %s status=%s body=%s", url, response.status_code, response.text[:500])
+        return _result(False, response.status_code, error="server_error")
+
+    if response.status_code in (401, 403):
+        logger.error(
+            "GuestBookings API AUTHENTICATION/AUTHORIZATION error (%s) - this is a credentials/access "
+            "problem on the API server itself, not a request-content problem: %s body=%s",
+            response.status_code, url, response.text[:500],
+        )
+        return _result(False, response.status_code, error="authentication_error")
+
+    if response.status_code >= 400:
+        details = _validation_details(response)
+        logger.error(
+            "GuestBookings API validation error: %s status=%s body=%s rejected_fields=%s",
+            url, response.status_code, response.text[:500],
+            [d["field"] for d in details] or "unknown",
+        )
+        return _result(False, response.status_code, error="validation_error", details=details)
+
+    try:
+        body = response.json()
+    except ValueError:
+        return _result(False, response.status_code, error="invalid_json_response")
+
+    if not body:
+        return _result(False, response.status_code, error="empty_response")
+
+    if not body.get("isSuccess"):
+        return _result(False, response.status_code, data=body, error="api_reported_failure")
+
+    return _result(True, response.status_code, data=body.get("data", {}))
+
+
 def _cms_request(method: str, base_url: Optional[str], path: str, language: Optional[str] = None, sso: Optional[dict] = None, **kwargs) -> dict:
     """GET/POST to cms-api with the SSO bearer token. A 401 means the
     token expired early or was revoked: log in again once and retry."""
@@ -482,7 +531,7 @@ def authentica_verify_otp(phone: str, otp: str, email: str = "") -> dict:
 # same way _post_bookings already handles GuestBookings' identical
 # response envelope.
 
-def _post_json(url: str, payload: dict, client_id: Optional[str] = None, language: Optional[str] = None, retry: bool = True) -> dict:
+def _post_json(url: str, payload: dict, client_id: Optional[str] = None, language: Optional[str] = None) -> dict:
     """Generic POST + envelope handling, shared by get_specialties/
     get_doctors. Mirrors _post_bookings' error handling exactly
     (timeout/5xx/4xx/empty/invalid JSON/isSuccess check), kept as a
@@ -505,12 +554,7 @@ def _post_json(url: str, payload: dict, client_id: Optional[str] = None, languag
     # wrong path) and retrying it would just get the same 4xx back
     # slower, so those still fall straight through to the existing
     # handling below with no retry loop involved.
-    # `retry=False` is for NON-IDEMPOTENT calls (GuestBookings/Reservation).
-    # A timeout there does not mean the booking failed - the server may
-    # have created it and only the reply was slow. Retrying then books
-    # the same slot a second time and gets "already booked" back for the
-    # patient's OWN appointment. The caller checks for that instead.
-    max_attempts = max(1, DOCTORS_API_MAX_RETRIES + 1) if retry else 1
+    max_attempts = max(1, DOCTORS_API_MAX_RETRIES + 1)
     response = None
     last_timeout = False
     last_exc: Optional[Exception] = None
@@ -601,10 +645,6 @@ def _post_json(url: str, payload: dict, client_id: Optional[str] = None, languag
         return _result(False, response.status_code, error="empty_response")
 
     if not body.get("isSuccess"):
-        logger.error(
-            "Doctors/Specialties API reported failure: %s status=%s messages=%s",
-            url, response.status_code, body.get("messages"),
-        )
         return _result(False, response.status_code, data=body, error="api_reported_failure")
 
     return _result(True, response.status_code, data=body.get("data", {}))
@@ -839,30 +879,7 @@ def get_doctor_schedule_slots(
     if branch_ids:
         payload["branchIds"] = branch_ids
 
-    result = _post_json(url, payload, client_id=client_id, language=language)
-
-    # A SLOT ON A FULL DAY IS NOT BOOKABLE, EVEN WHEN isBooked=false.
-    #
-    # CONFIRMED REAL PRODUCTION FAILURE (Tanasuq, Dr. Omar Al-Mudaifer,
-    # 30/09/2026): the doctor's schedule has maxNoOfCases=10 and 11 slots
-    # were already booked. 5:20 PM came back isBooked=false - but with
-    # isAtDailyCapacity=true - so the bot offered it, and every
-    # GuestBookings/Reservation call was refused with "This slot is
-    # already booked Please select another time". The patient was sent
-    # round the same loop again and again. Nothing read this flag.
-    # Filtered here, once, so every caller (days, slots, reschedule, the
-    # pre-booking re-check) agrees with what Reservation will accept.
-    if not is_booked and result.get("success") and isinstance(result.get("data"), dict):
-        items = result["data"].get("items") or []
-        kept = [i for i in items if not (isinstance(i, dict) and i.get("isAtDailyCapacity") is True)]
-        if len(kept) != len(items):
-            logger.info(
-                "get_doctor_schedule_slots: dropped %d slot(s) on days already at the "
-                "doctor's daily capacity (isAtDailyCapacity=true)", len(items) - len(kept),
-            )
-            result["data"] = {**result["data"], "items": kept}
-
-    return result
+    return _post_json(url, payload, client_id=client_id, language=language)
 
 
 def get_doctor_fees(
@@ -1097,7 +1114,7 @@ def create_booking(
         "spaceId": space_id,
     }
 
-    return _post_json(url, payload, client_id=client_id, retry=False)
+    return _post_json(url, payload, client_id=client_id)
 
 
 def get_booking_by_id(base_url: str, booking_id: str, client_id: Optional[str] = None, sso: Optional[dict] = None) -> dict:

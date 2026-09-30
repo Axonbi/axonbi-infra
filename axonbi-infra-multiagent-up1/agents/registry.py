@@ -146,13 +146,6 @@ class AgentSpec:
     # need cannot recover, it simply stalls.
     full_tools: bool = False
 
-    # Tools this specialist must NEVER hold, even when `full_tools` /
-    # `full_access` bind everything else. CONFIRMED REAL PRODUCTION
-    # FAILURES (2026-09-08 and 2026-09-23): the fallback agent, which has
-    # none of the cancel flow's text, improvised cancellations. Cancelling
-    # belongs to the `cancel` specialist only.
-    excluded_tools: tuple = ()
-
     def tools(self) -> List:
         """Resolves this specialist's tools out of tools.ALL_TOOLS.
 
@@ -163,10 +156,7 @@ class AgentSpec:
         """
 
         if self.full_access or self.full_tools or not config.AGENT_TOOL_SCOPING:
-            return [
-                tool for tool in tools_module.ALL_TOOLS
-                if getattr(tool, "name", None) not in self.excluded_tools
-            ]
+            return list(tools_module.ALL_TOOLS)
 
         resolved = []
         for name in self.tool_names:
@@ -210,7 +200,6 @@ _SPECS: Tuple[AgentSpec, ...] = (
         # `full_access=True` is what CONCIERGE_FULL_PROMPT restores.
         full_access=config.CONCIERGE_FULL_PROMPT,
         full_tools=True,
-        excluded_tools=("cancel_appointment",),
         section_keys=("medical", "faq", "entity_info"),
         job="""\
 ============================================================
@@ -404,7 +393,17 @@ Never answer a "what services do you offer" question from
 `list_specialties` or from `answer_hospital_faq` similarity results -
 call `list_hospital_services` and show the complete list it returns,
 unchanged. Never state a fee unless they asked about cost and
-`get_doctor_fees` returned it.""",
+`get_doctor_fees` returned it.
+
+PRICING/STAY-DURATION QUESTIONS THE KNOWLEDGE BASE CANNOT ANSWER - the
+knowledge base has no pricing figures at all for inpatient/hospitalization
+stays (cost per night, expected stay length, package prices), for any
+condition. If asked about the PRICE or DURATION of an inpatient stay and
+`answer_hospital_faq`/`get_doctor_fees` return nothing usable, do NOT
+apologise with no next step. Call `request_human_handoff` and tell the
+patient plainly you're connecting them with the pricing/reservations team
+for that exact number - never invent a figure, and never leave them with
+just an apology.""",
     ),
 
     AgentSpec(
