@@ -90,6 +90,8 @@ PROMPT = """You interpret ONE patient message sent to Latifa, a hospital's Whats
 
 Interpret the user's meaning using the entire relevant conversation, especially the assistant's immediately previous question. Do not classify based on isolated keywords. A short reply ("اه", "تمام", "أكيد", "الثاني", "الخميس", a name, a number) means nothing alone: it takes its meaning from the question it answers. Indirect wording counts: wanting an appointment on another day is a reschedule, not wanting it any more is a cancellation, wanting someone to look at a body part is medical.
 
+A message stays in the topic it continues. After a request outside patient care (a job, training, an interview, a supplier), a statement about the patient's OWN qualifications, profession or experience ("معي دكتوراه في علم النفس", "I'm a nurse") continues THAT request - intent "other", about_this_hospital true, not a symptom and not a booking. The specialty word inside it names their field, not a specialty they want to be seen in.
+
 Return ONLY a JSON object with these keys:
 "intent": what the patient wants to happen next -
   booking: a new appointment, a doctor's available times, or continuing a booking in progress
