@@ -88,3 +88,25 @@ def test_nearest_weekday_suggestion_is_calendar_arithmetic_not_a_fabrication(mon
     assert graph._reply_invents_availability("أقرب يوم أحد متاح هو 07/10/2026 - يناسبك؟", state) is True
     # and times are never accepted this way
     assert graph._reply_invents_availability("أقرب يوم أحد 04/10/2026 الساعة 5:40 مساءً", state) is True
+
+
+def _fees_conversation(reply, patient):
+    return [
+        HumanMessage(content="بكم د احمد"),
+        _call("1", "get_doctor_fees", {"doctor_name": "احمد"}),
+        ToolMessage(content=json.dumps({"status": "found"}), name="get_doctor_fees", tool_call_id="1"),
+        AIMessage(content=reply),
+        HumanMessage(content=patient),
+    ]
+
+
+def test_yes_after_a_price_answer_keeps_the_doctor():
+    messages = _fees_conversation("د. أحمد يوسف جلسة الاستشارة النفسية سعرها ٢٥٠ ريال. تحب أحجز لك موعد عنده؟",
+                                  "نعم بكرا ان شاء الله")
+    directive = graph._build_priced_doctor_affirmation_directive(messages, "s-none", "booking")
+    assert "match_entity_for_booking" in directive and "احمد" in directive
+
+
+def test_no_directive_when_the_reply_did_not_offer_booking():
+    messages = _fees_conversation("د. أحمد يوسف جلسة الاستشارة النفسية سعرها ٢٥٠ ريال.", "نعم")
+    assert graph._build_priced_doctor_affirmation_directive(messages, "s-none", "booking") == ""

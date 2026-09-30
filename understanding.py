@@ -109,7 +109,7 @@ Return ONLY a JSON object with these keys:
 "changes_intent": the patient deliberately leaves the current flow (STATE.flow) for a different request.
 "confirms": clearly says yes to what the assistant's previous message asked to confirm or approve.
 "declines": says no to, or rejects, what the assistant's previous message offered or proposed (a day, time, doctor, branch, booking, transfer). False when that message offered nothing (a greeting, a question). A new unrelated request is not a decline.
-"wants_human": asks for a person in any wording, or clearly accepts an offer to transfer them. False for a decline, frustration alone, a complaint topic, or a reply that is not clearly a yes (a list number, "دي").
+"wants_human": asks for a person in any wording, or clearly accepts an offer to transfer them. A plea for help ("طيب ارجو المساعدة", "ساعدني", "please help") right after the assistant offered to transfer them IS accepting that offer. False for a decline, frustration alone, a complaint topic, or a reply that is not clearly a yes (a list number, "دي").
 "cancel_request": this message asks for an existing appointment to be cancelled.
 "cancel_confirmed": ONLY when the previous message asked to confirm cancelling a specific appointment and this clearly says yes. "تم تاكيد الموعد مسبقا" (already confirmed) is not.
 "crisis": suicidal thoughts, wanting to die or "end it", self-harm, or danger to self or others, direct or indirect, including someone with them. Anxiety, sadness, insomnia or asking for a psychiatrist are not.

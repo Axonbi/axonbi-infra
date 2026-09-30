@@ -1792,11 +1792,15 @@ _SPECIALTY_CATALOGUE_DIRECTIVE = (
     "SAME TURN call `find_available_doctors` with every plausibly-matching "
     "id and carry on (this includes symptoms they describe for someone "
     "else, e.g. a brother or a child).\n"
-    "- Nothing in the catalogue fits what they asked for (e.g. they want "
-    "dentistry and the clinic has none) -> say so plainly and warmly, "
-    "naming what THEY asked for (\"للأسف ما عندنا تخصص أسنان\"), and "
-    "offer a human staff member. Never substitute the nearest-sounding "
-    "specialty and never show the catalogue as \"here is what we have\".\n"
+    "- Nothing in the catalogue fits what they asked for -> do NOT "
+    "declare what the hospital does or does not offer: all you can see "
+    "is the list of specialties open for booking, which is not the whole "
+    "hospital. Say you have no information about that part, naming what "
+    "THEY asked for, and offer to transfer them (e.g. \"ما عندي معلومات "
+    "عن [ما طلبه]، تحب أحوّلك لخدمة العملاء؟\"). Never say \"we don't "
+    "have X\" or \"X is not available at the hospital\". Never substitute "
+    "the nearest-sounding specialty and never show the catalogue as "
+    "\"here is what we have\".\n"
     "- Too vague to match -> ask ONE short question about what is wrong, "
     "not for a specialty name.\n\n"
 )
@@ -14393,6 +14397,73 @@ def _build_single_doctor_affirmation_directive(
     return _SINGLE_DOCTOR_AFFIRMED_DIRECTIVE.format(name=name)
 
 
+_PRICED_DOCTOR_AFFIRMED_DIRECTIVE = (
+    "============================================================\n"
+    "THEY SAID YES TO BOOKING WITH {name} - THE DOCTOR IS ALREADY KNOWN\n"
+    "============================================================\n"
+    "You just told the patient {name}'s fee and asked whether to book "
+    "with them. They agreed. The doctor is {name}: do NOT ask for a "
+    "specialty, do NOT list specialties, and do NOT search a specialty "
+    "for this doctor - a doctor is not found by guessing which specialty "
+    "list they sit in.\n\n"
+    "In THIS turn call `match_entity_for_booking` with "
+    "user_input=\"{name}\" and entity_type=\"doctor\", then continue the "
+    "flow from STEP NB2 - their real days and branches. A day the "
+    "patient mentioned in the same message (\"بكرا\") is honoured after "
+    "the doctor is confirmed.\n\n"
+    "CONFIRMED IN test-production-mu1 (2026-09-29 22:20): \"د. أحمد يوسف "
+    "جلسة الاستشارة النفسية سعرها ٢٥٠ ريال. تحب أحجز لك موعد عنده؟\" -> "
+    "\"نعم بكرا ان شاء الله\" -> the four specialties, then a roster of "
+    "14 psychotherapists, then \"د. أحمد يوسف غير متاح حاليًا\" - the "
+    "patient was walked away from the very doctor they had asked for.\n\n"
+)
+
+_LEADING_AFFIRMATION_RE = re.compile(
+    r"^\s*(?:اه+ا*|ايه+|أيوه+|ايوه+|ايوا+|نعم|تمام|اوك+|أوك+|ok(?:ay)?|yes|yep|sure|"
+    r"ماشي|حاضر|طبعا|أكيد|اكيد|ياريت|يا\s*ريت)"
+)
+
+
+def _build_priced_doctor_affirmation_directive(
+    messages: list, session_id: str, agent_name: str,
+) -> str:
+    """"Yes" (possibly with more words) to "shall I book with Dr X?"
+    asked right after `get_doctor_fees` answered a price question about
+    that doctor. Nothing in that path writes the doctor into the booking
+    session, and the affirmation is not a BARE yes ("نعم بكرا ان
+    شاء الله"), so `_build_single_doctor_affirmation_directive` never
+    fires either."""
+
+    if agent_name not in _NEW_BOOKING_AGENTS or not messages:
+        return ""
+
+    index = _latest_human_index(messages)
+    if index < 0 or index != len(messages) - 1:
+        return ""
+
+    content = getattr(messages[index], "content", "")
+    text = (content if isinstance(content, str) else str(content)).strip()
+    if not text or not _LEADING_AFFIRMATION_RE.match(_norm_ar(text)):
+        return ""
+
+    if (tools._BOOKING_SESSIONS.get(session_id) or {}).get("doctor_id"):
+        return ""
+
+    last_ai = _norm_ar(_last_ai_reply_text(messages))
+    if not last_ai or "احجز" not in last_ai:
+        return ""
+
+    for message in reversed(messages[:index]):
+        for call in reversed(getattr(message, "tool_calls", None) or []):
+            if not isinstance(call, dict) or call.get("name") != "get_doctor_fees":
+                continue
+            name = str((call.get("args") or {}).get("doctor_name") or "").strip()
+            if name and _norm_ar(name) in last_ai:
+                return _PRICED_DOCTOR_AFFIRMED_DIRECTIVE.format(name=name)
+
+    return ""
+
+
 def _build_bare_doctor_answer_directive(messages: list) -> str:
     """Fires when the patient's latest message is just the bare word
     ("دكتور"/"doctor"), answering a specialty-vs-doctor choice the
@@ -18781,6 +18852,9 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     # booking handover happens in prose, so the doctor is named but
     # never confirmed in the session; this carries it across.
     single_doctor_directive = _build_single_doctor_affirmation_directive(
+        state["messages"], state.get("session_id"), agent_name,
+    )
+    single_doctor_directive += _build_priced_doctor_affirmation_directive(
         state["messages"], state.get("session_id"), agent_name,
     )
     show_all_doctors_directive = _build_show_all_doctors_after_ask_directive(state["messages"])
