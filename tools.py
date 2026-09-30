@@ -5985,6 +5985,54 @@ def _name_tokens(text: str) -> frozenset:
     return frozenset(tokens)
 
 
+def _ordered_name_tokens(text: str) -> list:
+    """`_name_tokens`, in the order the words were written."""
+
+    if not text:
+        return []
+    normalized = _normalize_arabic(_strip_entity_filler(text))
+    tokens = []
+    for raw in re.split(r"[\s.،,\-]+", normalized):
+        token = raw.strip()
+        if token.startswith("ال") and len(token) > 3:
+            token = token[2:]
+        if len(token) > 1:
+            tokens.append(token)
+    return tokens
+
+
+def _word_by_word_score(input_text: str, value_text: str) -> Optional[float]:
+    """How well each WORD of the input matches a word of the stored name,
+    with the FIRST word (the given name) counting double.
+
+    WHY: comparing the two strings character by character rewards the
+    part two different doctors share. CONFIRMED (2026-09-30 10:11): the
+    patient wrote "نجود الخليفة" and the clinic has both "نجود الخليفي"
+    and "العنود الخليفة". The whole-string ratio put them within 0.08 of
+    each other (the shared family name carries it), so the patient was
+    asked to choose between two people while having named one of them.
+    Word by word, "نجود" is an exact match for one and only 0.75 for the
+    other. None when either side is a single word - a lone given name is
+    ambiguous by nature and is left to the ordinary path."""
+
+    import difflib
+
+    wanted = _ordered_name_tokens(input_text)
+    stored = _ordered_name_tokens(value_text)
+    # More than four words is a sentence, not a name: its first word is
+    # not a given name, so the double weight would be meaningless.
+    if len(wanted) < 2 or len(stored) < 2 or len(wanted) > 4:
+        return None
+
+    total = weight_sum = 0.0
+    for position, word in enumerate(wanted):
+        best = max(difflib.SequenceMatcher(None, word, other).ratio() for other in stored)
+        weight = 2.0 if position == 0 else 1.0
+        total += best * weight
+        weight_sum += weight
+    return total / weight_sum if weight_sum else None
+
+
 def _token_set_score(input_tokens: frozenset, value_tokens: frozenset) -> float:
     """0.97 when two names carry the same identifying words, or when one
     is a shortened form of the other; 0.0 when they are not comparable
@@ -6079,6 +6127,13 @@ def _fuzzy_match(user_input: str, candidates: list, name_keys: list) -> dict:
                         best_score = max(best_score, 0.96)
                     else:
                         ratio = difflib.SequenceMatcher(None, candidate_input, normalized_value).ratio()
+                        by_word = _word_by_word_score(candidate_input, normalized_value)
+                        if by_word is not None:
+                            # More precise than the character ratio for a
+                            # multi-word name, in BOTH directions: it also
+                            # stops a title or filler ("أ.") dragging the
+                            # right doctor below the wrong one.
+                            ratio = by_word
                         best_score = max(best_score, ratio)
         if best_score >= 0.6:
             scored.append((item, best_score))

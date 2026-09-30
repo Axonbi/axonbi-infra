@@ -153,3 +153,14 @@ def test_single_doctor_yes_in_any_wording():
     assert "ليلى الحربي" in graph._build_single_doctor_affirmation_directive(
         messages, session_id, "booking", reading={"confirms": True})
     assert graph._build_single_doctor_affirmation_directive(messages, session_id, "booking") == ""
+
+
+def test_a_named_doctor_is_matched_even_when_a_neighbour_shares_the_family_name():
+    import tools
+    doctors = [{"name": "العنود الخليفة"}, {"name": "نجود الخليفي"}, {"name": "اسيلا الحسن"}]
+    for typed in ("نجود الخليفة", "أ. نجود الخليفة"):
+        result = tools._fuzzy_match(typed, doctors, ["name"])
+        assert result["result"] == "matched" and result["item"]["name"] == "نجود الخليفي"
+    # a bare given name is still a genuine choice
+    people = [{"name": "احمد عبدالرحمن"}, {"name": "احمد عقيل"}]
+    assert tools._fuzzy_match("احمد", people, ["name"])["result"] == "ambiguous"
