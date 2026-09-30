@@ -7105,7 +7105,54 @@ def _reply_shows_doctor_for_service_with_no_lookup_this_turn(reply_text: str, st
         state.get("messages") or [],
         ("find_available_doctors", "match_entity_for_booking"),
     )
-    return not ran_this_turn
+    if ran_this_turn:
+        return False
+
+    # NOT STALE: THE SAME SPECIALTY WAS LOOKED UP EARLIER AND THE REPLY
+    # NAMES THAT LOOKUP'S OWN DOCTORS. The guard exists for a name being
+    # carried into a DIFFERENT service/specialty. When an earlier
+    # `find_available_doctors` was called for the very specialty this
+    # reply names, and returned the doctor(s) the reply shows, nothing
+    # is being carried anywhere.
+    # CONFIRMED IN test-production-mu1 (2026-09-30 08:12): the medical
+    # flow looked up طب اسنان and offered to book; the booking flow's
+    # next reply listed that same doctor for طب اسنان and was rejected
+    # twice - two wasted model calls, then kept as-is anyway.
+    return not _reply_matches_earlier_lookup(reply_text, state.get("messages") or [])
+
+
+def _reply_matches_earlier_lookup(reply_text: str, messages: list) -> bool:
+    folded_reply = _norm_ar(reply_text)
+    results_by_call = {
+        getattr(m, "tool_call_id", None): getattr(m, "content", "")
+        for m in messages if getattr(m, "type", None) == "tool"
+        and getattr(m, "name", None) == "find_available_doctors"
+    }
+
+    for message in messages:
+        for call in getattr(message, "tool_calls", None) or []:
+            if not isinstance(call, dict) or call.get("name") != "find_available_doctors":
+                continue
+            specialty = _norm_ar(str((call.get("args") or {}).get("specialty_name") or "")).strip()
+            if not specialty or specialty not in folded_reply:
+                continue
+            content = results_by_call.get(call.get("id"))
+            if not isinstance(content, str):
+                continue
+            try:
+                payload = json.loads(content)
+            except (ValueError, TypeError):
+                continue
+            doctors = payload.get("doctors") if isinstance(payload, dict) else None
+            for doctor in doctors or []:
+                if not isinstance(doctor, dict):
+                    continue
+                for key in ("name", "altName", "formatedName"):
+                    value = doctor.get(key)
+                    if value and _norm_ar(str(value)) in folded_reply:
+                        return True
+
+    return False
 
 
 _STALE_DOCTOR_CONTEXT_CORRECTION_DIRECTIVE = (

@@ -31,3 +31,28 @@ def test_a_real_answer_still_counts_as_a_repeat():
     ]
     retry = AIMessage(content="", tool_calls=[{"id": "2", "name": "get_doctor_schedule_for_booking", "args": {}}])
     assert len(graph._repeated_tool_calls(retry, messages)) == 1
+
+
+def test_stale_doctor_guard_accepts_the_same_specialty_looked_up_earlier():
+    messages = [
+        HumanMessage(content="عندي وجع في سني"),
+        _call("1", "find_available_doctors", {"specialty_name": "طب اسنان"}),
+        ToolMessage(content=json.dumps({"status": "found", "doctors": [{"name": "ليلى الحربي"}]}),
+                    name="find_available_doctors", tool_call_id="1"),
+        AIMessage(content="تحب أحجز؟"),
+        HumanMessage(content="ايوه"),
+    ]
+    reply = "الدكاترة المتاحين في تخصص طب اسنان:\n1️⃣ د. ليلى الحربي"
+    assert graph._reply_shows_doctor_for_service_with_no_lookup_this_turn(reply, {"messages": messages}) is False
+
+
+def test_stale_doctor_guard_still_flags_a_name_carried_to_another_specialty():
+    messages = [
+        HumanMessage(content="عندي وجع في سني"),
+        _call("1", "find_available_doctors", {"specialty_name": "طب اسنان"}),
+        ToolMessage(content=json.dumps({"status": "found", "doctors": [{"name": "ليلى الحربي"}]}),
+                    name="find_available_doctors", tool_call_id="1"),
+        HumanMessage(content="وايش عندكم تغذية"),
+    ]
+    reply = "الدكاترة المتاحين لخدمة أخصائي التغذية:\n1️⃣ د. ليلى الحربي"
+    assert graph._reply_shows_doctor_for_service_with_no_lookup_this_turn(reply, {"messages": messages}) is True
