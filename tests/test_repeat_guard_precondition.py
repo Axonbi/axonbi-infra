@@ -179,3 +179,13 @@ def test_a_file_sent_by_the_patient_is_handed_to_staff():
     assert sr.decide({"intent": "booking", "confidence": 1.0}, facts).handoff is True
     # a normal message is untouched
     assert sr.decide({"intent": "booking", "confidence": 1.0}, sr.TurnFacts()).handoff is False
+
+
+def test_a_day_named_on_its_own_after_an_offer_is_not_treated_as_a_refusal():
+    from langchain_core.messages import AIMessage, HumanMessage
+    offer = AIMessage(content="المواعيد المتاحة ليوم الأربعاء 07/10/2026: 1 4:00 مساءً. أي رقم أو وقت تفضل؟")
+    declines = {"declines": True, "changes_intent": False}
+    for said in ("اليوم", "بكره", "الخميس"):
+        assert graph._build_negation_directive([offer, HumanMessage(content=said)], declines) == ""
+    # a real refusal still fires, even when it names a day
+    assert graph._build_negation_directive([offer, HumanMessage(content="لا مش مناسب")], declines) != ""
