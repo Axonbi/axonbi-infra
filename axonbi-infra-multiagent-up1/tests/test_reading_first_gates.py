@@ -228,16 +228,49 @@ def test_turn_usage_sums_every_call_and_logs_no_content(caplog):
     assert "سر المريض" not in caplog.text
 
 
+def _turn_usage(caplog):
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("turn_usage ")]
+    return json.loads(lines[-1][len("turn_usage "):])
+
+
 def test_a_real_turn_reports_its_calls(session_id, llm, reader, caplog):
     from conftest import send
-    reader.table["هلا"] = {"intent": "greeting"}
-    llm._responses.append(AIMessage(content="أهلا 🌷"))
+    reader.table["عندي صداع من يومين"] = {"intent": "medical"}
+    llm._responses.append(AIMessage(content="سلامتك 🌷 الصداع في أي جهة من الراس؟"))
     with caplog.at_level(logging.INFO, logger="llm_usage"):
-        send(session_id, "هلا")
-    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("turn_usage ")]
-    summary = json.loads(lines[-1][len("turn_usage "):])
+        send(session_id, "عندي صداع من يومين")
+    summary = _turn_usage(caplog)
     assert summary["by_role"]["understanding"]["calls"] == 1
     assert summary["by_role"]["specialist"]["calls"] == 1
+
+
+def test_a_bare_first_greeting_costs_no_specialist_call(session_id, llm, reader, caplog):
+    """The greeting is written in code; the model used to be called to
+    write nothing beside it (tanasuq-production, 2026-10-01: 31,143 input
+    tokens for one output token)."""
+    from conftest import send
+    reader.table["صباح الخير"] = {"intent": "greeting", "confidence": 1.0}
+    with caplog.at_level(logging.INFO, logger="llm_usage"):
+        reply = send(session_id, "صباح الخير")["reply"]
+    assert "لطيفة" in reply, "the clinic's greeting still goes out"
+    assert len(llm.calls) == 0
+    assert "specialist" not in _turn_usage(caplog)["by_role"]
+
+
+def test_a_greeting_that_asks_for_something_still_reaches_the_model(session_id, llm, reader):
+    from conftest import send
+    reader.table["السلام عليكم ممكن احجز"] = {"intent": "greeting", "confidence": 0.6, "wants_options": True}
+    llm._responses.append(AIMessage(content="وعليكم السلام 🌷 أكيد، عندك دكتور أو تخصص معيّن في بالك؟"))
+    send(session_id, "السلام عليكم ممكن احجز")
+    assert len(llm.calls) == 1
+
+
+def test_without_a_reading_the_model_still_answers_a_greeting(session_id, llm, reader):
+    from conftest import send
+    reader.fail = True
+    llm._responses.append(AIMessage(content=""))
+    send(session_id, "صباح الخير")
+    assert len(llm.calls) == 1
 
 
 # ----------------------------------------------------------------------

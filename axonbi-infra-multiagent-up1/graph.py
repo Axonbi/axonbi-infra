@@ -4368,6 +4368,66 @@ def _unified_phone_from_kb(kb_file: str, mtime: float) -> str:
     return ""
 
 
+def _is_bare_first_greeting(state: AgentState, target_language: Optional[str]) -> bool:
+    """The first message is only a greeting (or thanks) - by the turn's
+    reading, never by a word list - and this clinic has a greeting to send.
+    Anything else in it (a name, a request, a flag) leaves the turn to the
+    model, as does a missing reading."""
+
+    if state.get("greeted") or state.get("crisis_active"):
+        return False
+    reading = state.get("understanding")
+    if not reading or reading.get("intent") != "greeting" or reading.get("is_ambiguous"):
+        return False
+    if any((reading.get("entities") or {}).values()) or reading.get("doctor_name") or reading.get("specialty"):
+        return False
+    if any(reading.get(key) for key in (
+            "wants_human", "crisis", "cancel_request", "asks_price", "asks_location",
+            "wants_options", "declines", "confirms", "changes_intent")):
+        return False
+    messages = state.get("messages") or []
+    first = getattr(messages[0], "content", "") if messages else ""
+    return bool(_build_greeting(state.get("templates") or {}, first if isinstance(first, str) else "",
+                                target_language or "ar").strip())
+
+
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+
+
+@lru_cache(maxsize=32)
+def _hr_email_from_kb(kb_file: str, mtime: float) -> str:
+    """The HR address as the clinic's own knowledge base writes it - the
+    first e-mail on a line about HR, jobs or careers. Same reading, and
+    same mtime-keyed cache, as `_unified_phone_from_kb`."""
+
+    try:
+        with open(kb_file, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return ""
+
+    for wanted in ("الموارد البشرية", "HR", "التوظيف", "الوظائف", "Careers", "Jobs"):
+        for line in lines:
+            if wanted in line:
+                match = _EMAIL_RE.search(line)
+                if match:
+                    return match.group(0)
+    return ""
+
+
+def _clinic_hr_email(templates: dict) -> str:
+    """The HR address from the clinic's knowledge base, or ""."""
+
+    kb_file = str((templates or {}).get("_knowledge_base_file") or "").strip()
+    if not kb_file:
+        return ""
+    try:
+        mtime = os.path.getmtime(kb_file)
+    except OSError:
+        return ""
+    return _hr_email_from_kb(kb_file, mtime)
+
+
 def _clinic_unified_phone(templates: dict) -> str:
     """client config `unified_phone` first, else the knowledge base."""
 
@@ -19969,6 +20029,17 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                     state.get("templates") or {}, target_language, intent,
                 )
 
+    # A BARE GREETING ON THE FIRST TURN IS ANSWERED BY THE GREETING ALONE.
+    # The greeting is already written in code below, and the FIRST-TURN
+    # OVERRIDE tells the model to write nothing beside it - so the model
+    # call returned one empty token for ~31k input tokens. CONFIRMED
+    # (tanasuq-production, 2026-10-01 11:17:14): "صباح الخير" ->
+    # specialist:concierge input_tokens=31143 output_tokens=1.
+    if deterministic_reply is None and _is_bare_first_greeting(state, target_language):
+        deterministic_reply = ""
+        logger.info("agent[%s]: bare greeting on the first turn - the greeting alone, no model call",
+                    agent_name)
+
     # ONLINE / REMOTE SESSIONS. Always the hospital's own channels - see
     # `_REMOTE_SESSION_RE`. Not for a complaint or a cancellation, where
     # "I booked online" is context, not a question.
@@ -21099,11 +21170,11 @@ def _out_of_scope_offer(reading: Optional[dict], english: bool,
     templates = templates or {}
     if _PRESCRIPTION_RE.search(_norm_ar(f"{topic or ''} {_latest_human_text(messages or [])}")):
         return _PRESCRIPTION_OFFER["en" if english else "ar"]
-    # A clinic with an HR address gives it: jobs, training and CVs are
-    # most of what arrives here. Worded as "if it is about...", so a
-    # supplier or an admin question still reads right, and the transfer
-    # offer stays for everything else.
-    hr_email = str(templates.get("hr_email") or "").strip()
+    # A clinic whose knowledge base names an HR address gives it: jobs,
+    # training and CVs are most of what arrives here. Worded as "if it is
+    # about...", so a supplier or an admin question still reads right,
+    # and the transfer offer stays for everything else.
+    hr_email = _clinic_hr_email(templates)
     if english:
         subject = topic or "this"
         default = ("If your question is about jobs, training or sending your CV, you can email "
