@@ -12,7 +12,9 @@ re-check was skipped with a warning and the appointment was moved anyway
 """
 
 import json
+from datetime import datetime, timedelta
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 from langchain_core.messages import HumanMessage, ToolMessage
 
@@ -121,16 +123,20 @@ def test_an_unreadable_time_is_not_written():
 
 
 def test_the_listing_remembers_the_doctor_but_never_shows_it():
+    # A day that is always ahead: the listing drops slots that have
+    # already started, so a fixed date turned this test red the day after
+    # it (2026-10-01) - and with it every deploy.
+    day = (datetime.now(ZoneInfo("Asia/Riyadh")) + timedelta(days=7)).strftime("%Y-%m-%d")
     state = _state("rs-6")
     listed = {"success": True, "status_code": 200, "error": None,
-              "data": {"items": [{"slotStart": "2026-09-30T13:00:00+03:00", "slotEnd": "2026-09-30T13:12:00+03:00",
+              "data": {"items": [{"slotStart": f"{day}T13:00:00+03:00", "slotEnd": f"{day}T13:12:00+03:00",
                                   "isBooked": False, "doctorName": "د. عمر"}]}}
     try:
         with patch("tools._resolve_doctor_id", return_value={"status": "found", "doctor_id": "D-LIST"}), \
              patch("api.get_doctor_schedule_slots", return_value=listed):
             shown = tools.get_available_reschedule_slots.func(
                 state=state, ref_number="TNS-1",
-                from_date="2026-09-30T00:00:00+03:00", to_date="2026-09-30T23:59:00+03:00")
+                from_date=f"{day}T00:00:00+03:00", to_date=f"{day}T23:59:00+03:00")
         assert shown["status"] == "found"
         assert all("_doctor_id" not in slot for slot in shown["slots"]), "internal id shown to the model"
         remembered = tools._BOOKING_SESSIONS["rs-6"]["last_list"]["items"]
