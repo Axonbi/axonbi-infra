@@ -4444,22 +4444,61 @@ def _strip_repeated_greeting(reply_text: str, state: AgentState, target_language
     return rest or reply_text
 
 
-def _is_bare_first_greeting(state: AgentState, target_language: Optional[str]) -> bool:
-    """The first message is only a greeting (or thanks) - by the turn's
-    reading, never by a word list - and this clinic has a greeting to send.
-    Anything else in it (a name, a request, a flag) leaves the turn to the
-    model, as does a missing reading."""
+def _reading_is_bare_greeting(state: AgentState) -> bool:
+    """The turn's reading says the message is only a greeting or thanks -
+    nothing named, nothing flagged, not ambiguous. Never a word list; a
+    missing reading is not a greeting."""
 
-    if state.get("greeted") or state.get("crisis_active"):
+    if state.get("crisis_active"):
         return False
     reading = state.get("understanding")
     if not reading or reading.get("intent") != "greeting" or reading.get("is_ambiguous"):
         return False
     if any((reading.get("entities") or {}).values()) or reading.get("doctor_name") or reading.get("specialty"):
         return False
-    if any(reading.get(key) for key in (
-            "wants_human", "crisis", "cancel_request", "asks_price", "asks_location",
-            "wants_options", "declines", "confirms", "changes_intent")):
+    return not any(reading.get(key) for key in (
+        "wants_human", "crisis", "cancel_request", "asks_price", "asks_location",
+        "wants_options", "declines", "confirms", "changes_intent"))
+
+
+_LATER_GREETING_REPLY = {
+    "ar": {"thanks": "في الخدمة دائمًا 🌷 إذا احتجت أي شيء ثاني، أنا هنا.",
+           "morning": "صباح النور 🌷 كيف أقدر أساعدك؟",
+           "evening": "مساء النور 🌷 كيف أقدر أساعدك؟",
+           "salam": "وعليكم السلام 🌷 كيف أقدر أساعدك؟"},
+    "en": {"thanks": "Always happy to help 🌷 Let me know if you need anything else.",
+           "morning": "Good morning 🌷 How can I help you?",
+           "evening": "Good evening 🌷 How can I help you?",
+           "salam": "Wa alaikum assalam 🌷 How can I help you?"},
+}
+
+
+def _later_greeting_reply(text: str, target_language: Optional[str]) -> str:
+    """A greeting or thanks after the first turn, answered in one line.
+
+    CONFIRMED COST (tanasuq-production logs, 2026-10-01): a turn with
+    nothing to do cost a concierge call of ~31-33k input tokens. The
+    reading already decided it is only a greeting; the wording follows the
+    same time-of-day cues the opening greeting uses."""
+
+    lowered = (text or "").lower()
+    replies = _LATER_GREETING_REPLY["en" if (target_language or "").startswith("en") else "ar"]
+    if any(cue in lowered for cue in _MORNING_CUES):
+        return replies["morning"]
+    if any(cue in lowered for cue in _EVENING_CUES):
+        return replies["evening"]
+    if "السلام" in _norm_ar(lowered) or "salam" in lowered:
+        return replies["salam"]
+    return replies["thanks"]
+
+
+def _is_bare_first_greeting(state: AgentState, target_language: Optional[str]) -> bool:
+    """The first message is only a greeting (or thanks) - by the turn's
+    reading, never by a word list - and this clinic has a greeting to send.
+    Anything else in it (a name, a request, a flag) leaves the turn to the
+    model, as does a missing reading."""
+
+    if state.get("greeted") or not _reading_is_bare_greeting(state):
         return False
     messages = state.get("messages") or []
     first = getattr(messages[0], "content", "") if messages else ""
@@ -17807,6 +17846,44 @@ def _build_new_booking_different_number_directive(
     return _NEW_BOOKING_DIFFERENT_NUMBER_DIRECTIVE
 
 
+_SAME_NUMBER_YES_DIRECTIVE = (
+    "============================================================\n"
+    "THEY SAID YES - BOOK ON THIS WHATSAPP NUMBER\n"
+    "============================================================\n"
+    "You asked whether to book on the WhatsApp number the patient is "
+    "messaging from, and they said yes. Use that number - it is their own "
+    "verified channel, so no code is needed: call `get_patient_info` with it "
+    "now and continue from its result. Do NOT ask them to send a phone "
+    "number.\n\n"
+)
+
+
+def _build_same_number_yes_directive(messages: list, agent_name: str,
+                                     reading: Optional[dict] = None) -> str:
+    """The mirror of `_build_new_booking_different_number_directive`: a YES
+    to STEP NB6's same-number question.
+
+    CONFIRMED (tanasuq-production, 2026-10-01 12:18): the patient answered
+    "ايه" (Saudi "yes") to "نكمل الحجز على نفس رقم الواتساب ده؟" and was
+    asked "من فضلك أرسل رقم الجوال مع رمز الدولة." - she had to type her
+    own WhatsApp number. The yes is read the same way every hook reads one
+    (`_patient_confirms`: the reading, then the yes-words)."""
+
+    if agent_name not in ("booking", "concierge") or not messages:
+        return ""
+    index = _latest_human_index(messages)
+    if index < 0 or index != len(messages) - 1:
+        return ""
+    content = getattr(messages[index], "content", "")
+    text = (content if isinstance(content, str) else str(content)).strip()
+    if not text or not _patient_confirms(text, reading):
+        return ""
+    last_ai = _norm_ar(_last_ai_reply_text(messages))
+    if not last_ai or not _NEW_BOOKING_SAME_NUMBER_QUESTION_RE.search(last_ai):
+        return ""
+    return _SAME_NUMBER_YES_DIRECTIVE
+
+
 # ==========================================================
 # A REFUSAL NEVER TURNS INTO THE PHONE STEP - output guard, no model call
 # ==========================================================
@@ -19712,6 +19789,11 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     new_booking_number_directive = _build_new_booking_different_number_directive(
         state["messages"], agent_name,
     )
+    # ...and when they said YES to it, use that number - see
+    # `_build_same_number_yes_directive`.
+    same_number_yes_directive = _build_same_number_yes_directive(
+        state["messages"], agent_name, state.get("understanding"),
+    )
     selected_slot_directive = _build_selected_slot_directive(state.get("session_id"))
     selected_reschedule_slot_directive = _build_selected_reschedule_slot_directive(state.get("session_id"))
 
@@ -19800,7 +19882,7 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         + selected_reschedule_slot_directive
         + otp_required_directive
         + specialty_unresolved_directive + unstaffed_specialty_directive
-        + new_booking_number_directive
+        + new_booking_number_directive + same_number_yes_directive
         + supplied_identifier_directive + just_booked_directive + scope_directive
         + empty_branch_directive + branch_pick_directive + day_pick_directive
         + negation_directive
@@ -20117,6 +20199,15 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     if deterministic_reply is None and _is_bare_first_greeting(state, target_language):
         deterministic_reply = ""
         logger.info("agent[%s]: bare greeting on the first turn - the greeting alone, no model call",
+                    agent_name)
+
+    # ...and a greeting or thanks LATER, with no booking/cancel/medical step
+    # waiting on an answer (only concierge or faq hold the turn), is one
+    # line from code - see `_later_greeting_reply`.
+    if (deterministic_reply is None and state.get("greeted") and agent_name in ("concierge", "faq")
+            and _reading_is_bare_greeting(state)):
+        deterministic_reply = _later_greeting_reply(latest_user_message, target_language)
+        logger.info("agent[%s]: greeting/thanks after the first turn - one line, no model call",
                     agent_name)
 
     # ONLINE / REMOTE SESSIONS. Always the hospital's own channels - see
@@ -20905,7 +20996,13 @@ def router(state: AgentState) -> dict:
     # Once per turn, from the node - never from the conditional edge,
     # which LangGraph may call more than once. See _clear_stale_branch_context.
     _clear_stale_branch_context(chosen, state.get("session_id"))
-    _clear_abandoned_booking_context(chosen, previous, reason, state.get("session_id"))
+    patient_turn = sum(1 for m in messages if getattr(m, "type", None) == "human")
+    _clear_abandoned_booking_context(chosen, previous, reason, state.get("session_id"),
+                                     reading=reading, turn=patient_turn)
+    if chosen == "booking" and state.get("session_id"):
+        # When booking last had the conversation - what tells a short
+        # detour from a booking left behind (see the function above).
+        tools._get_booking_session(state["session_id"])["_booking_turn"] = patient_turn
 
     if chosen != previous:
         logger.info(
@@ -21084,6 +21181,15 @@ def _understanding_context(state: AgentState) -> dict:
     messages = state.get("messages") or []
     active = state.get("active_agent")
     context: dict = {"flow": active or "none"}
+
+    # The clinic's dialect, so a word that differs by dialect is read the
+    # clinic's way: "ايه" is "yes" in Saudi/Gulf Arabic and "what?" in
+    # Egyptian. CONFIRMED (tanasuq-production, 2026-10-01 12:18): "ايه" to
+    # "نكمل الحجز على نفس رقم الواتساب ده؟" came back confirms=false, and
+    # the patient was asked to send a phone number.
+    dialect = str((state.get("templates") or {}).get("_dialect_name") or "").strip()
+    if dialect:
+        context["dialect"] = dialect
 
     try:
         if active and agents.router._flow_just_completed(messages):
@@ -21429,7 +21535,34 @@ _CONTINUATION_REASONS = (
 )
 
 
-def _clear_abandoned_booking_context(chosen: Optional[str], previous: Optional[str], reason: Optional[str], session_id: Optional[str]) -> None:
+# How many patient messages away from booking still count as a short
+# detour - a question or two about the hospital, then back.
+_BOOKING_DETOUR_TURNS = 3
+
+
+def _returns_from_a_short_detour(session: dict, reading: Optional[dict], turn: Optional[int]) -> bool:
+    """Back in booking within a few messages, naming nothing new - the
+    booking in progress is resumed, not wiped.
+
+    CONFIRMED (tanasuq-production, 2026-10-01 12:15): with Sunday 18/10's
+    times on screen, "عاوزه اعرف معلومات عن المكان" went to faq; coming
+    back to pick a time would have wiped the doctor, branch and slot. A
+    message that names a doctor, specialty or service is a new booking,
+    and is still treated as one - that is the case this clearing exists
+    for (see the docstring below)."""
+
+    last = session.get("_booking_turn")
+    if last is None or turn is None or turn - last > _BOOKING_DETOUR_TURNS:
+        return False
+    reading = reading or {}
+    entities = reading.get("entities") or {}
+    return not (reading.get("doctor_name") or reading.get("specialty")
+                or entities.get("doctor") or entities.get("service"))
+
+
+def _clear_abandoned_booking_context(chosen: Optional[str], previous: Optional[str], reason: Optional[str],
+                                     session_id: Optional[str], reading: Optional[dict] = None,
+                                     turn: Optional[int] = None) -> None:
     """Deterministically drops a stale doctor/specialty from a booking
     attempt the patient has clearly walked away from, the moment the
     router hands the turn to `booking` from a DIFFERENT specialist.
@@ -21497,6 +21630,13 @@ def _clear_abandoned_booking_context(chosen: Optional[str], previous: Optional[s
 
     session = tools._BOOKING_SESSIONS.get(session_id)
     if not session:
+        return
+
+    if _returns_from_a_short_detour(session, reading, turn):
+        logger.info(
+            "router: %s -> booking after a short detour (session_id=%s) - resuming the "
+            "booking in progress, not clearing it", previous, session_id,
+        )
         return
 
     stale_keys = ("doctor_id", "branch_id", "specialty_ids", "known_doctor_names", "selected_slot")
