@@ -13,10 +13,14 @@ Both cost no specialist call (they used to cost ~30k tokens, and up to
 active, and never in the middle of a flow - the flow's owner answers.
 """
 
+import os
+
 from langchain_core.messages import AIMessage, HumanMessage
 
+import config
 import graph
-from conftest import send, state_of
+import main
+from conftest import TANASUQ, send, state_of
 
 TRAINING = "كنت مقدمه في تدريب في مستشفي اجي اعمل انترفيو امتي"
 PARTY = "ممكن تحجزلي حفلة عيد ميلاد"
@@ -44,37 +48,57 @@ def test_hospital_matter_gets_customer_service_or_number():
                      "تحب أحوّلك لخدمة العملاء، أو أرسل لك رقم التواصل؟")
 
 
+# Tanasuq's own knowledge base, which names the HR address. The live
+# config sends `knowledge_base_file` the same way (n8n's client row).
+KB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                  "knowledge_base", "tanasuq-saudi.txt")
+WITH_KB = {**TANASUQ, "knowledge_base_file": KB}
+
+
+def _send(session_id, text):
+    return main.send_message_with_signals(TANASUQ["client_id"], session_id, text,
+                                          channel_phone="966500000001", client_config=WITH_KB)
+
+
+def test_the_hr_email_is_read_from_the_knowledge_base(tmp_path):
+    assert graph._clinic_hr_email({"_knowledge_base_file": KB}) == "HR@tanasuq.med.sa"
+    # A knowledge base without an HR line, or none at all: nothing to give.
+    plain = tmp_path / "kb.txt"
+    plain.write_text("البريد الإلكتروني: info@clinic.test\n", encoding="utf-8")
+    assert graph._clinic_hr_email({"_knowledge_base_file": str(plain)}) == ""
+    assert graph._clinic_hr_email({}) == ""
+    assert graph._clinic_hr_email({"_knowledge_base_file": str(tmp_path / "missing.txt")}) == ""
+
+
+def test_the_hr_email_is_not_taken_from_the_client_config():
+    templates = config.get_messages(TANASUQ["client_id"],
+                                    client_row_override={**TANASUQ, "hr_email": "jobs@example.test"})
+    assert "hr_email" not in templates
+    assert "jobs@example.test" not in graph._out_of_scope_offer(_hospital(), False, templates, [])
+
+
 def test_a_job_or_training_question_gets_tanasuqs_hr_email(session_id, llm, reader):
-    """Tanasuq's dialect row carries hr_email: jobs, training and CVs go to
-    HR, and the transfer offer stays for anything else."""
-    _greet(session_id, llm, reader)
-    calls = len(llm.calls)
+    """Jobs, training and CVs go to HR, and the transfer offer stays for
+    anything else."""
+    reader.table["هلا"] = {"intent": "greeting"}
+    _send(session_id, "هلا")
     reader.table[TRAINING] = _hospital()
-    reply = send(session_id, TRAINING)["reply"]
+    reply = _send(session_id, TRAINING)["reply"]
     assert "HR@tanasuq.med.sa" in reply
     assert "تحب أحوّلك لخدمة العملاء؟" in reply
-    assert len(llm.calls) == calls, "written in code - no specialist call"
+    assert len(llm.calls) == 0, "written in code - no specialist call"
 
 
 def test_the_hr_email_reply_in_english():
-    reply = graph._out_of_scope_offer(_hospital("a job"), True, {"hr_email": "HR@tanasuq.med.sa"},
+    reply = graph._out_of_scope_offer(_hospital("a job"), True, {"_knowledge_base_file": KB},
                                       [HumanMessage(content="Do you have any job openings?")])
     assert "HR@tanasuq.med.sa" in reply and "transfer you to customer service" in reply
     assert not graph._looks_arabic(reply)
 
 
-def test_the_hr_email_set_in_n8n_wins():
-    import config
-    from conftest import TANASUQ
-    templates = config.get_messages(TANASUQ["client_id"],
-                                    client_row_override={**TANASUQ, "hr_email": "jobs@example.test"})
-    assert templates["hr_email"] == "jobs@example.test"
-    assert config.get_messages(TANASUQ["client_id"], client_row_override=TANASUQ)["hr_email"] == "HR@tanasuq.med.sa"
-
-
 def test_hospital_matter_on_the_first_message_keeps_the_greeting(session_id, llm, reader):
     reader.table[TRAINING] = _hospital()
-    reply = send(session_id, TRAINING)["reply"]
+    reply = _send(session_id, TRAINING)["reply"]
     assert "HR@tanasuq.med.sa" in reply
     assert reply.index("لطيفة") < reply.index("HR@"), "greeting first"
     assert len(llm.calls) == 0

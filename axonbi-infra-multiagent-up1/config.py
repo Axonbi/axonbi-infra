@@ -1011,11 +1011,6 @@ _CLIENT_OVERRIDE_KEYS = (
     # where the subject goes.
     "msg_out_of_scope_offer",
     "msg_out_of_scope_offer_en",
-    # Optional: the HR address for jobs, training and CVs. When set, a
-    # request about the hospital that is not patient care is answered
-    # with it (graph._out_of_scope_offer), "{hr_email}" in the authored
-    # offer above.
-    "hr_email",
     # Optional: the fixed reply to an online / remote-session question,
     # "{phone}" where the hospital's unified number goes.
     "msg_remote_sessions",

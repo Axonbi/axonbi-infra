@@ -133,13 +133,14 @@ def test_same_words_typed_after_reading_the_answer_run_normally(session_id, llm,
 
 
 def test_message_id_dedupes_even_after_the_answer(session_id, llm, reader, monkeypatch):
-    llm._responses.append(AIMessage(content="أهلا 🌷"))
-    reader.table["هلا"] = {"intent": "greeting"}
-    first = main.send_message_with_signals(TANASUQ["client_id"], session_id, "هلا",
+    # A message that needs the model - a bare greeting no longer calls it.
+    llm._responses.append(AIMessage(content="سلامتك 🌷 من متى الصداع؟"))
+    reader.table["عندي صداع"] = {"intent": "medical"}
+    first = main.send_message_with_signals(TANASUQ["client_id"], session_id, "عندي صداع",
                                            client_config=TANASUQ, message_id="wamid.1")
     real_now = main._now
     monkeypatch.setattr(main, "_now", lambda: real_now() + 120)
-    again = main.send_message_with_signals(TANASUQ["client_id"], session_id, "هلا",
+    again = main.send_message_with_signals(TANASUQ["client_id"], session_id, "عندي صداع",
                                            client_config=TANASUQ, message_id="wamid.1")
     assert again == first
     assert len(llm.calls) == 1
