@@ -192,14 +192,61 @@ def test_privacy_and_terms_are_left_out_of_an_unrelated_answer(kb_file):
 
 def test_privacy_is_answered_when_that_is_the_question(kb_file):
     privacy = rag._chunk_text(KB_TEXT)[2]
+    overview = rag._chunk_text(KB_TEXT)[0]
     result = _faq(kb_file, "ايه سياسة الخصوصية عندكم؟", [privacy], question="سياسة الخصوصية")
-    assert result == {"status": "found", "passages": [privacy]}
-    assert _faq(kb_file, "هل بياناتي محمية؟", [privacy], question="حماية البيانات")["passages"] == [privacy]
+    assert result == {"status": "found", "passages": [privacy, overview]}
+    assert privacy in _faq(kb_file, "هل بياناتي محمية؟", [privacy], question="حماية البيانات")["passages"]
 
 
-def test_only_policy_passages_for_an_unrelated_question_is_not_found(kb_file):
+def test_only_policy_passages_for_an_unrelated_question_leaves_the_overview(kb_file):
     chunks = rag._chunk_text(KB_TEXT)
-    assert _faq(kb_file, "معلومات عن المكان", [chunks[2], chunks[3]]) == {"status": "not_found"}
+    assert _faq(kb_file, "معلومات عن المكان", [chunks[2], chunks[3]]) == {"status": "found", "passages": [chunks[0]]}
+
+
+# The log after the second fix (12:15): with the privacy passage gone,
+# "عاوزه اعرف معلومات عن المكان" got "ما عندي معلومات محددة عن المكان", and
+# "ايه تناسق" cleared nothing (0.280 < 0.32) - "no information about what
+# Tanasuq is". The overview, and for a "where" question the branches, now
+# always come along.
+
+def _faq_with_reading(kb_file, patient_message, search_results, reading, question):
+    state = {"templates": {"_knowledge_base_file": kb_file}, "understanding": reading,
+             "messages": [HumanMessage(content=patient_message)]}
+    with patch("rag.search", return_value=search_results):
+        return tools.answer_hospital_faq.func(state=state, question=question)
+
+
+def test_what_is_the_hospital_is_answered_from_the_overview(kb_file):
+    overview = rag._chunk_text(KB_TEXT)[0]
+    result = _faq_with_reading(kb_file, "ايه تناسق", [], {"intent": "answer"}, "ايه تناسق")
+    assert result == {"status": "found", "passages": [overview]}
+
+
+def test_a_where_question_also_gets_the_branches(kb_file):
+    chunks = rag._chunk_text(KB_TEXT)
+    result = _faq_with_reading(kb_file, "عاوزه اعرف معلومات عن المكان", [chunks[2], chunks[4]],
+                               {"intent": "faq", "asks_location": True}, "معلومات عن المكان")
+    assert result == {"status": "found", "passages": [chunks[4], chunks[0], chunks[1]]}
+    assert not any(rag.is_policy_passage(p) for p in result["passages"])
+
+
+def test_a_knowledge_base_without_headings_is_unchanged(tmp_path):
+    plain = tmp_path / "plain.txt"
+    plain.write_text("فقرة عن المستشفى.\n\nفقرة عن الخدمات.", encoding="utf-8")
+    assert rag.overview_passage(str(plain)) == "" and rag.contact_passages(str(plain)) == []
+    result = _faq_with_reading(str(plain), "ايه ده", [], {"asks_location": True}, "ايه ده")
+    assert result == {"status": "not_found"}
+
+
+def test_tanasuqs_overview_and_branches_are_found():
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "knowledge_base", "tanasuq-saudi.txt")
+    if not os.path.exists(path):
+        pytest.skip("no Tanasuq knowledge base on this branch")
+    assert rag.overview_passage(path).startswith("1. معلومات عامة عن تناسق الطبية | General Overview")
+    contact = rag.contact_passages(path)
+    assert contact and all("Contact & Branch" in c.split("\n", 1)[0] for c in contact)
+    assert any("المنار" in c for c in contact) and any("النزهة" in c for c in contact)
 
 
 def _job_reading(changes_intent=True):
