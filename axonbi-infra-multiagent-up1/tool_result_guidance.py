@@ -41,6 +41,15 @@ from typing import Optional
 GUIDANCE_KEY = "_guidance"
 
 
+_INVALID_PHONE_GUIDANCE = (
+    "This is not a complete mobile number (for example a Saudi mobile is "
+    "05XXXXXXXX - ten digits - and an Egyptian one 01XXXXXXXXX). Nothing "
+    "was checked and no code was sent. In one short line, tell the patient "
+    "the number looks incomplete and ask them to send it again in full. "
+    "Never say a code was sent, and do not call send_otp for this number."
+)
+
+
 RESULT_GUIDANCE: dict = {
 
     # ------------------------------------------------------------------
@@ -158,6 +167,12 @@ RESULT_GUIDANCE: dict = {
             "entity_type. Show the list first (user_input=\"\"), then "
             "let them pick - again, never say it \"doesn't exist\".",
     },
+
+    # ------------------------------------------------------------------
+    # An incomplete number, or not a mobile. Nothing was checked or sent.
+    "validate_phone_format": {"invalid": _INVALID_PHONE_GUIDANCE},
+    "compare_phone": {"invalid_phone": _INVALID_PHONE_GUIDANCE},
+    "send_otp": {"invalid_phone": _INVALID_PHONE_GUIDANCE},
 
     # ------------------------------------------------------------------
     "get_patient_info": {

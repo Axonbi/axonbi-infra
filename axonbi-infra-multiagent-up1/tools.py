@@ -332,10 +332,42 @@ def normalize_phone_number(phone: Optional[str], state=None) -> Optional[str]:
     return "+" + default_code + cleaned
 
 
+# A COMPLETE MOBILE NUMBER, for the countries these clinics serve: how
+# many digits follow the country code, and what a mobile number starts
+# with. The number gets an SMS code and becomes the booking's
+# mobileNumber, so an incomplete number or a landline is useless either
+# way. CONFIRMED (tanasuq, 2026-10-01): "055401389" - a Saudi mobile
+# missing a digit - passed the generic 7-15 digit check, became
+# "+96655401389", and an OTP was sent to it.
+#
+# A country NOT listed keeps the generic E.164 check: patients register
+# with foreign numbers, and a wrong rule for a country we do not serve
+# would lock them out.
+_MOBILE_NUMBER_RULES = {
+    "966": (9, "5"),    # Saudi Arabia  05X XXX XXXX
+    "20": (10, "1"),    # Egypt         01X XXXX XXXX
+    "971": (9, "5"),    # UAE           05X XXX XXXX
+    "962": (9, "7"),    # Jordan        07X XXX XXXX
+    "965": (8, None),   # Kuwait
+    "974": (8, None),   # Qatar
+    "973": (8, None),   # Bahrain
+    "968": (8, None),   # Oman
+}
+
+
 def _is_valid_phone_format(phone: Optional[str]) -> bool:
     if not phone:
         return False
-    return bool(re.match(r"^\+\d{7,15}$", phone.strip()))
+    phone = phone.strip()
+    if not re.match(r"^\+\d{7,15}$", phone):
+        return False
+    digits = phone[1:]
+    for code in sorted(_MOBILE_NUMBER_RULES, key=len, reverse=True):
+        if digits.startswith(code):
+            length, prefix = _MOBILE_NUMBER_RULES[code]
+            national = digits[len(code):]
+            return len(national) == length and (prefix is None or national.startswith(prefix))
+    return True
 
 
 _CLINIC_TZ = ZoneInfo(DEFAULT_TIMEZONE)
@@ -895,6 +927,13 @@ def compare_phone(
     a = normalize_phone_number(provided_phone, state)
     b = normalize_phone_number(verified_channel, state) if verified_channel else None
 
+    # An incomplete number is not "a different number" - answering
+    # "no_match" sent the model straight on to send_otp for it.
+    if not _is_valid_phone_format(a):
+        logger.info("compare_phone: provided=%r -> normalized=%r is not a complete mobile number",
+                    provided_phone, a)
+        return {"status": "invalid_phone"}
+
     match = bool(a and b and a == b)
 
     if channel_phone and normalize_phone_number(channel_phone, state) != b:
@@ -1394,6 +1433,12 @@ def send_otp(state: Annotated[AgentState, InjectedState], phone: str) -> dict:
             normalized, normalized_channel,
         )
         return {"status": "otp_not_needed_matches_channel"}
+
+    # Never send a code to a number that cannot be the patient's - the
+    # last check before an SMS leaves, whichever steps came before it.
+    if not _is_valid_phone_format(normalized):
+        logger.warning("send_otp: refused - %r is not a complete mobile number; nothing sent", normalized)
+        return {"status": "invalid_phone"}
 
     if OTP_PROVIDER == "authentica":
         api.authentica_send_otp(normalized)
