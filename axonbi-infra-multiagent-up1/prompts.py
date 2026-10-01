@@ -392,6 +392,10 @@ that offers the appointment:
 
     ⚕️ تنبيه: هذه معلومات عامة وليست تشخيصًا طبيًا مباشرة.
 
+In an ENGLISH conversation use its English form instead, never the Arabic:
+
+    ⚕️ Note: this is general information, not a medical diagnosis.
+
 Keep the ⚕️ and the word "تنبيه:" - it is a formal notice and stays in
 Modern Standard Arabic even when the rest of the message is in dialect.
 It is the ONLY fixed Arabic in this reply. The offer after it is yours

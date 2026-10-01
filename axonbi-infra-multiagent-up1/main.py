@@ -533,7 +533,13 @@ def send_message_with_signals(
                 # ask them to rephrase, which is both true and useful.
                 if upstream_api_failed(result.get("messages") or []):
                     templates = get_messages(client_id, client_row_override=client_config)
+                    # The clinic's template is Arabic; an English
+                    # conversation gets the English line.
+                    english = str(result.get("target_language") or "").lower().startswith("en")
                     reply = (
+                        templates.get("msg_On_failure_en")
+                        or "Sorry, a temporary problem occurred. Could you send your message again? 🌷"
+                    ) if english else (
                         templates.get("msg_On_failure")
                         or "عذرًا، حصلت مشكلة مؤقتة. ممكن تبعت رسالتك تاني؟ 🌷"
                     )

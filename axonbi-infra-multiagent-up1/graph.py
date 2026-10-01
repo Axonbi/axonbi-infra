@@ -9112,6 +9112,31 @@ _NOT_A_DIAGNOSIS_CORRECTION_DIRECTIVE = (
     "Change nothing else about the reply.\n\n"
 )
 
+# The notice in each language. The Arabic one is the clinic's formal
+# wording; an English conversation gets the English one - the Arabic line
+# went out word for word inside English replies (tanasuq, 2026-10-01).
+_NOT_A_DIAGNOSIS_NOTICE = {
+    "ar": "⚕️ تنبيه: هذه معلومات عامة وليست تشخيصًا طبيًا مباشرة.",
+    "en": "⚕️ Note: this is general information, not a medical diagnosis.",
+}
+
+
+def _not_a_diagnosis_correction(state: AgentState) -> str:
+    if _detect_target_language(state.get("messages") or []) != "en":
+        return _NOT_A_DIAGNOSIS_CORRECTION_DIRECTIVE
+    return (
+        "============================================================\n"
+        "ADD THE 'NOT A DIAGNOSIS' NOTICE - IT IS REQUIRED\n"
+        "============================================================\n"
+        "Your previous draft pointed the patient at a specialty or offered "
+        "them a doctor without the required notice. Add this line exactly, "
+        "on its own line, immediately before the line that offers the "
+        "appointment - in English, like the rest of this conversation:\n"
+        f"    {_NOT_A_DIAGNOSIS_NOTICE['en']}\n\n"
+        "Make sure the offer after it is a complete sentence of its own, and "
+        "change nothing else about the reply.\n\n"
+    )
+
 
 def _reply_asks_generic_branch_after_doctor(reply_text: str, state: AgentState) -> bool:
     """True when a doctor is settled and the reply asks a bare "which
@@ -12091,7 +12116,7 @@ def _build_crisis_directive(messages: list, templates: dict, active: bool = Fals
     if not (active or _signals_crisis(messages)):
         return ""
 
-    clinic = (templates or {}).get("_clinic_name_ar") or (templates or {}).get("_clinic_name") or ""
+    clinic = _clinic_name_for(templates, english=_detect_target_language(messages) == "en")
     at_clinic = (" at " + clinic) if clinic else ""
 
     return (
@@ -12143,7 +12168,7 @@ def _build_medication_request_directive(messages: list, templates: dict) -> str:
     if _signals_crisis(messages):
         return ""
 
-    clinic = (templates or {}).get("_clinic_name_ar") or (templates or {}).get("_clinic_name") or ""
+    clinic = _clinic_name_for(templates, english=_detect_target_language(messages) == "en")
     clinic_phrase = (" at " + clinic) if clinic else " here"
 
     return (
@@ -14152,7 +14177,7 @@ _REPLY_VERIFIERS = (
             agent_name in ("medical", "concierge")
             and _medical_reply_missing_not_a_diagnosis(reply, state)
         ),
-        lambda reply, state: _NOT_A_DIAGNOSIS_CORRECTION_DIRECTIVE,
+        lambda reply, state: _not_a_diagnosis_correction(state),
         "medical-guidance reply steered the patient to a specialty/doctor without "
         "the required 'not a diagnosis' clause",
     ),
@@ -17697,6 +17722,106 @@ def _reply_advances_past_a_refusal(reply_text: str, state: AgentState, agent_nam
         and not _SUMMARY_OR_CONFIRMATION_CUE_RE.search(folded)
 
 
+# ==========================================================
+# ENGLISH CONVERSATIONS GET THE ENGLISH FORM OF EVERY FIXED TEXT
+# ==========================================================
+#
+# The prompt carries the clinic's fixed texts in Arabic - the "not a
+# diagnosis" notice, the handoff line, the templates, the Arabic hospital
+# name - and tells the model to copy them word for word. In an English
+# conversation it did exactly that. CONFIRMED (tanasuq, 2026-10-01): an
+# English medical reply carried "⚕️ تنبيه: هذه معلومات عامة وليست
+# تشخيصًا طبيًا مباشرة." and "at مستشفى تناسق الطبية", and the handoff
+# that followed was "تم تحويلك إلى أحد ممثلي خدمة العملاء 🌷".
+#
+# Two layers, neither a model call: the footer below tells the model, and
+# `_localize_fixed_texts_for_english` swaps the known fixed strings in
+# code if one still comes through.
+
+def _clinic_name_for(templates: Optional[dict], english: bool) -> str:
+    """The hospital's name in the conversation's language. An English
+    name is only used if the configured `clinic_name` is written in Latin
+    letters - a row that holds the Arabic name in both columns has no
+    English one to offer."""
+
+    templates = templates or {}
+    name_en = str(templates.get("_clinic_name") or "").strip()
+    name_ar = str(templates.get("_clinic_name_ar") or "").strip()
+    if english:
+        return name_en if _has_latin_letters(name_en) else ""
+    return name_ar or name_en
+
+
+def _english_fixed_texts_directive(templates: Optional[dict]) -> str:
+    name = _clinic_name_for(templates, english=True)
+    named = f" The hospital's name in English is \"{name}\" - never its Arabic name." if name else ""
+    return (
+        "============================================================\n"
+        "ENGLISH CONVERSATION - FIXED ARABIC TEXTS ARE WRITTEN IN ENGLISH\n"
+        "============================================================\n"
+        "Every fixed Arabic text in this prompt - the FIXED TEMPLATES, the "
+        "reference phrases, the handoff line, any [BEGIN-EXACT-TEXT] block - "
+        "is written in English in this reply: same lines, order and emoji, "
+        "same real names, dates and numbers; only the words change. The "
+        f"not-a-diagnosis notice is \"{_NOT_A_DIAGNOSIS_NOTICE['en']}\".{named}\n\n"
+    )
+
+
+_ARABIC_DIACRITICS = frozenset("ًٌٍَُِّْٰ")
+
+
+def _tolerant_text_re(text: str):
+    """`text` as a pattern that survives what the model does to a copied
+    line: joined or re-broken lines, dropped tashkeel, a dropped emoji
+    variation selector."""
+
+    parts = []
+    for ch in text.strip():
+        if ch.isspace():
+            if parts and parts[-1] != r"\s*":
+                parts.append(r"\s*")
+        elif ch in _ARABIC_DIACRITICS or ch == "️":
+            parts.append(re.escape(ch) + "?")
+        else:
+            parts.append(re.escape(ch))
+    return re.compile("".join(parts))
+
+
+def _localize_fixed_texts_for_english(reply_text: str, state: AgentState) -> str:
+    """The reply with every known Arabic fixed text swapped for its
+    English form. For English conversations only - the caller checks."""
+
+    if not isinstance(reply_text, str) or not _looks_arabic(reply_text):
+        return reply_text
+
+    templates = state.get("templates") or {}
+    handoff_en = str(templates.get("msg_handoff_confirmation_en") or "").strip() or _HANDOFF_TEXT_EN
+
+    pairs = [(_NOT_A_DIAGNOSIS_NOTICE["ar"], _NOT_A_DIAGNOSIS_NOTICE["en"])]
+    for arabic in (templates.get("msg_handoff_confirmation"), _HANDOFF_TEXT_AR):
+        if arabic and str(arabic).strip():
+            pairs.append((str(arabic), handoff_en))
+    name_ar = str(templates.get("_clinic_name_ar") or "").strip()
+    name_en = _clinic_name_for(templates, english=True)
+    if name_ar and name_en:
+        pairs.append((name_ar, name_en))
+
+    text = reply_text
+    for arabic, english in pairs:
+        text = _tolerant_text_re(arabic).sub(lambda _m, e=english: e, text)
+
+    # A handoff turn has one thing to say. If Arabic is still in it, the
+    # model wrote the clinic's handoff line in its own words - say it in
+    # English instead.
+    if _looks_arabic(text):
+        for msg in _tool_results_since_latest_human(state.get("messages") or [], ("request_human_handoff",)):
+            if (parse_tool_content(msg) or {}).get("status") == "handoff_requested":
+                return handoff_en
+        logger.info("english reply still carries Arabic text after localizing: %r", text)
+
+    return text
+
+
 def _reply_asks_same_number_before_booking_ready(reply_text: str, state: AgentState) -> bool:
     """True when a NEW BOOKING reply asks "same WhatsApp number?"
     (STEP NB6) before a doctor is confirmed AND a time slot is
@@ -19576,6 +19701,9 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         # explicitly overriding) channel-identity directive AFTER it
         # gives it the final word for this turn.
         + channel_identity_directive
+        # After every directive that hands over a fixed Arabic text, so it
+        # has the last word on language - English turns only.
+        + (_english_fixed_texts_directive(templates) if target_language == "en" else "")
         # LAST, and in this order. Both override the scope refusal, and
         # the scope refusal is itself deliberately emphatic - the same
         # reason channel identity had to be moved down here. Crisis goes
@@ -20358,6 +20486,17 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         )
         response = AIMessage(content=_declined_offer_reply(state.get("templates"), target_language))
 
+    # ENGLISH CONVERSATION, ENGLISH FIXED TEXTS - see
+    # `_localize_fixed_texts_for_english`.
+    if not has_tool_calls and target_language == "en":
+        localized = _localize_fixed_texts_for_english(response.content, state)
+        if localized != response.content:
+            logger.warning(
+                "agent[%s]: English reply carried Arabic fixed text - swapped for its English "
+                "form in code. Draft: %r", agent_name, response.content,
+            )
+            response = AIMessage(content=localized)
+
     if not has_tool_calls and not state.get("greeted"):
         first_user_message = state["messages"][0].content if state["messages"] else ""
         greeting = _build_greeting(state.get("templates") or {}, first_user_message, target_language or "ar")
@@ -21068,7 +21207,7 @@ def handoff(state: AgentState) -> dict:
     if crisis:
         text = _crisis_text(english, templates)
     elif english:
-        text = _HANDOFF_TEXT_EN
+        text = str(templates.get("msg_handoff_confirmation_en") or "").strip() or _HANDOFF_TEXT_EN
     else:
         text = templates.get("msg_handoff_confirmation") or _HANDOFF_TEXT_AR
 

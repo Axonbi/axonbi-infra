@@ -63,6 +63,7 @@ TEST_FILES=(
   tests/test_semantic_routing.py tests/test_reading_first_gates.py
   tests/test_reschedule_reverification.py tests/test_out_of_scope.py
   tests/test_decline_flow_control.py tests/test_phone_validation.py
+  tests/test_english_fixed_texts.py
 )
 
 RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; DIM=$'\033[2m'; OFF=$'\033[0m'

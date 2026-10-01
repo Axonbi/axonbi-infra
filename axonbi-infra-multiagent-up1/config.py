@@ -990,11 +990,18 @@ _CLIENT_OVERRIDE_KEYS = (
     "msg_unknown_fallback",
     "msg_media_canned",
     "msg_handoff_confirmation",
+    "msg_handoff_confirmation_en",
     "msg_back_to_ai",
     "msg_patient_booking_number",
     "msg_booking_confirmation",
     "msg_booking_success",
     "msg_On_failure",
+    "msg_On_failure_en",
+    # Optional: the acknowledgement sent when the patient turns an offer
+    # down and the draft tried to ask for their number anyway
+    # (graph._declined_offer_reply).
+    "msg_declined_offer",
+    "msg_declined_offer_en",
     # Optional: the clarification question (graph.clarify) in the
     # clinic's own words, with "{options}" where the choices go. Either
     # file may carry it; absent, a neutral built-in wording is used.
