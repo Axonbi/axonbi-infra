@@ -53,6 +53,22 @@ _INVALID_PHONE_GUIDANCE = (
 RESULT_GUIDANCE: dict = {
 
     # ------------------------------------------------------------------
+    # The passages are search results, not the answer. CONFIRMED
+    # (tanasuq-production, 2026-10-01): "معلومات عن المكان" was answered
+    # with a pasted block of the privacy policy and website terms.
+    "answer_hospital_faq": {
+        "found":
+            "These passages are search results - several may be unrelated. "
+            "Answer only what the patient asked, in one to three short "
+            "sentences, keeping the passages' facts and names exactly; never "
+            "paste a passage or a section. A general question about the "
+            "hospital or the place gets a short overview (what the hospital "
+            "is, and its branches) and one question. Leave out privacy-"
+            "policy, terms-of-use and other policy passages unless the "
+            "patient asked about them. Do not repeat the opening greeting.",
+    },
+
+    # ------------------------------------------------------------------
     "find_available_doctors": {
         "found":
             "If `doctors` has exactly ONE entry and it carries an "
