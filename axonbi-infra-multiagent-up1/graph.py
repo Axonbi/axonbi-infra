@@ -4406,7 +4406,10 @@ def _hr_email_from_kb(kb_file: str, mtime: float) -> str:
     except OSError:
         return ""
 
-    for wanted in ("الموارد البشرية", "HR", "التوظيف", "الوظائف", "Careers", "Jobs"):
+    # Not "الوظائف": it is also "functions" ("الوظائف التنفيذية" is in a
+    # clinic's own service description), and an address on such a line
+    # would be handed out as HR's.
+    for wanted in ("الموارد البشرية", "HR", "التوظيف", "Careers", "Jobs"):
         for line in lines:
             if wanted in line:
                 match = _EMAIL_RE.search(line)
