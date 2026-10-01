@@ -28,6 +28,10 @@ WHAT CODE STILL DECIDES (hard rules, each logged as an override)
 
 THE DECISION
 ------------
+  0. A refusal of the previous offer that asks for nothing new (see
+     `turn_action`) -> whoever owns the conversation keeps it, and the
+     turn is flagged so nothing the patient refused can advance. Never a
+     clarification, never out-of-scope, never the declined flow itself.
   1. Low confidence / ambiguous:
        a flow is in progress -> it keeps the turn (context explains it)
        nothing in progress   -> one clarification question
@@ -86,6 +90,23 @@ class TurnFacts:
     # The message is a file (PDF, image, voice note...). The assistant
     # cannot open files, so a person is the only useful next step.
     media_received: bool = False
+    # DATA VALIDATION: the message is nothing but a refusal word ("لا",
+    # "no"). Like `crisis_signal` it can only ADD: it says a refusal
+    # carries no request of its own, and supplies the refusal when the
+    # reading has none at all. It never overrides a reading's `confirms`.
+    bare_refusal: bool = False
+
+
+# WHAT THE MESSAGE DOES THIS TURN - derived in code from the reading, not
+# asked of the model. One intent covers several actions: "booking" can be
+# continuing a booking, confirming a slot, or turning down an offer, and
+# only some of those may move the flow forward.
+ACTION_SWITCH = "switch"
+ACTION_CONFIRM = "confirm"
+ACTION_DECLINE = "decline"                          # refuses, asks for nothing new
+ACTION_DECLINE_AND_REQUEST = "decline_and_request"  # refuses AND says what instead
+ACTION_ANSWER = "answer"
+ACTION_CONTINUE = "continue"
 
 
 @dataclass
@@ -98,6 +119,7 @@ class Decision:
     out_of_scope: bool = False
     override_reason: Optional[str] = None
     reading: Optional[dict] = field(default=None, repr=False)
+    turn_action: Optional[str] = None
 
 
 def confidence_of(reading: Optional[dict]) -> float:
@@ -122,6 +144,58 @@ def active_flow(facts: TurnFacts) -> Optional[str]:
     return None
 
 
+def carries_new_request(reading: dict, flow: Optional[str]) -> bool:
+    """The message asks for something besides refusing: "لا، السبت",
+    "لا، عايز الدكتور عبدالله", "لا، خليه الأسبوع الجاي", "لا، عندي شكوى".
+    Read from fields the reading already has - a value it named, a flag
+    it raised, or an intent other than the flow being answered."""
+
+    entities = reading.get("entities") or {}
+    if any(entities.values()) or reading.get("doctor_name") or reading.get("specialty"):
+        return True
+    if any(reading.get(key) for key in (
+            "changes_intent", "wants_human", "cancel_request", "wants_options",
+            "asks_price", "asks_location", "crisis")):
+        return True
+    intent = reading.get("intent")
+    return intent in SPECIALISTS and intent != flow
+
+
+def turn_action(reading: Optional[dict], facts: TurnFacts) -> Optional[str]:
+    """What this message does, from the reading and state - never from
+    the patient's words beyond the `bare_refusal` data fact.
+
+    ORDER MATTERS. A message that only says "لا" is a refusal whatever
+    intent the reading attached to it; a deliberate move to another
+    request beats everything else; a refusal is checked BEFORE "answers
+    the question" because answering with "no" is not continuing - that
+    was the production failure: "تحب أساعدك تحجز مع دكتور ثاني؟" -> "لا"
+    read as a booking answer, and booking went on to the phone number."""
+
+    if reading is None:
+        # Technical failure: the data fact is all there is.
+        return ACTION_DECLINE if facts.bare_refusal else None
+
+    flow = active_flow(facts)
+    intent = reading.get("intent")
+    confirms = bool(reading.get("confirms"))
+    declines = bool(reading.get("declines"))
+
+    if facts.bare_refusal and not confirms:
+        return ACTION_DECLINE
+    if (reading.get("changes_intent") and intent in SPECIALISTS + ("human",)
+            and intent != flow):
+        return ACTION_SWITCH
+    if confirms and not declines:
+        return ACTION_CONFIRM
+    if declines and not confirms:
+        return (ACTION_DECLINE_AND_REQUEST if carries_new_request(reading, flow)
+                else ACTION_DECLINE)
+    if answering(reading):
+        return ACTION_ANSWER
+    return ACTION_CONTINUE
+
+
 def handoff_consent_problem(reading: dict, facts: TurnFacts, thresholds: Thresholds) -> Optional[str]:
     """Why a wants_human reading must not be carried out, or None."""
 
@@ -143,6 +217,15 @@ def owner(reading: dict, facts: TurnFacts, thresholds: Thresholds = Thresholds()
 
     intent = reading.get("intent")
     flow = active_flow(facts)
+
+    if turn_action(reading, facts) == ACTION_DECLINE:
+        # OWNERSHIP, NOT PERMISSION. Whoever made the offer keeps the
+        # conversation so the reply can close it naturally; what they may
+        # DO this turn is narrowed elsewhere (graph's decline gate). Not
+        # `intent`: a "no" to "shall I book you?" read as booking must
+        # not start a booking, and "no" is never by itself a cancel.
+        keeper = flow or CONCIERGE
+        return keeper, f"semantic: declined the previous offer - {keeper} keeps it, nothing advances", None
 
     if intent == "answer":
         # TOOL-CAPABILITY INVARIANT: the answer picks from a doctor or
@@ -175,13 +258,16 @@ def owner(reading: dict, facts: TurnFacts, thresholds: Thresholds = Thresholds()
             return intent, f"semantic: {intent}", None
         if reading.get("changes_intent"):
             return intent, f"semantic: intent changed {flow} -> {intent}", None
-        if flow == "booking" and intent in ("reschedule", "cancel") and answering(reading):
+        if (flow == "booking" and intent in ("reschedule", "cancel") and answering(reading)
+                and not reading.get("cancel_request")):
             # A time or a correction given while a NEW booking is being
             # built ("الساعه 7" on the review card) reads as a change of
             # an appointment, but there is no appointment yet - it answers
             # booking's own question. CONFIRMED IN PRODUCTION
             # (2026-09-30 12:23): it was moved into reschedule, which asked
             # "برقم الجوال ولا برقم الحجز؟".
+            # NOT an explicit request to cancel: "تحب أحجز لك موعد جديد؟" ->
+            # "لا، خلاص الغيه" answers the offer AND asks for a cancellation.
             return flow, "semantic: answering booking's question (a change-shaped reply stays in booking)", None
         if flow in ("reschedule", "cancel") and intent == "booking" and answering(reading):
             # A reply INSIDE a reschedule/cancel flow - a day, a time, a
@@ -223,7 +309,8 @@ def decide(reading: Optional[dict], facts: TurnFacts,
                         handoff=True, override_reason="media", reading=reading)
 
     if reading is None:
-        return Decision(None, "understanding unavailable (technical failure)", ROUTING_FALLBACK)
+        return Decision(None, "understanding unavailable (technical failure)", ROUTING_FALLBACK,
+                        turn_action=turn_action(None, facts))
 
     consent_problem = None
     in_crisis = facts.crisis_active or crisis_now
@@ -237,13 +324,20 @@ def decide(reading: Optional[dict], facts: TurnFacts,
         return Decision(CONCIERGE, "handoff: patient wants a person", ROUTING_SEMANTIC,
                         handoff=True, reading=reading)
 
-    if (is_uncertain(reading, thresholds) and reading.get("intent") != "greeting"
-            and active_flow(facts) is None):
+    action = turn_action(reading, facts)
+
+    # A CLEAR REFUSAL IS NOT UNCERTAINTY. "لا" right after an offer means
+    # what it means however low the confidence number came back, and
+    # answering it with "do you mean booking, rescheduling or
+    # cancelling?" - or the out-of-scope offer, for a "no" read as
+    # "other" - ignores the conversation it belongs to.
+    if (action != ACTION_DECLINE and is_uncertain(reading, thresholds)
+            and reading.get("intent") != "greeting" and active_flow(facts) is None):
         return Decision(
             facts.previous if facts.previous in SPECIALISTS + (CONCIERGE,) else CONCIERGE,
             "semantic: ambiguous with no flow to resolve it - clarify", ROUTING_SEMANTIC,
             clarify=True, override_reason=consent_problem and f"handoff not carried out: {consent_problem}",
-            reading=reading,
+            reading=reading, turn_action=action,
         )
 
     # Outside patient care, and no flow in progress to return to: a short
@@ -253,6 +347,7 @@ def decide(reading: Optional[dict], facts: TurnFacts,
     # Never while a crisis is active: that person gets the specialist
     # carrying the crisis rules, whatever the message reads as.
     if (reading.get("intent") == "other" and active_flow(facts) is None
+            and action != ACTION_DECLINE
             and not is_uncertain(reading, thresholds)
             and not (facts.crisis_active or crisis_now)):
         return Decision(
@@ -262,10 +357,10 @@ def decide(reading: Optional[dict], facts: TurnFacts,
                else "unrelated to the hospital, decline"),
             ROUTING_SEMANTIC, out_of_scope=True,
             override_reason=consent_problem and f"handoff not carried out: {consent_problem}",
-            reading=reading,
+            reading=reading, turn_action=action,
         )
 
     agent, reason, rule = owner(reading, facts, thresholds)
     override = rule or (consent_problem and f"handoff not carried out: {consent_problem}")
     return Decision(agent, reason, ROUTING_SAFETY if override else ROUTING_SEMANTIC,
-                    override_reason=override, reading=reading)
+                    override_reason=override, reading=reading, turn_action=action)

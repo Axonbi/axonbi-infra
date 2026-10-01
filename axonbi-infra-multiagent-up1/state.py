@@ -174,6 +174,13 @@ class AgentState(TypedDict):
     # stored is the reading AFTER the router's consent check - a transfer
     # the router refused reads wants_human=False here too.
     understanding: NotRequired[Optional[dict]]
+    # What this turn's message DOES, derived in code from `understanding`
+    # (agents.semantic_router.turn_action): "decline", "decline_and_request",
+    # "confirm", "switch", "answer", "continue", or None. "decline" - a
+    # refusal that asks for nothing new - is what graph._tool_node's
+    # decline gate reads: nothing the patient just refused may advance.
+    # Rewritten by the router every turn, so it never outlives its turn.
+    turn_action: NotRequired[Optional[str]]
     # Sticky for the whole thread once any message signals a crisis
     # (self-harm / suicidal thoughts). The crisis rules used to apply only
     # while the LATEST message matched, so a follow-up "yes" or "i need

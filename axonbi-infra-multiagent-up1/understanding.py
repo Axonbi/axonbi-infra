@@ -105,17 +105,18 @@ Return ONLY a JSON object with these keys:
   greeting: only a greeting or thanks
   other: anything else - including things that are not patient care: jobs, training, interviews, suppliers, business
   An answer's intent is the flow it moves forward: yes to "shall I book you with Dr X?" is booking, to "cancel it?" is cancel, to "connect you with customer service?" is human.
+  A no moves nothing forward: a bare refusal ("لا", "لا خلاص", "مش عايز") is intent "answer", declines true - not the topic's flow, not a cancellation. A no that also asks for something ("لا، السبت", "لا، عايز الدكتور عبدالله") takes that request's intent and values, declines true.
 "confidence": 0.0-1.0 for intent.
 "is_ambiguous": true only if it could mean different intents and neither STATE nor the conversation settles it; then "alternatives": the 2-3 plausible intents, else []. Two cases that are ALWAYS ambiguous unless the conversation already says which: "الموعد" with nothing before it; and being unable to make an appointment without saying whether to cancel it or move it ("مش هقدر اجي", "can't make it") -> intent "cancel", is_ambiguous true, alternatives ["cancel", "reschedule"], confidence at most 0.5.
 "answer_to_previous_question": it replies to the assistant's previous message.
 "changes_intent": the patient deliberately leaves the current flow (STATE.flow) for a different request.
-"confirms": clearly says yes to what the assistant's previous message asked to confirm or approve.
-"declines": says no to, or rejects, what the assistant's previous message offered or proposed (a day, time, doctor, branch, booking, transfer). False when that message offered nothing (a greeting, a question). A new unrelated request is not a decline.
+"confirms": clearly says yes to what the assistant's previous message asked to confirm or approve. Never true together with declines.
+"declines": says no to, or rejects, what the assistant's previous message offered or proposed (a day, time, doctor, branch, booking, transfer). False when that message offered nothing (a greeting, an open question). A new unrelated request is not a decline.
 "wants_human": asks for a person in any wording, or clearly accepts an offer to transfer them. A plea for help ("طيب ارجو المساعدة", "ساعدني", "please help") right after the assistant offered to transfer them IS accepting that offer. False for a decline, frustration alone, a complaint topic, or a reply that is not clearly a yes (a list number, "دي").
 "cancel_request": this message asks for an existing appointment to be cancelled.
 "cancel_confirmed": ONLY when the previous message asked to confirm cancelling a specific appointment and this clearly says yes. "تم تاكيد الموعد مسبقا" (already confirmed) is not.
 "crisis": suicidal thoughts, wanting to die or "end it", self-harm, or danger to self or others, direct or indirect, including someone with them. Anxiety, sadness, insomnia or asking for a psychiatrist are not.
-"wants_options": cannot choose or does not know (which doctor, which specialty, which day) or asks to be shown everything that is available, in any wording ("مش عارف", "اعرض لي الكل", "what do you have?"). False when they simply name or pick something.
+"wants_options": cannot choose or does not know (which doctor, which specialty, which day), asks to be shown everything that is available, or asks for other choices, in any wording ("مش عارف", "اعرض لي الكل", "غيره", "what do you have?"). False when they simply name or pick something.
 "asks_price": asks about a price, fee or cost.
 "asks_location": asks where a branch is, its address or map.
 "about_this_hospital": only for intent "other" - true when it concerns THIS hospital although it is not patient care (a job, training, an interview, a supplier, administration); false when it has nothing to do with the hospital (a party, event tickets, food prices, general chat).
@@ -127,6 +128,7 @@ Booleans default to false.
 
 EXAMPLES (the pattern, not the words - other keys omitted):
 - ASSISTANT: "هل تريد إلغاء الموعد؟" / PATIENT: "أكيد" -> {{"intent": "cancel", "answer_to_previous_question": true, "confirms": true, "cancel_confirmed": true}}
+- ASSISTANT: "تحب أدور لك على دكتور ثاني؟" / PATIENT: "لا" -> {{"intent": "answer", "answer_to_previous_question": true, "declines": true}}
 - nothing asked yet / PATIENT: "مش هقدر احضر الموعد" -> {{"intent": "cancel", "is_ambiguous": true, "alternatives": ["cancel", "reschedule"], "confidence": 0.5, "declines": false}}
 - ASSISTANT: "تحب نلغي الموعد، ولا نأجله ليوم تاني؟" / PATIENT: "خليه الأسبوع الجاي" -> {{"intent": "reschedule", "answer_to_previous_question": true, "is_ambiguous": false}}
 

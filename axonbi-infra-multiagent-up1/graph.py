@@ -903,6 +903,8 @@ def _patient_declines_this_turn(state: AgentState) -> bool:
     act on the day/time it names. The reading decides; without one, the
     refusal patterns the negation directive already uses."""
 
+    if state.get("turn_action") == agents.semantic_router.ACTION_DECLINE:
+        return True
     reading = state.get("understanding")
     if reading is not None:
         return bool(reading.get("declines"))
@@ -14612,10 +14614,17 @@ def _patient_confirms(text: str, reading: Optional[dict] = None) -> bool:
     """Whether the patient said yes - by MEANING when the turn's reading
     is available (any wording, any dialect, "نعم بكرا ان شاء الله"), and
     by the bare yes-words otherwise. The word list alone made every
-    directive that waits for "yes" deaf to everything else."""
+    directive that waits for "yes" deaf to everything else.
 
-    if reading is not None and reading.get("confirms"):
-        return True
+    A reading that says they REFUSED is never a yes, whatever word list
+    the text happens to match - the refusal has to stop every hook that
+    waits for a yes, not just the ones that check `declines` themselves."""
+
+    if reading is not None:
+        if reading.get("declines") and not reading.get("confirms"):
+            return False
+        if reading.get("confirms"):
+            return True
     return bool(_BARE_AFFIRMATION_RE.match(_norm_ar(text or "")))
 
 
@@ -15089,18 +15098,32 @@ _LEADING_REFUSAL_RE = re.compile(
 )
 
 
-def _build_negation_directive(messages: list, reading: Optional[dict] = None) -> str:
-    """Fires when the patient's whole message is a refusal ("لا", "مش
-    مناسب", "no").
+def _build_negation_directive(messages: list, reading: Optional[dict] = None,
+                              turn_action: Optional[str] = None) -> str:
+    """Fires when the patient's message refuses what was just offered
+    ("لا", "مش مناسب", "no", "لا، السبت").
 
-    A bare "no" is an answer, and it is answering whatever was just
-    offered. The reply must move AWAY from that thing - it must never
-    carry on as though the answer had been yes.
+    A "no" is an answer, and it is answering whatever was just offered.
+    The reply must move AWAY from that thing - it must never carry on as
+    though the answer had been yes.
+
+    TWO SHAPES. A refusal that asks for nothing new (turn_action
+    "decline") gets the stop-it text - and the tools that would advance
+    the refused thing are blocked in `_tool_node`, so the text is not the
+    only thing holding the line. A refusal that also says what they want
+    instead gets the shorter use-what-they-said text.
 
     CONFIRMED REAL PRODUCTION FAILURE: the patient replied "لا", and the
     next message was "أقرب موعد متاح عند رانيا عبد الرحمن في Al Nozha:
     الثلاثاء 01/09/2026 ... هل يناسبك هذا اليوم؟" - the refusal was
-    swallowed and the same doctor was pushed forward regardless."""
+    swallowed and the same doctor was pushed forward regardless.
+
+    CONFIRMED REAL PRODUCTION FAILURE (tanasuq, 2026-09-30/10-01): "تحب
+    أساعدك تحجز مع دكتور ثاني في نفس التخصص؟" -> "لا" -> "من فضلك أرسل
+    رقم الجوال مع رمز الدولة". The previous version of this text opened
+    with a bullet ordering "ask for the alternative phone number" and told
+    the model a refused doctor means "offer the other available doctors"
+    - the two wrong replies a refused alternative-doctor offer can get."""
 
     if not messages:
         return ""
@@ -15127,7 +15150,9 @@ def _build_negation_directive(messages: list, reading: Optional[dict] = None) ->
     # "لا عاوزه اعدل الحجز" and "مش كويس وعندي صداع" as refusals of the
     # offer on the table; the reading knows the first is a new request
     # (routing already moved it) and the second is a symptom.
-    if reading is not None:
+    if turn_action == agents.semantic_router.ACTION_DECLINE:
+        refuses = True
+    elif reading is not None:
         refuses = bool(reading.get("declines")) and not reading.get("changes_intent")
         # A DAY NAMED ON ITS OWN IS AN ANSWER, NOT A REFUSAL. After "does
         # Wednesday 07/10 work?", a patient who writes "اليوم" or
@@ -15168,55 +15193,47 @@ def _build_negation_directive(messages: list, reading: Optional[dict] = None) ->
     if not previous_ai:
         return ""
 
+    asked = f"    \"{previous_ai[:300]}\"\n\n"
+
+    bare = (turn_action == agents.semantic_router.ACTION_DECLINE if turn_action is not None
+            else bool(_BARE_NEGATION_RE.match(folded)))
+
+    if not bare:
+        return (
+            "============================================================\n"
+            "THEY TURNED DOWN WHAT YOU OFFERED\n"
+            "============================================================\n"
+            "The patient refused what your last message offered:\n"
+            + asked +
+            "It is never a yes to it, and the refused day/time/doctor/branch "
+            "must not be offered again, not even as one option in a list.\n"
+            "  - Their message also says what they want instead (another day, "
+            "a time, a doctor's name, \"the same doctor\"): act on THAT now.\n"
+            "  - It only names what they refuse (\"مش مناسب الخميس\"): leave "
+            "that out and offer the real alternatives.\n\n"
+        )
+
     return (
         "============================================================\n"
-        "THEY SAID NO - DO NOT CARRY ON AS IF THEY SAID YES\n"
+        "THEY SAID NO - STOP WHAT YOU OFFERED\n"
         "============================================================\n"
-        "The patient's entire message is a refusal. It answers the "
-        "question you just asked, which was:\n"
-        f"    \"{previous_ai[:300]}\"\n\n"
-        "Whatever that question offered - this doctor, this day, this "
-        "time, this branch - they have declined it. Your reply must "
-        "move AWAY from it:\n"
-        "  - Asked whether to book/continue on the SAME WHATSAPP NUMBER "
-        "(\"نكمل الحجز على نفس رقم الواتساب ده؟\" or similar) and they "
-        "said no -> this is NOT a refusal of the day/time/doctor, even "
-        "if a booking confirmation or an appointment detail sits right "
-        "above that question in the same message. Your entire reply "
-        "must ask for the alternative phone number (or booking "
-        "reference) - see the CHANNEL IDENTITY instructions elsewhere "
-        "in this prompt for the exact next step. Do NOT reopen the "
-        "day/time/doctor choice, and do NOT call any availability tool.\n"
-        "    CONFIRMED REAL PRODUCTION FAILURE: right after the Saturday "
-        "slot was confirmed, the assistant asked \"نكمل الحجز على نفس "
-        "رقم واتساب ده؟\"; the patient said \"لا\"; the reply then "
-        "offered a DIFFERENT day (Wednesday) instead of asking for the "
-        "other phone number - the day/time had already been settled and "
-        "was never what \"لا\" was answering.\n"
-        "  - Offered a DAY or a TIME and they said no -> show the OTHER "
-        "days/times that are actually available (call the tool again "
-        "with the next offset), never the same one reworded.\n"
-        "    THE REFUSED DAY MUST NOT APPEAR IN THAT LIST AT ALL. If "
-        "they named it (\"مش مناسب التلات\"), leave it out of the "
-        "alternatives entirely - re-offering it as one of the options "
-        "ignores what they just told you, and they can pick it back by "
-        "accident. CONFIRMED REAL PRODUCTION FAILURE: a patient "
-        "rejected Tuesday and the very next message offered \"1️⃣ "
-        "الأحد 2️⃣ الاثنين 3️⃣ الثلاثاء\" - the rejected day still "
-        "on the menu.\n"
-        "  - Offered a DOCTOR and they said no -> offer the other "
-        "available doctors, not that doctor's schedule.\n"
-        "  - Offered a BRANCH and they said no -> the other branches.\n"
-        "  - Asked whether to continue at all and they said no -> stop "
-        "warmly and ask if there's anything else, without pushing.\n\n"
-        "Do NOT re-present the same thing with different wording, and "
-        "do NOT advance to the next step of the flow for the thing they "
-        "just refused. If nothing else is available, say that plainly "
-        "instead of quietly re-offering what they turned down.\n\n"
-        "CONFIRMED REAL PRODUCTION FAILURE: the patient replied \"لا\" "
-        "and the very next message was \"أقرب موعد متاح عند رانيا عبد "
-        "الرحمن ... هل يناسبك هذا اليوم؟\" - the refusal was ignored "
-        "and the same doctor pushed forward anyway.\n\n"
+        "The patient's message only says no. It answers your last message:\n"
+        + asked +
+        "and it is never a yes to it.\n"
+        "  - That message offered or proposed something (another doctor, a "
+        "booking, a day, time, doctor or branch, a service, the review "
+        "card): do not do it, do not re-offer it in other words, and do not "
+        "move to any later step (no asking for a phone or WhatsApp number, "
+        "no verification code, no review card, no booking, no new search - "
+        "those tools are blocked this turn). Reply in ONE short message: "
+        "acknowledge it; if they turned down a day, time or doctor, ask "
+        "which they would prefer instead (other available days/times may "
+        "be shown, never the refused one); otherwise ask whether there is "
+        "anything else you can help with.\n"
+        "  - That message asked something \"no\" simply answers (book on "
+        "this same WhatsApp number? add an optional email? a doctor in "
+        "mind? is this the appointment?): take no as the answer and ask "
+        "that step's next question.\n\n"
     )
 
 
@@ -16024,6 +16041,22 @@ _BRANCH_QUESTION_PHRASING_DIRECTIVE = (
     "appointment' yourself; that fact only ever comes from "
     "`resolve_available_day` / `list_available_days_for_booking`'s "
     "actual result, never from your own reasoning about the schedule.\n\n"
+)
+
+
+_SINGLE_BRANCH_SCHEDULE_DIRECTIVE = (
+    "============================================================\n"
+    "THIS DOCTOR WORKS AT ONE BRANCH - DON'T ASK WHICH BRANCH\n"
+    "============================================================\n"
+    "The doctor's schedule was just looked up: ONE branch, now confirmed "
+    "for this booking. Show what the tool returned under one heading, one "
+    "line per day (the clinic's own dialect; the Arabic shows the shape):\n"
+    "    مواعيد الدكتور [اسم الدكتور] في فرع [اسم الفرع]:\n"
+    "    • [اليوم]: من [من الساعة] لـ [إلى الساعة] — [اسم الخدمة]\n\n"
+    "Then ONE question about the DAY only. Never ask or mention which "
+    "branch (\"أنهي فرع\", \"أي فرع\", \"which branch\") - there is "
+    "nothing to choose. Several days: ask which day suits them. Exactly "
+    "one day: ask whether to show that day's available times.\n\n"
 )
 
 
@@ -17610,6 +17643,60 @@ def _build_new_booking_different_number_directive(
     return _NEW_BOOKING_DIFFERENT_NUMBER_DIRECTIVE
 
 
+# ==========================================================
+# A REFUSAL NEVER TURNS INTO THE PHONE STEP - output guard, no model call
+# ==========================================================
+#
+# The decline gate in `_tool_node` stops the TOOLS. This stops the one
+# visible step the gate cannot see, because it is only text: asking for
+# the number. CONFIRMED (tanasuq, 2026-09-30/10-01, twice): "... تحب أدور
+# لك على دكتور ثاني؟" -> "لا" -> "من فضلك أرسل رقم الجوال مع رمز الدولة".
+#
+# Scoped so it cannot fire on the legitimate "no": after "same WhatsApp
+# number?" a slot is always already locked (NB6), and the existing-
+# booking flows (cancel/reschedule/complaint) ask for a number after a
+# "no" by design. Replaced in code rather than rewritten by a second
+# model call - the reply to a bare "no" has nothing in it to compose.
+_DECLINED_OFFER_REPLY = {
+    "ar": "تمام 🌷 إذا احتجت أي شيء ثاني، أنا في الخدمة.",
+    "en": "No problem 🌷 If there's anything else I can help with, just let me know.",
+}
+
+_GIVES_A_NUMBER_RE = re.compile(r"\+?\d[\d\s-]{6,}\d")
+
+
+def _declined_offer_reply(templates: Optional[dict], target_language: Optional[str]) -> str:
+    """The clinic's own `msg_declined_offer` (`_en`) wording if it has one."""
+
+    english = (target_language or "").strip().lower().startswith("en")
+    authored = (templates or {}).get("msg_declined_offer_en" if english else "msg_declined_offer")
+    if authored and str(authored).strip():
+        return str(authored).strip()
+    return _DECLINED_OFFER_REPLY["en" if english else "ar"]
+
+
+def _reply_advances_past_a_refusal(reply_text: str, state: AgentState, agent_name: str) -> bool:
+    """The patient refused the offer on the table, no appointment is
+    locked, and the draft asks for their phone / WhatsApp number anyway."""
+
+    if (state.get("turn_action") != agents.semantic_router.ACTION_DECLINE
+            or not isinstance(reply_text, str) or not reply_text):
+        return False
+    if agent_name in ("cancel", "reschedule", "complaint"):
+        return False
+    session = tools._BOOKING_SESSIONS.get(state.get("session_id") or "") or {}
+    if session.get("selected_slot"):
+        return False
+
+    folded = _norm_ar(reply_text)
+    asks = (_ASKS_FOR_PHONE_DIRECTLY_RE.search(folded) or _SAME_WHATSAPP_QUESTION_RE.search(folded)
+            or _NEW_BOOKING_SAME_NUMBER_QUESTION_RE.search(folded))
+    # Giving the hospital's number, or restating a settled one, is not
+    # asking for theirs.
+    return bool(asks) and not _GIVES_A_NUMBER_RE.search(reply_text) \
+        and not _SUMMARY_OR_CONFIRMATION_CUE_RE.search(folded)
+
+
 def _reply_asks_same_number_before_booking_ready(reply_text: str, state: AgentState) -> bool:
     """True when a NEW BOOKING reply asks "same WhatsApp number?"
     (STEP NB6) before a doctor is confirmed AND a time slot is
@@ -19093,7 +19180,9 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     service_named_directive = _build_service_named_directive(
         state["messages"], state.get("session_id"), state.get("understanding"),
     )
-    negation_directive = _build_negation_directive(state["messages"], state.get("understanding"))
+    negation_directive = _build_negation_directive(
+        state["messages"], state.get("understanding"), state.get("turn_action"),
+    )
     doctors_scope_directive = _build_doctors_scope_directive(
         state["messages"], state.get("session_id"),
     )
@@ -19604,6 +19693,20 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     # did not.
     if deterministic_pairs:
         state = {**state, "messages": list(state.get("messages") or []) + deterministic_pairs}
+
+    # ONE BRANCH IS NOT A CHOICE. `branch_question_directive` was picked
+    # above while no branch was known, and its main example closes with the
+    # two-branch question. When the schedule hook has just looked the
+    # doctor up and `get_doctor_schedule_for_booking` auto-confirmed their
+    # ONLY branch, that question is wrong for this turn.
+    # CONFIRMED (tanasuq, 2026-09-30 21:25): one branch (المدار), six days,
+    # and the reply still closed "حابب تحجز في أنهي فرع وأنهي يوم؟".
+    if (branch_question_directive
+            and any(getattr(m, "name", None) == "get_doctor_schedule_for_booking"
+                    for m in deterministic_pairs)
+            and (tools._BOOKING_SESSIONS.get(state.get("session_id") or "") or {}).get("branch_id")):
+        system_message = SystemMessage(content=system_message.content.replace(
+            branch_question_directive, _SINGLE_BRANCH_SCHEDULE_DIRECTIVE))
 
     # THE BOOKING FLOW'S OPENING QUESTION IS WRITTEN IN CODE, NOT ASKED
     # FOR IN A DIRECTIVE.
@@ -20244,6 +20347,17 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
             else:
                 response = AIMessage(content=normalized)
 
+    # A REFUSAL NEVER TURNS INTO THE PHONE STEP - see
+    # `_reply_advances_past_a_refusal`. After every verifier, so nothing
+    # downstream can put the question back.
+    if not has_tool_calls and _reply_advances_past_a_refusal(response.content, state, agent_name):
+        logger.warning(
+            "agent[%s]: the patient declined and the draft asked for their number with no "
+            "appointment locked - sending the fixed acknowledgement instead. Draft: %r",
+            agent_name, response.content,
+        )
+        response = AIMessage(content=_declined_offer_reply(state.get("templates"), target_language))
+
     if not has_tool_calls and not state.get("greeted"):
         first_user_message = state["messages"][0].content if state["messages"] else ""
         greeting = _build_greeting(state.get("templates") or {}, first_user_message, target_language or "ar")
@@ -20502,6 +20616,7 @@ def router(state: AgentState) -> dict:
         "is_ambiguous": (reading or {}).get("is_ambiguous"),
         "answer_to_previous_question": (reading or {}).get("answer_to_previous_question"),
         "changes_intent": (reading or {}).get("changes_intent"),
+        "turn_action": decision.turn_action,
         "selected_agent": (HANDOFF_NODE if decision.handoff
                            else CLARIFY_NODE if decision.clarify
                            else OUT_OF_SCOPE_NODE if decision.out_of_scope else chosen),
@@ -20521,6 +20636,10 @@ def router(state: AgentState) -> dict:
         "routing_reason": reason,
         "previous_agent": previous,
         "understanding": reading,
+        # What the message DOES this turn ("decline", "confirm", ...),
+        # read by the decline gate in `_tool_node` and by the refusal
+        # directive. Rewritten every turn, like `understanding`.
+        "turn_action": decision.turn_action,
         "crisis_active": crisis_was_active or crisis_now,
         "handoff_now": decision.handoff,
         "clarify_now": decision.clarify,
@@ -20570,24 +20689,27 @@ def _routing_thresholds():
 def _turn_facts(state: AgentState, previous: Optional[str] = None,
                 messages: Optional[list] = None):
     """The state-side inputs of the routing decision. Read from what the
-    graph already keeps; the only two looks at the patient's message are
-    the crisis SAFETY pattern and the list-number DATA check."""
+    graph already keeps; the only looks at the patient's message are the
+    crisis SAFETY pattern and the list-number and bare-refusal DATA
+    checks (the refusal one is the existing `_BARE_NEGATION_RE`, not a
+    new pattern - see TurnFacts.bare_refusal for what it may decide)."""
 
     messages = messages if messages is not None else (state.get("messages") or [])
     previous = previous if previous is not None else state.get("active_agent")
 
     session = tools._BOOKING_SESSIONS.get(state.get("session_id") or "") or {}
     last_list = session.get("last_list") or {}
+    latest = understanding.latest_human_text(messages) or ""
 
     return agents.semantic_router.TurnFacts(
+        bare_refusal=bool(latest) and bool(_BARE_NEGATION_RE.match(_norm_ar(latest))),
         previous=previous,
         flow_completed=bool(messages) and agents.router._flow_just_completed(messages),
         crisis_active=bool(state.get("crisis_active")),
         crisis_signal=_signals_crisis(messages),
         media_received=_message_is_media(messages),
         transfer_offered=_assistant_offered_a_transfer(messages),
-        bare_list_position=bool(_BARE_LIST_POSITION_RE.match(
-            understanding.latest_human_text(messages) or "")),
+        bare_list_position=bool(_BARE_LIST_POSITION_RE.match(latest)),
         list_on_screen=last_list.get("entity_type") if isinstance(last_list, dict) else None,
         previous_cannot_book=previous in agents.router._CANNOT_COMPLETE_A_BOOKING,
     )
@@ -21355,6 +21477,106 @@ def _blocked_create_new_booking_tool_calls(state: AgentState) -> list:
     return booking_calls
 
 
+# ==========================================================
+# ACTION GATES - what a turn may not DO, decided in code
+# ==========================================================
+#
+# A REFUSAL STOPS WHAT WAS REFUSED. "تحب أساعدك تحجز مع دكتور ثاني؟" ->
+# "لا" used to reach the booking specialist as an ordinary booking turn,
+# with only a prompt paragraph between the model and the next step; the
+# next step it took was the phone number, and the turn after that an OTP
+# (tanasuq, 2026-09-30/10-01). On a turn whose action is "decline" - a
+# refusal that asks for nothing new (agents.semantic_router.turn_action) -
+# the tools that would carry anything forward do not run.
+#
+# NOT EVERY BOOKING TOOL. Showing other days or times after a refused day
+# (list_available_days_for_booking, get_available_slots_for_booking,
+# resolve_available_day) stays open; and a refusal that names what they
+# want instead ("لا، السبت") is "decline_and_request", which is not gated
+# at all - what they asked for is then the thing to act on.
+_DECLINE_BLOCKED_TOOLS = frozenset((
+    # committing to something
+    "select_appointment_slot", "confirm_booking_review", "create_new_booking",
+    "cancel_appointment", "select_reschedule_slot", "reschedule_appointment",
+    # moving on to the identity step - on a "no" turn the next step, even
+    # after "no" to "same WhatsApp number?", is a question, not a lookup
+    "compare_phone", "send_otp", "verify_otp", "get_patient_info",
+    # picking, or searching for, an alternative - or starting over
+    "match_entity_for_booking", "find_available_doctors", "find_best_doctor_in_specialty",
+    "list_branches_for_specialty", "find_branches_offering_service", "reset_booking_session",
+))
+
+# A NEW BOOKING TAKES THE PATIENT'S NUMBER AFTER THE APPOINTMENT IS LOCKED.
+# STEP NB6 says so in prose; nothing enforced it, so a number typed while
+# no slot existed went straight to `send_otp` (tanasuq, 2026-10-01: an OTP
+# sent with no doctor schedule and no slot at all).
+_NEW_BOOKING_IDENTITY_TOOLS = frozenset(("compare_phone", "send_otp", "verify_otp", "get_patient_info"))
+
+_DECLINED_PAYLOAD = {
+    "status": "blocked_patient_declined",
+    "message": (
+        "Not run - the patient just said no to what was offered, so nothing "
+        "they refused may move forward this turn (no slot or doctor "
+        "selection, no phone/OTP/patient lookup, no review, no booking, no "
+        "new search). Nothing was sent. Reply without tools: acknowledge "
+        "their no and ask what they would prefer instead, or whether there "
+        "is anything else you can help with."
+    ),
+}
+
+_NOT_AT_PHONE_STEP_PAYLOAD = {
+    "status": "not_at_phone_step",
+    "message": (
+        "Not run - this new booking has no doctor and time slot locked yet, "
+        "so it is not at the phone step (STEP NB6 comes only after "
+        "select_appointment_slot succeeds). Nothing was checked and no code "
+        "was sent. Do not ask for or check a phone number now; continue from "
+        "the step the booking is actually on."
+    ),
+}
+
+
+def _gated_tool_calls(state: AgentState) -> list:
+    """`(tool_call, payload)` for each call in the last AIMessage that one
+    of the action gates above stops. Pure state checks - no model call."""
+
+    messages = state.get("messages") or []
+    calls = list(getattr(messages[-1], "tool_calls", None) or []) if messages else []
+    if not calls:
+        return []
+
+    gated = []
+    if state.get("turn_action") == agents.semantic_router.ACTION_DECLINE:
+        gated = [(tc, _DECLINED_PAYLOAD) for tc in calls if tc.get("name") in _DECLINE_BLOCKED_TOOLS]
+
+    if state.get("active_agent") == "booking":
+        session = tools._BOOKING_SESSIONS.get(state.get("session_id") or "") or {}
+        # A slot locked in this same batch counts - the patient picked a
+        # time and confirmed the number in one message.
+        locking_now = any(tc.get("name") == "select_appointment_slot" for tc in calls)
+        if not (session.get("doctor_id") and (session.get("selected_slot") or locking_now)):
+            already = {tc.get("id") for tc, _ in gated}
+            gated += [(tc, _NOT_AT_PHONE_STEP_PAYLOAD) for tc in calls
+                      if tc.get("name") in _NEW_BOOKING_IDENTITY_TOOLS and tc.get("id") not in already]
+
+    return gated
+
+
+_MISSING_REVIEW_PAYLOAD = {
+    "status": "missing_review_confirmation",
+    "message": (
+        "create_new_booking was blocked - no booking was created "
+        "and NOTHING was sent to the clinic's system. You must "
+        "show the clinic's approved review card first (STEP NB7: "
+        "doctor, branch, date, time, patient name/mobile/email, "
+        "ending with its confirmation question, reproduced word "
+        "for word from the msg_booking_confirmation template) and "
+        "wait for the patient's explicit yes. Only call "
+        "create_new_booking again after that."
+    ),
+}
+
+
 # ToolNode automatically injects graph state into any tool parameter
 # annotated with InjectedState (see tools.py's `state` params) without
 # exposing it to the LLM's function-calling schema.
@@ -21412,19 +21634,39 @@ def _tool_node(state: AgentState, config: RunnableConfig) -> dict:
         _patched = last_message.model_copy(update={"tool_calls": _reordered})
         state = {**state, "messages": state["messages"][:-1] + [_patched]}
 
-    blocked_calls = _blocked_create_new_booking_tool_calls(state)
+    # The action gates first (a refusal, a booking not at the phone step),
+    # then the review-card gate for whatever create_new_booking is left.
+    blocked = {}
+    for tc, payload in _gated_tool_calls(state):
+        blocked[tc.get("id")] = (tc, payload)
+        logger.warning(
+            "_tool_node: BLOCKED %s (tool_call_id=%s, session_id=%s, turn_action=%s) - %s. "
+            "Nothing was sent.",
+            tc.get("name"), tc.get("id"), state.get("session_id"),
+            state.get("turn_action"), payload["status"],
+        )
+    for tc in _blocked_create_new_booking_tool_calls(state):
+        if tc.get("id") in blocked:
+            continue
+        blocked[tc.get("id")] = (tc, _MISSING_REVIEW_PAYLOAD)
+        logger.warning(
+            "_tool_node: BLOCKED create_new_booking (tool_call_id=%s, "
+            "session_id=%s) - no review card confirmation found in the "
+            "assistant's immediately preceding reply. No real booking "
+            "request was sent.",
+            tc.get("id"), state.get("session_id"),
+        )
 
-    if blocked_calls:
-        blocked_ids = {tc.get("id") for tc in blocked_calls}
+    if blocked:
         last = state["messages"][-1]
         remaining_calls = [
             tc for tc in (getattr(last, "tool_calls", None) or [])
-            if tc.get("id") not in blocked_ids
+            if tc.get("id") not in blocked
         ]
 
         if remaining_calls:
             # Any OTHER tool call requested in the same turn still runs
-            # normally - only the unconfirmed booking itself is stopped.
+            # normally - only the blocked calls themselves are stopped.
             patched_last = last.model_copy(update={"tool_calls": remaining_calls})
             patched_state = {**state, "messages": state["messages"][:-1] + [patched_last]}
             result = _base_tool_node.invoke(patched_state, config)
@@ -21432,33 +21674,13 @@ def _tool_node(state: AgentState, config: RunnableConfig) -> dict:
             result = {"messages": []}
 
         synthetic_messages = []
-        for tc in blocked_calls:
-            logger.warning(
-                "_tool_node: BLOCKED create_new_booking (tool_call_id=%s, "
-                "session_id=%s) - no review card confirmation found in the "
-                "assistant's immediately preceding reply. No real booking "
-                "request was sent.",
-                tc.get("id"), state.get("session_id"),
-            )
-            payload = {
-                "status": "missing_review_confirmation",
-                "message": (
-                    "create_new_booking was blocked - no booking was created "
-                    "and NOTHING was sent to the clinic's system. You must "
-                    "show the clinic's approved review card first (STEP NB7: "
-                    "doctor, branch, date, time, patient name/mobile/email, "
-                    "ending with its confirmation question, reproduced word "
-                    "for word from the msg_booking_confirmation template) and "
-                    "wait for the patient's explicit yes. Only call "
-                    "create_new_booking again after that."
-                ),
-            }
-            guidance = tool_result_guidance.guidance_for("create_new_booking", payload)
+        for tc, payload in blocked.values():
+            guidance = tool_result_guidance.guidance_for(tc.get("name"), payload)
             if guidance:
                 payload = {**payload, tool_result_guidance.GUIDANCE_KEY: guidance}
             synthetic_messages.append(ToolMessage(
                 content=json.dumps(payload, ensure_ascii=False, default=str),
-                name="create_new_booking",
+                name=tc.get("name"),
                 tool_call_id=tc.get("id"),
             ))
 
