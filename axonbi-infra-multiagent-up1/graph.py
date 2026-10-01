@@ -21099,19 +21099,30 @@ def _out_of_scope_offer(reading: Optional[dict], english: bool,
     templates = templates or {}
     if _PRESCRIPTION_RE.search(_norm_ar(f"{topic or ''} {_latest_human_text(messages or [])}")):
         return _PRESCRIPTION_OFFER["en" if english else "ar"]
+    # A clinic with an HR address gives it: jobs, training and CVs are
+    # most of what arrives here. Worded as "if it is about...", so a
+    # supplier or an admin question still reads right, and the transfer
+    # offer stays for everything else.
+    hr_email = str(templates.get("hr_email") or "").strip()
     if english:
         subject = topic or "this"
-        default = ("I'm sorry, I don't have information about {topic} - it's outside what I can "
+        default = ("If your question is about jobs, training or sending your CV, you can email "
+                   "our HR team at {hr_email} 🌷\nFor anything else, would you like me to "
+                   "transfer you to customer service?") if hr_email else (
+                   "I'm sorry, I don't have information about {topic} - it's outside what I can "
                    "help with 🌷 Would you like me to transfer you to customer service, or send "
                    "you our contact number?")
         authored = templates.get("msg_out_of_scope_offer_en")
     else:
         subject = topic or "هذا الموضوع"
-        default = ("للأسف ما عندي معلومات عن {topic}، لأنه خارج نطاق خدماتي 🌷 "
+        default = ("إذا كان استفسارك عن التوظيف أو التدريب أو إرسال السيرة الذاتية، تقدر تراسل "
+                   "إدارة الموارد البشرية على البريد الإلكتروني: {hr_email} 🌷\n"
+                   "ولأي استفسار ثاني، تحب أحوّلك لخدمة العملاء؟") if hr_email else (
+                   "للأسف ما عندي معلومات عن {topic}، لأنه خارج نطاق خدماتي 🌷 "
                    "تحب أحوّلك لخدمة العملاء، أو أرسل لك رقم التواصل؟")
         authored = templates.get("msg_out_of_scope_offer")
     template = authored if authored and "{topic}" in authored else default
-    return template.replace("{topic}", subject)
+    return template.replace("{topic}", subject).replace("{hr_email}", hr_email)
 
 
 def out_of_scope(state: AgentState) -> dict:

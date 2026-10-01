@@ -37,21 +37,46 @@ def _greet(session_id, llm, reader):
     send(session_id, "هلا")
 
 
-def test_hospital_matter_gets_customer_service_or_number(session_id, llm, reader):
+def test_hospital_matter_gets_customer_service_or_number():
+    """A clinic with no HR address configured."""
+    reply = graph._out_of_scope_offer(_hospital(), False, {}, [HumanMessage(content=TRAINING)])
+    assert reply == ("للأسف ما عندي معلومات عن التدريب، لأنه خارج نطاق خدماتي 🌷 "
+                     "تحب أحوّلك لخدمة العملاء، أو أرسل لك رقم التواصل؟")
+
+
+def test_a_job_or_training_question_gets_tanasuqs_hr_email(session_id, llm, reader):
+    """Tanasuq's dialect row carries hr_email: jobs, training and CVs go to
+    HR, and the transfer offer stays for anything else."""
     _greet(session_id, llm, reader)
     calls = len(llm.calls)
     reader.table[TRAINING] = _hospital()
     reply = send(session_id, TRAINING)["reply"]
-    assert reply == ("للأسف ما عندي معلومات عن التدريب، لأنه خارج نطاق خدماتي 🌷 "
-                     "تحب أحوّلك لخدمة العملاء، أو أرسل لك رقم التواصل؟")
+    assert "HR@tanasuq.med.sa" in reply
+    assert "تحب أحوّلك لخدمة العملاء؟" in reply
     assert len(llm.calls) == calls, "written in code - no specialist call"
+
+
+def test_the_hr_email_reply_in_english():
+    reply = graph._out_of_scope_offer(_hospital("a job"), True, {"hr_email": "HR@tanasuq.med.sa"},
+                                      [HumanMessage(content="Do you have any job openings?")])
+    assert "HR@tanasuq.med.sa" in reply and "transfer you to customer service" in reply
+    assert not graph._looks_arabic(reply)
+
+
+def test_the_hr_email_set_in_n8n_wins():
+    import config
+    from conftest import TANASUQ
+    templates = config.get_messages(TANASUQ["client_id"],
+                                    client_row_override={**TANASUQ, "hr_email": "jobs@example.test"})
+    assert templates["hr_email"] == "jobs@example.test"
+    assert config.get_messages(TANASUQ["client_id"], client_row_override=TANASUQ)["hr_email"] == "HR@tanasuq.med.sa"
 
 
 def test_hospital_matter_on_the_first_message_keeps_the_greeting(session_id, llm, reader):
     reader.table[TRAINING] = _hospital()
     reply = send(session_id, TRAINING)["reply"]
-    assert "تحب أحوّلك لخدمة العملاء، أو أرسل لك رقم التواصل؟" in reply
-    assert reply.index("لطيفة") < reply.index("للأسف"), "greeting first"
+    assert "HR@tanasuq.med.sa" in reply
+    assert reply.index("لطيفة") < reply.index("HR@"), "greeting first"
     assert len(llm.calls) == 0
 
 
