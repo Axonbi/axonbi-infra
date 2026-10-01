@@ -95,7 +95,65 @@ def _all_chunks_fallback(file_path: str) -> list:
     return [(chunk, RELEVANCE_FLOOR) for chunk in chunks]
 
 
+# A top-level section heading: "9. سياسة الخصوصية وحماية البيانات | Privacy
+# Policy". The bilingual " | " is what tells it from a numbered item
+# inside a section ("1. برنامج علاج إيذاء الذات").
+_SECTION_HEADING_RE = re.compile(r"^[ \t]*\d{1,2}\.[ \t]+[^\n|]+\|[^\n]+$", re.MULTILINE)
+
+# Sections that are site policy, not information about the hospital's
+# care. Narrow on purpose: a "Cancellation Policy" section is something a
+# patient needs, so "policy" alone is not on this list.
+_POLICY_SECTION_RE = re.compile(
+    r"خصوصي|حماي[ةه]\s*البيانات|شروط\s*(?:ال)?استخدام|privacy|terms\s*of\s*use|terms\s*(?:&|and)\s*conditions",
+    re.IGNORECASE,
+)
+
+
+def _sections(text: str) -> list:
+    """[(heading, body), ...] in document order; heading is "" for text
+    before the first heading, or for a file with no headings at all."""
+
+    matches = list(_SECTION_HEADING_RE.finditer(text))
+    if not matches:
+        return [("", text)]
+    sections = []
+    if text[:matches[0].start()].strip():
+        sections.append(("", text[:matches[0].start()]))
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        sections.append((match.group(0).strip(), text[match.end():end]))
+    return sections
+
+
+def is_policy_passage(passage: str) -> bool:
+    """A passage from the knowledge base's privacy-policy or terms-of-use
+    section (every chunk starts with its section's heading)."""
+
+    first_line = (passage or "").split("\n", 1)[0]
+    return bool(_SECTION_HEADING_RE.match(first_line) and _POLICY_SECTION_RE.search(first_line))
+
+
 def _chunk_text(text: str) -> list:
+    """Chunks that never cross a section, each led by its section's
+    heading - so a passage says where it comes from, and the search and
+    the caller can tell an overview from a privacy policy.
+
+    CONFIRMED (tanasuq-production, 2026-10-01): the knowledge base has
+    almost no blank lines, so it was cut into hard 800-character slices
+    that ran across sections, and "عاوزه اعرف معلومات عن المكان" came back
+    with the privacy policy and the partners list mixed together.
+
+    A file with no bilingual section headings is chunked exactly as
+    before."""
+
+    chunks = []
+    for heading, body in _sections(text):
+        for piece in _chunk_paragraphs(body):
+            chunks.append(f"{heading}\n{piece}" if heading else piece)
+    return chunks
+
+
+def _chunk_paragraphs(text: str) -> list:
     """Split text into chunks along paragraph/blank-line boundaries
     where possible (keeps related sentences together), falling back to
     a hard character-count split with overlap for any single paragraph
