@@ -1,0 +1,458 @@
+Bridge Clinics — General Information Knowledge Base
+عيادات بريدج — قاعدة المعرفة للمعلومات العامة
+
+CHUNK 01 — Center Overview (EN)
+category: about | lang: en | source: https://bridge.med.sa/en/about-us-and-our-philosophy/
+Bridge Mental Health Care Center (Bridge Clinics) is a care and wellness center in Riyadh, Saudi Arabia, dedicated to effectively and efficiently improving personal mental wellness. It was founded in 2022 by Dr. Omar Almedfer, consultant child and adolescent psychiatrist.
+Bridge is a community mental health center that delivers comprehensive, high-quality services in: Psychiatry, Clinical Psychology, Speech and Language Therapy, Occupational Therapy, ABA Therapy (Applied Behavior Analysis), and Special Education.
+The team is staffed by highly qualified and experienced professionals and counsellors who stand for quality and confidentiality. They work closely with clients and speak to them in strict confidence.
+Slogan: "WE CARE, WE CAN". Tagline: "Inspiring better health … we're here for you!" / "Bridge opens up possibilities."
+
+CHUNK 02 — نبذة عن المركز (AR)
+category: about | lang: ar | source: https://bridge.med.sa/about-us-and-our-philosophy/
+بريدج مركز صحي – نفسي – اجتماعي في الرياض، المملكة العربية السعودية، متخصص بتحسين الصحة النفسية بصورة شاملة وفعالة. تأسست عيادات بريدج عام 2022م من قبل الدكتور عمر المديفر، استشاري الطب النفسي للأطفال والمراهقين.
+يقدم المركز خدمات الطب النفسي للأطفال والمراهقين والراشدين، علم النفس الإكلينيكي، علاج النطق واللغة، العلاج الوظيفي، تعديل السلوك (تحليل السلوك التطبيقي ABA)، برنامجاً خاصاً للأطفال والراشدين الذين يعانون من فرط الحركة وتشتت الانتباه، بالإضافة إلى خدمات التربية الخاصة.
+يتكون الفريق من محترفين ومستشارين مؤهلين تأهيلاً عالياً وذوي خبرة، يعملون مع العميل عن كثب، يحترمون أحاسيسه ومشاعره ويتحدثون إليه بسرية تامة.
+الشعار: "نلهم صحة أفضل … نحن هنا من أجلك!" — "بريدج يجد لك حلولاً…" — WE CARE, WE CAN.
+
+CHUNK 03 — Our Care Philosophy (EN)
+category: about | lang: en | source: https://bridge.med.sa/en/about-us-and-our-philosophy/
+It's hard to watch someone you care about struggle with their mental health, so if you or someone you know is struggling, you are not alone.
+Dr. Omar Almedfer combines years of experience in psychiatry. His career has been devoted to changing attitudes toward the psychiatry field in order to treat his clients as individuals and not as patients. He helps clients recover by making them fully understand and accept the nature of their difficulties, drawing connections through their needs, stories, values, social backgrounds, cultures, passions and purposes.
+Dr. Omar and the Bridge team aim to implement, in light of Saudi Vision 2030, a comprehensive developmental vision for mental health services in the Kingdom of Saudi Arabia that demystifies and destigmatizes psychiatry.
+The team's priority is to focus not only on the whole person but also on the whole family, leading to better, lasting outcomes. Bridge also aims to give withdrawn persons with lingering mental problems the confidence and skills they need, irrespective of social background, race or culture, through counselling, information and advice — taking into account their needs, goals and aspirations.
+
+CHUNK 04 — فلسفتنا (AR)
+category: about | lang: ar | source: https://bridge.med.sa/about-us-and-our-philosophy/
+مما لا شك فيه أنه من أصعب الأمور أن تنظر بعين الحزن إلى ابن أو أخ أو صديق عزيز يعاني من مشاكل في الصحة العقلية، وقد تعاني أنت أيضاً. ولكن ثق جيداً أنك لست وحدك. نحن وجدنا لنسير وإياكم في درب الرعاية حتى نصل إلى النتيجة المرجوة.
+من هو الدكتور عمر المديفر؟ هو استشاري في الطب النفسي للأطفال والمراهقين، يحمل سنين من الخبرة في مجال الطب النفسي، وكرس حياته المهنية لتغيير الآراء والمواقف المغلوطة المتعلقة بالطب النفسي. يربط بين ما يبوح به عملاؤه من مشاعر واحتياجات وقصص وقيم وخلفيات اجتماعية وثقافية، فيجعلهم يتقبلون أداءهم ويفهمون أسباب وطبيعة الصعوبات التي تواجههم.
+يسعى الدكتور عمر وفريق بريدج إلى إزالة الغموض والآراء السلبية عن مجال الطب النفسي، وهذا الهدف ينضوي تحت رؤية 2030 في المملكة العربية السعودية. كما أن فتح باب المشورة والمعلومات وتقديمها للأشخاص والعائلات بغض النظر عن خلفياتهم الاجتماعية وثقافتهم يضمن ديمومة النتائج المحققة واستمراريتها.
+كن مطمئناً! إن هدفنا هو إحداث تأثير إيجابي حقيقي في حياة عملائنا أياً كان منحنى حياتهم.
+
+CHUNK 05 — Who We Help / Approach (EN)
+category: services | lang: en | source: https://bridge.med.sa/en/
+School stress, anxiety, depression, hyperactivity, lack of communication, behaviour issues — whatever your child or teen is going through, Bridge is here to help.
+Bridge specializes in the treatment of children and adolescents with behavioral, emotional and psychiatric difficulties. It provides a wide range of treatment modalities, such as individual therapy, group therapy and behavioral interventions.
+Bridge also offers comprehensive diagnostic evaluation and intervention for children, adolescents and adults with psychological, developmental, emotional, behavioral and learning difficulties, and assists caregivers in understanding the clients' needs.
+Bridge provides evidence-based, best-practice psychological services by qualified and experienced psychologists.
+
+CHUNK 06 — من نساعد ومنهجنا (AR)
+category: services | lang: ar | source: https://bridge.med.sa/
+لا تقلق! أنت لست وحدك … هل يبدو طفلك قلقاً؟ غاضباً؟ هل يواجه مشاكل في المدرسة؟ هل لديه فرط نشاط أو صعوبة في التواصل؟ لا تقلق، نحن هنا للمساعدة.
+لدى عيادات بريدج فريق من الأطباء النفسيين للأطفال والمراهقين ذوي خبرة سنوات، مؤهلين تأهيلاً عالياً ومتخصصين في علاج الأطفال والمراهقين الذين يعانون من صعوبات سلوكية وعاطفية وتعليمية. يضع الأخصائيون تقييماً تشخيصياً شاملاً ويبنون خططاً علاجية لمجموعة من الاحتياجات. أما التدخل العلاجي فلدينا فريق يتقن أحدث الطرق والأساليب العلمية الفعالة، منها الفردي ومنها الجماعي. وفي جميع مراحل التدخل يتعاون فريقنا عن كثب مع كل من يقدم الرعاية في بيئة الطفل أو المراهق للوصول معاً إلى النتيجة المرجوة.
+لا تتأخر! فإن دعم طفلك في مرحلة مبكرة يحدث فرقاً كبيراً، ويساعده في التصدي للصعوبات والتغلب على التحديات اليومية بسلام.
+نحن نقدم خدمات نفسية قائمة على الأدلة وأفضل الممارسات من قبل علماء النفس.
+
+CHUNK 07 — Full List of Services (EN)
+category: services | lang: en | source: https://bridge.med.sa/services/ , https://bridge.med.sa/en/
+Services offered by Bridge Clinics:
+1. Child and Adolescent Psychiatry
+2. Adult Psychiatry
+3. Clinical Psychology / Psychotherapy (children, adolescents, adults, couples, families)
+4. Speech and Language Therapy program
+5. Occupational Therapy program
+6. ADHD program (children and adults)
+7. Applied Behavior Analysis (ABA)
+8. Cognitive / mental abilities assessment
+9. Parent training
+10. Picky / selective eating (feeding selectivity)
+11. Special Education program (learning difficulties)
+12. Therapeutic technologies: Cogmed, BGaze, Play Attention, Kinems, Floreo VR, NAO robot, Photon robot
+13. Free online screening questionnaires for parents (ADHD, SCL child mental health, M-CHAT autism screening)
+Short descriptions from the site:
+Child and Adolescent Psychiatry: psychiatry services practiced by expert therapists and psychiatrists.
+Clinical Psychology: clients — children, adolescents or adults — discover a systematic psychological approach.
+Speech and Language Therapy: "Do you face some difficulties in making your child communicate verbally with you?"
+Occupational Therapy: "Does your child face daily challenges, such as struggling when putting on shoes and socks, or when focusing on learning?"
+ADHD program: a unique and comprehensive approach to improve attention, memory, executive function and self-regulation, with executive function training.
+Education: ground-breaking multisensory educational games for PreK–5 students with kinesthetic and learning analytics.
+Autism: teaches social, behavioral, communication and life skills in a fun and engaging way.
+
+CHUNK 08 — قائمة الخدمات (AR)
+category: services | lang: ar | source: https://bridge.med.sa/services/
+يمكن أن يكون الأمر صعباً، لكنك لست وحدك. خدمات عيادات بريدج:
+1. الطب النفسي (للأطفال والمراهقين والراشدين)
+2. العلاج النفسي / العلاج النفسي العيادي
+3. برنامج النطق والتخاطب
+4. برنامج العلاج الوظيفي
+5. برنامج فرط الحركة وتشتت الانتباه (ADHD)
+6. تحليل السلوك التطبيقي (ABA)
+7. تقييم القدرات العقلية
+8. تدريب الوالدين
+9. الانتقائية في الأكل
+10. برنامج التربية الخاصة
+11. العلاج بالتقنيات الحديثة: Cogmed و BGaze و Play Attention و Kinems و Floreo و روبوت ناو NAO و روبوت فوتون
+12. استبيانات "قيم طفلك" الإلكترونية للأهالي (فرط الحركة، مسح الصحة النفسية SCL، فحص التوحد M-CHAT)
+وصف مختصر:
+الطب النفسي للأطفال والمراهقين: يقدم مركز بريدج خدمات الطب النفسي التي يمارسها المعالجون والأطباء النفسيون الخبراء.
+العلاج النفسي العيادي: في مركز بريدج سيكتشف عملاؤنا، الأطفال أو المراهقون أو البالغون، منهجاً نفسياً منظماً.
+علاج النطق والتخاطب: هل تواجه بعض الصعوبات في جعل طفلك يتواصل معك شفهياً؟
+العلاج الوظيفي: هل يواجه طفلك تحديات يومية، مثل المعاناة عند ارتداء الأحذية والجوارب، أو عند التركيز على التعلم؟
+برنامج فرط الحركة وتشتت الانتباه: نهج فريد وشامل لتحسين الانتباه والذاكرة والوظيفة التنفيذية والتنظيم الذاتي والتدريب على الوظائف التنفيذية.
+التعليم: ألعاب تعليمية رائدة متعددة الحواس لطلاب مرحلة ما قبل المدرسة حتى الصف الخامس مع تحليلات الحركة والتعلم.
+التوحد: يعلّم المهارات الاجتماعية والسلوكية والتواصلية والحياتية بطريقة ممتعة وجذابة.
+
+CHUNK 09 — Psychiatry Services (EN)
+category: services/psychiatry | lang: en | source: https://bridge.med.sa/en/adults/psychiatry/
+Bridge Center provides psychiatry services practiced by expert therapists and psychiatrists — medical doctors specializing in treating mental health problems and dealing with emotional and behavioral differences in young people and adults.
+The team of licensed psychiatrists is highly qualified to assess, evaluate and treat psychiatric and behavioral difficulties.
+Psychiatry, a branch of medicine devoted to the prevention and treatment of mental health disorders, often complements the work a client does with a psychologist or therapist, from a medical perspective. Bridge psychiatrists collaborate with clients' psychologists or therapists, get involved with every aspect of the client's environment, and work closely with caregivers — family and schools.
+Concerned that you feel anxious, irritated or depressed? You can get all the support you need in one place. At Bridge you can start your journey with expert therapists and psychiatrists who have decades of experience in providing diagnosis through confidential interviews (including with caregivers) and in treatment planning for a wide range of needs.
+Therapists from a clinical medical background can prescribe medication when necessary and identify an appropriate path for intervention. The team builds warm and supportive relationships to encourage clients to open up, and uses appropriate techniques to help them overcome their difficulty.
+
+CHUNK 10 — Clinical Psychology Services (EN)
+category: services/psychology | lang: en | source: https://bridge.med.sa/en/adults/clinical-psychology/
+At Bridge Center, clients discover a systematic psychological approach to healing and aligning with themselves regardless of their insecurities.
+Whether you or your loved ones suffer from worries — getting worried all the time, changes in sleep patterns, isolating yourself, withdrawing from favorite activities — you will receive the help you need from the psychology department.
+Bridge offers comprehensive psychology services for adults, couples and families, including thorough assessments, counseling and therapy services.
+The assessment process — therapists confidentially conduct:
+thorough interviews to learn more about your difficulties
+clinical observations
+administration of the latest standardized tests
+All assessments are documented in a report and communicated in a confidential feedback meeting. A treatment plan is then formulated to help decrease symptoms and cope with difficulties.
+
+CHUNK 11 — Adults Section (EN)
+category: services/adults | lang: en | source: https://bridge.med.sa/en/adults/
+Bridge serves adults as well as children. The Adults section covers two services:
+Psychiatry — psychiatry services by expert therapists and psychiatrists treating mental health problems and emotional/behavioral differences in young people and adults (see Psychiatry chunk).
+Clinical Psychology — a systematic psychological approach to healing for adults, couples and families (see Clinical Psychology chunk).
+The ADHD program (Play Attention, Cogmed, BGaze) is also offered for adults.
+
+CHUNK 12 — Special Education Program (EN)
+category: services/special-education | lang: en | source: https://bridge.med.sa/en/portfolio/special-education-intervention/
+Is your child struggling in school? Does he have difficulties in reading, writing or math? Are his developmental and academic skills below the age-appropriate level?
+Discovering that your child has learning difficulties can be stressful. With understanding, patience and the right intervention, you can help him bridge the gap.
+Bridge offers a Special Education Intervention program covering: reading, reading comprehension, phonological awareness, phonics, spelling and math interventions. Bridge also provides executive function intervention through play to improve skills such as perception, discrimination and memory.
+The Special Education department opens a communication line with the child's school and teaching staff to recommend techniques and strategies that help the child achieve better throughout the school journey.
+
+CHUNK 13 — برنامج التربية الخاصة (AR)
+category: services/special-education | lang: ar | source: https://bridge.med.sa/portfolio/special-education-intervention/
+هل يعاني طفلك في المدرسة؟ هل يواجه صعوبات في القراءة والكتابة وكذلك في الرياضيات؟ هل تلاحظ أن مهاراته النمائية والأكاديمية دون المستوى المناسب لعمره؟
+قد يكون اكتشاف أن طفلك يعاني من صعوبات في التعلم أمراً مرهقاً. مع بعض التفهم والصبر بالإضافة إلى التدخل الصحيح، ستساعده على اكتساب المهارات الناقصة.
+تقدم عيادات بريدج برنامج التربية الخاصة الذي يركز على القراءة وفهم المقروء والوعي الصوتي والتهجئة والرياضيات لنمو طفلك وتقدمه. بالإضافة إلى ذلك نقدم برنامج تنمية المهارات النمائية من خلال اللعب لتحسين الإدراك والتمييز والذاكرة.
+سيبني قسم التربية الخاصة خطوط اتصال مع مدرسة طفلك وطاقم التعليم لتزويدهم بالتوصيات والاستراتيجيات التي تساعده على تحقيق أفضل خلال رحلته المدرسية.
+
+CHUNK 14 — ADHD Program: Play Attention (EN)
+category: services/adhd-technology | lang: en | source: https://bridge.med.sa/en/adhd/
+Play Attention — "The game-changing neurotechnology that solves the ADHD puzzle. Better focus … better performance … better brain."
+For over 25 years, Play Attention's NASA-inspired technology and customized executive function training programs have improved the lives of children and adults worldwide.
+Backed by research: Tufts University School of Medicine, funded by the US Department of Education, found that Play Attention improved attention, executive function, academic performance and behavioral control of ADHD students.
+Lifetime support: you are assigned a personal executive function coach who supports you every step and guides you with an individualized program.
+Children: with online training and at-home programs, children can achieve superior results.
+Adults: adults of all ages can improve executive function.
+
+CHUNK 15 — برنامج فرط الحركة: تقنية تنمية الانتباه Play Attention (AR)
+category: services/adhd-technology | lang: ar | source: https://bridge.med.sa/adhd/
+تقنية تنمية الانتباه Play Attention — "تركيز أفضل … أداء أفضل … إنجاز أفضل".
+لأكثر من 25 عاماً عملت التكنولوجيا المستوحاة من وكالة ناسا وبرامج التدريب المخصصة للوظائف التنفيذية على تحسين حياة الأطفال والبالغين في جميع أنحاء العالم.
+مدعم بأفضل الأدوات: تجمع Play Attention بين تقنية مراقبة الدماغ المستوحاة من ناسا ومجموعة أدوات تتناول كل شيء من التطور المعرفي إلى التنظيم الذاتي لتقديم حل كامل وفردي.
+مدعمة بالأبحاث: وجدت كلية الطب بجامعة تافتس، بتمويل من وزارة التعليم الأمريكية، أن Play Attention يحسن الانتباه والوظائف التنفيذية والأداء الأكاديمي والتحكم السلوكي لطلاب اضطراب فرط الحركة ونقص الانتباه.
+دعم مدى الحياة: يتم تعيين مدرب شخصي للوظائف التنفيذية يدعمك في كل خطوة ويرشدك ببرنامج فردي يناسب احتياجاتك.
+الأطفال: من خلال التدريب عبر الإنترنت والبرامج المنزلية يمكن لطفلك تحقيق نتائج فائقة.
+الكبار: يمكن للبالغين من جميع الأعمار تحسين الوظائف التنفيذية.
+Play Attention نظام كامل الخدمات قابل للتخصيص، لكن التكنولوجيا وحدها ليست كافية؛ فالعقل ينمو أيضاً من خلال التمارين البدنية، والتدريب/الإرشاد، والتغذية الجيدة، واليقظة، وتشكيل السلوك، وتدريب الوالدين — وكلها مكونات من نظام Play Attention.
+المعادلة: التكنولوجيا المستوحاة من ناسا + التدريب على المهارات الإدراكية + تشكيل السلوك = مهارات تدوم مدى الحياة.
+
+CHUNK 16 — Play Attention: الفئات المستفيدة وطريقة العمل (AR)
+category: services/adhd-technology | lang: ar | source: https://bridge.med.sa/adhd/
+تدخل مناسب للفئات التالية: فرط الحركة وتشتت الانتباه ADHD للأطفال والبالغين، الزهايمر، القلق، التوحد، متلازمة داون، قلة التركيز، ضعف الذاكرة، صعوبات التعلم.
+كيف تبدأ؟ تقدم بطلب استشارة. نناقش كيف نأخذ سمات مثل التشتت وفرط الحركة والتفكير الإبداعي والانفعالات العاطفية لتسخيرها للتحكم في حياتك وتحسين النتائج في المدرسة والعمل والمنزل. نعمل معاً على:
+تحديد نقاط القوة التي يمكن تعزيزها
+تقييم نقاط الضعف المتأثرة بضعف الوظائف التنفيذية مثل الذاكرة والتركيز
+مناقشة أهمية تطوير المهارات الحياتية وتشكيل السلوك
+تصميم خطة فردية ثم البدء فوراً
+آلية العمل: تستخدم Play Attention تقنية مستوحاة من ناسا لمراقبة نشاط الدماغ ومستويات الانتباه عبر شريط يوضع على الذراع، بسيط وسهل الاستخدام. جميع الألعاب تتفعل من خلال رصد تفاعل الدماغ، فلا يمكن ممارسة المهارة "اللعبة" إلا إذا كنت منتبهاً بالفعل. يتعلم المتدرب كيف يحافظ على انتباهه من خلال ردود الفعل الفورية التي يتلقاها أثناء اللعب.
+
+CHUNK 17 — Cogmed (EN)
+category: services/adhd-technology | lang: en | source: https://bridge.med.sa/en/adhd/
+Cogmed — "Focus … learn … get things done."
+Cogmed is an evidence-based training program for improving attention and working memory. The ability to focus is important for succeeding in school, work and daily life.
+Starts from 4 weeks of digital cognitive training.
+A professional coach tailors the program and guides the user through cognitive exercises, accessed on a computer, tablet or phone. No pharmaceuticals are used.
+Scientifically proven: designed by neuroscientists, validated in several large-scale clinical trials, with findings published in more than 120 scientific articles.
+Has helped more than 200,000 people with attention deficit, a key component of: ADHD and ADD; stroke and traumatic brain injury; long-term effects of premature birth; side-effects of cancer treatment.
+
+CHUNK 18 — Cogmed (AR)
+category: services/adhd-technology | lang: ar | source: https://bridge.med.sa/adhd/
+Cogmed — "زيادة تركيز… تطوير الأداء… إنجاز الأمور بشكل أفضل!"
+برنامج تدريبي قائم على الأدلة لتحسين الانتباه والقدرة على التركيز والتذكر، وهي من أساسيات النجاح في المدرسة والعمل والحياة اليومية والعلاقات مع الأسرة والمدرسة والعمل.
+يبدأ من 4 أسابيع من التدريب المعرفي الرقمي.
+يقوم مدرب محترف بتخصيص البرنامج وإرشادك خلال التدريبات المعرفية التي يتم الوصول إليها من جهاز كمبيوتر أو جهاز لوحي أو هاتف.
+تأثير مثبت علمياً: صممه علماء الأعصاب، مع تأثير مثبت على الانتباه والذاكرة العاملة، تم التحقق منه في تجارب سريرية واسعة النطاق ونشرت نتائجه في أكثر من 120 مقالة علمية.
+ساعد أكثر من 200,000 شخص يعانون من تشتت الانتباه، وهو تدخل رئيسي لعدة حالات: فرط الحركة وتشتت الانتباه ADHD و ADD، السكتة الدماغية وإصابات الدماغ، التأثيرات طويلة الأمد للولادة المبكرة، الأعراض الجانبية لعلاج السرطان.
+
+CHUNK 19 — BGaze ADHD Clinic (AR + EN)
+category: services/adhd-technology | lang: ar | source: https://bridge.med.sa/adhd/
+عيادة BGaze لفرط الحركة وتشتت الانتباه للبالغين والأطفال: أول عيادة تستخدم التقنيات لتقديم حلول التشخيص والعلاج المدعومة بالذكاء الاصطناعي لاضطراب فرط الحركة وتشتت الانتباه.
+يشتمل نظام BGaze على أجهزة متطورة لتتبع العين لالتقاط أنماط حركة العين الدقيقة اللاإرادية (حاصلة على براءة اختراع عالمياً)، ما يوفر درجة أعلى من دقة التشخيص الموضوعية.
+نظام سهل الاستخدام للتشخيص الكامل لاضطراب فرط الحركة ونقص الانتباه لدى الأطفال والبالغين، ببروتوكول سهل ودقيق وجيد التنظيم.
+مدة التقييم: يسمح خلال 15 دقيقة بإجراء تقييم موضوعي يعتمد على الذكاء الاصطناعي.
+تجمع العيادة بين التكنولوجيا المبتكرة والبروتوكول وفقاً للمعايير المعمول بها.
+EN summary: BGaze is an AI-supported ADHD diagnosis and treatment system for children and adults using patented eye-tracking of involuntary micro eye movements. An objective AI-based assessment takes about 15 minutes. (Described on the Arabic site only.)
+
+CHUNK 20 — Kinems Educational Platform (EN)
+category: services/education-technology | lang: en | source: https://bridge.med.sa/en/education/
+KINEMS — multisensory, movement-based educational games for PreK–5 students.
+Engagement & personalization: technology-rich, highly stimulating game-based interventions. Personalized activities based on IEP goals boost motivation, achievement and attendance, and improve motor skills and academic performance.
+Progress monitoring: tracks student growth in motor and learning skills, showing the moment-by-moment impact of interventions.
+Movement-based learning: integrates occupational therapy tasks with academic learning activities, making education more efficient and effective.
+
+CHUNK 21 — منصة Kinems لدعم التعلم والمهارات الأكاديمية (AR)
+category: services/education-technology | lang: ar | source: https://bridge.med.sa/education/
+KINEMS منصة تقنية تعليمية شاملة بنهج متعدد الحواس: مجموعة من الألعاب الحركية التعليمية تحاكي أهداف منهج المدارس من رياض الأطفال حتى المرحلة الابتدائية، وتركز على المهارات الأكاديمية (الرياضيات، القراءة، الكتابة) وصولاً إلى المهارات الحركية التي تستهدف أنشطة العلاج الوظيفي والطبيعي وتنمية المهارات الإدراكية.
+"إنجاز أكبر في وقت أقل" — يشعر الطفل أن التدريب لعبة يستمتع بها حتى مع المهام الصعبة.
+تقديم الخدمة عن بعد: تسمح المنصة للأخصائي بتقديم الخدمة عن بعد ومتابعة تقدم الطفل من أي مكان.
+آلية العمل:
+1. بناءً على خطة الطفل واحتياجاته الفردية ومرحلته الدراسية، يختار Kinems الألعاب المناسبة.
+2. أثناء التدريب يتم رصد واستخراج تقارير فورية دقيقة مع تحليلات بيانية.
+3. بناءً على التقارير يتم ضبط مستوى الصعوبة والانتقال من مستوى لآخر.
+4. تصدر تقارير مفصلة لكل جلسة لمشاركتها مع الأهل والمعلمين.
+المميزات: المشاركة والتخصيص وفق أهداف الخطة الفردية؛ ممارسة قائمة على الأدلة بالتعاون مع جامعات في الولايات المتحدة؛ رصد التقدم في المهارات الوظيفية والطبيعية والإدراكية.
+
+CHUNK 22 — Photon Robot (AR + EN)
+category: services/education-technology | lang: ar,en | source: https://bridge.med.sa/education/ , https://bridge.med.sa/en/education/
+EN: The Special Education Photon is the world's first teaching robot designed to work with children with Autism Spectrum Disorder as well as emotional and social disorders. Its authors are teachers and therapists who work with children with special educational needs daily. Photon plays the role of the student's companion — a guide in the world of confusing social norms and everyday challenges. It can surprise, entertain and motivate students. "Equal chance for all."
+AR: روبوت فوتون لذوي الاحتياجات الخاصة هو أول روبوت تعليمي في العالم مصمم للعمل مع الأطفال ذوي اضطراب طيف التوحد والاضطرابات العاطفية والاجتماعية. صمم المنهج مختصون يعملون يومياً مع الأطفال ذوي الاحتياجات التعليمية الخاصة. يلعب فوتون دور صديق ودليل للطفل في عالم الأعراف الاجتماعية والتحديات اليومية، ويتفاعل معه ويحفزه.
+تعليم برمجة متقدمة مبسطة: عند العمل مع فوتون يطور الطلاب مهارات البرمجة بخطوات بسيطة وتفعيلها في الحياة الواقعية، وينشئون محاكاة للمشكلات ويطورون خوارزميات الروبوت ثم يختبرون افتراضاتهم في بيئة مادية.
+
+CHUNK 23 — Floreo VR for Autism and Social Skills (EN)
+category: services/autism-technology | lang: en | source: https://bridge.med.sa/en/autism/
+Floreo — "The first behavioral therapy metaverse." A virtual world, open and accessible for every neurodiverse person and safe for learners, equipping them with skills they can apply in everyday life. The VR platform teaches social, behavioral, communication and life skills for individuals with Autism Spectrum Disorder (ASD), ADHD, anxiety and other neurodiverse conditions.
+Powered by VR: immersive and repeatable; provides practice in situations difficult to replicate at home or in an office. Learners practice social skills in a safe and reinforcing manner.
+Supervised experience: using an iPad, an adult coach guides the learner through lessons, selects lessons, monitors progress and gives feedback.
+
+CHUNK 24 — فلوريو VR لتنمية مهارات التواصل الاجتماعي (AR)
+category: services/autism-technology | lang: ar | source: https://bridge.med.sa/autism/
+فلوريو VR: أول علاج سلوكي يستخدم الواقع الافتراضي للاضطرابات والحالات العصبية النمائية. عالم افتراضي آمن يزود المتعلمين بالمهارات والأدوات التي يمكن تطبيقها في حياتهم اليومية. طورت المنصة للتدريب على المهارات الاجتماعية والسلوكية والتواصلية والحياتية للأفراد المصابين باضطراب التوحد (ASD)، واضطراب فرط الحركة ونقص الانتباه (ADHD)، والقلق، وحالات عصبية أخرى.
+التدريب في الواقع الافتراضي: أظهرت الدراسات فعالية التدريب بمحاكاة الواقع؛ البيئات والشخصيات متنوعة وجذابة والتدريبات قابلة للتكرار، ويتيح Floreo التدريب على مواقف يصعب تكرارها في المنزل أو المدرسة أو الشارع أو المناسبات الاجتماعية أو المطار، وحتى مواقف يصعب تعريض المتعلم لها كالتنمر. الهدف تمكين المتعلمين من ممارسة المهارات الاجتماعية بطريقة آمنة ومعززة.
+الخبرة الخاضعة للإشراف: باستخدام جهاز iPad يوجه الأخصائي المتعلم ويختار الدروس ويراقب التقدم ويقدم الملاحظات.
+يدعم Floreo العلاج عن بعد: يمكن للأخصائي قيادة الجلسة بجهاز iPad من أي مكان في العالم (مع اتصال بالإنترنت) بينما يختبر المتعلم الدروس باستخدام iPhone وسماعات VR محمولة.
+
+CHUNK 25 — NAO Robot for Autism (EN)
+category: services/autism-technology | lang: en | source: https://bridge.med.sa/en/autism/
+Robot-Assisted Therapy for Autism: the NAO Robot special-education program provides a bridge for children on the autism spectrum from isolation to greater social and academic engagement.
+Educational value: social skills, body cognition, pragmatic language, behavioral techniques, learning readiness. Best for special education and autism.
+Benefits: NAO is a humanoid interface that naturally attracts children, helps create communication bridges between the child and people around him, is easy to interpret, helps reduce anxiety and minimizes over-stimulation. Interactions are simple, repetitive and predictable, engaging and motivating.
+Curriculum included — supports ABA principles. Learning goals include: working in a group, staying focused, listening, sharing ideas, asking for a break appropriately, staying focused when nervous, listening for meaning, following directions, recognizing emotions, saying hello and goodbye, simple prepositions.
+
+CHUNK 26 — روبوت ناو NAO للتوحد (AR)
+category: services/autism-technology | lang: ar | source: https://bridge.med.sa/autism/
+روبوت ناو NAO للتوحد — "جسر التواصل نحو مشاركة اجتماعية أكبر!"
+واجهة تكنولوجية تحاكي التفاعل البشري لجذب الأطفال بشكل طبيعي، تساعد في بناء جسور التواصل بين الطفل ومن حوله، وتقلل قلق الأطفال، وتستهدف تنمية مهارات ذوي التوحد للانتقال من العزلة إلى مشاركة اجتماعية وأكاديمية أكبر.
+فوائد التدريب: المنهج يتبع مبادئ تحليل السلوك التطبيقي (ABA)، ويشمل: العمل في مجموعة، زيادة التركيز، الاستماع داخل مجموعة، مشاركة الأفكار، طلب استراحة بشكل مناسب، الحفاظ على التركيز عند التوتر، أهداف أكاديمية، اتباع التوجيهات، التعرف على المشاعر، التحية (مرحباً ووداعاً) وغيرها.
+يدعم التطور العاطفي بتمكين الأطفال من التعرف على مشاعرهم وفهم تأثيرها على سلوكهم.
+يطور مهارات التواصل الاجتماعي بأنشطة ملائمة لاحتياجاتهم وقدراتهم.
+يطور القدرات الحركية بجلسات تمارين جماعية مع الأقران مثل اليوغا.
+القيمة التربوية: التقليد، المهارات الاجتماعية، إدراك الجسد، الاستعداد للتعلم، المهارات الأكاديمية.
+
+CHUNK 27 — Branches and Locations (EN)
+category: contact/locations | lang: en | source: https://bridge.med.sa/contact-us/
+Bridge Clinics has three locations in Riyadh, Saudi Arabia:
+1. An Nuzhah branch — Hail Street, An Nuzhah District, Riyadh 12473. Google Maps name: "Bridge Clinic Al Nuzha". Coordinates: 24.75582, 46.70655.
+2. Al Malqa branch — Wadi Waj Street, Al Malqa District, Riyadh 13524. Google Maps name: "Bridge Medical Rehabilitation Clinics – Al Malqa" (عيادات بريدج للتأهيل الطبي - حي الملقا). Coordinates: 24.82027, 46.60728.
+3. An Narjis location — Rabi' Al-Dhuhli Street, An Narjis District, Riyadh 13333. Google Maps name: "Bridge therapeutic education school". Coordinates: 24.86013, 46.67344.
+Note: the English contact page lists only the An Nuzhah address; the Arabic contact page lists all three.
+
+CHUNK 28 — الفروع والمواقع (AR)
+category: contact/locations | lang: ar | source: https://bridge.med.sa/contact-us/
+لدى عيادات بريدج ثلاثة مواقع في الرياض:
+1. فرع النزهة: الرياض، حي النزهة، شارع حايل، 12473. (على خرائط جوجل: Bridge Clinic Al Nuzha)
+2. فرع الملقا: الرياض، حي الملقا، شارع وادي واج، 13524. (على خرائط جوجل: عيادات بريدج للتأهيل الطبي - حي الملقا)
+3. موقع النرجس: الرياض، حي النرجس، شارع ربعي الذهلي، 13333. (على خرائط جوجل: Bridge therapeutic education school)
+
+CHUNK 29 — Contact Information and Working Hours (EN)
+category: contact | lang: en | source: https://bridge.med.sa/contact-us/ , https://bridge.med.sa/en/contact-us/
+Phone / WhatsApp (Arabic site, header and floating chat widget): 055 207 3103 (+966 55 207 3103)
+Phones listed on the English site: 011 233 9253 and 055 376 7854
+Email: info@bridge.med.sa
+WhatsApp link: https://wa.me/966552073103
+Instagram: https://www.instagram.com/bridgeclinicssa/
+X (Twitter): https://twitter.com/bridgeclinicssa (also @Bridge_clinic1 in site metadata)
+Snapchat: https://snapchat.com/t/667cv8Kr
+Contact form on the website: name, email, mobile number, subject, message.
+Working hours:
+Sunday – Thursday: 9:00 AM – 8:00 PM
+Friday – Saturday: Closed
+
+CHUNK 30 — معلومات التواصل وساعات العمل (AR)
+category: contact | lang: ar | source: https://bridge.med.sa/contact-us/
+الهاتف / واتساب: 055 207 3103 (+966552073103)
+أرقام مذكورة في النسخة الإنجليزية من الموقع: 011 233 9253 و 055 376 7854
+البريد الإلكتروني: info@bridge.med.sa
+واتساب: https://wa.me/966552073103
+إنستغرام: bridgeclinicssa
+إكس (تويتر): bridgeclinicssa
+سناب شات: https://snapchat.com/t/667cv8Kr
+نموذج "راسلنا" في الموقع: الاسم، البريد الإلكتروني، رقم الجوال، الموضوع، الرسالة.
+ساعات العمل:
+الأحد – الخميس: 9 صباحاً – 8 مساءً
+الجمعة – السبت: مغلق
+
+CHUNK 31 — "Assess Your Child" Online Questionnaires (EN)
+category: screening-tools | lang: en | source: https://bridge.med.sa/bridge/
+The website section "Assess your child" (قيم طفلك) offers free online parent questionnaires (in Arabic):
+1. M-CHAT — autism screening questionnaire for children under 4 years (23 yes/no questions). https://bridge.med.sa/qsm_quiz/modified-checklist-for-autism-in-toddlers-m-chat/
+2. SCL — child mental health screening questionnaire (40 yes/no questions covering separation anxiety, fears and obsessive behaviors, attention and hyperactivity, mood, sleep, motor coordination, learning, language, social communication, repetitive behaviors and toileting). https://bridge.med.sa/qsm_quiz/مسرد-الأعراض/
+3. ADHD — attention deficit hyperactivity questionnaire (54 statements rated Always / Sometimes / Rarely / Never). https://bridge.med.sa/qsm_quiz/adhd/
+4. Behavioral assessment — short 6-question yes/no attention/hyperactivity checklist. https://bridge.med.sa/qsm_quiz/التقييم-السلوكي-2/
+At the end of each questionnaire the parent enters the child's name, email and mobile number.
+Important disclaimer from the site: these questionnaires are guidance/screening tools, not diagnostic tools. An accurate diagnosis can only be made through a clinical assessment by a specialist.
+
+CHUNK 32 — استبيانات "قيم طفلك" (AR)
+category: screening-tools | lang: ar | source: https://bridge.med.sa/bridge/
+يوفر قسم "قيم طفلك" في الموقع استبيانات إلكترونية مجانية للأهالي:
+1. إستبيان فحص التوحد لعمر أقل من 4 سنوات (M-CHAT) — 23 سؤالاً بإجابة نعم/لا.
+2. إستبيان مسح الصحة النفسية للأطفال (SCL) — 40 عبارة بإجابة نعم/لا.
+3. إستبيان فرط الحركة وتشتت الإنتباه (ADHD) — 54 عبارة بإجابات: دائماً، أحياناً، نادراً، أبداً.
+4. التقييم السلوكي — 6 عبارات بإجابة نعم/لا.
+في نهاية كل استبيان يدخل ولي الأمر اسم الطفل والإيميل ورقم الجوال.
+تنبيه من الموقع: هذه الاستبيانات استرشادية للمسح وليست أدوات تشخيصية. لا يمكن إجراء التشخيص الدقيق إلا من خلال التقييم الإكلينيكي من قبل المختص.
+تعليمات الاستبيان: يحتوي على عبارات تصف سلوك الطفل في المنزل؛ اقرأها جيداً وحدد مدى انطباق كل منها على طفلك بما يناسب عمره أو حالته الصحية.
+
+CHUNK 33 — Sections Not Yet Published (EN + AR)
+category: site-info | lang: en,ar | source: https://bridge.med.sa/education-information/ , https://bridge.med.sa/en/online-testing/
+"Education Information" / "معلومات علمية": marked "Coming soon" (قريباً) — no content yet.
+"Online Testing" (English site): marked "Coming soon".
+The Arabic service detail pages (picky eating, ADHD program, speech therapy, occupational therapy, cognitive assessment, ABA, parent training, psychotherapy, psychiatry) currently show titles only, with no further description on the website.
+If a user asks for details not listed here, the agent should offer to connect them with the center by phone/WhatsApp (055 207 3103) or email (info@bridge.med.sa).
+
+APPENDIX — Questionnaire Items (reference only)
+Reference content from the website's screening questionnaires. For the agent: do not administer these as a diagnosis; direct parents to the online questionnaire link or to a clinical assessment.
+CHUNK A1 — M-CHAT Items (AR)
+category: screening-tools/items | lang: ar | source: https://bridge.med.sa/qsm_quiz/modified-checklist-for-autism-in-toddlers-m-chat/
+إستبيان فحص التوحد لعمر أقل من 4 سنوات (M-CHAT) — الإجابة: نعم / لا
+1. هل يستطيع الطفل الأرجحة عندما تضعه على ركبتيك؟
+2. هل يهتم طفلك بالأطفال الآخرين؟ هل يبادر بالذهاب لهم؟
+3. هل يحب طفلك تسلق الأشياء كتسلق السلالم والدرج؟
+4. هل يستمتع طفلك بلعبة الاختباء؟ مثل: الغميمة، خبي وجهي بيدي.
+5. هل يلعب طفلك تخيل الموقف أو تمثيل الدور؟ مثل: يمثل أنه يكلم بالتلفون أو يعتني بالعروسة؟
+6. هل يستخدم طفلك إصبعه للإشارة للأشياء التي يطلبها ويريدها؟
+7. هل سبق أن شاهدت طفلك يشير بإصبعه للأشياء التي حوله؟
+8. هل يلعب طفلك بالألعاب الصغيرة (كالمكعبات) بشكل صحيح دون أن يضعها في فمه أو يعبث بها أو يقذفها فقط؟
+9. هل سبق لطفلك أن جاء ليطلعك أو يريك لعبة أو رسمة؟
+10. هل يتواصل طفلك معك بالنظر (عينك في عينه) لأكثر من ثانية؟
+11. هل لاحظت أن طفلك شديد الحساسية للأصوات (كأن يغلق أذنيه)؟
+12. هل يستجيب طفلك لرؤيتك أو ابتسامتك بابتسامة مماثلة؟
+13. هل يقلد طفلك تعابير وجهك (كأن تبتسم أو تحزن فيقلد وجهك)؟
+14. هل يستجيب طفلك ويلتفت لك عند مناداته باسمه؟
+15. إذا أشرت بإصبعك لشيء داخل الغرفة، هل ينظر طفلك له بالضبط؟
+16. هل يستطيع طفلك المشي؟
+17. هل ينظر طفلك لنفس الشيء الذي تنظر إليه وفي نفس اللحظة؟
+18. هل يحرك طفلك أصابعه بشكل غير طبيعي وبالقرب من وجهه؟
+19. هل يحاول طفلك لفت انتباهك لما يقوم به من عمل أو لعب؟
+20. هل سبق أن تساءلت يوماً: هل ابني مصاب بالصمم؟ أو أن في سمعه مشكلة؟
+21. هل يفهم طفلك ما يقوله الآخرون من حوله؟
+22. هل يبدو طفلك وكأنه يحدق في الأشياء بنظرة شاخصة غير هادفة، أو يتجول ذهاباً وإياباً من غير هدف محدد؟
+23. هل يرجع طفلك لينظر لوجهك ويتأكد من ردة فعلك عندما يواجه موقفاً جديداً أو غير اعتيادي؟
+CHUNK A2 — SCL Child Mental Health Survey Items (AR)
+category: screening-tools/items | lang: ar | source: https://bridge.med.sa/qsm_quiz/مسرد-الأعراض/
+إستبيان مسح الصحة النفسية للأطفال (SCL) — الإجابة: نعم / لا
+1. لديه صعوبة في الابتعاد عن والديه أو عمن يعتنون به (يخاف أكثر من المعتاد)
+2. يقلق كثيراً أن يفقد والديه أو أحدهما أو أن يحدث لأحدهما مكروه
+3. يمتنع أو يرفض الذهاب للمدرسة أو لأي مكان آخر خوفاً من انفصاله عن والديه
+4. لديه صعوبات في النوم إذا لم يكن والداه بقربه
+5. لديه شكوى جسدية مثل الصداع أو ألم البطن أو الغثيان عندما يتوقع ابتعاده عن والديه
+6. لديه خوف زائد أو غير منطقي من أشياء محددة
+7. يقضم أظافره بشكل ملحوظ
+8. لديه أفكار ملحة ومتكررة تسبب له التوتر (مثل الخوف من البكتيريا)
+9. يضطر لتكرار تصرفات محددة (مثل غسل اليدين أو تكرار كل شيء)
+10. لديه سلوك نتف الشعر (شعر الرأس أو الحواجب)
+11. يفشل في الانتباه للتفاصيل أو يرتكب أخطاء كأنه غير مبالٍ
+12. لديه صعوبة في الاحتفاظ بالانتباه خلال اللعب أو الأنشطة الدراسية
+13. كأنه لا يستمع حين يكلمه أحد بشكل مباشر
+14. يصعب عليه اتباع التعليمات أو يفشل في إكمال مهامه الدراسية أو المنزلية
+15. يفقد أو يضيع الأشياء التي يستخدمها في أنشطته (الألعاب، الأقلام وغيرها)
+16. يتشتت انتباهه بسهولة لأشياء غير مهمة
+17. ينسى كثيراً المهام المعتادة واليومية
+18. يتململ كثيراً أو يتحرك في كرسيه بكثرة
+19. يتحرك أو يركض أو يتسلق بشكل زائد عن الحد
+20. يتكلم أكثر من المعتاد لسنه
+21. لديه حزن شبه مستمر
+22. يلاحظ الآخرون أنه متهيج أو حساس أغلب الأحيان
+23. يفقد طاقته أو ليس لديه نشاط معظم الأيام
+24. يشعر بعدم الأهمية أو بشعور غير منطقي بالذنب معظم الوقت
+25. نومه مضطرب
+26. لا ينجح كثيراً في الألعاب أو الرياضات التي تحتاج تناسقاً حركياً
+27. لديه صعوبات في الدراسة (القراءة أو الرياضيات أو الكتابة)
+28. لديه تأخر في النطق أو قدرات لغوية محدودة حالياً
+29. يتجنب التواصل البصري خلال محادثة الآخرين
+30. لا يتابع ببصره أو بجسده إذا أشار الآخرون نحو الأشياء
+31. يظهر اهتماماً قليلاً بالآخرين، وغير متصل بهم عاطفياً
+32. لديه صعوبة في بدء أو إيقاف الحوار، وقد يستمر في الحديث رغم فقدان الآخرين الاهتمام
+33. يصدر أصواتاً وإزعاجاً وغالباً لا يشعر بها
+34. لديه عبارة غريبة يكررها باستمرار (من أفلام الكرتون وما شابه)
+35. لا يندمج في اللعب التخيلي ويلعب وحده أكثر من لعبه مع الآخرين
+36. ينشغل بأشياء أو لديه روتين غريب (نمط) مثل صف الأشياء أو تدوير عجلات السيارات
+37. لديه صعوبة في التأقلم مع التغيير وعدم مرونة بسبب التزامه بروتين أو شروط معينة
+38. لديه نمطية واضحة في تصرفات أو حركات معينة (التصفيق، وضع الأشياء في الفم بعنف)
+39. ينشغل بأمور معينة بشكل لافت مثل الجداول أو الحروف أو الأرقام أو الطقس
+40. لديه مشاكل في النظافة الشخصية (الإخراج أو التبول اللاإرادي أو الإمساك)
+CHUNK A3 — ADHD Questionnaire Items, Part 1: Attention, Memory, Schoolwork (AR)
+category: screening-tools/items | lang: ar | source: https://bridge.med.sa/qsm_quiz/adhd/
+إستبيان فرط الحركة وتشتت الإنتباه (ADHD) — الإجابة: دائماً / أحياناً / نادراً / أبداً
+الهدف: تحديد ما إذا كان الطفل يظهر أعراضاً مشابهة لأعراض الأطفال المصابين باضطراب فرط الحركة وتشتت الانتباه، كأداة مسح وليست أداة تشخيصية.
+1. مدة انتباه طفلي قصيرة ولا يستطيع تركيز انتباهه على شيء محدد لمدة طويلة
+2. يتشتت انتباهه لأي شيء حوله
+3. يجد صعوبة في الاستماع
+4. عندما أتحدث معه يبدو وكأنه لا ينصت لي
+5. غير قادر على متابعة الحوار
+6. يجد صعوبة في فهم المعلومات الجديدة
+7. لا يستطيع استيعاب التعليمات التي يسمعها
+8. يجد صعوبة في التعرف على شكل الأشياء ولا يلاحظ التشابه والاختلاف بينها
+9. ينسى التعليمات ويحتاج إلى تذكير
+10. ينسى في المنزل بعض الأشياء التي يحتاجها في المدرسة
+11. ينسى أو يفقد بعض أغراضه في المدرسة
+12. ينسى عمل الأشياء الروتينية اليومية
+13. يخطئ في عمل الأشياء التي سبق أن تعلم خطواتها أو ترتيبها
+14. لا يستطيع الانتهاء من عمله دون مساعدة الآخرين
+15. يتردد عند اتخاذ أي قرار حتى لو كان بسيطاً
+16. أعماله المدرسية أو مهامه المنزلية غير مكتملة
+17. أعماله المدرسية مليئة بالأخطاء
+18. أعماله المدرسية مليئة بالمحو والشطب وكتبه ودفاتره غير نظيفة
+19. كتاباته رديئة وغير منظمة
+20. يقفز في الكتابة تاركاً بعض السطور أو الجمل
+21. يخطئ في الكتابة حتى لو كان ينقل من كتاب أمامه
+22. يخطئ في القراءة فيحذف أو يضيف بعض الحروف أو الكلمات
+23. يقفز في القراءة تاركاً بعض السطور أو الجمل
+24. يشرد ذهنه أثناء حل واجباته أو استذكار دروسه
+25. يحول الكلام الذي يسمعه إلى صيغة سؤال أو يردد بعض مقاطعه
+26. لا يستطيع نقل الرسائل الشفهية من وإلى الآخرين
+27. حديثه عن شيء أو واقعة ناقص أو غير مترابط، وينسى الأسماء أو وصف الأشياء أو تسلسل الأحداث
+28. يبتعد عن المشاركة في الأعمال التي تحتاج إلى تفكير
+CHUNK A4 — ADHD Questionnaire Items, Part 2: Hyperactivity, Impulsivity, Behavior (AR)
+category: screening-tools/items | lang: ar | source: https://bridge.med.sa/qsm_quiz/adhd/
+29. كثير الحركة لا يهدأ ولا يستقر في مكانه
+30. يتململ في جلسته ويتلوى بيديه ورجليه
+31. يظل يمشي ذهاباً وإياباً دون سبب أو هدف واضح
+32. يحدث صخباً وضوضاء مزعجة في المكان
+33. يتحدث بكثرة
+34. يتحدث أثناء حديث الآخرين
+35. يتحدث في الأوقات التي تحتاج إلى هدوء
+36. يتدخل في لعب الأطفال الآخرين على غير رغبتهم
+37. يعبث بالأشياء التي في متناول يده
+38. يخطف لعب وأشياء الأطفال الآخرين
+39. يجري ويرقص ويقفز أثناء تنقله من مكان لآخر
+40. يتسلق الأشياء العمودية في المكان
+41. يجعل المكان الذي يوجد فيه مبعثراً وغير منظم
+42. أعماله تخلو من النظام والترتيب
+43. بعد انتهائه من النشاط لا يعيد الأدوات إلى مكانها الصحيح
+44. يصعب السيطرة على سلوكه عند الخروج مع الأسرة
+45. يبدأ في العمل قبل أن يتلقى التعليمات
+46. متسرع في استجابته ويتفاعل فوراً دون تفكير
+47. عجول لا يستطيع انتظار دوره في الألعاب أو المواقف الاجتماعية
+48. يجب أن تجاب مطالبه في الحال ويستخدم حيلاً مثل البكاء الشديد والصراخ
+49. شديد الانفعال ولا يستطيع التحكم في سلوكه الاجتماعي
+50. متقلب المزاج؛ قد يكون هادئاً ثم يثور ويغضب فجأة
+51. يريد أن يكون نصيبه في كل شيء أكبر من نصيب الأطفال الآخرين
+52. يقاطع حديث الآخرين
+53. عنيد يرفض اتباع التعليمات وقد يعمل العكس
+54. يقوم بسلوكيات تعرض حياته للخطر مثل القفز من أماكن مرتفعة أو الجري في شارع مزدحم دون النظر إلى الطريق
+CHUNK A5 — Behavioral Assessment Items (AR)
+category: screening-tools/items | lang: ar | source: https://bridge.med.sa/qsm_quiz/التقييم-السلوكي-2/
+التقييم السلوكي — الإجابة: نعم / لا
+1. يتحرك كثيراً حتى خلال جلوسه، من خلال تحريك يديه أو رجليه أو جسده عموماً
+2. يسرح كثيراً … أحلام يقظة
+3. يصعب عليه الانسجام والانتظام مع الآخرين وكذلك اللعب بهدوء
+4. لا يطبق التعليمات ويفشل كثيراً في إنهاء العمل المطلوب منه إذا كان يحتاج إلى تركيز
+5. يتجنب المهام التي تحتاج تركيزاً ذهنياً لمدة طويلة مثل حل الواجبات والعمل داخل الصف
+6. يتشتت انتباهه بسهولة لأي مثير آخر
