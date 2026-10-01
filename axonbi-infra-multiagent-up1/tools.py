@@ -8903,7 +8903,7 @@ def resolve_available_day(
     # the MACHINE values, and `from_date`/`to_date` get passed verbatim
     # into the next call. The display fields are additions, not
     # replacements.
-    return {
+    result = {
         "status": "found",
         "date": chosen_date.isoformat(),
         "weekday_name": english_name,
@@ -8914,6 +8914,39 @@ def resolve_available_day(
         "from_date": day_start.isoformat(),
         "to_date": day_end.isoformat(),
     }
+
+    # NEARER ONES OF THE SAME WEEKDAY WITH NOTHING OPEN. The earliest open
+    # date is not always the date they meant: CONFIRMED (tanasuq-production,
+    # 2026-10-01): "الاحد الجاي" on Thursday 01/10 resolved to 18/10 - the
+    # 04/10 and 11/10 Sundays had nothing open - and the reply showed
+    # 18/10's times as if it were the Sunday they asked for. Said only
+    # when it happened, so it costs nothing otherwise.
+    skipped = _nearer_weekday_dates(lead_time.date(), after_dt, target_weekday, chosen_date)
+    if skipped:
+        result["nearer_dates_without_slots"] = [
+            f"{_display_weekday(d.isoformat(), language)} {_display_date(d.isoformat())}" for d in skipped
+        ]
+        result["note"] = (
+            "Nothing is open on the nearer date(s) in nearer_dates_without_slots. Say so in "
+            "one short line before showing this date, so the patient knows it is not the "
+            "nearest one."
+        )
+    return result
+
+
+def _nearer_weekday_dates(earliest: date, after: Optional[date], weekday: int, chosen: date) -> list:
+    """Every date of `weekday` from the first one that could be booked up to
+    (not including) `chosen` - at most four."""
+
+    first = earliest
+    if after and after >= first:
+        first = after + timedelta(days=1)
+    first += timedelta(days=(weekday - first.weekday()) % 7)
+    dates = []
+    while first < chosen and len(dates) < 4:
+        dates.append(first)
+        first += timedelta(days=7)
+    return dates
 
 
 _ENGLISH_WEEKDAY_INDEX = {
