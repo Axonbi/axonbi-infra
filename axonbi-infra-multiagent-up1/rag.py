@@ -133,6 +133,55 @@ def is_policy_passage(passage: str) -> bool:
     return bool(_SECTION_HEADING_RE.match(first_line) and _POLICY_SECTION_RE.search(first_line))
 
 
+_CONTACT_SECTION_RE = re.compile(r"تواصل|الفروع|فروع|contact|branch", re.IGNORECASE)
+
+# file_path -> (mtime, chunks)
+_SECTION_CHUNK_CACHE: dict = {}
+
+
+def _headed_chunks(file_path: str) -> list:
+    """The file's chunks that start with a section heading, re-read only
+    when the file changes. [] for a missing file or one with no headings."""
+
+    try:
+        mtime = os.path.getmtime(file_path)
+    except (OSError, TypeError):
+        return []
+    cached = _SECTION_CHUNK_CACHE.get(file_path)
+    if cached and cached[0] == mtime:
+        return cached[1]
+    try:
+        with open(file_path, encoding="utf-8") as f:
+            chunks = _chunk_text(f.read())
+    except OSError:
+        return []
+    headed = [c for c in chunks if _SECTION_HEADING_RE.match(c.split("\n", 1)[0])]
+    _SECTION_CHUNK_CACHE[file_path] = (mtime, headed)
+    return headed
+
+
+def overview_passage(file_path: str) -> str:
+    """The knowledge base's first section - its general overview - as one
+    passage, or "" when the file has no section headings.
+
+    WHY IT TRAVELS WITH EVERY FAQ ANSWER. A general question is short and
+    vague ("ايه تناسق", "معلومات عن المكان"), and its embedding scores low
+    against every long passage - CONFIRMED (tanasuq-production,
+    2026-10-01): "ايه تناسق" cleared nothing (best 0.280 against a 0.32
+    floor) and the patient was told there is no information about what
+    Tanasuq is. The overview is the answer to exactly those questions."""
+
+    headed = _headed_chunks(file_path)
+    return headed[0] if headed else ""
+
+
+def contact_passages(file_path: str) -> list:
+    """Every passage of the contact / branches section - for a question
+    about where the hospital is."""
+
+    return [c for c in _headed_chunks(file_path) if _CONTACT_SECTION_RE.search(c.split("\n", 1)[0])]
+
+
 def _chunk_text(text: str) -> list:
     """Chunks that never cross a section, each led by its section's
     heading - so a passage says where it comes from, and the search and

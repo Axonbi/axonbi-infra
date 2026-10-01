@@ -6106,6 +6106,19 @@ def answer_hospital_faq(
                         len(passages) - len(kept))
         passages = kept
 
+    # THE OVERVIEW, AND FOR A "WHERE" QUESTION THE BRANCHES, ALWAYS COME
+    # ALONG - see rag.overview_passage. A short, vague question ("ايه
+    # تناسق", "معلومات عن المكان") does not retrieve them by similarity, and
+    # they are exactly what answers it. `asks_location` is the turn's own
+    # reading, not a word list. Nothing is added for a knowledge base with
+    # no section headings.
+    extra = [rag.overview_passage(kb_file)]
+    if ((state.get("understanding") or {}).get("asks_location")):
+        extra += rag.contact_passages(kb_file)
+    for passage in extra:
+        if passage and passage not in passages:
+            passages.append(passage)
+
     if not passages:
         return {"status": "not_found"}
 
