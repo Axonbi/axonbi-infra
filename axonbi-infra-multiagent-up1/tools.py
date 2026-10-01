@@ -6092,10 +6092,31 @@ def answer_hospital_faq(
 
     passages = rag.search(kb_file, question)
 
+    # PRIVACY POLICY AND TERMS OF USE ONLY FOR A QUESTION ABOUT THEM.
+    # Similarity search ranks them high for anything near "the site" /
+    # "الموقع" - CONFIRMED (tanasuq-production, 2026-10-01): "عاوزه اعرف
+    # معلومات عن المكان" was answered with the privacy policy, even after
+    # the prompt said not to. Dropped here, in code, unless the model's
+    # query or the patient's own message is about privacy, data or terms.
+    asked = _normalize_arabic(f"{question} {understanding_module.latest_human_text(state.get('messages') or [])}")
+    if not _ASKS_ABOUT_PRIVACY_OR_TERMS_RE.search(asked):
+        kept = [passage for passage in passages if not rag.is_policy_passage(passage)]
+        if len(kept) != len(passages):
+            logger.info("answer_hospital_faq: left out %d privacy/terms passage(s) - not asked about",
+                        len(passages) - len(kept))
+        passages = kept
+
     if not passages:
         return {"status": "not_found"}
 
     return {"status": "found", "passages": passages}
+
+
+# Folded form (see _normalize_arabic): ة is written ه.
+_ASKS_ABOUT_PRIVACY_OR_TERMS_RE = re.compile(
+    r"خصوصي|بيانات|سريه|شروط|سياسه|privacy|data|terms|confidential|policy",
+    re.IGNORECASE,
+)
 
 
 # ==========================================================

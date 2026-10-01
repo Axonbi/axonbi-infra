@@ -112,3 +112,139 @@ def test_the_faq_prompt_no_longer_says_copy_the_passages():
     assert "NEVER paste a passage" in text
     assert "معلومات عن\n    المكان" in text
     assert "PRIVACY POLICY, TERMS OF USE AND OTHER POLICY TEXT are only for a\n    patient who asks about them" in text
+
+
+# ----------------------------------------------------------------------
+# The production log after the first fix (tanasuq-production, 2026-10-01
+# 11:42-11:44): "عاوزه اعرف معلومات عن المكان" still came back with the
+# privacy policy and the partners list, and "عاوزه اقدم علي شغل في فرع
+# النزهه" stayed with faq ("other - faq keeps its flow") and got the
+# generic refusal instead of the HR address.
+# ----------------------------------------------------------------------
+
+import os
+
+import pytest
+
+import rag
+import tools
+from agents.semantic_router import TurnFacts, decide
+
+KB_TEXT = (
+    "1. معلومات عامة عن المستشفى | General Overview\n"
+    "مستشفى متخصص في الطب النفسي في الرياض.\n"
+    "6. معلومات التواصل والفروع | Contact & Branch Information\n"
+    "فرع المنار وفرع النزهة.\n"
+    "البريد الإلكتروني: info@clinic.test\n"
+    "التوظيف والتدريب - إدارة الموارد البشرية | Careers - HR: HR@clinic.test\n"
+    "9. سياسة الخصوصية وحماية البيانات | Privacy Policy\n"
+    "المستشفى يلتزم بحماية بيانات المستخدمين.\n"
+    "10. شروط استخدام الموقع | Terms of Use\n"
+    "يمنع نسخ محتوى الموقع.\n"
+    "11. الشركاء | Partners\n"
+    "المختبرات التشخيصية البرج.\n"
+)
+
+
+@pytest.fixture
+def kb_file(tmp_path):
+    path = tmp_path / "kb.txt"
+    path.write_text(KB_TEXT, encoding="utf-8")
+    return str(path)
+
+
+def test_chunks_never_cross_a_section_and_carry_its_heading():
+    chunks = rag._chunk_text(KB_TEXT)
+    assert [c.split("\n", 1)[0].split(".")[0] for c in chunks] == ["1", "6", "9", "10", "11"]
+    assert [rag.is_policy_passage(c) for c in chunks] == [False, False, True, True, False]
+    assert all(word in "".join(chunks) for word in KB_TEXT.split())
+
+
+def test_a_knowledge_base_without_section_headings_is_chunked_as_before():
+    text = "فقرة أولى عن المستشفى.\n\nفقرة ثانية عن الخدمات."
+    assert rag._chunk_text(text) == rag._chunk_paragraphs(text)
+
+
+def test_tanasuqs_knowledge_base_splits_cleanly():
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "knowledge_base", "tanasuq-saudi.txt")
+    if not os.path.exists(path):
+        pytest.skip("no Tanasuq knowledge base on this branch")
+    text = open(path, encoding="utf-8").read()
+    chunks = rag._chunk_text(text)
+    policy = [c.split("\n", 1)[0] for c in chunks if rag.is_policy_passage(c)]
+    assert policy and all("Privacy" in h or "Terms" in h for h in policy)
+    assert all(word in "".join(chunks) for word in text.split())
+
+
+def _faq(kb_file, patient_message, search_results, question="معلومات عن المكان"):
+    state = {"templates": {"_knowledge_base_file": kb_file}, "messages": [HumanMessage(content=patient_message)]}
+    with patch("rag.search", return_value=search_results):
+        return tools.answer_hospital_faq.func(state=state, question=question)
+
+
+def test_privacy_and_terms_are_left_out_of_an_unrelated_answer(kb_file):
+    chunks = rag._chunk_text(KB_TEXT)
+    privacy, terms, partners, overview = chunks[2], chunks[3], chunks[4], chunks[0]
+    result = _faq(kb_file, "عاوزه اعرف معلومات عن المكان", [privacy, terms, partners, overview])
+    assert result == {"status": "found", "passages": [partners, overview]}
+
+
+def test_privacy_is_answered_when_that_is_the_question(kb_file):
+    privacy = rag._chunk_text(KB_TEXT)[2]
+    result = _faq(kb_file, "ايه سياسة الخصوصية عندكم؟", [privacy], question="سياسة الخصوصية")
+    assert result == {"status": "found", "passages": [privacy]}
+    assert _faq(kb_file, "هل بياناتي محمية؟", [privacy], question="حماية البيانات")["passages"] == [privacy]
+
+
+def test_only_policy_passages_for_an_unrelated_question_is_not_found(kb_file):
+    chunks = rag._chunk_text(KB_TEXT)
+    assert _faq(kb_file, "معلومات عن المكان", [chunks[2], chunks[3]]) == {"status": "not_found"}
+
+
+def _job_reading(changes_intent=True):
+    return {"intent": "other", "confidence": 1.0, "is_ambiguous": False, "about_this_hospital": True,
+            "changes_intent": changes_intent, "entities": {"branch": "النزهة", "topic": "شغل"}}
+
+
+def test_a_job_question_after_faq_questions_gets_the_out_of_scope_reply():
+    assert decide(_job_reading(), TurnFacts(previous="faq")).out_of_scope is True
+    assert decide(_job_reading(changes_intent=False), TurnFacts(previous="faq")).out_of_scope is True
+
+
+def test_a_deliberate_change_of_subject_leaves_a_booking_but_a_passing_remark_does_not():
+    assert decide(_job_reading(), TurnFacts(previous="booking")).out_of_scope is True
+    staying = decide(_job_reading(changes_intent=False), TurnFacts(previous="booking"))
+    assert staying.out_of_scope is False and staying.agent == "booking"
+
+
+def test_the_logged_conversation_end_to_end(session_id, llm, reader, kb_file):
+    client = {**TANASUQ, "knowledge_base_file": kb_file}
+
+    def say(text):
+        return main.send_message_with_signals(TANASUQ["client_id"], session_id, text,
+                                              channel_phone="966500000001", client_config=client)["reply"]
+
+    chunks = rag._chunk_text(KB_TEXT)
+    reader.table["صباح الخير"] = {"intent": "greeting", "confidence": 1.0}
+    say("صباح الخير")
+    assert len(llm.calls) == 0
+
+    reader.table["عاوزه اعرف معلومات عن المكان"] = {"intent": "faq", "confidence": 1.0, "asks_location": True,
+                                                   "answer_to_previous_question": True}
+    llm._responses.extend([
+        AIMessage(content="", tool_calls=[{"name": "answer_hospital_faq", "args": {"question": "معلومات عن المكان"},
+                                           "id": "f1", "type": "tool_call"}]),
+        AIMessage(content="مستشفى متخصص في الطب النفسي في الرياض، وله فرعان: المنار والنزهة 🌷 تحب أرسل لك موقع فرع؟"),
+    ])
+    with _relaxed_verifiers(), patch("rag.search", return_value=[chunks[2], chunks[4], chunks[1], chunks[0]]):
+        say("عاوزه اعرف معلومات عن المكان")
+    shown = [m for m in llm.calls[-1] if isinstance(m, ToolMessage) and m.name == "answer_hospital_faq"][-1]
+    passages = json.loads(shown.content)["passages"]
+    assert not any(rag.is_policy_passage(p) for p in passages) and chunks[0] in passages
+
+    calls = len(llm.calls)
+    reader.table["عاوزه اقدم علي شغل في فرع النزهه"] = _job_reading()
+    reply = say("عاوزه اقدم علي شغل في فرع النزهه")
+    assert "HR@clinic.test" in reply and "تحب أحوّلك لخدمة العملاء؟" in reply
+    assert len(llm.calls) == calls, "written in code - no specialist call"

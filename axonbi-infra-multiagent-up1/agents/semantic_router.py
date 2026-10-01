@@ -343,10 +343,18 @@ def decide(reading: Optional[dict], facts: TurnFacts,
     # Outside patient care, and no flow in progress to return to: a short
     # "not something I can help with - customer service or a contact
     # number?" offer, written in code. Inside a flow, the owning
-    # specialist answers it and carries on.
+    # specialist answers it and carries on - unless that "flow" is only a
+    # run of FAQ questions (nothing in progress to carry on), or the
+    # patient deliberately left it (changes_intent). CONFIRMED
+    # (tanasuq-production, 2026-10-01): after three FAQ questions,
+    # "عاوزه اقدم علي شغل في فرع النزهه" (changes_intent true) stayed with
+    # faq - "other - faq keeps its flow" - and got the generic refusal
+    # instead of the HR address.
     # Never while a crisis is active: that person gets the specialist
     # carrying the crisis rules, whatever the message reads as.
-    if (reading.get("intent") == "other" and active_flow(facts) is None
+    flow = active_flow(facts)
+    if (reading.get("intent") == "other"
+            and (flow is None or flow == "faq" or reading.get("changes_intent"))
             and action != ACTION_DECLINE
             and not is_uncertain(reading, thresholds)
             and not (facts.crisis_active or crisis_now)):
