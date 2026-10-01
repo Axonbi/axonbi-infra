@@ -4368,6 +4368,82 @@ def _unified_phone_from_kb(kb_file: str, mtime: float) -> str:
     return ""
 
 
+def _greeting_line_key(line: str) -> str:
+    """A greeting line with emoji, punctuation, spacing and Arabic letter
+    variants taken out - so the model's copy of a line still matches the
+    template's when it changed an emoji or a hamza."""
+
+    return " ".join(re.sub(r"[^\w\s]", " ", tools._normalize_arabic(line or "")).split())
+
+
+def _greeting_line_keys(state: AgentState, target_language: Optional[str]) -> set:
+    templates = state.get("templates") or {}
+    messages = state.get("messages") or []
+    first = getattr(messages[0], "content", "") if messages else ""
+    first = first if isinstance(first, str) else ""
+    keys = set()
+    for language in {target_language or "ar", "ar", "en"}:
+        for line in _build_greeting(templates, first, language).splitlines():
+            key = _greeting_line_key(line)
+            if key:
+                keys.add(key)
+    return keys
+
+
+def _greeting_already_sent(state: AgentState, target_language: Optional[str]) -> bool:
+    """An earlier reply in this conversation already carried the opening
+    greeting (at least two of its lines) - whatever the `greeted` flag says."""
+
+    keys = _greeting_line_keys(state, target_language)
+    if not keys:
+        return False
+    for message in state.get("messages") or []:
+        if getattr(message, "type", None) != "ai":
+            continue
+        content = getattr(message, "content", "")
+        if not isinstance(content, str) or not content:
+            continue
+        found = {_greeting_line_key(line) for line in content.splitlines()} & keys
+        if len(found) >= 2:
+            return True
+    return False
+
+
+def _strip_repeated_greeting(reply_text: str, state: AgentState, target_language: Optional[str]) -> str:
+    """The reply without the opening greeting it repeats at its start.
+
+    The greeting - the persona line and the capability menu - is sent once,
+    on the first turn. CONFIRMED (tanasuq-production, 2026-10-01 14:26):
+    "اهلا" got the greeting, and "معلومات عن المكان" got the whole greeting
+    again in front of its answer. Lines are compared without emoji,
+    punctuation or letter variants; only a leading run of them is cut, and
+    a reply that is nothing but the greeting is left as it is."""
+
+    if not isinstance(reply_text, str) or not reply_text.strip():
+        return reply_text
+    keys = _greeting_line_keys(state, target_language)
+    if not keys:
+        return reply_text
+
+    lines = reply_text.splitlines()
+    index, removed = 0, 0
+    while index < len(lines):
+        key = _greeting_line_key(lines[index])
+        if not key:
+            index += 1          # blank / emoji-only line inside the block
+            continue
+        if key in keys:
+            removed += 1
+            index += 1
+            continue
+        break
+
+    if not removed:
+        return reply_text
+    rest = "\n".join(lines[index:]).strip()
+    return rest or reply_text
+
+
 def _is_bare_first_greeting(state: AgentState, target_language: Optional[str]) -> bool:
     """The first message is only a greeting (or thanks) - by the turn's
     reading, never by a word list - and this clinic has a greeting to send.
@@ -20571,7 +20647,24 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
             )
             response = AIMessage(content=localized)
 
-    if not has_tool_calls and not state.get("greeted"):
+    # THE OPENING GREETING GOES OUT ONCE PER CONVERSATION - see
+    # `_strip_repeated_greeting`. Decided from what was actually sent, not
+    # only from the `greeted` flag, and outside the output contract, so
+    # neither a stale flag nor REPLY_NORMALIZATION_ENABLED=false can let
+    # it through a second time.
+    already_greeted = bool(state.get("greeted")) or _greeting_already_sent(state, target_language)
+    if not has_tool_calls and already_greeted:
+        stripped = _strip_repeated_greeting(response.content, state, target_language)
+        if stripped != response.content:
+            logger.warning(
+                "agent[%s]: reply repeated the opening greeting after the first turn - cut "
+                "it in code. Draft: %r", agent_name, response.content,
+            )
+            response = AIMessage(content=stripped)
+        if not state.get("greeted"):
+            updates["greeted"] = True
+
+    if not has_tool_calls and not already_greeted:
         first_user_message = state["messages"][0].content if state["messages"] else ""
         greeting = _build_greeting(state.get("templates") or {}, first_user_message, target_language or "ar")
 
