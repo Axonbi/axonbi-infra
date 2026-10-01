@@ -15,6 +15,7 @@ active, and never in the middle of a flow - the flow's owner answers.
 
 import os
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
 import config
@@ -48,22 +49,34 @@ def test_hospital_matter_gets_customer_service_or_number():
                      "تحب أحوّلك لخدمة العملاء، أو أرسل لك رقم التواصل؟")
 
 
-# Tanasuq's own knowledge base, which names the HR address. The live
-# config sends `knowledge_base_file` the same way (n8n's client row).
-KB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                  "knowledge_base", "tanasuq-saudi.txt")
-WITH_KB = {**TANASUQ, "knowledge_base_file": KB}
+# A knowledge base shaped like the clinics' own contact section. Written
+# per test rather than read from a clinic's file, so the suite does not
+# depend on any one tenant's data (bridge-production renamed Tanasuq's).
+KB_TEXT = (
+    "برنامج الوظائف التنفيذية للأطفال - للاستفسار: programs@clinic.test\n"
+    "معلومات التواصل | Contact Details\n"
+    "البريد الإلكتروني: info@clinic.test\n"
+    "التوظيف والتدريب وإرسال السيرة الذاتية - إدارة الموارد البشرية | Careers - HR: HR@clinic.test\n"
+)
 
 
-def _send(session_id, text):
-    return main.send_message_with_signals(TANASUQ["client_id"], session_id, text,
-                                          channel_phone="966500000001", client_config=WITH_KB)
+@pytest.fixture
+def kb(tmp_path):
+    path = tmp_path / "kb.txt"
+    path.write_text(KB_TEXT, encoding="utf-8")
+    return str(path)
 
 
-def test_the_hr_email_is_read_from_the_knowledge_base(tmp_path):
-    assert graph._clinic_hr_email({"_knowledge_base_file": KB}) == "HR@tanasuq.med.sa"
+def _send(session_id, text, kb):
+    return main.send_message_with_signals(TANASUQ["client_id"], session_id, text, channel_phone="966500000001",
+                                          client_config={**TANASUQ, "knowledge_base_file": kb})
+
+
+def test_the_hr_email_is_read_from_the_knowledge_base(kb, tmp_path):
+    # The HR line, not the general address and not the "functions" line.
+    assert graph._clinic_hr_email({"_knowledge_base_file": kb}) == "HR@clinic.test"
     # A knowledge base without an HR line, or none at all: nothing to give.
-    plain = tmp_path / "kb.txt"
+    plain = tmp_path / "plain.txt"
     plain.write_text("البريد الإلكتروني: info@clinic.test\n", encoding="utf-8")
     assert graph._clinic_hr_email({"_knowledge_base_file": str(plain)}) == ""
     assert graph._clinic_hr_email({}) == ""
@@ -77,31 +90,40 @@ def test_the_hr_email_is_not_taken_from_the_client_config():
     assert "jobs@example.test" not in graph._out_of_scope_offer(_hospital(), False, templates, [])
 
 
-def test_a_job_or_training_question_gets_tanasuqs_hr_email(session_id, llm, reader):
+def test_a_job_or_training_question_gets_the_hr_email(session_id, llm, reader, kb):
     """Jobs, training and CVs go to HR, and the transfer offer stays for
     anything else."""
     reader.table["هلا"] = {"intent": "greeting"}
-    _send(session_id, "هلا")
+    _send(session_id, "هلا", kb)
     reader.table[TRAINING] = _hospital()
-    reply = _send(session_id, TRAINING)["reply"]
-    assert "HR@tanasuq.med.sa" in reply
+    reply = _send(session_id, TRAINING, kb)["reply"]
+    assert "HR@clinic.test" in reply
     assert "تحب أحوّلك لخدمة العملاء؟" in reply
     assert len(llm.calls) == 0, "written in code - no specialist call"
 
 
-def test_the_hr_email_reply_in_english():
-    reply = graph._out_of_scope_offer(_hospital("a job"), True, {"_knowledge_base_file": KB},
+def test_the_hr_email_reply_in_english(kb):
+    reply = graph._out_of_scope_offer(_hospital("a job"), True, {"_knowledge_base_file": kb},
                                       [HumanMessage(content="Do you have any job openings?")])
-    assert "HR@tanasuq.med.sa" in reply and "transfer you to customer service" in reply
+    assert "HR@clinic.test" in reply and "transfer you to customer service" in reply
     assert not graph._looks_arabic(reply)
 
 
-def test_hospital_matter_on_the_first_message_keeps_the_greeting(session_id, llm, reader):
+def test_hospital_matter_on_the_first_message_keeps_the_greeting(session_id, llm, reader, kb):
     reader.table[TRAINING] = _hospital()
-    reply = _send(session_id, TRAINING)["reply"]
-    assert "HR@tanasuq.med.sa" in reply
+    reply = _send(session_id, TRAINING, kb)["reply"]
+    assert "HR@clinic.test" in reply
     assert reply.index("لطيفة") < reply.index("HR@"), "greeting first"
     assert len(llm.calls) == 0
+
+
+def test_tanasuqs_knowledge_base_names_its_hr_address():
+    """Only where that file exists - it is Tanasuq's data, not the suite's."""
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "knowledge_base", "tanasuq-saudi.txt")
+    if not os.path.exists(path):
+        pytest.skip("no Tanasuq knowledge base on this branch")
+    assert graph._clinic_hr_email({"_knowledge_base_file": path}) == "HR@tanasuq.med.sa"
 
 
 def test_unrelated_request_is_declined_without_a_transfer_offer(session_id, llm, reader):
