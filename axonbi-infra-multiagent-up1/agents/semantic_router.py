@@ -353,6 +353,15 @@ def decide(reading: Optional[dict], facts: TurnFacts,
     # Never while a crisis is active: that person gets the specialist
     # carrying the crisis rules, whatever the message reads as.
     flow = active_flow(facts)
+    # "Where are you" is never outside patient care. CONFIRMED
+    # (tanasuq-production, 2026-10-02): "ارسلي اللوكيشن" right after a
+    # completed booking was read as "other" and got the refusal.
+    if reading.get("asks_location") and reading.get("intent") in ("other", "greeting", "answer"):
+        agent = facts.previous if facts.previous in SPECIALISTS else "faq"
+        return Decision(agent, f"semantic: location question - {agent}", ROUTING_SEMANTIC,
+                        override_reason=consent_problem and f"handoff not carried out: {consent_problem}",
+                        reading=reading, turn_action=action)
+
     if (reading.get("intent") == "other"
             and (flow is None or flow == "faq" or reading.get("changes_intent"))
             and action != ACTION_DECLINE

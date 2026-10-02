@@ -187,20 +187,21 @@ def test_privacy_and_terms_are_left_out_of_an_unrelated_answer(kb_file):
     chunks = rag._chunk_text(KB_TEXT)
     privacy, terms, partners, overview = chunks[2], chunks[3], chunks[4], chunks[0]
     result = _faq(kb_file, "عاوزه اعرف معلومات عن المكان", [privacy, terms, partners, overview])
-    assert result == {"status": "found", "passages": [partners, overview]}
+    assert result == {"status": "found", "passages": [partners, overview, chunks[1]]}
 
 
 def test_privacy_is_answered_when_that_is_the_question(kb_file):
     privacy = rag._chunk_text(KB_TEXT)[2]
     overview = rag._chunk_text(KB_TEXT)[0]
+    contact = rag._chunk_text(KB_TEXT)[1]
     result = _faq(kb_file, "ايه سياسة الخصوصية عندكم؟", [privacy], question="سياسة الخصوصية")
-    assert result == {"status": "found", "passages": [privacy, overview]}
+    assert result == {"status": "found", "passages": [privacy, overview, contact]}
     assert privacy in _faq(kb_file, "هل بياناتي محمية؟", [privacy], question="حماية البيانات")["passages"]
 
 
 def test_only_policy_passages_for_an_unrelated_question_leaves_the_overview(kb_file):
     chunks = rag._chunk_text(KB_TEXT)
-    assert _faq(kb_file, "معلومات عن المكان", [chunks[2], chunks[3]]) == {"status": "found", "passages": [chunks[0]]}
+    assert _faq(kb_file, "معلومات عن المكان", [chunks[2], chunks[3]]) == {"status": "found", "passages": [chunks[0], chunks[1]]}
 
 
 # The log after the second fix (12:15): with the privacy passage gone,
@@ -217,9 +218,9 @@ def _faq_with_reading(kb_file, patient_message, search_results, reading, questio
 
 
 def test_what_is_the_hospital_is_answered_from_the_overview(kb_file):
-    overview = rag._chunk_text(KB_TEXT)[0]
+    overview, contact = rag._chunk_text(KB_TEXT)[0], rag._chunk_text(KB_TEXT)[1]
     result = _faq_with_reading(kb_file, "ايه تناسق", [], {"intent": "answer"}, "ايه تناسق")
-    assert result == {"status": "found", "passages": [overview]}
+    assert result == {"status": "found", "passages": [overview, contact]}
 
 
 def test_a_where_question_also_gets_the_branches(kb_file):

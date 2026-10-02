@@ -305,12 +305,22 @@ def normalize_phone_number(phone: Optional[str], state=None) -> Optional[str]:
     cleaned = str(phone).strip().translate(_PHONE_DIGIT_TRANSLATION)
     cleaned = re.sub(r"[\s\-().]", "", cleaned)
 
+    default_code = _client_default_country_code(state)
+
     if cleaned.startswith("+"):
+        # "+535230420": a "+" in front of a LOCAL mobile number with no
+        # country code at all - nine digits starting with 5 is exactly a
+        # Saudi mobile without its 0. Read as "+53..." it went to the SMS
+        # provider, was rejected, and the patient was told a code was sent
+        # (tanasuq-production, 2026-10-02). Only when the digits are
+        # precisely this client's own national mobile shape.
+        digits = cleaned[1:]
+        rule = _MOBILE_NUMBER_RULES.get(default_code)
+        if rule and rule[1] and digits.isdigit() and len(digits) == rule[0] and digits.startswith(rule[1]):
+            return "+" + default_code + digits
         return _drop_trunk_zero(cleaned)
     if cleaned.startswith("00"):
         return _drop_trunk_zero("+" + cleaned[2:])
-
-    default_code = _client_default_country_code(state)
 
     # Leading zero = local format for whichever country this client is
     # in ("01158877175" -> Egypt, "0568000000" -> Saudi).
@@ -1441,7 +1451,19 @@ def send_otp(state: Annotated[AgentState, InjectedState], phone: str) -> dict:
         return {"status": "invalid_phone"}
 
     if OTP_PROVIDER == "authentica":
-        api.authentica_send_otp(normalized)
+        result = api.authentica_send_otp(normalized) or {}
+        if not result.get("success"):
+            # CONFIRMED (tanasuq-production, 2026-10-01): the provider
+            # answered 422 "you've run out of points", this returned
+            # otp_sent anyway, and the patient was told a code was on its
+            # way - then waited for an SMS that never came.
+            reason = " ".join(str(d) for d in (result.get("details") or [])).lower()
+            if "not valid" in reason or "invalid" in reason:
+                logger.warning("send_otp: provider rejected %r as not a valid number", normalized)
+                return {"status": "invalid_phone"}
+            logger.error("send_otp: provider did NOT send a code to %r (%s)", normalized,
+                         result.get("error") or "unknown error")
+            return {"status": "otp_send_failed"}
         return {"status": "otp_sent"}
 
     _otp_storage[normalized] = {"otp": TEST_OTP, "created_at": time.time()}
@@ -6112,9 +6134,12 @@ def answer_hospital_faq(
     # they are exactly what answers it. `asks_location` is the turn's own
     # reading, not a word list. Nothing is added for a knowledge base with
     # no section headings.
-    extra = [rag.overview_passage(kb_file)]
-    if ((state.get("understanding") or {}).get("asks_location")):
-        extra += rag.contact_passages(kb_file)
+    # The contact section always: when nothing else answers ("عندكم
+    # تامين", visiting hours) its unified number IS the answer - CONFIRMED
+    # (tanasuq-production, 2026-10-01): insurance got "no confirmed
+    # information" although the knowledge base says to call that number
+    # for insurance.
+    extra = [rag.overview_passage(kb_file)] + rag.contact_passages(kb_file)
     for passage in extra:
         if passage and passage not in passages:
             passages.append(passage)
@@ -9894,6 +9919,13 @@ def _remember_failed_slot(session: dict, doctor_id, branch_id, slot_start: str) 
     if _same_instant(locked.get("slotStart"), slot_start):
         session.pop("selected_slot", None)
         session["review_shown"] = False
+    # Nor may it stay in the list a bare number resolves against: "1"
+    # after the failure locked the same dead time again from that list
+    # (tanasuq-production, 2026-10-01 5:10 PM, three times).
+    last_list = session.get("last_list") or {}
+    if last_list.get("entity_type") == "slot" and last_list.get("items"):
+        last_list["items"] = [item for item in last_list["items"]
+                              if not _same_instant(item.get("slotStart"), slot_start)]
 
 
 def _is_failed_slot(session: dict, doctor_id, branch_id, slot_start: str) -> bool:
@@ -10312,6 +10344,12 @@ def create_new_booking(
         )
         if api_refused and not patient_field_rejected:
             _remember_failed_slot(session, doctor_id, branch_id, slot_start)
+        # "This slot is already booked" is about the slot, not the
+        # patient's details. Reported as invalid_details it read as "fix
+        # something and book again", and the patient was walked back to
+        # the same time from the old list (tanasuq-production, 2026-10-01).
+        if api_refused and any("already booked" in str(d.get("message") or "").lower() for d in details):
+            return {"status": "slot_unavailable"}
         # A field-level rejection (bad phone format, missing email, ...)
         # is NOT a transient technical fault: retrying later changes
         # nothing, and telling the patient to try again wastes their
@@ -10886,6 +10924,15 @@ def select_appointment_slot(state: Annotated[AgentState, InjectedState], user_in
                 user_input, session_id,
             )
             return {"status": "not_matched"}
+
+    # A time the booking system already refused is never locked again -
+    # see `_remember_failed_slot`.
+    if _is_failed_slot(session, session.get("doctor_id"), session.get("branch_id"), chosen.get("slotStart")):
+        logger.warning(
+            "select_appointment_slot: %s already failed to book in this session - not locking it (session_id=%s)",
+            chosen.get("slotStart"), session_id,
+        )
+        return {"status": "slot_unavailable"}
 
     # LOCKED IN. This is the one place the rest of the booking flow reads
     # the chosen time from - never the model's own recollection of the
