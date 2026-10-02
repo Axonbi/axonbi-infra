@@ -471,7 +471,11 @@ def authentica_send_otp(phone: str) -> dict:
             "Authentica send_otp rejected phone=%s status=%s body=%s",
             phone, response.status_code, response.text[:500],
         )
-        return _result(False, response.status_code, error="send_otp_failed")
+        # The provider's own reason travels with the failure: "Phone number
+        # is not valid" is the patient's typo, "run out of points" is the
+        # account - and neither may be reported to the patient as sent.
+        return _result(False, response.status_code, error="send_otp_failed",
+                       details=[response.text[:300]])
 
     try:
         body = response.json()

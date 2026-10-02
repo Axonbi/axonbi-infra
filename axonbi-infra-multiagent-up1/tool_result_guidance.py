@@ -188,7 +188,16 @@ RESULT_GUIDANCE: dict = {
     # An incomplete number, or not a mobile. Nothing was checked or sent.
     "validate_phone_format": {"invalid": _INVALID_PHONE_GUIDANCE},
     "compare_phone": {"invalid_phone": _INVALID_PHONE_GUIDANCE},
-    "send_otp": {"invalid_phone": _INVALID_PHONE_GUIDANCE},
+    "send_otp": {
+        "invalid_phone": _INVALID_PHONE_GUIDANCE,
+        "otp_send_failed":
+            "The verification code could NOT be sent - the SMS service "
+            "refused it. Nothing reached the patient. Never say a code was "
+            "sent and never ask them for one. In one short message, apologise "
+            "that the code cannot be sent right now and offer to continue on "
+            "the WhatsApp number they are messaging from, or to transfer them "
+            "to customer service. Do not call send_otp again this turn.",
+    },
 
     # ------------------------------------------------------------------
     "get_patient_info": {
@@ -346,6 +355,12 @@ RESULT_GUIDANCE: dict = {
             "available on that day, then show the times that ARE open "
             "and let them pick. Never invent a slot, and never move them "
             "to a different day without saying so.",
+        "slot_unavailable":
+            "The booking system already REFUSED this exact time in this "
+            "conversation - it is taken. Never offer it again. Call "
+            "`get_available_slots_for_booking` for the day (it leaves that "
+            "time out) and show only what it returns; if nothing is left, "
+            "say that day is full and offer another day.",
     },
 
     # ------------------------------------------------------------------
@@ -424,8 +439,11 @@ RESULT_GUIDANCE: dict = {
             "they will try to cancel with it and be told no such booking "
             "exists.",
         "slot_unavailable":
-            "The requested slot is no longer free - say so and offer to "
-            "pick again.",
+            "The requested slot is no longer free - say so. Never list "
+            "times from memory or from an earlier list: call "
+            "`get_available_slots_for_booking` for that day now (it leaves "
+            "the taken time out) and show only what it returns; if it comes "
+            "back not_found, say that day is full and offer another day.",
         "invalid_details":
             "The booking system REFUSED one of the patient's own details "
             "(e.g. field \"MobileNumber\" -> \"Mobile Number Not "

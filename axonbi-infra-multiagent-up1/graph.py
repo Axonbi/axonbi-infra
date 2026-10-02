@@ -1014,6 +1014,13 @@ def _deterministic_slot_lock(state: AgentState, agent_name: str):
         )
         return None
 
+    if isinstance(payload, dict) and payload.get("status") == "slot_unavailable":
+        # The pick is a time the booking system already refused. Hand the
+        # model that result (and its guidance to fetch fresh times)
+        # rather than leaving it to re-list the old times from memory.
+        logger.info("_deterministic_slot_lock: %r is a time that already failed to book", text)
+        return _forge_tool_pair("select_appointment_slot", {"user_input": text}, payload)
+
     if not isinstance(payload, dict) or payload.get("status") != "selected":
         # out_of_range / not_matched / no_list_shown - the model's own
         # path sees the same result if it calls the tool itself, and
@@ -1535,6 +1542,18 @@ def _already_contains_greeting(reply_text: str, greeting: str) -> bool:
 _NUMBER_EMOJIS = ["0️⃣", "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣"]
 
 
+def _time_range_text(first_time: str, last_time: str) -> str:
+    """" — من X إلى Y" for a day's open times; " — الساعة X" when only one
+    time is open - "من 2:00 مساءً إلى 2:00 مساءً" was sent in production
+    (tanasuq, 2026-10-01)."""
+
+    if not first_time or not last_time:
+        return ""
+    if first_time.strip() == last_time.strip():
+        return f" — الساعة {first_time}"
+    return f" — من {first_time} إلى {last_time}"
+
+
 def _numbered_prefix(n: int) -> str:
     """Emoji badge for a list position, for ANY number.
 
@@ -1730,7 +1749,7 @@ def _build_available_days_directive(messages: list, session_id: str) -> str:
         first_time = day.get("firstTime") or ""
         last_time = day.get("lastTime") or ""
         lines.append(
-            f"{_numbered_prefix(i + 1)} {weekday} {date_display} — من {first_time} إلى {last_time}".strip()
+            f"{_numbered_prefix(i + 1)} {weekday} {date_display}{_time_range_text(first_time, last_time)}".strip()
         )
 
     # IF THIS DAY LIST IS THE ANSWER TO A DAY THEY NAMED AND COULDN'T
@@ -2334,7 +2353,7 @@ def _build_resolved_day_directive(messages: list, session_id: str) -> str:
     # start/end (e.g. "11:00 - 11:30") and present that 30-minute
     # window as if it were the whole day's offer, instead of the day's
     # actual availability ("11:00 صباحًا - 3:00 مساءً").
-    time_range = f" — من {first_time} إلى {last_time}" if first_time and last_time else ""
+    time_range = _time_range_text(first_time, last_time)
     block = f"{header}\n🗓️ {weekday} {date_display}{time_range}".strip()
 
     return (
@@ -4481,15 +4500,49 @@ def _later_greeting_reply(text: str, target_language: Optional[str]) -> str:
     reading already decided it is only a greeting; the wording follows the
     same time-of-day cues the opening greeting uses."""
 
-    lowered = (text or "").lower()
     replies = _LATER_GREETING_REPLY["en" if (target_language or "").startswith("en") else "ar"]
+    return replies[_later_greeting_kind(text)]
+
+
+def _later_greeting_kind(text: str) -> str:
+    lowered = (text or "").lower()
     if any(cue in lowered for cue in _MORNING_CUES):
-        return replies["morning"]
+        return "morning"
     if any(cue in lowered for cue in _EVENING_CUES):
-        return replies["evening"]
+        return "evening"
     if "السلام" in _norm_ar(lowered) or "salam" in lowered:
-        return replies["salam"]
-    return replies["thanks"]
+        return "salam"
+    return "thanks"
+
+
+_GREETING_ACKNOWLEDGEMENT = {
+    "ar": {"morning": "صباح النور 🌷", "evening": "مساء النور 🌷", "salam": "وعليكم السلام 🌷"},
+    "en": {"morning": "Good morning 🌷", "evening": "Good evening 🌷", "salam": "Wa alaikum assalam 🌷"},
+}
+
+
+def _greeting_inside_a_flow_reply(text: str, last_ai_reply: str,
+                                  target_language: Optional[str]) -> Optional[str]:
+    """A greeting while a booking/cancel/... step is open: return the
+    greeting and put the open question back, in code. CONFIRMED
+    (tanasuq-production, 2026-10-02 06:49): "السلام عليكم ورحمة الله
+    وبركاته" with booking holding the turn got the out-of-scope menu.
+
+    No question open -> the plain one-line reply. A thanks while a
+    question is open -> None: the model answers, the question may need it."""
+
+    lang = "en" if (target_language or "").startswith("en") else "ar"
+    pending = ""
+    for line in reversed((last_ai_reply or "").splitlines()):
+        if "؟" in line or "?" in line:
+            pending = line.strip()
+            break
+    if not pending:
+        return _LATER_GREETING_REPLY[lang][_later_greeting_kind(text)]
+    kind = _later_greeting_kind(text)
+    if kind == "thanks":
+        return None
+    return _GREETING_ACKNOWLEDGEMENT[lang][kind] + "\n" + pending
 
 
 def _is_bare_first_greeting(state: AgentState, target_language: Optional[str]) -> bool:
@@ -4544,6 +4597,52 @@ def _clinic_hr_email(templates: dict) -> str:
     except OSError:
         return ""
     return _hr_email_from_kb(kb_file, mtime)
+
+
+def _clinic_branch_addresses(templates: dict) -> str:
+    """The knowledge base's branches passage (names and addresses), or ""."""
+
+    kb_file = str((templates or {}).get("_knowledge_base_file") or "").strip()
+    if not kb_file:
+        return ""
+    try:
+        import rag
+        passages = rag.contact_passages(kb_file)
+    except Exception:
+        logger.exception("_clinic_branch_addresses: could not read the knowledge base %r", kb_file)
+        return ""
+    return passages[0].strip() if passages else ""
+
+
+# CONFIRMED (tanasuq-production, 2026-10-02): "اي فرع أقرب للنظيم" in the
+# middle of a booking got "معنديش فرع اسمه أقرب للنظيم" - the booking
+# agent searched a branch NAMED that - and "ارسلي اللوكيشن" right after a
+# booking got the out-of-scope refusal. The reading already says
+# `asks_location`; this hands whichever agent owns the turn the real
+# addresses, from the clinic's own knowledge base, at no model cost.
+_LOCATION_QUESTION_DIRECTIVE = (
+    "============================================================\n"
+    "THE PATIENT IS ASKING WHERE THE HOSPITAL IS\n"
+    "============================================================\n"
+    "The branches and their addresses, from the hospital's knowledge base:\n"
+    "{addresses}\n\n"
+    "Answer from these addresses only. A place or district they name (\"أقرب "
+    "للنظيم\") is where THEY are, never a branch name - do not search it as "
+    "one and never answer that there is no branch by that name. Give the "
+    "branches with their districts; say which is nearer only when it is "
+    "plain from the addresses. For the map pin, call `share_branch_location` "
+    "with the exact branch name above (the one they asked about, chose or "
+    "booked). Then carry on with whatever was in progress.\n"
+)
+
+
+def _build_location_question_directive(reading: Optional[dict], templates: dict) -> str:
+    if not (reading or {}).get("asks_location"):
+        return ""
+    addresses = _clinic_branch_addresses(templates)
+    if not addresses:
+        return ""
+    return _LOCATION_QUESTION_DIRECTIVE.format(addresses=addresses)
 
 
 def _clinic_unified_phone(templates: dict) -> str:
@@ -5029,9 +5128,27 @@ def _build_schedule_display_directive(messages: list) -> str:
     if not messages:
         return ""
 
-    last = messages[-1]
-
-    if getattr(last, "name", None) not in ("get_doctor_schedule", "get_doctor_schedule_for_booking"):
+    # The schedule result among the tool results that close this hop - not
+    # only the very last one. The booking hook fetches the schedule and
+    # then the bookable days in one go, so the schedule sits one step back;
+    # looking only at the last message left the model to lay it out, and
+    # it listed النزهة twice (tanasuq-production, 2026-10-01 17:20).
+    last = None
+    for msg in reversed(messages):
+        kind = getattr(msg, "type", None)
+        if kind == "tool":
+            if getattr(msg, "name", None) in ("get_doctor_schedule", "get_doctor_schedule_for_booking"):
+                last = msg
+                break
+            # A later result that IS the answer (real bookable days) owns
+            # the reply; only a declined one ("which branch?") is passed over.
+            if (parse_tool_content(msg) or {}).get("status") == "found":
+                return ""
+            continue
+        if kind == "ai" and not str(getattr(msg, "content", "") or "").strip():
+            continue  # the tool-call message itself
+        break
+    if last is None:
         return ""
 
     try:
@@ -14393,7 +14510,12 @@ _REPLY_VERIFIERS = (
         "out-of-scope service menu",
     ),
     (
-        lambda reply, state, agent_name: _reply_ignores_a_refusal(reply, state),
+        # Not in cancel/reschedule: there the doctor is the patient's OWN
+        # appointment, and "لا خلص ثبت الموعد" is answered by naming it -
+        # flagged twice in production (2026-10-02), two wasted calls.
+        lambda reply, state, agent_name: (
+            agent_name not in ("cancel", "reschedule") and _reply_ignores_a_refusal(reply, state)
+        ),
         lambda reply, state: _REFUSAL_CORRECTION_DIRECTIVE,
         "the patient refused, and the reply brought the same doctor straight back",
     ),
@@ -17625,13 +17747,21 @@ def _reply_mishandles_rejected_single_booking(reply_text: str, state: AgentState
 
     # A single booking must actually have been found and shown BEFORE
     # this rejection - otherwise "لا" could be answering anything.
-    found_single_booking = False
-    for msg in messages[:index]:
+    found_at = -1
+    for position, msg in enumerate(messages[:index]):
         if getattr(msg, "name", None) in ("lookup_appointment", "check_booking_status"):
             payload = parse_tool_content(msg)
             if isinstance(payload, dict) and payload.get("status") == "found_one":
-                found_single_booking = True
-    if not found_single_booking:
+                found_at = position
+    if found_at < 0:
+        return False
+    # ...and the "no" must answer THAT showing - the one reply right after
+    # the lookup. CONFIRMED false positive (tanasuq-production,
+    # 2026-10-02): turns later, "تحب نجرب يوم ثاني؟" -> "لا خلص ثبت
+    # الموعد" was judged a rejection of the booking shown back then.
+    shown_since = [msg for msg in messages[found_at + 1:index]
+                   if getattr(msg, "type", None) == "ai" and str(getattr(msg, "content", "") or "").strip()]
+    if len(shown_since) != 1:
         return False
 
     folded_reply = _norm_ar(reply_text)
@@ -17936,6 +18066,64 @@ def _reply_advances_past_a_refusal(reply_text: str, state: AgentState, agent_nam
     # asking for theirs.
     return bool(asks) and not _GIVES_A_NUMBER_RE.search(reply_text) \
         and not _SUMMARY_OR_CONFIRMATION_CUE_RE.search(folded)
+
+
+# ==========================================================
+# A CODE THAT WAS NOT SENT IS NEVER REPORTED AS SENT
+# ==========================================================
+#
+# CONFIRMED (tanasuq-production, 2026-10-01 and 10-02): the SMS provider
+# refused every code ("you've run out of points", and once "Phone number is
+# not valid"), and the patient was told "أرسلت لك رمز التحقق على الرقم ..."
+# each time, then waited for an SMS that never came. `send_otp` now
+# reports the failure; this makes sure the reply cannot claim otherwise.
+_CODE_SENT_CLAIM_RE = re.compile(
+    r"(?:ارسلت|ارسلنا|ارسلناه|بعتت|بعتنا|تم\s*ارسال|راح\s*يوصلك)"
+    r"[^.\n؟?]{0,40}(?:رمز|كود|otp)|"
+    r"\b(?:sent|have\s+sent|we've\s+sent)\b[^.\n?]{0,40}\b(?:code|otp)\b",
+    re.IGNORECASE,
+)
+
+_OTP_NOT_SENT_REPLY = {
+    "ar": "عذرًا، ما قدرت أرسل رمز التحقق لهذا الرقم حاليًا 🙏\n"
+          "تحب نكمل على رقم الواتساب اللي تراسلنا منه، ولا أحوّلك لخدمة العملاء؟",
+    "en": "Sorry, I couldn't send a verification code to that number right now 🙏\n"
+          "Would you like to continue with the WhatsApp number you're messaging from, "
+          "or shall I transfer you to customer service?",
+}
+_OTP_INVALID_NUMBER_REPLY = {
+    "ar": "الرقم يبدو غير كامل 🙏 أرسله كامل لو سمحت، مثل 05XXXXXXXX.",
+    "en": "That number looks incomplete 🙏 Please send it in full, e.g. 05XXXXXXXX.",
+}
+
+
+def _failed_send_otp_status(messages: list) -> Optional[str]:
+    """"otp_send_failed" / "invalid_phone" when this turn's latest
+    `send_otp` did not send anything; None when it sent, or never ran."""
+
+    results = _tool_results_since_latest_human(messages, ("send_otp",))
+    if not results:
+        return None
+    try:
+        status = (json.loads(getattr(results[-1], "content", "") or "") or {}).get("status")
+    except (ValueError, TypeError, AttributeError):
+        return None
+    return status if status in ("otp_send_failed", "invalid_phone") else None
+
+
+def _otp_not_sent_correction(reply_text: str, state: AgentState,
+                             target_language: Optional[str]) -> Optional[str]:
+    """The fixed reply to send instead of a draft that says a code went
+    out when this turn's `send_otp` sent nothing."""
+
+    if not isinstance(reply_text, str) or not reply_text:
+        return None
+    status = _failed_send_otp_status(state.get("messages") or [])
+    if not status or not _CODE_SENT_CLAIM_RE.search(_norm_ar(reply_text)):
+        return None
+    lang = "en" if (target_language or "").strip().lower().startswith("en") else "ar"
+    table = _OTP_INVALID_NUMBER_REPLY if status == "invalid_phone" else _OTP_NOT_SENT_REPLY
+    return table[lang]
 
 
 # ==========================================================
@@ -18762,6 +18950,37 @@ def _build_selected_slot_directive(session_id: str) -> str:
         time_display=slot.get("time_display") or "",
         service_suffix=service_suffix,
     )
+
+
+# CONFIRMED (tanasuq-production, 2026-10-01): mid-booking, "كم مدة
+# الجلسه؟" was answered "حوالي 50 دقيقة إلى ساعة" with no tool behind it,
+# then "why are the times every 10 minutes?" got an invented reason, and
+# the patient caught the contradiction. The booking system's own slots
+# say how long the appointment is; this states it, so nothing is guessed.
+_SLOT_LENGTH_DIRECTIVE = (
+    "BOOKING FACT (from the booking system): this doctor's appointment slots "
+    "are {minutes} minutes long, start to end. Use it only if they ask how "
+    "long the session or appointment is - never another figure, and never a "
+    "reason the system gives none for.\n"
+)
+
+
+def _build_slot_length_directive(session_id: str) -> str:
+    session = tools._BOOKING_SESSIONS.get(session_id or "") or {}
+    candidates = [session.get("selected_slot") or {}]
+    last_list = session.get("last_list") or {}
+    if last_list.get("entity_type") == "slot":
+        candidates += list(last_list.get("items") or [])
+    for slot in candidates:
+        try:
+            start = datetime.fromisoformat(str(slot.get("slotStart"))[:19])
+            end = datetime.fromisoformat(str(slot.get("slotEnd"))[:19])
+        except (TypeError, ValueError):
+            continue
+        minutes = int((end - start).total_seconds() // 60)
+        if 0 < minutes <= 480:
+            return _SLOT_LENGTH_DIRECTIVE.format(minutes=minutes)
+    return ""
 
 
 _SELECTED_RESCHEDULE_SLOT_DIRECTIVE = (
@@ -19688,7 +19907,9 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     )
 
     bare_entity_directive = _build_bare_entity_answer_directive(state["messages"])
-    branches_info_directive = _build_branches_info_directive(state["messages"])
+    branches_info_directive = (_build_branches_info_directive(state["messages"])
+                               + _build_location_question_directive(state.get("understanding"),
+                                                                    state.get("templates") or {}))
     bare_doctor_directive = _build_bare_doctor_answer_directive(state["messages"])
 
     # "اه" to an offer that named exactly one doctor. The medical ->
@@ -19794,7 +20015,8 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     same_number_yes_directive = _build_same_number_yes_directive(
         state["messages"], agent_name, state.get("understanding"),
     )
-    selected_slot_directive = _build_selected_slot_directive(state.get("session_id"))
+    selected_slot_directive = (_build_selected_slot_directive(state.get("session_id"))
+                               + _build_slot_length_directive(state.get("session_id")))
     selected_reschedule_slot_directive = _build_selected_reschedule_slot_directive(state.get("session_id"))
 
     # The scoped prompt for whoever owns this turn. Rebuilt per turn for
@@ -20209,6 +20431,16 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         deterministic_reply = _later_greeting_reply(latest_user_message, target_language)
         logger.info("agent[%s]: greeting/thanks after the first turn - one line, no model call",
                     agent_name)
+    # ...and with another specialist holding the turn, the greeting plus
+    # whatever question is still open - see `_greeting_inside_a_flow_reply`.
+    elif (deterministic_reply is None and state.get("greeted")
+            and _reading_is_bare_greeting(state)):
+        in_flow = _greeting_inside_a_flow_reply(
+            latest_user_message, _last_ai_reply_text(state.get("messages") or []), target_language)
+        if in_flow:
+            deterministic_reply = in_flow
+            logger.info("agent[%s]: greeting inside a flow - answered in code with the open question",
+                        agent_name)
 
     # ONLINE / REMOTE SESSIONS. Always the hospital's own channels - see
     # `_REMOTE_SESSION_RE`. Not for a complaint or a cancellation, where
@@ -20726,6 +20958,17 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
             agent_name, response.content,
         )
         response = AIMessage(content=_declined_offer_reply(state.get("templates"), target_language))
+
+    # A CODE THAT WAS NOT SENT IS NEVER REPORTED AS SENT - see
+    # `_otp_not_sent_correction`.
+    if not has_tool_calls:
+        corrected = _otp_not_sent_correction(response.content, state, target_language)
+        if corrected:
+            logger.error(
+                "agent[%s]: send_otp sent nothing this turn but the draft said a code was sent - "
+                "sending the fixed not-sent reply instead. Draft: %r", agent_name, response.content,
+            )
+            response = AIMessage(content=corrected)
 
     # ENGLISH CONVERSATION, ENGLISH FIXED TEXTS - see
     # `_localize_fixed_texts_for_english`.
