@@ -106,7 +106,7 @@ Return ONLY a JSON object with these keys:
   other: anything else - including things that are not patient care: jobs, training, interviews, suppliers, business
   An answer's intent is the flow it moves forward: yes to "shall I book you with Dr X?" is booking, to "cancel it?" is cancel, to "connect you with customer service?" is human.
   A no moves nothing forward: a bare refusal ("لا", "لا خلاص", "مش عايز") is intent "answer", declines true - not the topic's flow, not a cancellation. A no that also asks for something ("لا، السبت", "لا، عايز الدكتور عبدالله") takes that request's intent and values, declines true.
-"confidence": 0.0-1.0 for intent.
+"confidence": 0.0-1.0 for intent. ALWAYS give it - the examples below leave keys out only to stay short.
 "is_ambiguous": true only if it could mean different intents and neither STATE nor the conversation settles it; then "alternatives": the 2-3 plausible intents, else []. Two cases that are ALWAYS ambiguous unless the conversation already says which: "الموعد" with nothing before it; and being unable to make an appointment without saying whether to cancel it or move it ("مش هقدر اجي", "can't make it") -> intent "cancel", is_ambiguous true, alternatives ["cancel", "reschedule"], confidence at most 0.5.
 "answer_to_previous_question": it replies to the assistant's previous message.
 "changes_intent": the patient deliberately leaves the current flow (STATE.flow) for a different request.
