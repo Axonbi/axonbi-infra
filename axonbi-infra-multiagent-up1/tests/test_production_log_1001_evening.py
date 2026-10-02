@@ -135,3 +135,29 @@ def test_an_in_scope_message_is_not_handed_the_refusal_text(session_id, llm, rea
 
 def test_the_understanding_prompt_knows_a_bare_surname_and_seeing_an_appointment():
     assert '"المديفر"' in understanding.PROMPT and "ابي اعرف موعدي" in understanding.PROMPT
+
+
+def test_a_cancellation_asked_for_earlier_goes_ahead_whoever_holds_the_turn():
+    state = _cancel_call_state("concierge")
+    tools._get_booking_session(state["session_id"])["_cancel_requested"] = True
+    try:
+        assert graph._gated_tool_calls(state) == []
+    finally:
+        tools._BOOKING_SESSIONS.pop(state["session_id"], None)
+
+
+def test_the_router_records_a_cancel_request_but_not_a_yes_to_a_suggestion(session_id, llm, reader):
+    relaxed = patch.multiple(graph, _VERIFIERS_SAFETY_STRICT=False, _VERIFIERS_FLOW_STRICT=False)
+    reader.table["صح"] = {"intent": "cancel", "cancel_request": True, "confirms": True,
+                          "answer_to_previous_question": True}
+    llm._responses.append(AIMessage(content="تمام 🌷"))
+    with relaxed:
+        send(session_id, "صح")
+    assert not (tools._BOOKING_SESSIONS.get(session_id) or {}).get("_cancel_requested")
+
+    reader.table["ابي الغي موعدي"] = {"intent": "cancel", "cancel_request": True}
+    llm._responses.append(AIMessage(content="تحب تلغي الموعد برقم الجوال ولا برقم الحجز؟"))
+    with relaxed:
+        send(session_id, "ابي الغي موعدي")
+    assert tools._BOOKING_SESSIONS[session_id]["_cancel_requested"] is True
+    tools._BOOKING_SESSIONS.pop(session_id, None)
