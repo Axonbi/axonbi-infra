@@ -934,6 +934,13 @@ def compare_phone(
     # existing calls still validate; it is ignored.
     verified_channel = (state or {}).get("channel_phone") or ""
 
+    # No digits at all is not a number. CONFIRMED (tanasuq-production,
+    # 2026-10-01 13:43): "نعم" was passed in, became "+966نعم", and the
+    # patient was told their number "looks incomplete".
+    if not any(ch.isdigit() for ch in str(provided_phone or "")):
+        logger.info("compare_phone: %r carries no digits - not a phone number", provided_phone)
+        return {"status": "no_number_given"}
+
     a = normalize_phone_number(provided_phone, state)
     b = normalize_phone_number(verified_channel, state) if verified_channel else None
 
@@ -3684,8 +3691,9 @@ def _resolve_specialty_for_booking(state, specialty_text: str) -> list:
         if chosen.get("id"):
             return [{"id": chosen["id"], "name": chosen.get("name")}]
 
+    # Close matches only - see `_specialty_named_by`.
     match = _fuzzy_match(specialty_text, items, ["name"])
-    if match["result"] == "matched" and match["item"].get("id"):
+    if match["result"] == "matched" and match["item"].get("id") and match.get("score", 1.0) >= 0.8:
         return [{"id": match["item"]["id"], "name": match["item"].get("name")}]
 
     return []
@@ -3743,8 +3751,13 @@ def _specialty_named_by(state, base_url: str, text: str) -> Optional[dict]:
     if not items:
         return None
 
+    # A close match only. Deciding that a patient's words NAME a specialty
+    # turns their answer into a department - CONFIRMED (tanasuq-production,
+    # 2026-10-01 15:28): the patient's own name "حاتم العنزي" scored 0.63
+    # against "اخصائية اجتماعية", was taken as that specialty, and he was
+    # shown the social worker's profile. Real department words score 0.95+.
     match = _fuzzy_match(text, items, ["name"])
-    if match["result"] == "matched" and match["item"].get("id"):
+    if match["result"] == "matched" and match["item"].get("id") and match.get("score", 1.0) >= 0.8:
         return {"id": match["item"]["id"], "name": match["item"].get("name")}
 
     # SUBSTRING FALLBACK - THE PATIENT'S WORDING IS OFTEN A SENTENCE,
@@ -3988,6 +4001,33 @@ def _expand_specialty_ids(state, base_url: str, specialty_ids: list) -> list:
         return specialty_ids
 
 
+def _id_seen_in_tool_results(state, value: str) -> bool:
+    """`value` appears in a tool result of this conversation, or in the
+    session's remembered lists. True when there is no history to check."""
+
+    messages = (state or {}).get("messages") or []
+    if not messages:
+        return True
+    for msg in messages:
+        if getattr(msg, "type", None) == "tool" and value in str(getattr(msg, "content", "") or ""):
+            return True
+    session = _get_booking_session((state or {}).get("session_id"))
+    return value in str(session.get("last_list") or "") or value in str(session.get("specialty_ids") or "")
+
+
+def _clinic_has_specialty_id(state, base_url: str, value: str) -> bool:
+    """`value` is one of this clinic's specialty ids. True if the list
+    cannot be fetched - never drop a real id over a network error."""
+
+    try:
+        result = api.get_specialties(base_url, language=conversation_language(state))
+    except Exception:
+        return True
+    if not result.get("success"):
+        return True
+    return any(str(item.get("id")) == value for item in (result.get("data") or {}).get("items", []) or [])
+
+
 def _looks_like_a_specialty_id(value: str) -> bool:
     """Whether `value` is plausibly an ID rather than a name or a list
     position.
@@ -4065,6 +4105,14 @@ def _sanitize_specialty_ids(state, base_url: str, specialty_ids: list) -> tuple:
             continue
 
         if _looks_like_a_specialty_id(value):
+            # An id no tool ever returned is invented. CONFIRMED
+            # (tanasuq-production, 2026-10-01 17:04): "7f3a3a3a-7f3a-4a3a-
+            # 8a3a-7f3a3a3a3a3a" was searched for the surname "المديفر".
+            if not _id_seen_in_tool_results(state, value) and not _clinic_has_specialty_id(state, base_url, value):
+                unresolved.append(value)
+                logger.error("find_available_doctors: specialty id %r was never returned by a tool - "
+                             "an invented id, dropped", value)
+                continue
             if value not in clean:
                 clean.append(value)
             continue

@@ -65,7 +65,7 @@ TEST_FILES=(
   tests/test_decline_flow_control.py tests/test_phone_validation.py
   tests/test_english_fixed_texts.py tests/test_faq_answer_and_greeting.py
   tests/test_routing_followups.py
-  tests/test_production_log_1002.py
+  tests/test_production_log_1002.py tests/test_production_log_1001_evening.py
 )
 
 RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; DIM=$'\033[2m'; OFF=$'\033[0m'

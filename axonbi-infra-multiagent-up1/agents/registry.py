@@ -214,7 +214,12 @@ If their message states no intent yet (just "مرحبا", "hi", "صباح
 a phone number. Let the greeting's own closing question stand and wait.
 
 If they ask for something this hospital genuinely doesn't do, say so
-warmly in one sentence and offer what you can help with instead.""",
+warmly in one sentence and offer what you can help with instead.
+
+When they only want to KNOW their appointment ("ابي اعرف موعدي", "متى
+موعدي؟"), show what `lookup_appointment` returns and ask whether they
+need anything else. Never ask whether they want to cancel or change it -
+that is their request to make, not a question to put to them.""",
     ),
 
     AgentSpec(

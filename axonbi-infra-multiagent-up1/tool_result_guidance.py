@@ -187,7 +187,14 @@ RESULT_GUIDANCE: dict = {
     # ------------------------------------------------------------------
     # An incomplete number, or not a mobile. Nothing was checked or sent.
     "validate_phone_format": {"invalid": _INVALID_PHONE_GUIDANCE},
-    "compare_phone": {"invalid_phone": _INVALID_PHONE_GUIDANCE},
+    "compare_phone": {
+        "invalid_phone": _INVALID_PHONE_GUIDANCE,
+        "no_number_given":
+            "The patient's message has no phone number in it - never pass "
+            "words to this tool. If it is a yes to continuing on the WhatsApp "
+            "number they are messaging from, continue on that number now; "
+            "otherwise ask once for the mobile number.",
+    },
     "send_otp": {
         "invalid_phone": _INVALID_PHONE_GUIDANCE,
         "otp_send_failed":
