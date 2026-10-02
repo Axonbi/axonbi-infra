@@ -5244,8 +5244,10 @@ def _build_schedule_display_directive(messages: list) -> str:
 
     branch_blocks = []
     for index, branch in enumerate(branch_order):
+        # "د." - the doctor's gender is not in the data, and "الدكتور ندى"
+        # was sent for a female doctor (tanasuq-production, 2026-10-02).
         heading = (
-            f"مواعيد الدكتور {doctor_name} في فرع {branch}:"
+            f"مواعيد د. {doctor_name} في فرع {branch}:"
             if index == 0
             else f"وفي فرع {branch}:"
         )
@@ -8461,7 +8463,7 @@ _BOOKING_OFFER_RE = re.compile(
 
 _GENERIC_BRANCH_QUESTION_RE = re.compile(
     r"اي\s*فرع\s*(?:تفضل|تحب|تبي|ترغب)|"
-    r"في\s*انهي\s*فرع|"
+    r"في\s*(?:انهي|أنهي|اي|أي)\s*فرع|"
     r"(?:الفروع|فروع)\s*(?:ال)?متاح|"
     r"which\s*branch\s*(?:would|do)\s*you"
 )
@@ -10613,7 +10615,7 @@ _COMPLAINT_STOP_APOLOGY_RE = re.compile(
 )
 
 _ASKED_WHICH_DOCTOR_OR_BRANCH_RE = re.compile(
-    r"تحت\s*أي\s*دكتور\s*بالظبط|في\s*أنهي\s*فرع\s*بالظبط|"
+    r"تحت\s*(?:أي|اي)\s*دكتور\s*(?:بالظبط|بالضبط)|في\s*(?:أنهي|انهي|أي|اي)\s*فرع\s*(?:بالظبط|بالضبط)|"
     r"which\s*doctor\s*exactly|which\s*branch\s*exactly"
 )
 
@@ -18145,6 +18147,52 @@ def _otp_not_sent_correction(reply_text: str, state: AgentState,
 
 
 # ==========================================================
+# A SAUDI/GULF CLINIC'S REPLIES CARRY NO EGYPTIAN FIXED WORDING
+# ==========================================================
+#
+# Many fixed sentences in the prompts are written in Egyptian ("نكمل
+# الحجز على نفس رقم الواتساب ده؟", "حابب تحجز في أنهي فرع وأنهي يوم؟",
+# "معنديش فرع اسمه ...") and the model copies them word for word. In a
+# Saudi clinic the patient read them as written (tanasuq-production,
+# 2026-10-01/02). Only whole words are swapped, only for a clinic whose
+# dialect is Saudi/Gulf, and every check that reads a previous reply
+# accepts both forms.
+# Letters only - "؟" and "،" sit in the same Unicode block and must end a word.
+_ARABIC_LETTER = "\u0621-\u064A\u0671-\u06D3"
+_GULF_WORD_SWAPS = (
+    ("رقم الواتساب ده", "رقم الواتساب هذا"),
+    ("وأنهي", "وأي"), ("وانهي", "وأي"),
+    ("أنهي", "أي"), ("انهي", "أي"),
+    ("معنديش", "ما عندي"),
+    ("مفيش", "ما فيه"),
+    ("النهارده", "اليوم"),
+    ("دلوقتي", "الحين"),
+    ("إزاي", "كيف"), ("ازاي", "كيف"),
+    ("ده", "هذا"),
+)
+_GULF_WORD_RES = tuple(
+    (re.compile(f"(?<![{_ARABIC_LETTER}]){re.escape(old)}(?![{_ARABIC_LETTER}])"), new)
+    for old, new in _GULF_WORD_SWAPS
+)
+
+
+def _clinic_speaks_gulf(templates: Optional[dict]) -> bool:
+    dialect = str((templates or {}).get("_dialect_name") or "").strip().lower()
+    return any(word in dialect for word in ("saudi", "gulf", "khaleej"))
+
+
+def _localize_egyptian_wording_for_gulf(reply_text: str, state: AgentState) -> str:
+    if not isinstance(reply_text, str) or not reply_text:
+        return reply_text
+    if not _clinic_speaks_gulf(state.get("templates")):
+        return reply_text
+    text = reply_text
+    for pattern, new in _GULF_WORD_RES:
+        text = pattern.sub(new, text)
+    return text
+
+
+# ==========================================================
 # ENGLISH CONVERSATIONS GET THE ENGLISH FORM OF EVERY FIXED TEXT
 # ==========================================================
 #
@@ -21040,6 +21088,14 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                 "replaced it with the open step in code. Draft: %r", agent_name, response.content,
             )
             response = AIMessage(content=fixed)
+
+    # A SAUDI/GULF CLINIC GETS NO EGYPTIAN FIXED WORDING - see
+    # `_localize_egyptian_wording_for_gulf`.
+    if not has_tool_calls and target_language != "en":
+        gulf = _localize_egyptian_wording_for_gulf(response.content, state)
+        if gulf != response.content:
+            logger.info("agent[%s]: Egyptian fixed wording swapped for the clinic's Gulf dialect", agent_name)
+            response = AIMessage(content=gulf)
 
     # ENGLISH CONVERSATION, ENGLISH FIXED TEXTS - see
     # `_localize_fixed_texts_for_english`.

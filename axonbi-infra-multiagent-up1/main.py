@@ -88,14 +88,26 @@ def _duplicate_result(session_id: str, message: str, message_id: Optional[str],
     # while it was still being answered or within the window after - see
     # the 2026-09-22 incident note below (n8n posted one "اه" twice, the
     # second request AFTER the first had finished).
-    if last and last[0] == (message or "").strip() and arrived_at <= last[3] + DUPLICATE_MESSAGE_WINDOW_SECONDS:
-        return dict(last[2])
+    #
+    # MEASURED FROM THE FIRST COPY'S ARRIVAL, NOT FROM OUR ANSWER. A copy is
+    # a duplicate when it arrived before that answer existed, or within the
+    # window of the first copy's own arrival. Counting the window from the
+    # answer swallowed the patient's NEXT reply whenever it used the same
+    # word: "نعم" to "same WhatsApp number?" at 17:06:15, then "نعم" to the
+    # review card 9s after it appeared - returned the card again instead of
+    # booking (tanasuq-production, 2026-10-01; the same at 11:44:47 and
+    # 06:54:33 on 10-02).
+    if last and last[0] == (message or "").strip():
+        first_arrival = last[4] if len(last) > 4 and last[4] is not None else last[3]
+        if arrived_at <= last[3] or arrived_at <= first_arrival + DUPLICATE_MESSAGE_WINDOW_SECONDS:
+            return dict(last[2])
     return None
 
 
-def _remember_answer(session_id: str, message: str, message_id: Optional[str], result: Dict) -> None:
+def _remember_answer(session_id: str, message: str, message_id: Optional[str], result: Dict,
+                     arrived_at: Optional[float] = None) -> None:
     now = _now()
-    _last_answered[session_id] = ((message or "").strip(), message_id, dict(result), now)
+    _last_answered[session_id] = ((message or "").strip(), message_id, dict(result), now, arrived_at)
     if message_id:
         _answered_ids[(session_id, message_id)] = (dict(result), now)
         if len(_answered_ids) > 5000:
@@ -620,7 +632,7 @@ def send_message_with_signals(
             if signals["escalate"] or signals["location"]:
                 logger.info("session_id=%s: turn signals=%s", session_id, signals)
 
-            _remember_answer(session_id, message, message_id, {"reply": reply, **signals})
+            _remember_answer(session_id, message, message_id, {"reply": reply, **signals}, arrived_at)
 
     finally:
         # Whatever happened above, the turn is over: cancel any interim
