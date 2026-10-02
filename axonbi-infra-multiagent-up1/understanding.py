@@ -120,7 +120,7 @@ Return ONLY a JSON object with these keys:
 "asks_price": asks about a price, fee or cost.
 "asks_location": asks where a branch is, its address, map or location pin ("ارسلي اللوكيشن"), or which branch is nearest to a place.
 "about_this_hospital": only for intent "other" - true when it concerns THIS hospital although it is not patient care (a job, training, an interview, a supplier, administration); false when it has nothing to do with the hospital (a party, event tickets, food prices, general chat).
-"doctor_name": a doctor's PERSONAL name as used (or the doctor referred back to, e.g. "الدكتور اللي قولتي عليه"), else null. "دكتور نفسي" / "دكتور عيون" name a specialty.
+"doctor_name": a doctor's PERSONAL name as used - not the patient's own name ("الموعد لحاتم العنزي" names the patient) (or the doctor referred back to, e.g. "الدكتور اللي قولتي عليه"), else null. "دكتور نفسي" / "دكتور عيون" name a specialty.
 "specialty": the specialty, department or service referred to, in the patient's words, else null.
 "entities": {{"branch", "date", "time", "booking_reference", "phone", "service", "topic"}} - values this message gives, as written ("بكرة" stays "بكرة"), else null. "topic" only for a request outside patient care: 1-3 words naming it in the patient's language (e.g. "التدريب").
 "reason": at most 8 words, for internal logs.
@@ -129,6 +129,8 @@ Booleans default to false.
 EXAMPLES (the pattern, not the words - other keys omitted):
 - ASSISTANT: "هل تريد إلغاء الموعد؟" / PATIENT: "أكيد" -> {{"intent": "cancel", "answer_to_previous_question": true, "confirms": true, "cancel_confirmed": true}}
 - ASSISTANT: "تحب أدور لك على دكتور ثاني؟" / PATIENT: "لا" -> {{"intent": "answer", "answer_to_previous_question": true, "declines": true}}
+- ASSISTANT: "عندك دكتور أو تخصص معيّن في بالك؟" / PATIENT: "المديفر" -> {{"intent": "booking", "answer_to_previous_question": true, "doctor_name": "المديفر"}} (a bare name or surname answering "which doctor?" is a doctor, never a symptom)
+- nothing asked yet / PATIENT: "ابي اعرف موعدي" -> {{"intent": "answer", "cancel_request": false}} (seeing an appointment is not cancelling or moving it)
 - ASSISTANT: "تحب نجرب يوم ثاني؟" / PATIENT: "لا خلاص ثبت موعدي" -> {{"intent": "answer", "answer_to_previous_question": true, "declines": true, "confirms": false}}
 - ASSISTANT: "عندك دكتور أو تخصص معيّن؟" / PATIENT: "لا، زيارة مريض" -> {{"intent": "faq", "declines": true, "changes_intent": true, "about_this_hospital": true}}
 - nothing asked yet / PATIENT: "مش هقدر احضر الموعد" -> {{"intent": "cancel", "is_ambiguous": true, "alternatives": ["cancel", "reschedule"], "confidence": 0.5, "declines": false}}

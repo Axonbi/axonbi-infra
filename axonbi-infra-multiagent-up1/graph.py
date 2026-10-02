@@ -16628,6 +16628,18 @@ def _build_out_of_scope_block(templates: dict, language: str = "ar") -> str:
     )
 
 
+_IN_SCOPE_DIRECTIVE = (
+    "============================================================\n"
+    "THIS MESSAGE IS ABOUT THE HOSPITAL - ANSWER IT\n"
+    "============================================================\n"
+    "The turn's reading places this message inside the hospital's own "
+    "services. Answer it, or ask the one question that moves it forward. "
+    "Never reply with a refusal or a list of what you can help with. If "
+    "you genuinely cannot tell what they mean, ask them in one short "
+    "question, in the conversation's language.\n"
+)
+
+
 def _build_scope_directive(templates: dict, language: str = "ar") -> str:
     """Always present, deliberately short.
 
@@ -18259,6 +18271,36 @@ def _reply_asks_same_number_before_booking_ready(reply_text: str, state: AgentSt
         return False
 
     return True
+
+
+def _premature_same_number_fix(reply_text: str, state: AgentState,
+                               target_language: Optional[str] = None) -> Optional[str]:
+    """The reply with STEP NB6's question taken out and the step the
+    booking is really on put back, in code; None when there is nothing
+    safe to put back. CONFIRMED (tanasuq-production, 2026-10-01 17:05):
+    the nearest day was shown with "نكمل الحجز على نفس رقم الواتساب ده؟",
+    the correction failed twice, and the reply went out - the patient's
+    "نعم" then led nowhere and the times had to be shown again."""
+
+    if not _reply_asks_same_number_before_booking_ready(reply_text, state):
+        return None
+    kept = [line for line in reply_text.splitlines()
+            if not _NEW_BOOKING_SAME_NUMBER_QUESTION_RE.search(_norm_ar(line))]
+    body = "\n".join(kept).strip()
+    session = tools._BOOKING_SESSIONS.get(state.get("session_id") or "") or {}
+    last_list = session.get("last_list") or {}
+    items = last_list.get("items") or []
+    english = (target_language or "").startswith("en")
+    if last_list.get("entity_type") == "slot" and items:
+        times = [str(item.get("time_display") or "").strip() for item in items]
+        question = "Which number or time suits you?" if english else "أي رقم أو وقت تفضل؟"
+        if all(t and t in body for t in times):
+            return f"{body}\n{question}".strip()
+        listed = "\n".join(f"{_numbered_prefix(i + 1)} {t}".rstrip() for i, t in enumerate(times))
+        return f"{body}\n{listed}\n{question}".strip()
+    if last_list.get("entity_type") == "day" and items and body:
+        return f"{body}\n{'Which day suits you?' if english else 'أي يوم يناسبك؟'}"
+    return None
 
 
 _PREMATURE_SAME_NUMBER_CORRECTION_DIRECTIVE = (
@@ -19932,9 +19974,20 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     branch_question_directive = _build_branch_question_directive(
         state["messages"], state.get("session_id"), agent_name,
     )
-    scope_directive = _build_scope_directive(
-        state.get("templates") or {}, target_language or "ar",
-    )
+    # THE REFUSAL TEXT ONLY WHEN THE READING SAYS "OUTSIDE PATIENT CARE".
+    # The router already answers those in code; a specialist holding the
+    # turn for an in-scope message was still handed the exact refusal "to
+    # copy for anything else", and copied it - for "مواعيد الزياره", "عمر
+    # المدير", "عند موعد من زمان حاجزينه", "بغيت تشوفين اخر موعد لي" and a
+    # plain "السلام عليكم" (tanasuq-production, 2026-10-01/02), each time
+    # with two failed corrections behind it.
+    reading_now = state.get("understanding")
+    if reading_now is None or reading_now.get("intent") == "other":
+        scope_directive = _build_scope_directive(
+            state.get("templates") or {}, target_language or "ar",
+        )
+    else:
+        scope_directive = _IN_SCOPE_DIRECTIVE
 
     # THE EVIDENCE LEDGER - the same block for every specialist, so what
     # this conversation has established does not depend on who is
@@ -20969,6 +21022,18 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                 "sending the fixed not-sent reply instead. Draft: %r", agent_name, response.content,
             )
             response = AIMessage(content=corrected)
+
+    # NO "SAME WHATSAPP NUMBER?" BEFORE A TIME IS PICKED - see
+    # `_premature_same_number_fix`. After the verifiers, so what goes out is
+    # the step the booking is really on.
+    if not has_tool_calls and agent_name in ("booking", "concierge", "faq"):
+        fixed = _premature_same_number_fix(response.content, state, target_language)
+        if fixed and fixed != response.content:
+            logger.warning(
+                "agent[%s]: draft asked the same-number question with no time picked - "
+                "replaced it with the open step in code. Draft: %r", agent_name, response.content,
+            )
+            response = AIMessage(content=fixed)
 
     # ENGLISH CONVERSATION, ENGLISH FIXED TEXTS - see
     # `_localize_fixed_texts_for_english`.
@@ -22236,6 +22301,29 @@ _NOT_AT_PHONE_STEP_PAYLOAD = {
 }
 
 
+# AN APPOINTMENT IS CANCELLED ONLY WHEN THE PATIENT ASKED FOR IT.
+# CONFIRMED (tanasuq-production, 2026-10-01 15:17): "ابي اعرف موعدي" ->
+# the concierge looked the appointment up and asked "هذا هو موعدك الذي
+# تبغى تلغيه؟" -> "صح" -> cancelled. The patient had only asked to SEE it,
+# and complained that evening that the AI cancelled his appointment.
+# A cancellation needs the cancel (or reschedule) flow to have owned an
+# earlier turn - a request made before the yes, not a yes to the
+# assistant's own suggestion.
+_CANCEL_NOT_ASKED_PAYLOAD = {
+    "status": "cancellation_not_requested",
+    "message": (
+        "Not run - nothing was cancelled. The patient has not asked to cancel "
+        "in this conversation; the cancellation was the assistant's suggestion. "
+        "Ask them plainly whether they want to CANCEL this appointment (name "
+        "the doctor, date and time), and cancel only after they say yes to that."
+    ),
+}
+
+
+def _cancellation_was_requested(state: AgentState) -> bool:
+    return state.get("previous_agent") in ("cancel", "reschedule")
+
+
 def _gated_tool_calls(state: AgentState) -> list:
     """`(tool_call, payload)` for each call in the last AIMessage that one
     of the action gates above stops. Pure state checks - no model call."""
@@ -22248,6 +22336,11 @@ def _gated_tool_calls(state: AgentState) -> list:
     gated = []
     if state.get("turn_action") == agents.semantic_router.ACTION_DECLINE:
         gated = [(tc, _DECLINED_PAYLOAD) for tc in calls if tc.get("name") in _DECLINE_BLOCKED_TOOLS]
+
+    if not _cancellation_was_requested(state):
+        already = {tc.get("id") for tc, _ in gated}
+        gated += [(tc, _CANCEL_NOT_ASKED_PAYLOAD) for tc in calls
+                  if tc.get("name") == "cancel_appointment" and tc.get("id") not in already]
 
     if state.get("active_agent") == "booking":
         session = tools._BOOKING_SESSIONS.get(state.get("session_id") or "") or {}

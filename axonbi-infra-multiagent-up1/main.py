@@ -391,6 +391,9 @@ def send_message(client_id: str, session_id: str, message: str, channel_phone: s
     )["reply"]
 
 
+_REACTION_PLACEHOLDERS = frozenset(("[reaction]",))
+
+
 def send_message_with_signals(
     client_id: str, session_id: str, message: str, channel_phone: str = None,
     bsuid: str = None, client_config: dict = None, message_id: str = None,
@@ -424,6 +427,16 @@ def send_message_with_signals(
 
     arrived_at = _now()
     logger.info("session_id=%s: sending message", session_id)
+
+    # A WhatsApp REACTION (👍 on one of our messages) reaches us as the
+    # placeholder "[reaction]". It says nothing to answer. CONFIRMED
+    # (tanasuq-production, 2026-10-01 16:11): one was read as an ambiguous
+    # request in English and got the English welcome plus "do you mean
+    # booking, changing or cancelling?". Answered in code, no model, no
+    # change to the conversation.
+    if (message or "").strip().lower() in _REACTION_PLACEHOLDERS:
+        logger.info("session_id=%s: a reaction, not a message - fixed acknowledgement", session_id)
+        return {"reply": "🌷", "escalate": False, "location": False, "branch_name": None}
 
     # Bracket the whole turn for progress.py. begin_turn arms nothing by
     # itself - it just marks that a turn is now in flight, so the timer
