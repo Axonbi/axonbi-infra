@@ -157,8 +157,16 @@ def test_a_location_question_carries_the_real_addresses(tmp_path):
 
 def test_a_salam_inside_a_flow_returns_the_open_question():
     reply = graph._greeting_inside_a_flow_reply(
-        "السلام عليكم ورحمة الله وبركاته", "مواعيد الدكتور في فرع النزهة:\nتحب تحجز في أي يوم؟", "ar")
+        "السلام عليكم ورحمة الله وبركاته", "تحب تحجز في أي يوم؟", "ar")
     assert reply == "وعليكم السلام 🌷\nتحب تحجز في أي يوم؟"
+
+
+def test_a_salam_over_a_card_sends_the_whole_card_back():
+    # The gates read the reply right before the patient's yes - a lone
+    # closing question there held the booking back a turn.
+    card = "يرجى مراجعة بيانات الحجز:\n🏥 الفرع: المنار\n✅ هل جميع البيانات صحيحة وتود تأكيد الحجز؟"
+    reply = graph._greeting_inside_a_flow_reply("السلام عليكم", card, "ar")
+    assert reply == "وعليكم السلام 🌷\n" + card
 
 
 def test_thanks_with_a_question_open_is_left_to_the_model():

@@ -4542,7 +4542,13 @@ def _greeting_inside_a_flow_reply(text: str, last_ai_reply: str,
     kind = _later_greeting_kind(text)
     if kind == "thanks":
         return None
-    return _GREETING_ACKNOWLEDGEMENT[lang][kind] + "\n" + pending
+    # A card or a list goes back WHOLE, not just its closing question: the
+    # gates read the reply right before the patient's yes. With only
+    # "✅ هل جميع البيانات صحيحة...؟" sent back, the "نعم" that followed
+    # found no review card there and the booking was held back a turn.
+    lines = [line for line in (last_ai_reply or "").splitlines() if line.strip()]
+    repeat = last_ai_reply.strip() if len(lines) > 1 else pending
+    return _GREETING_ACKNOWLEDGEMENT[lang][kind] + "\n" + repeat
 
 
 def _is_bare_first_greeting(state: AgentState, target_language: Optional[str]) -> bool:
@@ -21311,6 +21317,12 @@ def router(state: AgentState) -> dict:
         # When booking last had the conversation - what tells a short
         # detour from a booking left behind (see the function above).
         tools._get_booking_session(state["session_id"])["_booking_turn"] = patient_turn
+    # The patient ASKED to cancel - in their own words, not as a yes to a
+    # cancellation the assistant suggested. What `_cancellation_was_requested`
+    # reads, whichever specialist later holds the turn.
+    if (reading and reading.get("cancel_request") and not reading.get("confirms")
+            and state.get("session_id")):
+        tools._get_booking_session(state["session_id"])["_cancel_requested"] = True
 
     if chosen != previous:
         logger.info(
@@ -22321,7 +22333,15 @@ _CANCEL_NOT_ASKED_PAYLOAD = {
 
 
 def _cancellation_was_requested(state: AgentState) -> bool:
-    return state.get("previous_agent") in ("cancel", "reschedule")
+    """The patient asked to cancel in their own words at some point in this
+    conversation (recorded by the router), or the cancel/reschedule flow
+    owned the previous turn. A yes to the assistant's own suggestion is
+    neither."""
+
+    if state.get("previous_agent") in ("cancel", "reschedule"):
+        return True
+    session = tools._BOOKING_SESSIONS.get(state.get("session_id") or "") or {}
+    return bool(session.get("_cancel_requested"))
 
 
 def _gated_tool_calls(state: AgentState) -> list:
