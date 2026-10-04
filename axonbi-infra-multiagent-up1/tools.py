@@ -10692,7 +10692,47 @@ def get_doctor_schedule_for_booking(
             "schedule unmarked rather than failing the whole lookup"
         )
 
-    return {"status": "found", "schedules": schedules}
+    return {"status": "found", "schedules": _merge_schedule_periods(schedules)}
+
+
+def _merge_schedule_periods(schedules: list) -> list:
+    """One row per branch/day/hours, each branch's rows together.
+
+    A clinic publishes the same rota again for the next period, so one
+    doctor can have two identical Wednesday rows at one branch that differ
+    only in their validity dates. CONFIRMED (tanasuq-production 2026-10-04
+    10:13): د. عمر المديفر's reply listed فرع النزهة twice, with المنار in
+    between. Rows are merged only when everything shown is the same (days,
+    hours, service, fully-booked flag); the merged row runs from the
+    earliest start to the latest end."""
+
+    def _time(value) -> str:
+        return str(value or "")[11:16]
+
+    merged: list = []
+    index: dict = {}
+    for row in schedules:
+        key = (
+            row.get("branchId"), tuple(sorted(row.get("recurringDaysNames") or [])),
+            _time(row.get("fromDateTime")), _time(row.get("toDateTime")),
+            row.get("serviceName"), bool(row.get("fully_booked")),
+        )
+        if key not in index:
+            index[key] = len(merged)
+            merged.append(dict(row))
+            continue
+        kept = merged[index[key]]
+        if str(row.get("fromDateTime") or "") < str(kept.get("fromDateTime") or ""):
+            kept["fromDateTime"] = row.get("fromDateTime")
+            kept["effectiveFrom"] = row.get("effectiveFrom")
+        if str(row.get("toDateTime") or "") > str(kept.get("toDateTime") or ""):
+            kept["toDateTime"] = row.get("toDateTime")
+
+    branch_order: list = []
+    for row in merged:
+        if row.get("branchId") not in branch_order:
+            branch_order.append(row.get("branchId"))
+    return sorted(merged, key=lambda r: branch_order.index(r.get("branchId")))
 
 
 @tool

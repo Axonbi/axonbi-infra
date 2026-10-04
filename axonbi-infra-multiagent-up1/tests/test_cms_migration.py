@@ -320,3 +320,37 @@ def test_with_no_portal_an_empty_list_stays_a_success(wire):
     wire.answers = [_page([])]
     result = api.get_specialties(CMS)
     assert result["success"] and result["data"]["items"] == []
+
+
+# ----------------------------------------------------------------------
+# The same rota published for two periods is one row
+# (tanasuq-production 2026-10-04 10:13: فرع النزهة listed twice)
+# ----------------------------------------------------------------------
+
+def test_two_periods_of_one_rota_become_one_row_and_branches_stay_together():
+    import tools as _tools
+    rows = [
+        {"branchId": "nozha", "branchName": "النزهة", "recurringDaysNames": ["Wednesday"],
+         "fromDateTime": "2026-12-01T16:00:00", "toDateTime": "2027-03-31T18:00:00", "serviceName": "جلسة"},
+        {"branchId": "manar", "branchName": "المنار", "recurringDaysNames": ["Monday"],
+         "fromDateTime": "2026-10-01T16:00:00", "toDateTime": "2027-01-30T18:00:00", "serviceName": "جلسة"},
+        {"branchId": "nozha", "branchName": "النزهة", "recurringDaysNames": ["Wednesday"],
+         "fromDateTime": "2026-09-01T16:00:00", "toDateTime": "2026-11-30T18:00:00", "serviceName": "جلسة"},
+        {"branchId": "nozha", "branchName": "النزهة", "recurringDaysNames": ["Saturday"],
+         "fromDateTime": "2026-09-01T10:00:00", "toDateTime": "2026-11-30T12:00:00", "serviceName": "جلسة"},
+    ]
+    merged = _tools._merge_schedule_periods(rows)
+    assert [(r["branchId"], r["recurringDaysNames"][0]) for r in merged] == [
+        ("nozha", "Wednesday"), ("nozha", "Saturday"), ("manar", "Monday")]
+    assert merged[0]["fromDateTime"] == "2026-09-01T16:00:00" and merged[0]["toDateTime"] == "2027-03-31T18:00:00"
+
+
+def test_rows_with_different_hours_are_not_merged():
+    import tools as _tools
+    rows = [
+        {"branchId": "b", "recurringDaysNames": ["Monday"], "fromDateTime": "2026-10-01T16:00:00",
+         "toDateTime": "2026-11-30T18:00:00"},
+        {"branchId": "b", "recurringDaysNames": ["Monday"], "fromDateTime": "2026-12-01T17:00:00",
+         "toDateTime": "2027-01-30T20:00:00"},
+    ]
+    assert len(_tools._merge_schedule_periods(rows)) == 2
