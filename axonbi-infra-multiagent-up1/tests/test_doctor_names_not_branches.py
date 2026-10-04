@@ -61,3 +61,38 @@ def test_the_reply_is_told_never_to_deny_a_branch_for_doctors():
 
 def test_the_understanding_prompt_has_the_example():
     assert "اصيلا والعنود" in understanding.PROMPT
+
+
+# ----------------------------------------------------------------------
+# Several doctors in one message (17:36: "هل تقصد د. اصيلا الحسن؟" only)
+# ----------------------------------------------------------------------
+
+def _doctor_lookup(text, doctors=_DOCTORS):
+    state = {"session_id": "doctor-names-several", "templates": {"_doctors_base_url": "https://x.test"},
+             "messages": []}
+    try:
+        with patch.object(tools.api, "get_doctors", return_value=doctors):
+            return tools.match_entity_info.func(state=state, user_input=text, entity_type="doctor")
+    finally:
+        tools._BOOKING_SESSIONS.pop("doctor-names-several", None)
+
+
+def test_two_doctors_in_one_message_are_both_returned():
+    result = _doctor_lookup("اصيلا والعنود")
+    assert result["status"] == "several_doctors"
+    assert [d["formatedName"] for d in result["doctors"]] == ["اصيلا الحسن", "العنود الخليفة"]
+
+
+def test_one_doctor_is_unchanged():
+    assert _doctor_lookup("العنود الخليفه")["status"] == "matched"
+
+
+def test_one_shared_first_name_is_still_which_one():
+    doctors = {"success": True, "data": {"items": [
+        {"id": "n1", "formatedName": "نورة العتيبي"}, {"id": "n2", "formatedName": "نورة الماضي"}]}}
+    assert _doctor_lookup("نورة", doctors)["status"] != "several_doctors"
+
+
+def test_the_reply_is_told_to_answer_about_each():
+    text = guidance_for("match_entity_info", {"status": "several_doctors", "doctors": []})
+    assert text and "EACH" in text

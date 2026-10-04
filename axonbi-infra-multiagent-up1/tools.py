@@ -6732,7 +6732,7 @@ def _is_generic_doctor_phrase(text: Optional[str]) -> bool:
     return bool(words) and all(w in _GENERIC_DOCTOR_WORDS for w in words)
 
 
-def _doctors_named_in(state: AgentState, base_url: str, text: str) -> list:
+def _doctors_named_in(state: AgentState, base_url: str, text: str, items: Optional[list] = None) -> list:
     """The clinic's doctors that the words of `text` name, each word fuzzy-
     matched against the real doctor list at a near-exact score (first
     names included: "اصيلا" -> اصيلا الحسن). A joining "و" ("والعنود") is
@@ -6747,15 +6747,16 @@ def _doctors_named_in(state: AgentState, base_url: str, text: str) -> list:
                 candidates.append(word[1:])
     if not candidates:
         return []
-    try:
-        result = api.get_doctors(base_url, page_size=200, has_service_schedule=None,
-                                 language=conversation_language(state))
-    except Exception:  # noqa: BLE001 - a lookup aid, never a reason to fail the turn
-        logger.exception("_doctors_named_in: doctor list failed")
-        return []
-    if not result.get("success"):
-        return []
-    items = (result.get("data") or {}).get("items") or []
+    if items is None:
+        try:
+            result = api.get_doctors(base_url, page_size=200, has_service_schedule=None,
+                                     language=conversation_language(state))
+        except Exception:  # noqa: BLE001 - a lookup aid, never a reason to fail the turn
+            logger.exception("_doctors_named_in: doctor list failed")
+            return []
+        if not result.get("success"):
+            return []
+        items = (result.get("data") or {}).get("items") or []
     found, seen = [], set()
     for word in candidates:
         match = _fuzzy_match(word, items, ["formatedName", "altName", "name"])
@@ -7082,6 +7083,22 @@ def match_entity_info(
                 # false "not_matched" out of a transient error.
                 if narrowed:
                     match_candidates = narrowed
+
+    # SEVERAL DOCTORS IN ONE MESSAGE. "ابغى اعرف عن اصيلا والعنود" as one
+    # string matches only the first name, weakly (0.78), and came back as
+    # "هل تقصد د. اصيلا الحسن؟" - the second doctor dropped (tanasuq-
+    # production 2026-10-04 17:36). Each named doctor is returned instead.
+    if entity_type == "doctor":
+        several = _doctors_named_in(state, base_url, user_input, items=items)
+        # Two WORDS that each name a doctor - one shared first name ("نورة")
+        # stays the existing "which one?" question.
+        naming_words = [w for w in str(user_input or "").split()
+                        if _doctors_named_in(state, base_url, w, items=items)] if len(several) >= 2 else []
+        if len(several) >= 2 and len(naming_words) >= 2:
+            logger.info("match_entity_info: %r names %d doctors - returning all of them",
+                        user_input, len(several))
+            _remember_list(state, "doctor", several)
+            return {"status": "several_doctors", "doctors": several}
 
     match_result = _fuzzy_match(user_input, match_candidates, name_keys)
     logger.info(
