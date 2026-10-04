@@ -28,6 +28,7 @@ from langchain_core.messages import HumanMessage
 from config import DUPLICATE_MESSAGE_WINDOW_SECONDS, GRAPH_RECURSION_LIMIT, MESSAGE_ID_MEMORY_SECONDS, POST_SUCCESS_TIMEOUT_SECONDS, SESSION_TIMEOUT_SECONDS, THREAD_ID_PREFIX, configure_logging, get_messages
 from graph import graph, soft_recovery_reply, upstream_api_failed
 
+import conversation_store
 import llm_usage
 import progress
 import tools
@@ -512,10 +513,11 @@ def send_message_with_signals(
                 state["target_language"] = None
 
             usage_token = llm_usage.start_turn()
+            turn_usage = None
             try:
                 result = graph.invoke(state, config=thread_config)
             finally:
-                llm_usage.end_turn(usage_token, session_id=session_id)
+                turn_usage = llm_usage.end_turn(usage_token, session_id=session_id)
 
             # End the turn for progress.py IMMEDIATELY once the real
             # answer exists - not only in the `finally` block below.
@@ -633,6 +635,16 @@ def send_message_with_signals(
                 logger.info("session_id=%s: turn signals=%s", session_id, signals)
 
             _remember_answer(session_id, message, message_id, {"reply": reply, **signals}, arrived_at)
+
+            # ONE SUMMARY ROW PER CONVERSATION - see conversation_store.
+            # Off unless DATABASE_URL is set; never raises, never waits.
+            conversation_store.record_turn(
+                client_id=client_id, session_id=session_id,
+                conversation_id=thread_config["configurable"]["thread_id"],
+                phone=channel_phone, result=result, new_messages=new_messages_this_turn,
+                booking_session=tools._BOOKING_SESSIONS.get(session_id),
+                usage=turn_usage, escalated=signals["escalate"],
+            )
 
     finally:
         # Whatever happened above, the turn is over: cancel any interim
