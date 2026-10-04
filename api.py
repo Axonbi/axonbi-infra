@@ -20,6 +20,7 @@ need a try/except around a tool call.
 import logging
 import threading
 import time
+from datetime import datetime, timedelta
 from typing import Optional
 
 import requests
@@ -1051,17 +1052,57 @@ def _cms_bookable_slots(base_url: str, payload: dict, language: Optional[str]) -
     hides slots inside the clinic's lead-time cutoff, like the website.
     Asked with pageSize 0 (the date range bounds it), sorted by slotStart
     here, and slots at the doctor's daily capacity are dropped - a patient
-    cannot book them."""
+    cannot book them.
 
-    result = _cms_request(
-        "post", base_url, "/api/Doctors/GetBookableScheduleSlots", language=language,
-        sso=_cms_sso_for(base_url), json={**payload, "pageNumber": 1, "pageSize": 0},
-    )
-    if result["success"] and isinstance(result.get("data"), dict):
-        items = [i for i in (result["data"].get("items") or []) if not i.get("isAtDailyCapacity")]
-        items.sort(key=lambda i: str(i.get("slotStart") or ""))
-        result["data"] = {**result["data"], "items": items, "totalCount": len(items), "hasNextPage": False}
+    AT MOST 31 DAYS PER REQUEST. cms-api refuses an unpaginated range
+    longer than that ("The requested date range cannot exceed 31 days when
+    requesting unpaginated results", tanasuq-production 2026-10-04 10:14),
+    and the day lookups ask for ~6 weeks - so a longer range is asked in
+    pieces and merged."""
+
+    items: list = []
+    seen: set = set()
+    result = None
+    for start, end in _date_windows(payload.get("fromDate"), payload.get("toDate")):
+        result = _cms_request(
+            "post", base_url, "/api/Doctors/GetBookableScheduleSlots", language=language,
+            sso=_cms_sso_for(base_url),
+            json={**payload, "fromDate": start, "toDate": end, "pageNumber": 1, "pageSize": 0},
+        )
+        if not result["success"] or not isinstance(result.get("data"), dict):
+            return result
+        for item in result["data"].get("items") or []:
+            key = (item.get("slotStart"), item.get("doctorId"), item.get("branchId"), item.get("scheduleId"))
+            if key in seen or item.get("isAtDailyCapacity"):
+                continue
+            seen.add(key)
+            items.append(item)
+    items.sort(key=lambda i: str(i.get("slotStart") or ""))
+    result["data"] = {**result["data"], "items": items, "totalCount": len(items), "hasNextPage": False}
     return result
+
+
+_SLOT_WINDOW = timedelta(days=30)
+
+
+def _date_windows(from_date, to_date) -> list:
+    """[from, to] split into consecutive windows of at most 30 days, in the
+    same ISO style it came in. Anything unparsable goes as one window -
+    the API then says what is wrong with it."""
+
+    try:
+        start = datetime.fromisoformat(str(from_date).replace("Z", "+00:00"))
+        end = datetime.fromisoformat(str(to_date).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return [(from_date, to_date)]
+    if end - start <= _SLOT_WINDOW:
+        return [(from_date, to_date)]
+    windows = []
+    while start < end:
+        stop = min(start + _SLOT_WINDOW, end)
+        windows.append((start.isoformat(), stop.isoformat()))
+        start = stop
+    return windows
 
 
 def get_doctor_fees(
