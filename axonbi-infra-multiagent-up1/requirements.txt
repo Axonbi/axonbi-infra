@@ -46,8 +46,3 @@ python-dotenv>=1.0.0
 langgraph-cli[inmem]>=0.4.31
 langsmith>=0.11.1
 langgraph-sdk>=0.4.3
-
-# Conversation summaries in PostgreSQL (conversation_store.py). Only used
-# when DATABASE_URL is set; without it - or without this package - the
-# summaries are simply off.
-psycopg[binary]>=3.1
