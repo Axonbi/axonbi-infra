@@ -302,7 +302,8 @@ def get_bookings_by_phone(
     (e.g. [1, 2] for New+Confirmed). tools.py's _filter_active still runs
     afterwards as a second layer."""
 
-    payload = {"pageNumber": 1, "pageSize": page_size, "patientMobile": phone}
+    # cms-api: pageSize 100 or less (the guide, conventions).
+    payload = {"pageNumber": 1, "pageSize": min(page_size, _CMS_MAX_PAGE_SIZE), "patientMobile": phone}
     if status_list:
         payload["statusList"] = status_list
 
@@ -358,9 +359,99 @@ def _post_bookings(url: str, payload: dict, language: Optional[str], client_id: 
     return _result(True, response.status_code, data=body.get("data", {}))
 
 
-def _cms_request(method: str, base_url: Optional[str], path: str, language: Optional[str] = None, sso: Optional[dict] = None, **kwargs) -> dict:
+# ==========================================================
+# cms-api for EVERYTHING (Catalyst CMS API - AI Booking Integration
+# Guide v1.2, 2026-10-03)
+# ==========================================================
+#
+# portal-api routes for the assistant are being retired: the catalogue,
+# bookable slots and the reservation move to cms-api with the clinic's
+# token. A clinic is moved when its config names its cms host (config
+# `_booking_on_cms`); tools register that host here with the clinic's SSO
+# account, and every catalogue function below routes a registered host to
+# cms-api. Any other base URL keeps the old portal-api path untouched.
+_CMS_HOSTS: dict = {}
+_CMS_MAX_PAGE_SIZE = 100   # the guide: pageSize 100 or less, follow hasNextPage
+_CMS_MAX_PAGES = 20
+
+
+_CMS_PORTAL_FALLBACK: dict = {}
+
+
+def register_cms_host(base_url: Optional[str], sso: Optional[dict], portal_url: Optional[str] = None) -> None:
+    if base_url:
+        _CMS_HOSTS[base_url.rstrip("/")] = dict(sso or {})
+        if portal_url and portal_url.rstrip("/") != base_url.rstrip("/"):
+            _CMS_PORTAL_FALLBACK[base_url.rstrip("/")] = portal_url.rstrip("/")
+
+
+# A CALL cms-api REFUSES FOR ACCESS GOES TO portal-api - while portal-api
+# still serves it. The integration account needs one permission per
+# endpoint (the guide, section 2); a missing one is a 403 on that endpoint
+# alone, and without this the whole catalogue - and every booking - would
+# stop on it. Only access/route errors fall back: a validation error, a
+# refused slot or a timeout is the answer, not a reason to ask elsewhere.
+_FALLBACK_ERRORS = ("authentication_error", "endpoint_not_found", "not_configured")
+
+
+def _cms_first(base_url: str, cms_call, portal_call, what: str, fallback_errors=_FALLBACK_ERRORS) -> dict:
+    result = cms_call()
+    if result["success"] or result.get("error") not in fallback_errors:
+        return result
+    portal = _CMS_PORTAL_FALLBACK.get((base_url or "").rstrip("/"))
+    if not portal:
+        return result
+    logger.error(
+        "cms-api refused %s (status=%s error=%s) - ASK CATALYST for this endpoint's permission; "
+        "served from portal-api %s for now", what, result.get("status_code"), result.get("error"), portal,
+    )
+    return portal_call(portal)
+
+
+def _cms_sso_for(base_url: Optional[str]) -> Optional[dict]:
+    """The SSO account for a registered cms host, or None for portal-api."""
+    return _CMS_HOSTS.get((base_url or "").rstrip("/"))
+
+
+def _cms_list(base_url: str, path: str, payload: dict, language: Optional[str] = None) -> dict:
+    """A paged cms-api list, every page merged into one `items` list - the
+    shape the portal-api calls returned with one big page."""
+
+    sso = _cms_sso_for(base_url)
+    size = min(int(payload.get("pageSize") or _CMS_MAX_PAGE_SIZE), _CMS_MAX_PAGE_SIZE)
+    items: list = []
+    last = None
+    for page in range(1, _CMS_MAX_PAGES + 1):
+        result = _cms_request("post", base_url, path, language=language, sso=sso,
+                              json={**payload, "pageNumber": page, "pageSize": size})
+        if not result["success"] or not isinstance(result.get("data"), dict):
+            return result
+        data = result["data"]
+        items.extend(data.get("items") or [])
+        last = result
+        if not data.get("hasNextPage"):
+            break
+    last["data"] = {**last["data"], "items": items, "totalCount": len(items), "hasNextPage": False}
+    return last
+
+
+def _request_once(method: str, url: str, **kwargs):
+    """One attempt, same return shape as `_request_with_retry`."""
+    try:
+        return requests.request(method, url, timeout=REQUEST_TIMEOUT_SECONDS, **kwargs), False, None
+    except requests.Timeout:
+        return None, True, None
+    except requests.RequestException as exc:
+        return None, False, exc
+
+
+def _cms_request(method: str, base_url: Optional[str], path: str, language: Optional[str] = None, sso: Optional[dict] = None, retry: bool = True, **kwargs) -> dict:
     """GET/POST to cms-api with the SSO bearer token. A 401 means the
-    token expired early or was revoked: log in again once and retry."""
+    token expired early or was revoked: log in again once and retry.
+
+    `retry=False` sends the request once - no timeout/5xx retries. The
+    Reservation must never be retried automatically (the guide, 4.3): a
+    timed-out reservation may have been made."""
 
     if not base_url:
         logger.error("cms-api base URL is not configured (CMS_API_BASE_URL / cms_base_url) - cannot call %s", path)
@@ -378,7 +469,10 @@ def _cms_request(method: str, base_url: Optional[str], path: str, language: Opti
         headers["Authorization"] = f"Bearer {token}"
 
         logger.debug("%s %s %s", method.upper(), url, kwargs)
-        response, last_timeout, last_exc = _request_with_retry(method, url, headers=headers, **kwargs)
+        if retry:
+            response, last_timeout, last_exc = _request_with_retry(method, url, headers=headers, **kwargs)
+        else:
+            response, last_timeout, last_exc = _request_once(method, url, headers=headers, **kwargs)
         if response is None or response.status_code != 401:
             break
 
@@ -677,6 +771,9 @@ def get_specialties(base_url: str, page_size: int = 200, client_id: Optional[str
     # default and is rejected at runtime with a 500.
     payload = {"pageNumber": 1, "pageSize": page_size}
 
+    if _cms_sso_for(base_url) is not None:
+        return _cms_first(base_url, lambda: _cms_list(base_url, "/api/Specialties/GetList", payload, language),
+                          lambda portal: get_specialties(portal, page_size, client_id, language), "Specialties/GetList")
     return _post_json(url, payload, client_id=client_id, language=language)
 
 
@@ -750,6 +847,14 @@ def get_doctors(
     if intersection_end:
         payload["intersectionEnd"] = intersection_end
 
+    if _cms_sso_for(base_url) is not None:
+        # cms-api also serves clinic staff: without this it returns
+        # doctors with no published service (the guide, 6.2).
+        cms_payload = {**payload, "hasPublishedService": True}
+        return _cms_first(
+            base_url, lambda: _cms_list(base_url, "/api/Doctors/GetList", cms_payload, language),
+            lambda portal: _post_json(f"{portal}/api/Doctors/GetList", payload, client_id=client_id, language=language),
+            "Doctors/GetList")
     return _post_json(url, payload, client_id=client_id, language=language)
 
 
@@ -780,6 +885,10 @@ def get_branches(
     if search_query:
         payload["searchQuery"] = search_query
 
+    if _cms_sso_for(base_url) is not None:
+        return _cms_first(base_url, lambda: _cms_list(base_url, "/api/Branches/GetList", payload, language),
+                          lambda portal: _post_json(f"{portal}/api/Branches/GetList", payload, client_id=client_id, language=language),
+                          "Branches/GetList")
     return _post_json(url, payload, client_id=client_id, language=language)
 
 
@@ -845,6 +954,10 @@ def get_doctor_schedule(
         if not include_future:
             payload["fromDateTimeTo"] = effective_date
 
+    if _cms_sso_for(base_url) is not None:
+        return _cms_first(base_url, lambda: _cms_list(base_url, "/api/DoctorSchedules/GetList", payload, language),
+                          lambda portal: _post_json(f"{portal}/api/DoctorSchedules/GetList", payload, client_id=client_id, language=language),
+                          "DoctorSchedules/GetList")
     return _post_json(url, payload, client_id=client_id, language=language)
 
 
@@ -883,7 +996,32 @@ def get_doctor_schedule_slots(
     if branch_ids:
         payload["branchIds"] = branch_ids
 
+    if _cms_sso_for(base_url) is not None:
+        return _cms_first(base_url, lambda: _cms_bookable_slots(base_url, payload, language),
+                          lambda portal: _post_json(f"{portal}/api/Doctors/GetDoctorScheduleSlots", payload, client_id=client_id, language=language),
+                          "Doctors/GetBookableScheduleSlots")
     return _post_json(url, payload, client_id=client_id, language=language)
+
+
+def _cms_bookable_slots(base_url: str, payload: dict, language: Optional[str]) -> dict:
+    """POST {cms}/api/Doctors/GetBookableScheduleSlots (the guide, 6.3).
+
+    Not Doctors/GetDoctorScheduleSlots: on cms-api that is the STAFF route
+    and lists slots the clinic can book but a patient cannot. This one
+    hides slots inside the clinic's lead-time cutoff, like the website.
+    Asked with pageSize 0 (the date range bounds it), sorted by slotStart
+    here, and slots at the doctor's daily capacity are dropped - a patient
+    cannot book them."""
+
+    result = _cms_request(
+        "post", base_url, "/api/Doctors/GetBookableScheduleSlots", language=language,
+        sso=_cms_sso_for(base_url), json={**payload, "pageNumber": 1, "pageSize": 0},
+    )
+    if result["success"] and isinstance(result.get("data"), dict):
+        items = [i for i in (result["data"].get("items") or []) if not i.get("isAtDailyCapacity")]
+        items.sort(key=lambda i: str(i.get("slotStart") or ""))
+        result["data"] = {**result["data"], "items": items, "totalCount": len(items), "hasNextPage": False}
+    return result
 
 
 def get_doctor_fees(
@@ -908,6 +1046,11 @@ def get_doctor_fees(
         "doctorIds": doctor_ids,
     }
 
+    if _cms_sso_for(base_url) is not None:
+        # Renamed on cms-api (the guide, 6.5); the fee is still `price`.
+        return _cms_first(base_url, lambda: _cms_list(base_url, "/api/DoctorAssignedServices/GetList", payload, language),
+                          lambda portal: _post_json(f"{portal}/api/DoctorServices/GetList", payload, client_id=client_id, language=language),
+                          "DoctorAssignedServices/GetList")
     return _post_json(url, payload, client_id=client_id, language=language)
 
 
@@ -945,6 +1088,11 @@ def get_services(
     if branch_ids:
         payload["branchIds"] = branch_ids
 
+    if _cms_sso_for(base_url) is not None:
+        # Active services only (the guide, 6.6) - staff see disabled ones too.
+        return _cms_first(base_url, lambda: _cms_list(base_url, "/api/Services/GetList", {**payload, "status": 1}, language),
+                          lambda portal: _post_json(f"{portal}/api/Services/GetList", payload, client_id=client_id, language=language),
+                          "Services/GetList")
     return _post_json(url, payload, client_id=client_id, language=language)
 
 
@@ -1044,8 +1192,19 @@ def reschedule_booking(
 
     result = _result(False, error="request_failed")
 
+    # A GUEST booking (made through the assistant or the website) moves
+    # with GuestBookings/Update and only the new times (the guide, 4.4);
+    # a registered patient's booking keeps the full Bookings/Update below.
+    if _cms_sso_for(base_url) is not None:
+        guest = _cms_request("post", base_url, "/api/GuestBookings/Get", sso=sso or _cms_sso_for(base_url),
+                             json={"id": booking_id})
+        if guest["success"] and isinstance(guest.get("data"), dict) and guest["data"].get("guestPatientId"):
+            return _cms_request("put", base_url, "/api/GuestBookings/Update", language=language,
+                                sso=sso or _cms_sso_for(base_url),
+                                json={"id": booking_id, "fromBookingTime": new_from, "toBookingTime": new_to})
+
     for attempt in (1, 2):
-        current = get_booking_by_id(base_url, booking_id, sso=sso)
+        current = _get_booking_full(base_url, booking_id, sso=sso)
         if not current["success"]:
             return current
 
@@ -1118,7 +1277,25 @@ def create_booking(
         "spaceId": space_id,
     }
 
+    if _cms_sso_for(base_url) is not None:
+        # Sent ONCE (the guide, 4.3): a timed-out reservation may have been
+        # made, so it is never retried automatically.
+        # Falls back ONLY on 401/403 (missing Bookings.Create): nothing was
+        # made. A 404 is an unknown branch - an answer, not a route problem.
+        return _cms_first(
+            base_url,
+            lambda: _cms_request("post", base_url, "/api/GuestBookings/Reservation",
+                                 sso=_cms_sso_for(base_url), retry=False, json=payload),
+            lambda portal: _post_json(f"{portal}/api/GuestBookings/Reservation", payload, client_id=client_id),
+            "GuestBookings/Reservation", fallback_errors=("authentication_error", "not_configured"))
     return _post_json(url, payload, client_id=client_id)
+
+
+def _get_booking_full(base_url: str, booking_id: str, sso: Optional[dict] = None) -> dict:
+    """The whole booking with its rowVersion, for the registered-patient
+    Bookings/Update (GuestBookings/Get carries no rowVersion)."""
+    return _cms_request("get", base_url, "/api/Bookings/GetById", sso=sso or _cms_sso_for(base_url),
+                        params={"Id": booking_id})
 
 
 def get_booking_by_id(base_url: str, booking_id: str, client_id: Optional[str] = None, sso: Optional[dict] = None) -> dict:
@@ -1128,4 +1305,8 @@ def get_booking_by_id(base_url: str, booking_id: str, client_id: Optional[str] =
     Fetches one booking by its GUID id. Used right after create_booking
     succeeds, to read back the new booking's bookingRefNum."""
 
+    if _cms_sso_for(base_url) is not None:
+        # The guide, 4.2: POST GuestBookings/Get {id}.
+        return _cms_request("post", base_url, "/api/GuestBookings/Get", sso=sso or _cms_sso_for(base_url),
+                            json={"id": booking_id})
     return _cms_request("get", base_url, "/api/Bookings/GetById", sso=sso, params={"Id": booking_id})
