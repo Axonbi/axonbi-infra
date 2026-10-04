@@ -21616,8 +21616,14 @@ def _assistant_asked_an_optional_question(messages: list) -> bool:
     too, and "لا" to "هل جميع البيانات صحيحة؟" stays a refusal."""
     last_ai = understanding.last_ai_text_before_latest_human(messages) or ""
     questions = [line for line in last_ai.splitlines() if "؟" in line or "?" in line]
-    return bool(questions) and bool(
-        _OPTIONAL_QUESTION_RE.search(agents.router.normalize(questions[-1]).lower()))
+    if not questions:
+        return False
+    # "نكمل على نفس رقم الواتساب ده؟" -> "لا" means "another number", not
+    # "stop". CONFIRMED (tanasuq-production 2026-10-04 10:39): it was read
+    # as a refusal and the patient got "تمام 🌷 إذا احتجت أي شيء ثاني".
+    if _SAME_WHATSAPP_QUESTION_RE.search(_norm_ar(questions[-1])):
+        return True
+    return bool(_OPTIONAL_QUESTION_RE.search(agents.router.normalize(questions[-1]).lower()))
 
 
 def _assistant_offered_a_transfer(messages: list) -> bool:
@@ -21657,6 +21663,7 @@ def _turn_facts(state: AgentState, previous: Optional[str] = None,
         media_received=_message_is_media(messages),
         transfer_offered=_assistant_offered_a_transfer(messages),
         optional_question=_assistant_asked_an_optional_question(messages),
+        booking_underway=bool(session.get("doctor_id")),
         bare_list_position=bool(_BARE_LIST_POSITION_RE.match(latest)),
         list_on_screen=last_list.get("entity_type") if isinstance(last_list, dict) else None,
         previous_cannot_book=previous in agents.router._CANNOT_COMPLETE_A_BOOKING,

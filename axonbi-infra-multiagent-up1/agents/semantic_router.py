@@ -99,6 +99,9 @@ class TurnFacts:
     # question (the email on a new booking). "لا" to it is an answer -
     # "no email" - and the booking moves on to the review.
     optional_question: bool = False
+    # The booking session already has a doctor chosen - a new booking is
+    # really under way, so a correction belongs to it.
+    booking_underway: bool = False
 
 
 # WHAT THE MESSAGE DOES THIS TURN - derived in code from the reading, not
@@ -163,6 +166,13 @@ def carries_new_request(reading: dict, flow: Optional[str]) -> bool:
         return True
     intent = reading.get("intent")
     return intent in SPECIALISTS and intent != flow
+
+
+def _names_a_value(reading: dict) -> bool:
+    """The message gives a day, time, doctor, branch... (any entity)."""
+    entities = reading.get("entities") or {}
+    return bool(any(entities.values()) or reading.get("entities_present")
+                or reading.get("doctor_name") or reading.get("specialty"))
 
 
 def turn_action(reading: Optional[dict], facts: TurnFacts) -> Optional[str]:
@@ -271,8 +281,13 @@ def owner(reading: dict, facts: TurnFacts, thresholds: Thresholds = Thresholds()
             return intent, f"semantic: {intent}", None
         if reading.get("changes_intent"):
             return intent, f"semantic: intent changed {flow} -> {intent}", None
+        # ONLY WHEN IT GIVES A VALUE. "تعديل موعد" with nothing in it is a
+        # request to move an existing appointment. CONFIRMED (tanasuq-
+        # production 2026-10-04 10:39): it stayed in booking, which asked
+        # "نكمل تعديل موعدك على نفس رقم الواتساب هذا؟" - a booking step.
         if (flow == "booking" and intent in ("reschedule", "cancel") and answering(reading)
-                and not reading.get("cancel_request")):
+                and not reading.get("cancel_request")
+                and (_names_a_value(reading) or facts.booking_underway)):
             # A time or a correction given while a NEW booking is being
             # built ("الساعه 7" on the review card) reads as a change of
             # an appointment, but there is no appointment yet - it answers

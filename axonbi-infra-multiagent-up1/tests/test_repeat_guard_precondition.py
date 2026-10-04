@@ -295,8 +295,13 @@ def test_review_cannot_be_confirmed_without_a_locked_slot(monkeypatch):
 def test_an_answer_inside_a_new_booking_stays_in_booking():
     import agents.semantic_router as sr
     facts = sr.TurnFacts(previous="booking")
-    reading = {"intent": "reschedule", "confidence": 0.9, "answer_to_previous_question": True}
+    # "الساعه 7" on the review card - a value for the booking being built
+    reading = {"intent": "reschedule", "confidence": 0.9, "answer_to_previous_question": True,
+               "entities_present": ["time"]}
     assert sr.decide(reading, facts).agent == "booking"
+    # a correction with no value while a doctor is already chosen
+    bare = {k: v for k, v in reading.items() if k != "entities_present"}
+    assert sr.decide(bare, sr.TurnFacts(previous="booking", booking_underway=True)).agent == "booking"
     # a patient who really wants to move an appointment says so
     assert sr.decide({**reading, "changes_intent": True}, facts).agent == "reschedule"
 

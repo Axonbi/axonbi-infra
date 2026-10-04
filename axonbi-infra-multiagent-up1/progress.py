@@ -174,6 +174,9 @@ _TOOL_GROUPS: Dict[str, tuple] = {
 
     "sending_otp": (
         "send_otp",
+    ),
+
+    "verifying_otp": (
         "verify_otp",
     ),
 
@@ -301,6 +304,7 @@ _GROUP_PRIORITY = (
     "rescheduling",
     "sending_complaint",
     "sending_otp",
+    "verifying_otp",
     "searching_times",
     "searching_slots",
     "searching_service_branches",
@@ -354,6 +358,8 @@ _DEFAULT_MESSAGES: Dict[str, Dict[str, str]] = {
                            "en": "One moment please - moving your appointment… ⏳"},
     "sending_otp":        {"ar": "لحظة من فضلك، جاري إرسال رمز التحقق… 📲",
                            "en": "One moment please - sending the verification code… 📲"},
+    "verifying_otp":      {"ar": "لحظة من فضلك، جاري التحقق من الرمز… 🔐",
+                           "en": "One moment please - checking the code… 🔐"},
     "checking_info":      {"ar": "لحظة من فضلك، جاري الاستعلام… ⏳",
                            "en": "One moment please - checking that for you… ⏳"},
     "sending_complaint":  {"ar": "لحظة من فضلك، جاري تسجيل الشكوى… ⏳",
