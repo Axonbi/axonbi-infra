@@ -226,6 +226,12 @@ RESULT_GUIDANCE: dict = {
     },
 
     "match_entity_info": {
+        "several_doctors":
+            "The patient named SEVERAL doctors and every one of them is in "
+            "`doctors`. Answer about EACH of them in this one reply (degree "
+            "and specialty, from these fields only) - do not ask \"did you "
+            "mean\" about one and drop the others. Then one question: which "
+            "of them they would like to book with.",
         "is_a_doctor":
             "What they named are DOCTORS of this clinic, not branches. Never "
             "say there is no branch by that name. Answer about the doctors in "
