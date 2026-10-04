@@ -6732,6 +6732,53 @@ def _is_generic_doctor_phrase(text: Optional[str]) -> bool:
     return bool(words) and all(w in _GENERIC_DOCTOR_WORDS for w in words)
 
 
+def _doctors_named_in(state: AgentState, base_url: str, text: str) -> list:
+    """The clinic's doctors that the words of `text` name, each word fuzzy-
+    matched against the real doctor list at a near-exact score (first
+    names included: "اصيلا" -> اصيلا الحسن). A joining "و" ("والعنود") is
+    tried without it. Empty when nothing names a doctor, or on any error."""
+
+    words = [w.strip(".,،؟?!\"'") for w in str(text or "").split()]
+    candidates = []
+    for word in words:
+        if len(word) >= 3:
+            candidates.append(word)
+            if word.startswith("و") and len(word) > 3:
+                candidates.append(word[1:])
+    if not candidates:
+        return []
+    try:
+        result = api.get_doctors(base_url, page_size=200, has_service_schedule=None,
+                                 language=conversation_language(state))
+    except Exception:  # noqa: BLE001 - a lookup aid, never a reason to fail the turn
+        logger.exception("_doctors_named_in: doctor list failed")
+        return []
+    if not result.get("success"):
+        return []
+    items = (result.get("data") or {}).get("items") or []
+    found, seen = [], set()
+    for word in candidates:
+        match = _fuzzy_match(word, items, ["formatedName", "altName", "name"])
+        hits = []
+        if match["result"] == "matched" and match.get("score", 0) >= 0.9:
+            hits = [match["item"]]
+        elif match["result"] == "ambiguous":
+            hits = match.get("items") or []
+        for item in hits:
+            if item.get("id") in seen:
+                continue
+            seen.add(item.get("id"))
+            found.append({
+                "id": item.get("id"),
+                "formatedName": _arabic_preferred_name(item) or item.get("formatedName"),
+                "degreeName": item.get("degreeName"),
+                "specialtyName": item.get("specialtyName"),
+                "serviceName": item.get("defaultServiceName") or item.get("serviceName"),
+                "hasSlots": item.get("hasSlots"),
+            })
+    return found
+
+
 @tool
 def match_entity_info(
     state: Annotated[AgentState, InjectedState],
@@ -7045,6 +7092,19 @@ def match_entity_info(
 
     if match_result["result"] == "not_matched":
         if entity_type == "branch":
+            # THE NAMES MAY BE DOCTORS. CONFIRMED (tanasuq-production,
+            # 2026-10-04 17:28): "ابغى اعرف عن اصيلا والعنود" - two of the
+            # clinic's doctors - was searched as a branch and answered
+            # "ما لقيت فرع اسمه "اصيلا" أو "العنود"". Checked against the
+            # clinic's own doctor list, not a word list.
+            named_doctors = _doctors_named_in(state, base_url, user_input)
+            if named_doctors:
+                logger.info(
+                    "match_entity_info: %r is not a branch but names %d doctor(s) - "
+                    "returning is_a_doctor", user_input, len(named_doctors),
+                )
+                _remember_list(state, "doctor", named_doctors)
+                return {"status": "is_a_doctor", "doctors": named_doctors}
             # Don't leave the patient with a bare "couldn't find it" -
             # hand back the branches that ARE currently available, so
             # the reply can say "لم أجد فرعًا باسم [x]، هذه الفروع

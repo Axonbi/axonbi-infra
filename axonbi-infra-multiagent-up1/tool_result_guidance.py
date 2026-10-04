@@ -226,6 +226,11 @@ RESULT_GUIDANCE: dict = {
     },
 
     "match_entity_info": {
+        "is_a_doctor":
+            "What they named are DOCTORS of this clinic, not branches. Never "
+            "say there is no branch by that name. Answer about the doctors in "
+            "`doctors` (degree and specialty, from these fields only) and "
+            "offer to show a doctor's appointments.",
         "matched":
             "If this is a doctor and `hasSlots` is explicitly False, do "
             "NOT end with \"تحب أحجز لك موعد عنده؟\" or similar - you "

@@ -133,6 +133,7 @@ EXAMPLES (the pattern, not the words - other keys omitted):
 - nothing asked yet / PATIENT: "ابي اعرف موعدي" -> {{"intent": "answer", "cancel_request": false}} (seeing an appointment is not cancelling or moving it)
 - ASSISTANT: "تحب نجرب يوم ثاني؟" / PATIENT: "لا خلاص ثبت موعدي" -> {{"intent": "answer", "answer_to_previous_question": true, "declines": true, "confirms": false}}
 - ASSISTANT: "عندك دكتور أو تخصص معيّن؟" / PATIENT: "لا، زيارة مريض" -> {{"intent": "faq", "declines": true, "changes_intent": true, "about_this_hospital": true}}
+- nothing asked yet / PATIENT: "ابغى اعرف عن اصيلا والعنود" -> {{"intent": "faq", "doctor_name": "اصيلا، العنود"}} (first names of doctors, not branches)
 - nothing asked yet / PATIENT: "تعديل للوصفه" -> {{"intent": "human", "wants_human": true}} (a prescription, not an appointment)
 - ASSISTANT: "وش المشكلة اللي تحس فيها؟" / PATIENT: "موضف" -> {{"intent": "human", "wants_human": true}}
 - ASSISTANT: "تحب تضيف بريدك الإلكتروني؟ (اختياري)" / PATIENT: "لا" -> {{"intent": "booking", "answer_to_previous_question": true, "declines": false}} (no email - the booking goes on)
