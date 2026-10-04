@@ -247,3 +247,41 @@ def test_the_config_flag(row, env, expected, monkeypatch):
         monkeypatch.setenv("BOOKING_ON_CMS", env)
     merged = config.get_messages("cms-flag-test", client_row_override={"base_url": PORTAL, **row})
     assert merged["_booking_on_cms"] is expected
+
+
+# ----------------------------------------------------------------------
+# Bookable slots: at most 31 days per unpaginated request
+# (tanasuq-production 2026-10-04 10:14: "The requested date range cannot
+# exceed 31 days when requesting unpaginated results")
+# ----------------------------------------------------------------------
+
+def test_a_six_week_range_is_asked_in_windows_and_merged(wire):
+    wire.answers = [
+        _page([{"slotStart": "2026-10-07T16:00:00+03:00", "doctorId": "d"},
+               {"slotStart": "2026-11-03T16:00:00+03:00", "doctorId": "d"}]),
+        _page([{"slotStart": "2026-11-03T16:00:00+03:00", "doctorId": "d"},   # boundary repeat
+               {"slotStart": "2026-11-11T16:00:00+03:00", "doctorId": "d"}]),
+    ]
+    result = api.get_doctor_schedule_slots(
+        CMS, ["d"], "2026-10-04T10:14:16+03:00", "2026-11-15T10:14:16+03:00")
+    windows = [(c[2]["json"]["fromDate"], c[2]["json"]["toDate"]) for c in wire.calls]
+    assert len(windows) == 2
+    assert windows[0][0] == "2026-10-04T10:14:16+03:00" and windows[-1][1] == "2026-11-15T10:14:16+03:00"
+    assert windows[0][1] == windows[1][0]
+    from datetime import datetime
+    for start, end in windows:
+        assert (datetime.fromisoformat(end) - datetime.fromisoformat(start)).days <= 31
+    assert [i["slotStart"][:10] for i in result["data"]["items"]] == ["2026-10-07", "2026-11-03", "2026-11-11"]
+
+
+def test_a_short_range_is_one_request_as_given(wire):
+    api.get_doctor_schedule_slots(CMS, ["d"], "2026-10-11T00:00:00", "2026-10-11T23:59:59")
+    assert len(wire.calls) == 1
+    assert wire.calls[0][2]["json"]["fromDate"] == "2026-10-11T00:00:00"
+
+
+def test_a_failing_window_returns_that_failure(wire):
+    wire.answers = [_page([{"slotStart": "2026-10-07T16:00:00+03:00"}]),
+                    _Resp(400, {"isSuccess": False, "messages": [{"prop": "ToDate", "message": "x"}]})]
+    result = api.get_doctor_schedule_slots(CMS, ["d"], "2026-10-04T00:00:00", "2026-11-15T00:00:00")
+    assert not result["success"]
