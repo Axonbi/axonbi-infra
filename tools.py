@@ -667,8 +667,22 @@ def _sso(state: AgentState) -> dict:
     return (state.get("templates") or {}).get("_sso") or {}
 
 
+def _cms_catalogue_url(state: AgentState) -> Optional[str]:
+    """The clinic's cms-api host when this clinic books on cms-api (config
+    `_booking_on_cms`), registered with its SSO account so api.py routes
+    the catalogue, slots and reservation there. None -> portal-api."""
+    templates = (state or {}).get("templates") or {}
+    if not templates.get("_booking_on_cms"):
+        return None
+    url = templates.get("_cms_base_url")
+    if url:
+        api.register_cms_host(url, templates.get("_sso") or {},
+                              portal_url=templates.get("_doctors_base_url") or templates.get("_base_url"))
+    return url or None
+
+
 def _base_url(state: AgentState) -> str:
-    return state.get("templates", {}).get("_base_url") or "https://demo.catalystsystems.io:1102"
+    return _cms_catalogue_url(state) or state.get("templates", {}).get("_base_url") or "https://demo.catalystsystems.io:1102"
 
 
 # ==========================================================
@@ -1330,7 +1344,7 @@ def _doctors_base_url(state: AgentState) -> Optional[str]:
     NEVER falls back to some other client's URL - see config.py's
     extensive comment on why (a real cross-tenant data leak risk)."""
 
-    return (state.get("templates") or {}).get("_doctors_base_url")
+    return _cms_catalogue_url(state) or (state.get("templates") or {}).get("_doctors_base_url")
 
 
 def _lab_in_place_doctor_name(state: AgentState) -> str:

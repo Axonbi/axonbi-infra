@@ -1399,6 +1399,16 @@ def get_messages(client_id: str, dialect: Optional[str] = None, client_row_overr
         or (client_row.get("cms_base_url") or "").strip()
         or _ENV_CMS_BASE_URL_OVERRIDE
     )
+    # EVERY CALL ON cms-api - catalogue, bookable slots and the reservation
+    # too (Catalyst CMS API - AI Booking Integration Guide v1.2): a clinic
+    # whose own config names its cms host is moved; any other client keeps
+    # portal-api for those calls. BOOKING_ON_CMS=0 in the environment turns
+    # the move off for everyone without a deploy of code.
+    merged["_booking_on_cms"] = bool(
+        ((client_row.get("CMS_API_BASE_URL") or "").strip()
+         or (client_row.get("cms_base_url") or "").strip())
+        and os.getenv("BOOKING_ON_CMS", "1").strip() != "0"
+    )
     # SSO account for cms-api, also per client. Keys are named after the env
     # vars, like CMS_API_BASE_URL. Anything missing falls back to the
     # environment (api._sso_settings).
