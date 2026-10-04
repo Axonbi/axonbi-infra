@@ -60,6 +60,18 @@ def test_no_or_another_question_is_not_a_yes_to_the_number():
 # The nearer ones of the asked weekday had nothing open
 # ----------------------------------------------------------------------
 
+# A FIXED CLOCK. On a Sunday afternoon the 17:00 slot of that same Sunday
+# falls inside the 12h lead and both tests failed (2026-10-04) - the
+# behaviour was right, the test's notion of "now" was not pinned.
+_NOW = datetime(2026, 10, 7, 10, 0, tzinfo=ZoneInfo("Asia/Riyadh"))  # a Wednesday morning
+
+
+class _FixedClock(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return _NOW.astimezone(tz) if tz else _NOW.replace(tzinfo=None)
+
+
 def _sundays_from(start, count):
     first = start + timedelta(days=(6 - start.weekday()) % 7)
     return [first + timedelta(days=7 * i) for i in range(count)]
@@ -74,14 +86,14 @@ def _resolve_sunday(open_dates):
               "isBooked": False} for d in open_dates]
     listed = {"success": True, "status_code": 200, "error": None, "data": {"items": items}}
     try:
-        with patch("api.get_doctor_schedule_slots", return_value=listed):
+        with patch("api.get_doctor_schedule_slots", return_value=listed),              patch.object(tools, "datetime", _FixedClock):
             return tools.resolve_available_day.func(state=state, weekday_name="الاحد الجاي")
     finally:
         tools._BOOKING_SESSIONS.pop(sid, None)
 
 
 def test_a_later_sunday_says_the_nearer_ones_have_nothing_open():
-    lead = (datetime.now(ZoneInfo("Asia/Riyadh")) + timedelta(hours=12)).date()
+    lead = (_NOW + timedelta(hours=12)).date()
     sundays = _sundays_from(lead, 3)
     result = _resolve_sunday([sundays[2]])
     assert result["status"] == "found" and result["date"] == sundays[2].isoformat()
@@ -91,7 +103,7 @@ def test_a_later_sunday_says_the_nearer_ones_have_nothing_open():
 
 
 def test_the_nearest_sunday_carries_no_note():
-    lead = (datetime.now(ZoneInfo("Asia/Riyadh")) + timedelta(hours=12)).date()
+    lead = (_NOW + timedelta(hours=12)).date()
     result = _resolve_sunday(_sundays_from(lead, 2))
     assert result["status"] == "found" and "note" not in result and "nearer_dates_without_slots" not in result
 

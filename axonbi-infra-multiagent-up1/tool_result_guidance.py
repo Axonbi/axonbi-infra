@@ -174,6 +174,13 @@ RESULT_GUIDANCE: dict = {
             "claimed it was a name. And never ask permission first "
             "(\"تحب أشوف لك قائمة الدكاترة؟\"): they have already told "
             "you what they want.",
+        "doctor_not_scheduled":
+            "The branch name is fine - the DOCTOR on file "
+            "(`doctor_display_name`) has no schedule at any branch, so "
+            "there is nothing to book with them anywhere. Never say the "
+            "branch does not exist. Say this doctor has no appointments "
+            "available right now and offer the doctors who are available "
+            "at the branch they named.",
         "out_of_range":
             "A number bigger than the list you showed. Say the list has "
             "only `list_size` options and ask them to pick within it - "
