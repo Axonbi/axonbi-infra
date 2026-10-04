@@ -48,7 +48,7 @@ KEEP_BACKUPS="${KEEP_BACKUPS:-10}"
 FILES=(
   graph.py tools.py prompts.py rag.py main.py app.py config.py
   state.py api.py progress.py start.py
-  understanding.py tool_result_guidance.py llm_usage.py conversation_store.py
+  understanding.py tool_result_guidance.py llm_usage.py
   agents/__init__.py agents/router.py agents/registry.py
   agents/sections.py agents/response_contract.py agents/hard_rules.py
   agents/semantic_router.py
@@ -65,7 +65,7 @@ TEST_FILES=(
   tests/test_decline_flow_control.py tests/test_phone_validation.py
   tests/test_english_fixed_texts.py tests/test_faq_answer_and_greeting.py
   tests/test_routing_followups.py
-  tests/test_production_log_1002.py tests/test_production_log_1001_evening.py tests/test_reply_quality_round.py tests/test_production_log_1003.py tests/test_review_no_and_invented_branches.py tests/test_cms_migration.py tests/test_production_log_1004.py tests/test_doctor_names_not_branches.py tests/test_conversation_store.py
+  tests/test_production_log_1002.py tests/test_production_log_1001_evening.py tests/test_reply_quality_round.py tests/test_production_log_1003.py tests/test_review_no_and_invented_branches.py tests/test_cms_migration.py tests/test_production_log_1004.py tests/test_doctor_names_not_branches.py
 )
 
 RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; DIM=$'\033[2m'; OFF=$'\033[0m'
