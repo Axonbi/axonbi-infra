@@ -119,6 +119,7 @@ def test_fees_and_services_use_the_cms_paths_and_filters(wire):
 
 
 def test_schedules_and_branches_move_host_only(wire):
+    wire.answers = [_page([{"id": "s"}]), _page([{"id": "b"}])]
     api.get_doctor_schedule(CMS, ["d"])
     api.get_branches(CMS)
     assert [c[1] for c in wire.calls] == [CMS + "/api/DoctorSchedules/GetList", CMS + "/api/Branches/GetList"]
@@ -285,3 +286,37 @@ def test_a_failing_window_returns_that_failure(wire):
                     _Resp(400, {"isSuccess": False, "messages": [{"prop": "ToDate", "message": "x"}]})]
     result = api.get_doctor_schedule_slots(CMS, ["d"], "2026-10-04T00:00:00", "2026-11-15T00:00:00")
     assert not result["success"]
+
+
+# ----------------------------------------------------------------------
+# An empty specialties/branches list from cms-api is the account, not the
+# clinic (tanasuq-production 2026-10-04 10:13: "0 specialties returned")
+# ----------------------------------------------------------------------
+
+def test_an_empty_specialty_list_is_served_by_portal(wire):
+    wire.answers = [_page([]), _page([{"id": "a"}])]
+    result = api.get_specialties(CMS)
+    assert result["success"] and result["data"]["items"] == [{"id": "a"}]
+    assert wire.calls[1][1] == PORTAL + "/api/Specialties/GetList"
+
+
+def test_an_empty_branch_list_is_served_by_portal_but_a_search_may_be_empty(wire):
+    wire.answers = [_page([]), _page([{"id": "b"}])]
+    assert api.get_branches(CMS)["data"]["items"] == [{"id": "b"}]
+    wire.calls.clear()
+    wire.answers = [_page([])]
+    result = api.get_branches(CMS, search_query="xyz")
+    assert result["success"] and result["data"]["items"] == [] and len(wire.calls) == 1
+
+
+def test_an_empty_doctor_list_is_an_answer(wire):
+    wire.answers = [_page([])]
+    result = api.get_doctors(CMS, specialty_ids=["s"])
+    assert result["success"] and len(wire.calls) == 1
+
+
+def test_with_no_portal_an_empty_list_stays_a_success(wire):
+    api._CMS_PORTAL_FALLBACK.clear()
+    wire.answers = [_page([])]
+    result = api.get_specialties(CMS)
+    assert result["success"] and result["data"]["items"] == []

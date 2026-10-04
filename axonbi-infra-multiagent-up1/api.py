@@ -395,13 +395,23 @@ def register_cms_host(base_url: Optional[str], sso: Optional[dict], portal_url: 
 _FALLBACK_ERRORS = ("authentication_error", "endpoint_not_found", "not_configured")
 
 
-def _cms_first(base_url: str, cms_call, portal_call, what: str, fallback_errors=_FALLBACK_ERRORS) -> dict:
-    result = cms_call()
+def _cms_first(base_url: str, cms_call, portal_call, what: str, fallback_errors=_FALLBACK_ERRORS,
+               empty_is_refusal: bool = False) -> dict:
+    """`empty_is_refusal`: for a list a clinic cannot have empty (its
+    specialties, its branches). CONFIRMED (tanasuq-production 2026-10-04
+    10:13): cms-api answered Specialties/GetList with success and no
+    items - the account's role, not the clinic, is what is missing."""
+    original = result = cms_call()
+    empty = (empty_is_refusal and result["success"] and isinstance(result.get("data"), dict)
+             and not (result["data"].get("items") or []))
+    if empty:
+        result = {**result, "success": False, "error": "empty_list"}
+        fallback_errors = tuple(fallback_errors) + ("empty_list",)
     if result["success"] or result.get("error") not in fallback_errors:
         return result
     portal = _CMS_PORTAL_FALLBACK.get((base_url or "").rstrip("/"))
     if not portal:
-        return result
+        return original
     logger.error(
         "cms-api refused %s (status=%s error=%s) - ASK CATALYST for this endpoint's permission; "
         "served from portal-api %s for now", what, result.get("status_code"), result.get("error"), portal,
@@ -774,7 +784,8 @@ def get_specialties(base_url: str, page_size: int = 200, client_id: Optional[str
 
     if _cms_sso_for(base_url) is not None:
         return _cms_first(base_url, lambda: _cms_list(base_url, "/api/Specialties/GetList", payload, language),
-                          lambda portal: get_specialties(portal, page_size, client_id, language), "Specialties/GetList")
+                          lambda portal: get_specialties(portal, page_size, client_id, language), "Specialties/GetList",
+                          empty_is_refusal=True)
     return _post_json(url, payload, client_id=client_id, language=language)
 
 
@@ -889,7 +900,7 @@ def get_branches(
     if _cms_sso_for(base_url) is not None:
         return _cms_first(base_url, lambda: _cms_list(base_url, "/api/Branches/GetList", payload, language),
                           lambda portal: _post_json(f"{portal}/api/Branches/GetList", payload, client_id=client_id, language=language),
-                          "Branches/GetList")
+                          "Branches/GetList", empty_is_refusal=not search_query)
     return _post_json(url, payload, client_id=client_id, language=language)
 
 
