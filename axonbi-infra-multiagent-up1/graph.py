@@ -11699,6 +11699,75 @@ def _honest_unstaffed_reply(draft: str, messages: list,
 _SAFE_FALLBACK_FABRICATED_AVAILABILITY = _env_flag("SAFE_FALLBACK_FABRICATED_AVAILABILITY", "true")
 
 
+# "لا" ALONE ON THE REVIEW CARD MEANS SOMETHING ON IT IS WRONG. The decline
+# rule answered it with "في شي ثاني أقدر أساعدك فيه؟" and the booking
+# ended (tanasuq-production, 2026-10-03 04:57: the card had no branch, the
+# patient asked "الفرع ؟", then said "لا"). Nothing is booked or dropped
+# here - the decline gate still blocks every booking tool this turn - the
+# patient is asked which detail to change, and the card comes back after.
+_REVIEW_CARD_NO_REPLY = {
+    "ar": "تمام 🌷 أي بيان تحب تعدّله؟ (الفرع، الدكتور، اليوم، الوقت، الاسم، الجوال)",
+    "en": "Sure 🌷 Which detail would you like to change? (branch, doctor, day, time, name, mobile)",
+}
+
+
+_INVENTED_BRANCH_DESCRIPTION = (
+    "reply named branch(es) that appear in NO tool result and are not "
+    "configured for this client"
+)
+
+
+def _real_branch_names(state: AgentState, target_language: Optional[str]) -> list:
+    """The branches this conversation really knows - names any tool returned,
+    the clinic's configured aliases, and its configured `branches` text - in
+    the conversation's script, deduplicated."""
+
+    names = []
+    names.extend(sorted(tools.get_known_entity_names(state.get("session_id"), "branch")))
+    for entry in (state.get("templates") or {}).get("_branch_aliases") or []:
+        names.extend(entry.get("aliases") or [])
+    raw = (state.get("raw_client_config") or {}).get("branches")
+    if isinstance(raw, str):
+        names.extend(re.split(r"[,،;|\n]+", raw))
+    elif isinstance(raw, list):
+        for item in raw:
+            names.append(item.get("name") if isinstance(item, dict) else item)
+
+    want_arabic = target_language != "en"
+    seen, result = set(), []
+    for name in names:
+        name = str(name or "").strip().strip("\"'[]{}")
+        if len(name) < 2 or "{" in name or ":" in name:
+            continue
+        if want_arabic != bool(re.search(r"[ء-ي]", name)):
+            continue
+        key = _norm_ar(name.replace("فرع", "").strip())
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(name)
+    return result
+
+
+def _real_branches_reply(state: AgentState, target_language: Optional[str]) -> str:
+    """Sent instead of a reply that named branches this clinic does not have,
+    after the correction retry named them again.
+
+    CONFIRMED (tanasuq-production, 2026-10-03 11:10): "الدكتور فيصل الحمدان
+    يشتغل في أكثر من فرع ... 1️⃣ فرع الرياض 2️⃣ فرع جدة 3️⃣ فرع الدمام" went
+    out after failing the check twice (safe fallback disabled), and the
+    patient chose "فرع الرياض". No branches known -> "" (the reply is kept,
+    as before)."""
+
+    names = _real_branch_names(state, target_language)
+    if not names:
+        return ""
+    lines = "\n".join(f"• {name}" for name in names)
+    if target_language == "en":
+        return f"Our branches:\n{lines}\n\nWhich branch suits you?"
+    return f"فروعنا:\n{lines}\n\nأي فرع يناسبك؟"
+
+
 def _substitute_despite_disabled_fallback(description: Optional[str]) -> bool:
     return _SAFE_FALLBACK_FABRICATED_AVAILABILITY and "fabricated appointment" in (description or "")
 
@@ -14690,8 +14759,7 @@ _REPLY_VERIFIERS = (
         lambda reply, state: _BRANCH_CORRECTION_DIRECTIVE.format(
             names=", ".join(_find_invented_branches(reply, state))
         ),
-        "reply named branch(es) that appear in NO tool result and are not "
-        "configured for this client",
+        _INVENTED_BRANCH_DESCRIPTION,
     ),
 )
 
@@ -20603,6 +20671,16 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
             logger.info("agent[%s]: greeting inside a flow - answered in code with the open question",
                         agent_name)
 
+    # A BARE "NO" TO THE REVIEW CARD ASKS WHICH DETAIL IS WRONG - see
+    # `_REVIEW_CARD_NO_REPLY`.
+    if (deterministic_reply is None and agent_name == "booking"
+            and state.get("turn_action") == agents.semantic_router.ACTION_DECLINE
+            and _review_card_shown_immediately_before(state.get("messages") or [],
+                                                     state.get("templates") or {})):
+        deterministic_reply = _REVIEW_CARD_NO_REPLY["en" if target_language == "en" else "ar"]
+        logger.info("agent[%s]: no to the review card - asking which detail to correct, no model call",
+                    agent_name)
+
     # ONLINE / REMOTE SESSIONS. Always the hospital's own channels - see
     # `_REMOTE_SESSION_RE`. Not for a complaint or a cancellation, where
     # "I booked online" is context, not a question.
@@ -21003,6 +21081,19 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                         normalized = _safe_fallback_reply(state, target_language, description)
                         used_safe_fallback = True
                         break
+                    # INVENTED BRANCHES ARE REPLACED BY THE REAL ONES - see
+                    # `_real_branches_reply`. Not the hand-off text: the
+                    # patient keeps going with a true list.
+                    if description == _INVENTED_BRANCH_DESCRIPTION:
+                        real = _real_branches_reply(state, target_language)
+                        if real:
+                            logger.error(
+                                "agent[%s]: reply STILL named invented branch(es) after "
+                                "correction - replaced with the branches this clinic really "
+                                "has. Draft: %r", agent_name, normalized,
+                            )
+                            normalized = real
+                            break
                     logger.error(
                         "agent[%s]: reply STILL failed the same check after correction (%s) - "
                         "keeping the reply as-is (safe-fallback substitution disabled per "
