@@ -624,7 +624,12 @@ def authentica_verify_otp(phone: str, otp: str, email: str = "") -> dict:
     except ValueError:
         body = {}
 
-    verified = bool(body.get("isSuccess") or body.get("success") or body.get("verified"))
+    # Authentica answers a correct code with {"status": true, ...} (and a
+    # wrong one with 422 {"status": false}). CONFIRMED (tanasuq-production
+    # 2026-10-04 10:40): the right code "4017" came back 200 and was told
+    # it was wrong, because only isSuccess/success/verified were read.
+    verified = bool(body.get("isSuccess") or body.get("success") or body.get("verified")
+                    or body.get("status") is True)
 
     return _result(verified, response.status_code, data=body)
 
