@@ -6505,8 +6505,14 @@ _ACTIONABLE_QUESTION_RE = re.compile(
 )
 
 
+_ORPHAN_LEADIN_RE = re.compile(
+    r"^(\s*)(?:[^\w\s؟?]+\s*)*(?:(?:أو|او|ولا|وإلا|والا|or)\s+)?",
+    re.IGNORECASE,
+)
+
+
 _CONDITIONAL_LEADIN_RE = re.compile(
-    r"^(\s*)(?:(?:إذا|اذا|لو|إن|ان)\s*(?:نعم|ايوه|أيوه|ايوة|أيوة|آه|اه|اي|أي|كده|كذا|كان\s*كذلك|"
+    r"^(\s*)و?(?:(?:إذا|اذا|لو|إن|ان)\s*(?:نعم|ايوه|أيوه|ايوة|أيوة|آه|اه|اي|أي|كده|كذا|كان\s*كذلك|"
     r"وافقت|حبيت|تحب)|if\s+(?:yes|so)|in\s+that\s+case)\s*[،,]\s*",
     re.IGNORECASE,
 )
@@ -6603,14 +6609,27 @@ def _strip_extra_questions(reply_text: str, templates: dict) -> tuple:
         if index == keeper:
             if removed and index > question_indexes[0]:
                 # The question it depended on is gone, so "إذا نعم، ..."
-                # / "if yes, ..." would now answer nothing.
+                # / "if yes, ..." would now answer nothing - and neither
+                # does a leading "أو" or the emoji that closed the dropped
+                # question. CONFIRMED (tanasuq-production, 2026-10-03):
+                # "أو تحب أحولك لخدمة العملاء؟", "وإذا نعم، تفضل ...",
+                # "😊 هل تبي ..." were sent as whole replies.
                 segment = _CONDITIONAL_LEADIN_RE.sub(lambda m: m.group(1), segment, count=1)
+                segment = _ORPHAN_LEADIN_RE.sub(lambda m: m.group(1), segment, count=1)
             kept.append(segment)
             continue
 
         if _normalize_for_compare(segment) in allowed:
             kept.append(segment)
             continue
+
+        # A statement in front of the dropped question is not part of it.
+        # CONFIRMED (tanasuq-production, 2026-10-03 06:16): "آسفة، ما
+        # قدرنا نرسل رمز التحقق ... الحين. ممكن نكمل ...؟" lost the apology
+        # together with the question.
+        statement_end = max(segment.rfind(". "), segment.rfind(".‏ "))
+        if statement_end > 0:
+            kept.append(segment[:statement_end + 1])
 
         removed += 1
         just_removed = True
@@ -15485,6 +15504,11 @@ def _build_negation_directive(messages: list, reading: Optional[dict] = None,
     # (routing already moved it) and the second is a symptom.
     if turn_action == agents.semantic_router.ACTION_DECLINE:
         refuses = True
+    elif (turn_action == agents.semantic_router.ACTION_ANSWER
+            and _assistant_asked_an_optional_question(messages)):
+        # "لا" to the optional email is the answer "no email"; the router
+        # already read it that way (semantic_router.turn_action).
+        refuses = False
     elif reading is not None:
         refuses = bool(reading.get("declines")) and not reading.get("changes_intent")
         # A DAY NAMED ON ITS OWN IS AN ANSWER, NOT A REFUSAL. After "does
@@ -16867,6 +16891,36 @@ def _build_review_card_phone_directive(state: AgentState, session_id: str) -> st
     normalized = tools.normalize_phone_number(source, state) or source
 
     return _REVIEW_CARD_PHONE_DIRECTIVE.format(phone=normalized)
+
+
+def _review_card_branch_fix(reply_text: str, state: AgentState, target_language: str) -> str:
+    """The review card always carries the branch on file.
+
+    CONFIRMED (tanasuq-production, 2026-10-03 04:56): a review card went
+    out with no branch line; the patient asked "الفرع ؟" and was told the
+    doctor "ما تم تحديد فرع لها في النظام" - and the booking ended. The
+    card is written by the model, so a missing branch line is put back
+    here, from the booking session."""
+
+    if not isinstance(reply_text, str) or "\n" not in reply_text:
+        return reply_text
+    session = tools._BOOKING_SESSIONS.get(state.get("session_id") or "") or {}
+    branch = session.get("branch_display_name")
+    if not (branch and session.get("doctor_id") and session.get("branch_id")):
+        return reply_text
+    confirmations = _review_confirmation_sentences(state.get("templates") or {})
+    segments = [_normalize_for_compare(s) for s in _split_sentences(reply_text)]
+    if not any(c in s for s in segments if s for c in confirmations):
+        return reply_text
+    if "🏥" in reply_text or str(branch) in reply_text:
+        return reply_text
+
+    label = "Branch" if target_language == "en" else "الفرع"
+    lines = reply_text.split("\n")
+    # Above the doctor line where the card has one, else under its heading.
+    at = next((i for i, line in enumerate(lines) if "👨" in line), 1)
+    lines.insert(at, f"🏥 {label}: {branch}")
+    return "\n".join(lines)
 
 
 # The refusal's distinctive middle clause. Matched rather than
@@ -21089,6 +21143,13 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
             )
             response = AIMessage(content=fixed)
 
+    # THE REVIEW CARD NAMES THE BRANCH - see `_review_card_branch_fix`.
+    if not has_tool_calls and agent_name == "booking":
+        carded = _review_card_branch_fix(response.content, state, target_language)
+        if carded != response.content:
+            logger.warning("agent[%s]: review card had no branch line - added the branch on file", agent_name)
+            response = AIMessage(content=carded)
+
     # A SAUDI/GULF CLINIC GETS NO EGYPTIAN FIXED WORDING - see
     # `_localize_egyptian_wording_for_gulf`.
     if not has_tool_calls and target_language != "en":
@@ -21452,6 +21513,22 @@ _TRANSFER_OFFER_RE = re.compile(
 _BARE_LIST_POSITION_RE = re.compile(r"^\s*(?:رقم\s*)?[0-9٠-٩]{1,2}\s*[.!؟?،,]*\s*$")
 
 
+# OUR OWN previous question was an optional one - the email on a new
+# booking ("تحب تضيف بريدك الإلكتروني؟ (اختياري)"). Provenance over the
+# assistant's own wording, like the transfer offer above; "لا" to it
+# means "no email", not "stop the booking".
+_OPTIONAL_QUESTION_RE = re.compile(r"اختياري|بريدك|البريد الالكتروني|ايميل|e-?mail|optional")
+
+
+def _assistant_asked_an_optional_question(messages: list) -> bool:
+    """Only the QUESTION line counts: the review card lists an email line
+    too, and "لا" to "هل جميع البيانات صحيحة؟" stays a refusal."""
+    last_ai = understanding.last_ai_text_before_latest_human(messages) or ""
+    questions = [line for line in last_ai.splitlines() if "؟" in line or "?" in line]
+    return bool(questions) and bool(
+        _OPTIONAL_QUESTION_RE.search(agents.router.normalize(questions[-1]).lower()))
+
+
 def _assistant_offered_a_transfer(messages: list) -> bool:
     last_ai = agents.router.normalize(understanding.last_ai_text_before_latest_human(messages))
     return bool(last_ai) and bool(_TRANSFER_OFFER_RE.search(last_ai))
@@ -21488,6 +21565,7 @@ def _turn_facts(state: AgentState, previous: Optional[str] = None,
         crisis_signal=_signals_crisis(messages),
         media_received=_message_is_media(messages),
         transfer_offered=_assistant_offered_a_transfer(messages),
+        optional_question=_assistant_asked_an_optional_question(messages),
         bare_list_position=bool(_BARE_LIST_POSITION_RE.match(latest)),
         list_on_screen=last_list.get("entity_type") if isinstance(last_list, dict) else None,
         previous_cannot_book=previous in agents.router._CANNOT_COMPLETE_A_BOOKING,

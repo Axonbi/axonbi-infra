@@ -7905,7 +7905,13 @@ def match_entity_for_booking(
         doctor_branch_ids = {s.get("branchId") for s in schedule_items if s.get("branchId")}
 
         if not doctor_branch_ids:
-            return {"matched": False, "ambiguous": False, "status": "not_matched"}
+            # The DOCTOR has no rota anywhere - the branch name is not the
+            # problem. CONFIRMED (tanasuq-production, 2026-10-03 11:11):
+            # فيصل الحمدان has no schedule, the patient picked "المنار"
+            # from the list the assistant had just shown, and was told
+            # "ما لقيت فرع اسمه المنار" twice.
+            return {"matched": False, "ambiguous": False, "status": "doctor_not_scheduled",
+                    "doctor_display_name": session.get("doctor_display_name")}
 
         # Cross-reference against the full branch list so altName (Arabic
         # name), address, etc. aren't lost - DoctorSchedules/GetList only
@@ -10574,6 +10580,13 @@ def get_doctor_schedule_for_booking(
             only_branch_id = next(iter(distinct_branch_ids))
             only_branch_name = next((item.get("branchName") for item in items if item.get("branchId") == only_branch_id), None)
             session["branch_id"] = only_branch_id
+            # INFERRED, NOT CHOSEN - like the other auto-confirm paths.
+            # Without the flag the next doctor the patient names is looked
+            # up only at THIS doctor's branch. CONFIRMED (tanasuq-production,
+            # 2026-10-03 18:25): رغد المهيلب's branch المنار was set here,
+            # "امل الدوسري" was then searched at المنار only, never
+            # matched, and her name went out over رغد's schedule.
+            session["branch_auto_resolved"] = True
             # Prefer a real Arabic altName if we can fetch it; fall back
             # to whatever name the schedule endpoint itself provided.
             try:

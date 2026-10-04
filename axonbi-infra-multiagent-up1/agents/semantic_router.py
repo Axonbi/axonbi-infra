@@ -95,6 +95,10 @@ class TurnFacts:
     # carries no request of its own, and supplies the refusal when the
     # reading has none at all. It never overrides a reading's `confirms`.
     bare_refusal: bool = False
+    # Provenance over OUR OWN previous message: it asked an OPTIONAL
+    # question (the email on a new booking). "لا" to it is an answer -
+    # "no email" - and the booking moves on to the review.
+    optional_question: bool = False
 
 
 # WHAT THE MESSAGE DOES THIS TURN - derived in code from the reading, not
@@ -174,6 +178,8 @@ def turn_action(reading: Optional[dict], facts: TurnFacts) -> Optional[str]:
 
     if reading is None:
         # Technical failure: the data fact is all there is.
+        if facts.bare_refusal and facts.optional_question:
+            return ACTION_ANSWER
         return ACTION_DECLINE if facts.bare_refusal else None
 
     flow = active_flow(facts)
@@ -181,6 +187,13 @@ def turn_action(reading: Optional[dict], facts: TurnFacts) -> Optional[str]:
     confirms = bool(reading.get("confirms"))
     declines = bool(reading.get("declines"))
 
+    # A "no" to an OPTIONAL question skips that field; it refuses
+    # nothing. CONFIRMED (tanasuq-production, 2026-10-02 23:20): "تحب
+    # تضيف بريدك الإلكتروني؟ (اختياري)" -> "لا" was read as a refusal,
+    # the review was blocked, and the booking ended at "تحب تغير موعدك؟".
+    if (facts.optional_question and (declines or facts.bare_refusal)
+            and not carries_new_request(reading, flow)):
+        return ACTION_ANSWER
     if facts.bare_refusal and not confirms:
         return ACTION_DECLINE
     if (reading.get("changes_intent") and intent in SPECIALISTS + ("human",)

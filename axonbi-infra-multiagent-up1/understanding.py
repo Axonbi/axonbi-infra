@@ -96,11 +96,11 @@ Return ONLY a JSON object with these keys:
 "intent": what the patient wants to happen next -
   booking: a new appointment, a doctor's available times, or continuing a booking in progress
   cancel: cancel an existing appointment - they no longer want it
-  reschedule: move an existing appointment - they want another day/time
+  reschedule: move an existing appointment - they want another day/time. Changing or renewing a PRESCRIPTION or medication ("تعديل الوصفة", "تجديد صرف الدواء") is not an appointment - that is human
   medical: a symptom, injury or health worry, or which doctor/specialty suits them
   faq: information for a PATIENT about the hospital's care (services, prices, branches, hours, insurance, visiting hours or visiting a patient staying there ("مواعيد الزيارة" is visiting, not appointments), a named doctor's background, the therapies offered such as CBT/DBT)
   complaint: file a complaint or suggestion - including that something was already done to their appointment ("لغيتوا موعدي", "the AI cancelled it"), which is not a request to cancel
-  human: talk to a real person / staff / customer service
+  human: talk to a real person / staff / customer service - including a bare "موظف" (or misspelt "موضف") or "التحدث"; and anything only staff can do, such as changing or renewing a prescription
   answer: replies to the assistant's question but you cannot tell which flow it moves forward
   greeting: only a greeting or thanks
   other: anything else - including things that are not patient care: jobs, training, interviews, suppliers, business
@@ -133,6 +133,9 @@ EXAMPLES (the pattern, not the words - other keys omitted):
 - nothing asked yet / PATIENT: "ابي اعرف موعدي" -> {{"intent": "answer", "cancel_request": false}} (seeing an appointment is not cancelling or moving it)
 - ASSISTANT: "تحب نجرب يوم ثاني؟" / PATIENT: "لا خلاص ثبت موعدي" -> {{"intent": "answer", "answer_to_previous_question": true, "declines": true, "confirms": false}}
 - ASSISTANT: "عندك دكتور أو تخصص معيّن؟" / PATIENT: "لا، زيارة مريض" -> {{"intent": "faq", "declines": true, "changes_intent": true, "about_this_hospital": true}}
+- nothing asked yet / PATIENT: "تعديل للوصفه" -> {{"intent": "human", "wants_human": true}} (a prescription, not an appointment)
+- ASSISTANT: "وش المشكلة اللي تحس فيها؟" / PATIENT: "موضف" -> {{"intent": "human", "wants_human": true}}
+- ASSISTANT: "تحب تضيف بريدك الإلكتروني؟ (اختياري)" / PATIENT: "لا" -> {{"intent": "booking", "answer_to_previous_question": true, "declines": false}} (no email - the booking goes on)
 - nothing asked yet / PATIENT: "مش هقدر احضر الموعد" -> {{"intent": "cancel", "is_ambiguous": true, "alternatives": ["cancel", "reschedule"], "confidence": 0.5, "declines": false}}
 - ASSISTANT: "تحب نلغي الموعد، ولا نأجله ليوم تاني؟" / PATIENT: "خليه الأسبوع الجاي" -> {{"intent": "reschedule", "answer_to_previous_question": true, "is_ambiguous": false}}
 
