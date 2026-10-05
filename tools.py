@@ -4620,7 +4620,14 @@ def _resolve_doctor_id(state: AgentState, ref_number: str, language: Optional[st
         logger.warning("_resolve_doctor_id: booking found but has no doctorId - ref_number=%s", ref_number)
         return {"status": "error"}
 
-    return {"status": "found", "doctor_id": doctor_id}
+    return {
+        "status": "found",
+        "doctor_id": doctor_id,
+        # The booking's own branch, so a reschedule stays where the
+        # booking is (get_doctor_schedule: a home visit stays a home visit).
+        "branch_id": items[0].get("branchId"),
+        "branch_name": items[0].get("branchName") or items[0].get("branchAltName"),
+    }
 
 
 # WEEKDAY VOCABULARY - deliberately much wider than "correct" Arabic.
@@ -5080,17 +5087,30 @@ def get_doctor_schedule(
     # mode can auto-resolve to it - never a real walk-in reschedule
     # option. This tool is the older, generic reschedule-flow one and
     # was not covered by those earlier fixes.
+    #
+    # UNLESS THE BOOKING IS A HOME VISIT. Then the home-service rows are
+    # the only ones that answer: CONFIRMED (elborgdemo staging 2026-10-05
+    # 11:36) a home-collection booking asked to be moved was offered
+    # "فرع حدائق الاهرام" only, because its own rows had been dropped.
     if _lab_uses_per_test_doctors(state):
+        def is_home(item):
+            return _is_home_service_branch_name(item.get("branchName"), state)
+        booking_branch_id = resolved.get("branch_id")
+        home_booking = _is_home_service_branch_name(resolved.get("branch_name"), state) or bool(
+            booking_branch_id and any(is_home(i) and i.get("branchId") == booking_branch_id for i in items)
+        )
         before_count = len(items)
-        items = [
-            item for item in items
-            if not _is_home_service_branch_name(item.get("branchName"), state)
-        ]
+        if home_booking:
+            items = [item for item in items if is_home(item)]
+            kept = "home-service"
+        else:
+            items = [item for item in items if not is_home(item)]
+            kept = "walk-in"
         if len(items) != before_count:
             logger.info(
-                "get_doctor_schedule (per-test-doctors): dropped %d row(s) "
-                "belonging to the fixed home-service branch",
-                before_count - len(items),
+                "get_doctor_schedule (per-test-doctors): kept the %s branch "
+                "rows only (booking at %r) - dropped %d row(s)",
+                kept, resolved.get("branch_name"), before_count - len(items),
             )
 
     if not items:
