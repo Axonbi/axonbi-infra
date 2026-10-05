@@ -52,3 +52,36 @@ def test_a_found_place_carries_its_nearest_branch(monkeypatch):
                         lambda state, latitude=0.0, longitude=0.0, place_option=0: {"status": "found", "nearest": {"name": "فرع اكتوبر"}})
     result = tools.geocode_address.func({"session_id": "s", "templates": {}}, address="مول المرشدي")
     assert result["status"] == "found" and result["nearest_branch"]["nearest"]["name"] == "فرع اكتوبر"
+
+
+def _turn(question, tool_name, payload):
+    from langchain_core.messages import ToolMessage
+    call = AIMessage(content="", tool_calls=[{"name": tool_name, "args": {}, "id": "c1"}])
+    return [HumanMessage(content=question), call,
+            ToolMessage(content=json.dumps(payload, ensure_ascii=False), name=tool_name, tool_call_id="c1")]
+
+
+BRANCH = {"name": "حدائق الاهرام", "address": "122 ج مدخل خوفو الدور الثاني", "phone": "+20 1123212321",
+          "working_hours": "يوميًا من 8 صباحًا إلى 10 مساءً", "distance_km": 3.2}
+
+
+def test_the_card_has_the_branch_details():
+    messages = _turn("اقرب فرع للهرم", "geocode_address",
+                     {"status": "found", "nearest_branch": {"status": "found", "branches": [BRANCH]}})
+    card, name = graph._nearest_branch_card(messages, "ar")
+    assert name == "حدائق الاهرام"
+    assert card.startswith("أقرب فرع ليك من الهرم هو:")
+    for part in ("🏥 الفرع: حدائق الاهرام", "📍 العنوان: 122 ج", "📞 التليفون: +20 1123212321",
+                 "⏰ مواعيد العمل:", "📏 المسافة: حوالي 3.2 كم"):
+        assert part in card
+
+
+def test_a_find_nearest_branch_result_makes_a_card_too():
+    messages = _turn("1", "find_nearest_branch", {"status": "found", "branches": [BRANCH]})
+    assert graph._nearest_branch_card(messages, "ar")[1] == "حدائق الاهرام"
+
+
+def test_no_card_for_an_unusually_far_branch_or_no_result():
+    far = _turn("اقرب فرع للهرم", "find_nearest_branch", {"status": "found", "branches": [BRANCH], "unusually_far": True})
+    assert graph._nearest_branch_card(far, "ar") == (None, None)
+    assert graph._nearest_branch_card([HumanMessage(content="هاي")], "ar") == (None, None)

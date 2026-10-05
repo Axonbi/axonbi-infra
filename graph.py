@@ -1331,10 +1331,67 @@ def _deterministic_nearest_to_place(state: AgentState, agent_name: str):
                     place, (payload or {}).get("status") if isinstance(payload, dict) else None)
         return None
 
+    nearest_branch = payload.get("nearest_branch") if isinstance(payload.get("nearest_branch"), dict) else {}
+    nearest = (nearest_branch.get("branches") or [{}])[0]
     logger.info("_deterministic_nearest_to_place: %r -> %s (nearest=%r)", place, payload.get("status"),
-                ((payload.get("nearest_branch") or {}).get("nearest") or {}).get("name")
-                if isinstance(payload.get("nearest_branch"), dict) else None)
+                (nearest or {}).get("name"))
     return _forge_tool_pair("geocode_address", {"address": place}, payload)
+
+
+def _nearest_branch_result_this_turn(messages: list) -> Optional[dict]:
+    """The nearest-branch answer found this turn (find_nearest_branch, or a
+    geocode_address result carrying `nearest_branch`), or None."""
+
+    for message in reversed(_tool_results_since_latest_human(messages, ("geocode_address", "find_nearest_branch"))):
+        try:
+            payload = json.loads(message.content) if isinstance(message.content, str) else None
+        except ValueError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if getattr(message, "name", None) == "geocode_address":
+            payload = payload.get("nearest_branch")
+        if isinstance(payload, dict) and payload.get("status") == "found" and payload.get("branches"):
+            return payload
+    return None
+
+
+def _nearest_branch_card(messages: list, language: str) -> tuple:
+    """(card text, branch name) for the nearest branch found this turn, in
+    the shape the patient gets when the model writes it well; (None, None)
+    when there is nothing to show or the distance needs the model's care
+    (`unusually_far`)."""
+
+    result = _nearest_branch_result_this_turn(messages)
+    if not result or result.get("unusually_far"):
+        return None, None
+    branch = result["branches"][0] or {}
+    name = (branch.get("name") or "").strip()
+    if not name:
+        return None, None
+
+    index = _latest_human_index(messages)
+    asked = getattr(messages[index], "content", "") if index >= 0 else ""
+    place = _place_in_nearest_question(asked if isinstance(asked, str) else str(asked))
+
+    distance = branch.get("distance_km")
+    if language == "en":
+        lines = [f"The nearest branch to you{f' from {place}' if place else ''} is:", "",
+                 f"🏥 Branch: {name}"]
+        labels = ("📍 Address", "📞 Phone", "⏰ Working hours", "📏 Distance")
+        closing = f"Would you like to book at {name}?"
+        distance_text = f"about {distance} km" if distance is not None else None
+    else:
+        lines = [f"أقرب فرع ليك{f' من {place}' if place else ''} هو:", "", f"🏥 الفرع: {name}"]
+        labels = ("📍 العنوان", "📞 التليفون", "⏰ مواعيد العمل", "📏 المسافة")
+        closing = f"تحب تحجز تحليل في {name}؟"
+        distance_text = f"حوالي {distance} كم" if distance is not None else None
+    for label, value in zip(labels, (branch.get("address"), branch.get("phone"),
+                                     branch.get("working_hours"), distance_text)):
+        if value:
+            lines.append(f"{label}: {value}")
+    lines += ["", closing]
+    return "\n".join(lines), name
 
 
 def _deterministic_doctor_schedule_lookup(state: AgentState, agent_name: str) -> list:
@@ -20896,6 +20953,21 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                 # Keep our own tags (e.g. the `asked` tag of a code-authored
                 # question) - only the text changes. See `_own_tags`.
                 response = AIMessage(content=normalized, additional_kwargs=_own_tags(response))
+
+    # THE NEAREST BRANCH FOUND THIS TURN IS WHAT THE REPLY SAYS. CONFIRMED
+    # (elborgdemo staging 2026-10-05 12:47): "اقرب فرع للهرم" as the first
+    # message found حدائق الاهرام - the location pin went out - but the text
+    # was the welcome menu alone. A reply that does not name the branch is
+    # replaced by the card; on a first turn the greeting goes above it.
+    if not has_tool_calls:
+        card, card_branch = _nearest_branch_card(state.get("messages") or [], target_language or "ar")
+        if card and card_branch not in (response.content or ""):
+            logger.warning(
+                "agent[%s]: the nearest branch found this turn (%r) is not in the reply - "
+                "sending the nearest-branch card instead. Original: %r",
+                agent_name, card_branch, response.content,
+            )
+            response = AIMessage(content=card, additional_kwargs=_own_tags(response))
 
     if not has_tool_calls and not state.get("greeted"):
         first_user_message = state["messages"][0].content if state["messages"] else ""
