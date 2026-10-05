@@ -65,3 +65,11 @@ def test_an_article_added_by_the_model_still_counts(monkeypatch):
     monkeypatch.setattr(tools.match_entity_for_booking, "func", _fake_match(calls))
     state = _state("s5", "1️⃣ تحليل البول الكامل\n2️⃣ تحليل السكر الصائم", answer="2")
     assert graph._deterministic_service_pick(state, "booking") is not None
+
+
+def test_the_labs_branch_is_not_an_invented_branch(monkeypatch):
+    # elborgdemo staging 2026-10-05 10:49: "فرع المعمل اللي ..." names no branch.
+    monkeypatch.setattr(graph, "_known_branch_text", lambda state: {"مصر الجديده"})
+    reply = "حابب تحدد فرع المعمل اللي تحب تعملي فيه التحليل؟"
+    assert graph._find_invented_branches(reply, {}) == []
+    assert graph._find_invented_branches("نحجزلك في فرع الزمالك؟", {}) != []

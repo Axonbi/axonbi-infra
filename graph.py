@@ -6417,6 +6417,11 @@ _NOT_A_BRANCH_NAME = {
     "ولا", "او", "أو", "من", "في", "علي", "على", "عند", "عندنا", "عندكم",
     "متاح", "متاحة", "المتاحة", "المتاح", "بس", "برضه", "برضو", "هو", "هي",
     "العيادة", "العياده", "عيادة", "عياده", "اللي", "الي", "التي", "الذي",
+    # "فرع المعمل اللي تحب..." is "the lab's branch", the same shape as
+    # "فرع العيادة". CONFIRMED (elborgdemo staging 2026-10-05 10:49): a
+    # reply naming no branch was rejected for the invented branch
+    # "المعمل اللي تحب تعملي فيه", and the patient ended on the handoff.
+    "المعمل", "معمل", "المعامل", "معامل", "المختبر", "مختبر",
     "تزور", "تزوري", "تختار", "تختاري", "يزور",
     # Number-words following "فرع" describe HOW MANY branches, not name
     # one - "متوفر في فرع واحد" ("available in one branch"). Confirmed
