@@ -8509,11 +8509,17 @@ def get_patient_info(state: Annotated[AgentState, InjectedState], mobile_number:
     # WRONG family member's name - the tool never told the model there
     # was ever a choice to make.
     if len(items) > 1:
+        choices = _patient_choices(items)
+        # Kept apart from `last_list`: that one still holds the slot list
+        # create_new_booking matches the chosen time against. Read by
+        # graph.py's `_deterministic_patient_pick`.
+        session["patient_choices"] = list(choices["patients"])
         return {
             "status": "found_multiple",
-            **_patient_choices(items),
+            **choices,
         }
 
+    session.pop("patient_choices", None)
     item = items[0]
     return {
         "status": "found",

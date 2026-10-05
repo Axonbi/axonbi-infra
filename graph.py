@@ -1096,6 +1096,82 @@ def _deterministic_service_pick(state: AgentState, agent_name: str):
     return _forge_tool_pair(tool_name, tool_args, payload)
 
 
+def _deterministic_patient_pick(state: AgentState, agent_name: str):
+    """When the patient answers the registered-names list with a BARE
+    NUMBER, resolve the name in code: the result reads as get_patient_info
+    having found exactly that one patient.
+
+    CONFIRMED REAL FAILURE (elborgdemo staging 2026-10-05 10:39): seven
+    names shown under one phone, the patient replied "7" - twice - and
+    the model asked "من فضلك أعطني اسمك الكامل" both times, so the
+    patient had to type the name they had already picked.
+
+    Only when the list the patient saw is the one remembered: every name
+    must appear in the reply just before their answer, in the same order.
+    Anything else (a name typed out, an out-of-range number) still goes
+    to the model, as before."""
+
+    if agent_name != "booking":
+        return None
+    if not _agent_holds_tools(agent_name, "get_patient_info"):
+        return None
+
+    session_id = state.get("session_id")
+    session = tools._get_booking_session(session_id)
+    choices = session.get("patient_choices") or []
+    if not choices:
+        return None
+
+    messages = state.get("messages") or []
+    index = _latest_human_index(messages)
+    if index < 0:
+        return None
+
+    content = getattr(messages[index], "content", "")
+    text = (content if isinstance(content, str) else str(content)).strip()
+    if not _POSITIONAL_ANSWER_RE.match(text):
+        return None
+
+    digits = re.sub(r"\D", "", text.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")))
+    position = int(digits) if digits else 0
+    if not 1 <= position <= len(choices):
+        return None
+
+    shown = ""
+    for message in reversed(messages[:index]):
+        if getattr(message, "type", None) == "ai" and getattr(message, "content", ""):
+            shown = message.content if isinstance(message.content, str) else str(message.content)
+            break
+
+    cursor = 0
+    for choice in choices:
+        name = choice.get("patientFullName") or ""
+        found = shown.find(name, cursor) if name else -1
+        if found < 0:
+            logger.info(
+                "_deterministic_patient_pick: the last reply does not show the "
+                "remembered names in order - the model takes this turn (session_id=%s)",
+                session_id,
+            )
+            return None
+        cursor = found + 1
+
+    chosen = choices[position - 1]
+    session.pop("patient_choices", None)
+    payload = {
+        "status": "found",
+        "patientFullName": chosen.get("patientFullName"),
+        "mobileNumber": session.get("booking_phone"),
+        "email": chosen.get("email"),
+        "chosen_from_list": True,
+    }
+    logger.info(
+        "_deterministic_patient_pick: position %d -> %r for session_id=%s",
+        position, chosen.get("patientFullName"), session_id,
+    )
+    return _forge_tool_pair("get_patient_info", {"mobile_number": session.get("booking_phone") or ""}, payload)
+
+
 def _deterministic_doctor_schedule_lookup(state: AgentState, agent_name: str) -> list:
     """Once a doctor is confirmed BY NAME via `match_entity_for_booking`
     THIS TURN, fetch their schedule AND their real bookable days in code
@@ -19899,6 +19975,10 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     if service_pick_pair is not None:
         deterministic_pairs.extend(service_pick_pair)
         history = history + list(service_pick_pair)
+    patient_pick_pair = _deterministic_patient_pick(state, agent_name)
+    if patient_pick_pair is not None:
+        deterministic_pairs.extend(patient_pick_pair)
+        history = history + list(patient_pick_pair)
     schedule_pairs = _deterministic_doctor_schedule_lookup(state, agent_name)
     if schedule_pairs:
         deterministic_pairs.extend(schedule_pairs)
