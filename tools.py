@@ -670,10 +670,10 @@ def _sso(state: AgentState) -> dict:
 def _cms_catalogue_url(state: AgentState) -> Optional[str]:
     """The clinic's cms-api host when this clinic books on cms-api (config
     `_booking_on_cms`), registered with its SSO account so api.py sends the
-    reservation there. None -> portal-api.
+    reservation and the bookable-slot lookups there (_slots_base_url).
+    None -> portal-api.
 
-    Only the RESERVATION uses it here. The catalogue and slots stay on
-    portal-api: CONFIRMED (elborgdemo staging 2026-10-05 10:33) cms-api's
+    The catalogue stays on portal-api: CONFIRMED (elborgdemo staging 2026-10-05 10:33) cms-api's
     Doctors/GetList answered without the lab's test doctors, so every lab
     search said "not found", while portal-api serves them and its ids are
     the ones GuestBookings/Reservation on cms-api accepts."""
@@ -685,6 +685,18 @@ def _cms_catalogue_url(state: AgentState) -> Optional[str]:
         api.register_cms_host(url, templates.get("_sso") or {},
                               portal_url=templates.get("_doctors_base_url") or templates.get("_base_url"))
     return url or None
+
+
+def _slots_base_url(state: AgentState, base_url: str) -> str:
+    """Where bookable slots are asked: cms-api when this clinic books there.
+
+    portal-api's Doctors/GetDoctorScheduleSlots is the staff route and
+    still lists a slot at the doctor's daily capacity, which the
+    reservation then refuses ("هذا الموعد محجوز بالفعل", elborgdemo
+    staging 2026-10-05 11:27). cms-api's GetBookableScheduleSlots drops
+    those. The doctor list stays on portal-api (see _cms_catalogue_url);
+    an empty answer from cms-api is asked again on portal-api."""
+    return _cms_catalogue_url(state) or base_url
 
 
 def _base_url(state: AgentState) -> str:
@@ -2876,7 +2888,7 @@ def _doctors_with_real_slots(state: AgentState, base_url: str, doctor_ids: list,
             continue
 
         result = api.get_doctor_schedule_slots(
-            base_url, doctor_ids=[doctor_id],
+            _slots_base_url(state, base_url), doctor_ids=[doctor_id],
             branch_ids=[branch_id] if branch_id else None,
             from_date=now.isoformat(), to_date=window_end.isoformat(),
             is_booked=False, page_size=1000,
@@ -5165,7 +5177,7 @@ def get_available_reschedule_slots(
         return {"status": "not_configured"}
 
     result = api.get_doctor_schedule_slots(
-        base_url, doctor_ids=[resolved["doctor_id"]],
+        _slots_base_url(state, base_url), doctor_ids=[resolved["doctor_id"]],
         from_date=from_date, to_date=to_date, is_booked=False,
      language=conversation_language(state),)
 
@@ -8667,7 +8679,7 @@ def resolve_available_day(
     to_date = (now + timedelta(days=horizon_days)).isoformat()
 
     result = api.get_doctor_schedule_slots(
-        base_url, doctor_ids=[doctor_id], branch_ids=[branch_id],
+        _slots_base_url(state, base_url), doctor_ids=[doctor_id], branch_ids=[branch_id],
         from_date=from_date, to_date=to_date, is_booked=False, page_size=1000,
      language=conversation_language(state),)
 
@@ -9195,7 +9207,7 @@ def _open_slots_on_day(state, base_url: str, doctor_id: str, branch_id: str,
     """
 
     result = api.get_doctor_schedule_slots(
-        base_url, doctor_ids=[doctor_id], branch_ids=[branch_id],
+        _slots_base_url(state, base_url), doctor_ids=[doctor_id], branch_ids=[branch_id],
         from_date=from_iso, to_date=to_iso, is_booked=False, page_size=200,
         language=conversation_language(state),
     )
@@ -9522,7 +9534,7 @@ def list_available_days_for_booking(
         chunk_end = min(chunk_start + timedelta(days=CHUNK_DAYS), now + timedelta(days=horizon_days))
 
         result = api.get_doctor_schedule_slots(
-            base_url, doctor_ids=[doctor_id], branch_ids=[branch_id],
+            _slots_base_url(state, base_url), doctor_ids=[doctor_id], branch_ids=[branch_id],
             from_date=chunk_start.isoformat(), to_date=chunk_end.isoformat(),
             is_booked=False, page_size=1000,
          language=conversation_language(state),)
@@ -10093,7 +10105,7 @@ def create_new_booking(
         return {"status": "error"}
 
     slots_result = api.get_doctor_schedule_slots(
-        base_url, doctor_ids=[doctor_id], branch_ids=[branch_id],
+        _slots_base_url(state, base_url), doctor_ids=[doctor_id], branch_ids=[branch_id],
         from_date=day_start, to_date=day_end, is_booked=False, page_size=200,
      language=conversation_language(state),)
 
@@ -10578,7 +10590,7 @@ def get_available_slots_for_booking(
         to_date = f"{requested_day_iso}T23:59:59"
 
     result = api.get_doctor_schedule_slots(
-        base_url, doctor_ids=[doctor_id], branch_ids=[branch_id],
+        _slots_base_url(state, base_url), doctor_ids=[doctor_id], branch_ids=[branch_id],
         from_date=from_date, to_date=to_date, is_booked=False, page_size=200,
      language=conversation_language(state),)
 
@@ -10662,7 +10674,7 @@ def get_available_slots_for_booking(
                     requested_day_iso, widen_from, widen_to,
                 )
                 retry_result = api.get_doctor_schedule_slots(
-                    base_url, doctor_ids=[doctor_id], branch_ids=[branch_id],
+                    _slots_base_url(state, base_url), doctor_ids=[doctor_id], branch_ids=[branch_id],
                     from_date=f"{widen_from}T00:00:00", to_date=f"{widen_to}T23:59:59",
                     is_booked=False, page_size=200, language=conversation_language(state),
                 )
@@ -11024,7 +11036,7 @@ def find_best_doctor_in_specialty(
         horizon = now + timedelta(days=30)
 
         slots_result = api.get_doctor_schedule_slots(
-            base_url, doctor_ids=doctor_ids,
+            _slots_base_url(state, base_url), doctor_ids=doctor_ids,
             from_date=now.isoformat(), to_date=horizon.isoformat(),
             is_booked=False, page_size=1000,
          language=conversation_language(state),)

@@ -279,6 +279,7 @@ def test_a_six_week_range_is_asked_in_windows_and_merged(wire):
 
 
 def test_a_short_range_is_one_request_as_given(wire):
+    wire.answers = [_page([{"slotStart": "2026-10-11T10:00:00+03:00"}])]
     api.get_doctor_schedule_slots(CMS, ["d"], "2026-10-11T00:00:00", "2026-10-11T23:59:59")
     assert len(wire.calls) == 1
     assert wire.calls[0][2]["json"]["fromDate"] == "2026-10-11T00:00:00"
@@ -329,3 +330,31 @@ def test_with_no_portal_an_empty_list_stays_a_success(wire):
 # The same rota published for two periods is one row
 # (tanasuq-production 2026-10-04 10:13: فرع النزهة listed twice)
 # ----------------------------------------------------------------------
+
+
+# ----------------------------------------------------------------------
+# elborgdemo: slots on cms-api, the doctor list on portal-api
+# ----------------------------------------------------------------------
+
+def test_slots_are_asked_on_cms_while_the_catalogue_stays_on_portal():
+    state = {"templates": {"_booking_on_cms": True, "_cms_base_url": CMS, "_sso": {"email": "bot"},
+                           "_base_url": PORTAL}}
+    try:
+        assert tools._slots_base_url(state, PORTAL) == CMS
+        assert tools._doctors_base_url(state) is None and tools._base_url(state) == PORTAL
+    finally:
+        api._CMS_HOSTS.clear()
+        api._CMS_PORTAL_FALLBACK.clear()
+
+
+def test_a_clinic_not_on_cms_asks_slots_on_portal():
+    assert tools._slots_base_url({"templates": {"_cms_base_url": CMS}}, PORTAL) == PORTAL
+
+
+def test_no_bookable_slots_on_cms_are_asked_again_on_portal(wire):
+    wire.answers = [_page([]), _Resp(body={"isSuccess": True, "data": {"items": [
+        {"slotStart": "2026-10-11T10:20:00+03:00"}]}})]
+    result = api.get_doctor_schedule_slots(CMS, ["d"], "2026-10-11T00:00:00", "2026-10-11T23:59:59")
+    assert [u for _, u, _ in wire.calls] == [CMS + "/api/Doctors/GetBookableScheduleSlots",
+                                           PORTAL + "/api/Doctors/GetDoctorScheduleSlots"]
+    assert result["success"] and len(result["data"]["items"]) == 1

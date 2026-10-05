@@ -1051,7 +1051,7 @@ def get_doctor_schedule_slots(
     if _cms_sso_for(base_url) is not None:
         return _cms_first(base_url, lambda: _cms_bookable_slots(base_url, payload, language),
                           lambda portal: _post_json(f"{portal}/api/Doctors/GetDoctorScheduleSlots", payload, client_id=client_id, language=language),
-                          "Doctors/GetBookableScheduleSlots")
+                          "Doctors/GetBookableScheduleSlots", empty_is_refusal=True)
     return _post_json(url, payload, client_id=client_id, language=language)
 
 
