@@ -1047,6 +1047,26 @@ def _deterministic_service_pick(state: AgentState, agent_name: str):
     if not _POSITIONAL_ANSWER_RE.match(text):
         return None  # a named service still goes to the model, as before
 
+    # THE NUMBER MUST ANSWER THIS LIST. `last_list` is only replaced by a
+    # tool that remembers one, so a list the model wrote itself leaves the
+    # older one in place. CONFIRMED REAL FAILURE (elborgdemo staging
+    # 2026-10-05 10:46): "1️⃣ مصر الجديدة" was the branch list in front of
+    # the patient, "1" was resolved against the test list from before and
+    # booked "تحليل البول الكامل".
+    items = last_list.get("items") or []
+    position = _list_position(text)
+    if not 1 <= position <= len(items):
+        return None
+    picked = items[position - 1]
+    picked_name = picked.get("name") if isinstance(picked, dict) else None
+    if not _reply_before_shows(messages, index, picked_name):
+        logger.info(
+            "_deterministic_service_pick: the reply before %r does not show %r "
+            "(remembered %s list) - the model takes this turn",
+            text, picked_name, entity_type,
+        )
+        return None
+
     # DIFFERENT TOOL PER LIST TYPE - see the docstring above for why.
     try:
         if entity_type == "service":
@@ -1096,6 +1116,37 @@ def _deterministic_service_pick(state: AgentState, agent_name: str):
     return _forge_tool_pair(tool_name, tool_args, payload)
 
 
+def _list_position(text: str) -> int:
+    """The position a bare-number answer names ("2", "٢", "رقم 2"), or 0."""
+
+    digits = re.sub(r"\D", "", text.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")))
+    return int(digits) if digits else 0
+
+
+def _last_reply_before(messages: list, index: int) -> str:
+    """The text of the assistant's reply just before messages[index]."""
+
+    for message in reversed(messages[:index]):
+        if getattr(message, "type", None) == "ai" and getattr(message, "content", ""):
+            content = message.content
+            return content if isinstance(content, str) else str(content)
+    return ""
+
+
+def _reply_before_shows(messages: list, index: int, name: Optional[str]) -> bool:
+    """Whether the reply the patient answered shows `name`. Spelling
+    variants (صائم/صايم), the article (السكر/سكر) and spacing are ignored:
+    the model rewords a name now and then, and this only has to tell this
+    list apart from a different one."""
+
+    if not name:
+        return False
+    def norm(value: str) -> str:
+        value = tools._normalize_arabic(value).replace("ئ", "ي").replace("ؤ", "و")
+        return " ".join(re.sub(r"^ال(?=\w{2})", "", word) for word in value.split())
+    return norm(name) in norm(_last_reply_before(messages, index))
+
+
 def _deterministic_patient_pick(state: AgentState, agent_name: str):
     """When the patient answers the registered-names list with a BARE
     NUMBER, resolve the name in code: the result reads as get_patient_info
@@ -1132,16 +1183,11 @@ def _deterministic_patient_pick(state: AgentState, agent_name: str):
     if not _POSITIONAL_ANSWER_RE.match(text):
         return None
 
-    digits = re.sub(r"\D", "", text.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")))
-    position = int(digits) if digits else 0
+    position = _list_position(text)
     if not 1 <= position <= len(choices):
         return None
 
-    shown = ""
-    for message in reversed(messages[:index]):
-        if getattr(message, "type", None) == "ai" and getattr(message, "content", ""):
-            shown = message.content if isinstance(message.content, str) else str(message.content)
-            break
+    shown = _last_reply_before(messages, index)
 
     cursor = 0
     for choice in choices:
