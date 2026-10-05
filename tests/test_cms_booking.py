@@ -190,25 +190,28 @@ def test_reading_a_booking_back_uses_guest_bookings_get(wire):
     assert result["data"]["bookingRefNum"] == "BK-1"
 
 
-def test_a_guest_booking_is_moved_with_guest_bookings_update(wire):
-    wire.answers = [_Resp(body={"isSuccess": True, "data": {"guestPatientId": "g1", "patientId": None}}),
+def test_a_guest_booking_is_moved_with_the_full_bookings_update(wire):
+    # elborgdemo: GuestBookings/Update (times only) refused a free slot.
+    wire.answers = [_Resp(body={"isSuccess": True, "data": {"rowVersion": "rv", "guestPatientId": "g1",
+                                                            "patientId": None}}),
                     _Resp(body={"isSuccess": True, "data": True})]
-    result = api.reschedule_booking(CMS, "id-1", {"doctorId": "d"}, "2026-10-06T13:00:00Z", "2026-10-06T14:00:00Z")
-    method, url, kwargs = wire.calls[1]
-    assert (method, url) == ("PUT", CMS + "/api/GuestBookings/Update")
-    assert kwargs["json"] == {"id": "id-1", "fromBookingTime": "2026-10-06T13:00:00Z",
-                              "toBookingTime": "2026-10-06T14:00:00Z"}
+    result = api.reschedule_booking(CMS, "id-1", {"doctorId": "d", "scheduleId": "s", "branchId": "b"},
+                                    "2026-10-06T13:00:00Z", "2026-10-06T14:00:00Z")
+    assert [(c[0], c[1]) for c in wire.calls] == [
+        ("GET", CMS + "/api/Bookings/GetById"), ("PUT", CMS + "/api/Bookings/Update")]
+    body = wire.calls[1][2]["json"]
+    assert body["guestPatientId"] == "g1" and body["doctorScheduleId"] == "s" and body["branchId"] == "b"
+    assert body["bookingTimeFrom"] == "2026-10-06T13:00:00Z" and body["rowVersion"] == "rv"
     assert result["success"]
 
 
 def test_a_registered_patients_booking_keeps_the_full_update(wire):
-    wire.answers = [_Resp(body={"isSuccess": True, "data": {"guestPatientId": None, "patientId": "p1"}}),
-                    _Resp(body={"isSuccess": True, "data": {"rowVersion": "rv", "patientId": "p1"}}),
+    wire.answers = [_Resp(body={"isSuccess": True, "data": {"rowVersion": "rv", "patientId": "p1"}}),
                     _Resp(body={"isSuccess": True, "data": True})]
     api.reschedule_booking(CMS, "id-1", {"doctorId": "d", "scheduleId": "s"}, "a", "b")
-    assert [(c[0], c[1]) for c in wire.calls[1:]] == [
+    assert [(c[0], c[1]) for c in wire.calls] == [
         ("GET", CMS + "/api/Bookings/GetById"), ("PUT", CMS + "/api/Bookings/Update")]
-    assert wire.calls[2][2]["json"]["rowVersion"] == "rv"
+    assert wire.calls[1][2]["json"]["rowVersion"] == "rv"
 
 
 def test_booking_lookup_by_phone_keeps_page_size_within_100(wire):

@@ -1297,17 +1297,11 @@ def reschedule_booking(
 
     result = _result(False, error="request_failed")
 
-    # A GUEST booking (made through the assistant or the website) moves
-    # with GuestBookings/Update and only the new times (the guide, 4.4);
-    # a registered patient's booking keeps the full Bookings/Update below.
-    if _cms_sso_for(base_url) is not None:
-        guest = _cms_request("post", base_url, "/api/GuestBookings/Get", sso=sso or _cms_sso_for(base_url),
-                             json={"id": booking_id})
-        if guest["success"] and isinstance(guest.get("data"), dict) and guest["data"].get("guestPatientId"):
-            return _cms_request("put", base_url, "/api/GuestBookings/Update", language=language,
-                                sso=sso or _cms_sso_for(base_url),
-                                json={"id": booking_id, "fromBookingTime": new_from, "toBookingTime": new_to})
-
+    # EVERY booking moves with the full Bookings/Update, a guest booking
+    # too. GuestBookings/Update (the guide, 4.4) carries only the new
+    # times, not the picked slot's schedule/branch/space, and refused a
+    # free slot as "هذا الموعد محجوز بالفعل" (elborgdemo staging
+    # 2026-10-05 11:27).
     for attempt in (1, 2):
         current = _get_booking_full(base_url, booking_id, sso=sso)
         if not current["success"]:
