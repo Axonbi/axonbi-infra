@@ -669,8 +669,14 @@ def _sso(state: AgentState) -> dict:
 
 def _cms_catalogue_url(state: AgentState) -> Optional[str]:
     """The clinic's cms-api host when this clinic books on cms-api (config
-    `_booking_on_cms`), registered with its SSO account so api.py routes
-    the catalogue, slots and reservation there. None -> portal-api."""
+    `_booking_on_cms`), registered with its SSO account so api.py sends the
+    reservation there. None -> portal-api.
+
+    Only the RESERVATION uses it here. The catalogue and slots stay on
+    portal-api: CONFIRMED (elborgdemo staging 2026-10-05 10:33) cms-api's
+    Doctors/GetList answered without the lab's test doctors, so every lab
+    search said "not found", while portal-api serves them and its ids are
+    the ones GuestBookings/Reservation on cms-api accepts."""
     templates = (state or {}).get("templates") or {}
     if not templates.get("_booking_on_cms"):
         return None
@@ -682,7 +688,7 @@ def _cms_catalogue_url(state: AgentState) -> Optional[str]:
 
 
 def _base_url(state: AgentState) -> str:
-    return _cms_catalogue_url(state) or state.get("templates", {}).get("_base_url") or "https://demo.catalystsystems.io:1102"
+    return state.get("templates", {}).get("_base_url") or "https://demo.catalystsystems.io:1102"
 
 
 # ==========================================================
@@ -1344,7 +1350,7 @@ def _doctors_base_url(state: AgentState) -> Optional[str]:
     NEVER falls back to some other client's URL - see config.py's
     extensive comment on why (a real cross-tenant data leak risk)."""
 
-    return _cms_catalogue_url(state) or (state.get("templates") or {}).get("_doctors_base_url")
+    return (state.get("templates") or {}).get("_doctors_base_url")
 
 
 def _lab_in_place_doctor_name(state: AgentState) -> str:
@@ -10158,8 +10164,11 @@ def create_new_booking(
             mobile_number, normalized_mobile,
         )
 
+    # portal-api answers GuestBookings/Reservation with 404 since the
+    # 2026-09-28 API change: the reservation goes to cms-api when the
+    # clinic has its host configured.
     result = api.create_booking(
-        base_url,
+        _cms_catalogue_url(state) or base_url,
         patient_full_name=patient_full_name,
         mobile_number=normalized_mobile,
         branch_id=matched_slot.get("branchId") or branch_id,

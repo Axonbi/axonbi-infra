@@ -221,10 +221,13 @@ def test_booking_lookup_by_phone_keeps_page_size_within_100(wire):
 # ----------------------------------------------------------------------
 
 def test_a_clinic_with_its_cms_host_in_config_books_on_cms():
+    # The reservation moves; the catalogue and slots stay on portal-api
+    # (elborgdemo: cms-api's Doctors/GetList lacks the lab's test doctors).
     state = {"templates": {"_booking_on_cms": True, "_cms_base_url": CMS, "_sso": {"email": "bot"},
                            "_doctors_base_url": PORTAL, "_base_url": PORTAL}}
     try:
-        assert tools._doctors_base_url(state) == CMS and tools._base_url(state) == CMS
+        assert tools._doctors_base_url(state) == PORTAL and tools._base_url(state) == PORTAL
+        assert tools._cms_catalogue_url(state) == CMS
         assert api._cms_sso_for(CMS) == {"email": "bot"} and api._CMS_PORTAL_FALLBACK[CMS] == PORTAL
     finally:
         api._CMS_HOSTS.clear()
