@@ -11856,12 +11856,24 @@ def geocode_address(
         address, top["latitude"], top["longitude"], top["display_name"],
     )
 
-    return {
+    result = {
         "status": "found",
         "latitude": top["latitude"],
         "longitude": top["longitude"],
         "display_name": top["display_name"],
     }
+    # THE NEAREST BRANCH COMES WITH IT. Finding the place is only step one,
+    # and the model stopped there: CONFIRMED (elborgdemo staging 2026-10-05
+    # 12:11 and 12:28) "مول المرشدي" was found and the patient got the
+    # whole branch list instead of the nearest one.
+    try:
+        nearest = find_nearest_branch.func(state, latitude=top["latitude"], longitude=top["longitude"])
+    except Exception:  # noqa: BLE001
+        logger.warning("geocode_address: find_nearest_branch raised for address=%r", address, exc_info=True)
+        nearest = None
+    if isinstance(nearest, dict) and nearest.get("status") not in (None, "error", "not_configured", "not_found"):
+        result["nearest_branch"] = nearest
+    return result
 
 
 @tool

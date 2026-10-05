@@ -1275,6 +1275,68 @@ def _deterministic_place_pick(state: AgentState, agent_name: str):
     return _forge_tool_pair("find_nearest_branch", {"place_option": position}, payload)
 
 
+# "اقرب فرع من مول المرشدي" / "ايه اقرب فرع للهرم" / "اقرب فرع للمعمل من
+# كارفور": the place the patient names after the question.
+_NEAREST_TO_PLACE_RE = re.compile(
+    r"[اأإ]قرب\s+فرع(?:\s+(?:لل|ل)?(?:معمل|معامل|مختبر))?\s*"
+    r"(?:(?:من|عند|جنب|قريب\s+من)\s+(?P<a>.+)|لل(?P<b>\S.*)|ل(?P<c>\S.*))$"
+)
+_NOT_A_PLACE = {"يه", "يا", "يك", "يكي", "ينا", "يها", "يهم", "ي", "ك", "كم"}
+
+
+def _place_in_nearest_question(text: str) -> Optional[str]:
+    match = _NEAREST_TO_PLACE_RE.search((text or "").strip().rstrip("؟?. "))
+    if not match:
+        return None
+    if match.group("a"):
+        place = match.group("a")
+    elif match.group("b"):
+        place = "ال" + match.group("b")
+    else:
+        place = match.group("c")
+    place = place.strip()
+    if place in _NOT_A_PLACE or len(place) < 3:
+        return None
+    return place
+
+
+def _deterministic_nearest_to_place(state: AgentState, agent_name: str):
+    """"أقرب فرع لـ/من <مكان>" is answered from the map in code: the place
+    is looked up (geocode_address, whose result carries the nearest branch,
+    or the "which one?" choice for a chain) before the model's turn.
+
+    CONFIRMED REAL FAILURE (elborgdemo staging 2026-10-05 12:27): "ايه اقرب
+    فرع للهرم" got "معنديش فرع اسمه الهرم" and the branch list - the model
+    looked for a branch called الهرم and never looked the place up."""
+
+    if not _agent_holds_tools(agent_name, "geocode_address", "find_nearest_branch"):
+        return None
+
+    messages = state.get("messages") or []
+    index = _latest_human_index(messages)
+    if index < 0:
+        return None
+    content = getattr(messages[index], "content", "")
+    place = _place_in_nearest_question(content if isinstance(content, str) else str(content))
+    if not place:
+        return None
+
+    try:
+        payload = tools.geocode_address.func(state, address=place)
+    except Exception:  # noqa: BLE001
+        logger.warning("_deterministic_nearest_to_place: geocode_address raised for %r", place, exc_info=True)
+        return None
+    if not isinstance(payload, dict) or payload.get("status") not in ("found", "ambiguous"):
+        logger.info("_deterministic_nearest_to_place: %r -> %r - the model takes this turn",
+                    place, (payload or {}).get("status") if isinstance(payload, dict) else None)
+        return None
+
+    logger.info("_deterministic_nearest_to_place: %r -> %s (nearest=%r)", place, payload.get("status"),
+                ((payload.get("nearest_branch") or {}).get("nearest") or {}).get("name")
+                if isinstance(payload.get("nearest_branch"), dict) else None)
+    return _forge_tool_pair("geocode_address", {"address": place}, payload)
+
+
 def _deterministic_doctor_schedule_lookup(state: AgentState, agent_name: str) -> list:
     """Once a doctor is confirmed BY NAME via `match_entity_for_booking`
     THIS TURN, fetch their schedule AND their real bookable days in code
@@ -20091,6 +20153,11 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     if place_pick_pair is not None:
         deterministic_pairs.extend(place_pick_pair)
         history = history + list(place_pick_pair)
+    else:
+        nearest_pair = _deterministic_nearest_to_place(state, agent_name)
+        if nearest_pair is not None:
+            deterministic_pairs.extend(nearest_pair)
+            history = history + list(nearest_pair)
     schedule_pairs = _deterministic_doctor_schedule_lookup(state, agent_name)
     if schedule_pairs:
         deterministic_pairs.extend(schedule_pairs)
