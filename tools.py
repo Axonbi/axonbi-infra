@@ -11680,8 +11680,39 @@ def _distinct_places(results: list) -> list:
             "latitude": latitude,
             "longitude": longitude,
             "display_name": result.get("display_name") or "",
+            "is_area": _is_area_result(result),
         })
     return places
+
+
+# Nominatim kinds that are an AREA (a district, a city, a neighbourhood),
+# not a single building: "الهرم" the district is one place to search from,
+# however many pyramids also carry the word.
+_AREA_ADDRESSTYPES = {
+    "suburb", "neighbourhood", "quarter", "city_district", "district", "borough",
+    "city", "town", "village", "hamlet", "municipality", "county", "state", "region",
+}
+
+
+def _is_area_result(result: dict) -> bool:
+    if result.get("class") in ("place", "boundary"):
+        return True
+    return (result.get("addresstype") or result.get("type")) in _AREA_ADDRESSTYPES
+
+
+def _place_name(place: dict) -> str:
+    """The place's own name (the first part of its address), normalised."""
+    first = (place.get("display_name") or "").split(",")[0]
+    return " ".join(_normalize_arabic(first).split())
+
+
+def _same_name_branches(places: list) -> list:
+    """The places that carry the SAME name as the best one: several stores
+    of one chain ("كارفور", "هايبر وان"). A different name that merely
+    contains the patient's word ("الهرم الأحمر" for "الهرم") is a different
+    place, not another branch of the same one."""
+    name = _place_name(places[0])
+    return [p for p in places if name and _place_name(p) == name]
 
 
 def _short_place_label(display_name: str, parts: int = 3) -> str:
@@ -11784,13 +11815,23 @@ def geocode_address(
         logger.info("geocode_address: Nominatim returned no match for address=%r", address)
         return {"status": "not_found"}
 
+    # AN AREA IS ONE PLACE. "الهرم" is the district; Nominatim also lists
+    # هرم خوفو / الهرم الأحمر / الهرم الأسود, and the patient was asked
+    # which pyramid they meant (elborgdemo staging 2026-10-05 12:12).
+    areas = [p for p in places if p.get("is_area")]
+    if areas:
+        places = areas[:1]
+
     # A PLACE THAT EXISTS MORE THAN ONCE IS NOT ONE PLACE. "أقرب فرع
     # لكارفور" - there are dozens of Carrefour stores and the patient did
     # not say which. Picking the first result names the branch nearest to
     # a store they may not have meant, so whenever the name resolves to
-    # more than one distinct place the patient is asked which one. (No
-    # shortcut for "they would all get the same branch": the patient did
-    # not choose, and the list may be only the first few of many.)
+    # more than one distinct place OF THAT SAME NAME the patient is asked
+    # which one. (No shortcut for "they would all get the same branch":
+    # the patient did not choose, and the list may be only the first few
+    # of many.) Results that only contain the word are not other branches
+    # of it: the best match is taken.
+    places = _same_name_branches(places) or places[:1]
     if len(places) > 1:
         options = [
             {
