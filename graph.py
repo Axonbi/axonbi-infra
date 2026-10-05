@@ -1218,6 +1218,63 @@ def _deterministic_patient_pick(state: AgentState, agent_name: str):
     return _forge_tool_pair("get_patient_info", {"mobile_number": session.get("booking_phone") or ""}, payload)
 
 
+def _deterministic_place_pick(state: AgentState, agent_name: str):
+    """When the patient answers "which of these places?" (geocode_address
+    found several branches of one chain) with a BARE NUMBER, find the
+    nearest branch to that place in code.
+
+    CONFIRMED REAL FAILURE (elborgdemo staging 2026-10-05 12:26): five
+    Carrefour stores were offered, the patient replied "1" - twice - and
+    the model showed the same five again each time instead of calling
+    find_nearest_branch(place_option=1).
+
+    Only when the reply just before shows the chosen place (any part of its
+    address after the shared name); anything else goes to the model."""
+
+    if not _agent_holds_tools(agent_name, "find_nearest_branch"):
+        return None
+
+    session_id = state.get("session_id")
+    pending = tools._PENDING_PLACES.get(str(session_id)) or []
+    if not pending:
+        return None
+
+    messages = state.get("messages") or []
+    index = _latest_human_index(messages)
+    if index < 0:
+        return None
+    content = getattr(messages[index], "content", "")
+    text = (content if isinstance(content, str) else str(content)).strip()
+    if not _POSITIONAL_ANSWER_RE.match(text):
+        return None
+    position = _list_position(text)
+    chosen = next((o for o in pending if o.get("option") == position), None)
+    if not chosen:
+        return None
+
+    parts = [p.strip() for p in re.split(r"[,،]", chosen.get("label") or "") if p.strip()]
+    if not any(_reply_before_shows(messages, index, part) for part in parts[1:] or parts):
+        logger.info(
+            "_deterministic_place_pick: the reply before %r does not show option %d "
+            "- the model takes this turn (session_id=%s)", text, position, session_id,
+        )
+        return None
+
+    try:
+        payload = tools.find_nearest_branch.func(state, place_option=position)
+    except Exception:  # noqa: BLE001
+        logger.warning("_deterministic_place_pick: find_nearest_branch raised for "
+                       "session_id=%s - handing the turn to the model", session_id, exc_info=True)
+        return None
+    if not isinstance(payload, dict) or payload.get("status") in (None, "needs_place_choice", "error", "not_configured"):
+        return None
+
+    tools._PENDING_PLACES.pop(str(session_id), None)
+    logger.info("_deterministic_place_pick: option %d (%r) -> find_nearest_branch status=%r for session_id=%s",
+                position, chosen.get("label"), payload.get("status"), session_id)
+    return _forge_tool_pair("find_nearest_branch", {"place_option": position}, payload)
+
+
 def _deterministic_doctor_schedule_lookup(state: AgentState, agent_name: str) -> list:
     """Once a doctor is confirmed BY NAME via `match_entity_for_booking`
     THIS TURN, fetch their schedule AND their real bookable days in code
@@ -20030,6 +20087,10 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     if patient_pick_pair is not None:
         deterministic_pairs.extend(patient_pick_pair)
         history = history + list(patient_pick_pair)
+    place_pick_pair = _deterministic_place_pick(state, agent_name)
+    if place_pick_pair is not None:
+        deterministic_pairs.extend(place_pick_pair)
+        history = history + list(place_pick_pair)
     schedule_pairs = _deterministic_doctor_schedule_lookup(state, agent_name)
     if schedule_pairs:
         deterministic_pairs.extend(schedule_pairs)
