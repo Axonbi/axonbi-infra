@@ -52,21 +52,7 @@ def _get_embeddings_model() -> OpenAIEmbeddings:
     global _embeddings_model
     if _embeddings_model is None:
         import config
-        # AZURE WHEN THE LLM IS AZURE. CONFIRMED REAL PRODUCTION FAILURE
-        # (Tanasuq, 2026-09-24): chat ran on Azure but embeddings went to
-        # api.openai.com with the Azure key -> 401 on every FAQ question,
-        # and the bot told patients it had no information about the
-        # hospital. Deployment name from AZURE_EMBEDDINGS_DEPLOYMENT.
-        if getattr(config, "LLM_PROVIDER", "") == "azure":
-            from langchain_openai import AzureOpenAIEmbeddings
-
-            _embeddings_model = AzureOpenAIEmbeddings(
-                azure_deployment=os.getenv("AZURE_EMBEDDINGS_DEPLOYMENT", _EMBEDDING_MODEL_NAME),
-                azure_endpoint=config.AZURE_OPENAI_ENDPOINT,
-                api_version=config.AZURE_OPENAI_API_VERSION,
-                api_key=config.OPENAI_API_KEY,
-            )
-        elif getattr(config, "LLM_PROVIDER", "") == "openrouter":
+        if getattr(config, "LLM_PROVIDER", "") == "openrouter":
             _embeddings_model = OpenAIEmbeddings(
                 model=config.OPENROUTER_EMBEDDING_MODEL,
                 api_key=config.llm_api_key() or "sk-not-configured",

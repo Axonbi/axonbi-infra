@@ -152,9 +152,12 @@ _ENV_DOCTORS_BASE_URL_OVERRIDE: Optional[str] = os.getenv("DOCTORS_API_BASE_URL"
 # token from the SSO login. Credentials come from the environment ONLY -
 # this repo is public.
 _ENV_CMS_BASE_URL_OVERRIDE: Optional[str] = os.getenv("CMS_API_BASE_URL") or None
-_DEFAULT_CMS_BASE_URL: str = "https://cms-api.tanasuq.med.sa"
+# No built-in host: each clinic supplies its own cms_base_url (client
+# config) or CMS_API_BASE_URL. Empty -> "not_configured", never another
+# tenant's server.
+_DEFAULT_CMS_BASE_URL: str = ""
 
-SSO_LOGIN_URL: str = os.getenv("SSO_LOGIN_URL", "https://sso.tanasuq.med.sa/api/Auth/Login")
+SSO_LOGIN_URL: str = os.getenv("SSO_LOGIN_URL", "")
 SSO_EMAIL: str = os.getenv("SSO_EMAIL", "")
 # The clinic's organizationId, sent with the login when set (the integration
 # account is scoped to one organization).
@@ -245,7 +248,7 @@ CANCELLABLE_STATUS_CODES = (STATUS_NEW, STATUS_CONFIRMED)
 # instead. This constant is ONLY the fallback for the rare client row
 # missing the column entirely.
 
-DEFAULT_TIMEZONE: str = os.getenv("DEFAULT_TIMEZONE", "Asia/Riyadh")
+DEFAULT_TIMEZONE: str = os.getenv("DEFAULT_TIMEZONE", "Africa/Cairo")  # Egypt
 
 
 # ==========================================================
@@ -432,29 +435,18 @@ def _agent_models(raw: str) -> dict:
 OPENAI_MODEL_BY_AGENT: dict = _agent_models(os.getenv("OPENAI_MODEL_BY_AGENT", ""))
 
 # ==========================================================
-# LLM provider: OpenRouter (default) or OpenAI directly
+# LLM provider: OpenAI directly (default) or OpenRouter
 # ==========================================================
 #
-# LLM_PROVIDER=openrouter (DEFAULT) -> the OpenAI-compatible client pointed
-#     at OpenRouter. Every OPENAI_MODEL* value is an OpenRouter model id; a
+# LLM_PROVIDER=openai (DEFAULT) -> api.openai.com with OPENAI_API_KEY.
+#     Every OPENAI_MODEL* value is a plain OpenAI model name ("gpt-4.1").
+# LLM_PROVIDER=openrouter -> the OpenAI-compatible client pointed at
+#     OpenRouter. Every OPENAI_MODEL* value is an OpenRouter model id; a
 #     bare OpenAI name ("gpt-4.1") is sent as "openai/gpt-4.1", so the
 #     existing values keep working. Key: OPENROUTER_API_KEY.
-# LLM_PROVIDER=openai (DEFAULT ON THIS DEPLOYMENT) -> api.openai.com with
-#     OPENAI_API_KEY, as before.
-# LLM_PROVIDER=azure -> Azure OpenAI. Azure has no notion of calling a
-#     model by name: every model must first be "deployed" in your Azure
-#     resource under a deployment name YOU chose, and that name (not
-#     "gpt-4.1") is what each request references. With azure, every
-#     OPENAI_MODEL* value is read as a DEPLOYMENT NAME, so
-#     OPENAI_MODEL_BY_AGENT=faq:my-mini-deployment works as before,
-#     naming a deployment instead of a model.
 #
-# This deployment defaults to "openai" (not "openrouter") so the
-# environment it already runs in keeps working with no change.
+# Azure OpenAI is not supported in this deployment.
 LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "openai").strip().lower()
-
-AZURE_OPENAI_ENDPOINT: str = os.getenv("AZURE_OPENAI_ENDPOINT", "")
-AZURE_OPENAI_API_VERSION: str = os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview")
 
 OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_BASE_URL: str = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")

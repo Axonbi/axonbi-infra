@@ -49,7 +49,7 @@ from functools import lru_cache
 from typing import Dict, Optional
 
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage, trim_messages
-from langchain_openai import AzureChatOpenAI, ChatOpenAI
+from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 from langchain_core.runnables import RunnableConfig
@@ -78,26 +78,11 @@ logger = logging.getLogger(__name__)
 def _make_llm(model: str, **kwargs):
     """The chat client for `model`, for config.LLM_PROVIDER.
 
-    openai (default on this deployment): api.openai.com, `model` is an
-    OpenAI model name. azure: an AzureChatOpenAI, `model` is a deployment
-    name (see below).
+    openai (default): api.openai.com, `model` is an OpenAI model name.
     openrouter: OpenRouter's OpenAI-compatible endpoint, so
     tool calling, JSON mode and every call site work unchanged; bare
     OpenAI names get the "openai/" prefix (config.llm_model_id).
     openai: api.openai.com, exactly as before."""
-
-    if config.LLM_PROVIDER == "azure":
-        # Azure has no "model name" at request time - only the DEPLOYMENT
-        # names the tenant created in the Azure portal - so `model`
-        # (OPENAI_MODEL / _CHEAP / _BY_AGENT / _UNDERSTANDING holds a
-        # deployment name here) is passed as `azure_deployment`.
-        return AzureChatOpenAI(
-            azure_deployment=model,
-            azure_endpoint=config.AZURE_OPENAI_ENDPOINT,
-            api_version=config.AZURE_OPENAI_API_VERSION,
-            api_key=config.OPENAI_API_KEY or "sk-not-configured",
-            **kwargs,
-        )
 
     if config.LLM_PROVIDER == "openrouter":
         return ChatOpenAI(
@@ -15196,7 +15181,7 @@ _PRICED_DOCTOR_AFFIRMED_DIRECTIVE = (
     "patient mentioned in the same message (\"بكرا\") is honoured after "
     "the doctor is confirmed.\n\n"
     "CONFIRMED IN test-production-mu1 (2026-09-29 22:20): \"د. أحمد يوسف "
-    "جلسة الاستشارة النفسية سعرها ٢٥٠ ريال. تحب أحجز لك موعد عنده؟\" -> "
+    "جلسة الاستشارة النفسية سعرها ٢٥٠ جنيه. تحب أحجز لك موعد عنده؟\" -> "
     "\"نعم بكرا ان شاء الله\" -> the four specialties, then a roster of "
     "14 psychotherapists, then \"د. أحمد يوسف غير متاح حاليًا\" - the "
     "patient was walked away from the very doctor they had asked for.\n\n"

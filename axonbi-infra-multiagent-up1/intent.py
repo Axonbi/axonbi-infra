@@ -106,23 +106,20 @@ def _classifier_llm():
     if _llm is not None:
         return _llm
 
-    # max_retries=2: the SDK retries 429s with backoff. Production hit Azure
+    # max_retries=2: the SDK retries 429s with backoff. Production hit
     # rate limits on 2026-09-24, and a consent check that fails on a
     # transient 429 would needlessly ask the patient again.
     kwargs = dict(temperature=0, max_retries=2, timeout=config.ROUTER_LLM_TIMEOUT_SECONDS)
-    if config.LLM_PROVIDER == "azure":
-        from langchain_openai import AzureChatOpenAI
+    from langchain_openai import ChatOpenAI
 
-        base = AzureChatOpenAI(
-            azure_deployment=config.OPENAI_MODEL_ROUTER,
-            azure_endpoint=config.AZURE_OPENAI_ENDPOINT,
-            api_version=config.AZURE_OPENAI_API_VERSION,
-            api_key=config.OPENAI_API_KEY or "sk-not-configured",
+    if config.LLM_PROVIDER == "openrouter":
+        base = ChatOpenAI(
+            model=config.llm_model_id(config.OPENAI_MODEL_ROUTER),
+            api_key=config.llm_api_key() or "sk-not-configured",
+            base_url=config.OPENROUTER_BASE_URL,
             **kwargs,
         )
     else:
-        from langchain_openai import ChatOpenAI
-
         base = ChatOpenAI(
             model=config.OPENAI_MODEL_ROUTER,
             api_key=config.OPENAI_API_KEY or "sk-not-configured",
