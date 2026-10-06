@@ -7849,6 +7849,21 @@ def match_entity_for_booking(
     if entity_type not in ("doctor", "branch"):
         return {"matched": False, "ambiguous": False, "status": "error"}
 
+    # AN E-MAIL ADDRESS IS NEVER A DOCTOR OR BRANCH NAME. CONFIRMED
+    # (tanasuq-production, 2026-10-06 08:20): "salm1387@gmail.com" went
+    # through the doctor fetch, a widened second fetch, and came back as
+    # 'no doctor named salm1387@gmail.com'. Skip the API entirely.
+    if re.search(r"[^\s@]+@[^\s@]+\.[A-Za-z]{2,}", str(user_input or "")):
+        return {
+            "matched": False,
+            "ambiguous": False,
+            "_guidance": (
+                "The patient typed an e-mail address, not a doctor or branch name. "
+                "Do not say no doctor/branch was found by that name and do not repeat the "
+                "address. Ask once, plainly, which doctor or specialty they want."
+            ),
+        }
+
     session_id = state.get("session_id")
     session = _get_booking_session(session_id)
 
@@ -8873,6 +8888,77 @@ def get_patient_info(state: Annotated[AgentState, InjectedState], mobile_number:
     }
 
 
+_ISO_DATE_RE = re.compile(r"(?<!\d)(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)")
+_DMY_DATE_RE = re.compile(r"(?<!\d)(\d{1,2})\s*[/\-.]\s*(\d{1,2})(?:\s*[/\-.]\s*(\d{2,4}))?(?!\d)")
+# Words that mean "the NEXT such weekday" - a bare weekday reply may only
+# be matched against the days just shown when none of these is present.
+_NEXT_OCCURRENCE_WORDS = {"الجاي", "الجايه", "الجاى", "القادم", "القادمه", "بعده", "بعدها", "بعد", "التالي", "next", "after"}
+
+
+def _parse_explicit_date(text: Optional[str], today: date) -> Optional[date]:
+    """A calendar date the patient typed (\"18/10\", \"الاحد 18/10/2026\",
+    \"2026-10-18\", Arabic-Indic digits too) or None.
+
+    CONFIRMED REAL PRODUCTION FAILURE (tanasuq-production, 2026-10-06):
+    after being offered \"الأحد 18/10/2026\" the patient replied \"18/10\"
+    (-> unrecognized day) and then \"الاحد 18/10/2026\" (-> the weekday
+    word won and the DATE was dropped, so 11/10 - the Sunday they had
+    just turned down - was shown again). A typed date is the most
+    specific answer there is and has to win over the weekday word.
+    Without a year the next occurrence on/after today is used."""
+
+    if not text:
+        return None
+    raw = str(text).translate(_ARABIC_DIGIT_MAP)
+
+    match = _ISO_DATE_RE.search(raw)
+    if match:
+        year, month, day = (int(g) for g in match.groups())
+        try:
+            return date(year, month, day)
+        except ValueError:
+            return None
+
+    match = _DMY_DATE_RE.search(raw)
+    if not match:
+        return None
+    day, month = int(match.group(1)), int(match.group(2))
+    year_text = match.group(3)
+    try:
+        if year_text:
+            year = int(year_text)
+            if year < 100:
+                year += 2000
+            return date(year, month, day)
+        candidate = date(today.year, month, day)
+        if candidate < today:
+            candidate = date(today.year + 1, month, day)
+        return candidate
+    except ValueError:
+        return None
+
+
+def _date_from_last_shown_days(session: dict, target_weekday: int, weekday_text: str) -> Optional[date]:
+    """The date of `target_weekday` in the day list the patient was JUST
+    shown, so a bare \"الاحد\" means the Sunday on screen (18/10) and not
+    the nearest Sunday overall (11/10, already declined)."""
+
+    last = session.get("last_list") or {}
+    if last.get("entity_type") != "day":
+        return None
+    words = {w for w in re.split(r"[\s/،,]+", str(weekday_text or "").lower()) if w}
+    if words & {_fold_weekday_token(w) for w in _NEXT_OCCURRENCE_WORDS} or words & _NEXT_OCCURRENCE_WORDS:
+        return None
+    for item in last.get("items") or []:
+        try:
+            shown = date.fromisoformat(str(item.get("date"))[:10])
+        except (ValueError, TypeError, AttributeError):
+            continue
+        if shown.weekday() == target_weekday:
+            return shown
+    return None
+
+
 @tool
 def resolve_available_day(
     state: Annotated[AgentState, InjectedState],
@@ -8904,7 +8990,20 @@ def resolve_available_day(
     if not doctor_id:
         return {"status": "missing_doctor"}
 
-    target_weekday = resolve_weekday_index(weekday_name)
+    _tz_name = (state.get("templates") or {}).get("_timezone", DEFAULT_TIMEZONE)
+    try:
+        _today = datetime.now(ZoneInfo(_tz_name)).date()
+    except Exception:
+        _today = datetime.now(ZoneInfo(DEFAULT_TIMEZONE)).date()
+
+    # A typed DATE beats a weekday word; a bare weekday after a shown day
+    # list means the one on screen. See the two helpers above.
+    exact_date = _parse_explicit_date(weekday_name, _today)
+    target_weekday = exact_date.weekday() if exact_date else resolve_weekday_index(weekday_name)
+    if exact_date is None and target_weekday is not None and not after_date:
+        exact_date = _date_from_last_shown_days(session, target_weekday, weekday_name)
+        if exact_date:
+            logger.info("resolve_available_day: bare weekday %r matched to shown date %s", weekday_name, exact_date)
     if target_weekday is None:
         # NOT "error" - the two need completely different handling.
         # "error" means the lookup itself broke and the patient should
@@ -9046,6 +9145,8 @@ def resolve_available_day(
             continue
         if after_dt and dt.date() <= after_dt:
             continue
+        if exact_date and dt.date() != exact_date:
+            continue
         candidates.append((dt, wire_dt))
 
     if not candidates:
@@ -9168,7 +9269,7 @@ def resolve_available_day(
     # 04/10 and 11/10 Sundays had nothing open - and the reply showed
     # 18/10's times as if it were the Sunday they asked for. Said only
     # when it happened, so it costs nothing otherwise.
-    skipped = _nearer_weekday_dates(lead_time.date(), after_dt, target_weekday, chosen_date)
+    skipped = [] if exact_date else _nearer_weekday_dates(lead_time.date(), after_dt, target_weekday, chosen_date)
     if skipped:
         result["nearer_dates_without_slots"] = [
             f"{_display_weekday(d.isoformat(), language)} {_display_date(d.isoformat())}" for d in skipped
