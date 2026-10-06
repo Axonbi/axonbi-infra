@@ -30,6 +30,7 @@ from graph import graph, soft_recovery_reply, upstream_api_failed
 
 import llm_usage
 import progress
+import session_store
 import tools
 
 configure_logging()
@@ -250,6 +251,23 @@ _now = time.time  # dedicated reference so tests can patch main._now in
 
 def _config_for(session_id: str) -> dict:
     now = _now()
+
+    # First sight of this session since the process started: rehydrate
+    # its bookkeeping from the durable store (no-op without
+    # CHECKPOINT_DB). Without this a restart would send every returning
+    # session back to generation 0 - the checkpointer's oldest thread for
+    # it - instead of the conversation that was actually in progress.
+    if session_id not in _last_active and session_id not in _generation:
+        persisted = session_store.load(session_id)
+        if persisted is not None:
+            p_last, p_success, p_generation = persisted
+            if p_last is not None:
+                _last_active[session_id] = p_last
+            if p_success is not None:
+                _success_at[session_id] = p_success
+            if p_generation:
+                _generation[session_id] = p_generation
+
     last = _last_active.get(session_id)
     success = _success_at.get(session_id)
 
@@ -293,6 +311,7 @@ def _config_for(session_id: str) -> dict:
     _prune_session_bookkeeping()
 
     generation = _generation.get(session_id, 0)
+    session_store.save(session_id, now, _success_at.get(session_id), generation)
     thread_id = f"{THREAD_ID_PREFIX}:{session_id}:{generation}" if generation else f"{THREAD_ID_PREFIX}:{session_id}"
 
     # AN EXPLICIT CEILING ON GRAPH STEPS PER TURN.
@@ -623,6 +642,9 @@ def send_message_with_signals(
 
             if _cancellation_just_succeeded(new_messages_this_turn):
                 _success_at[session_id] = _now()
+                session_store.save(
+                    session_id, _last_active.get(session_id), _success_at[session_id], _generation.get(session_id, 0)
+                )
                 logger.info(
                     "session_id=%s: cancellation succeeded this turn - will reset after %ss of no follow-up",
                     session_id, POST_SUCCESS_TIMEOUT_SECONDS,

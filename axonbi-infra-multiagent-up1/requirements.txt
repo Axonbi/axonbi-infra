@@ -46,3 +46,9 @@ python-dotenv>=1.0.0
 langgraph-cli[inmem]>=0.4.31
 langsmith>=0.11.1
 langgraph-sdk>=0.4.3
+
+# Durable conversation memory. graph.py switches from MemorySaver to
+# SqliteSaver when CHECKPOINT_DB names a file, so a restart or redeploy
+# no longer wipes in-progress conversations. Stdlib sqlite3 underneath -
+# no server to run. Unset CHECKPOINT_DB and this package is simply unused.
+langgraph-checkpoint-sqlite>=2.0.0

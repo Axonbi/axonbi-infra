@@ -22828,7 +22828,40 @@ else:
 
     logger.info("graph: single-agent mode (MULTI_AGENT_ENABLED is off)")
 
-checkpointer = MemorySaver()
+def _build_checkpointer():
+    """MemorySaver by default; a durable SqliteSaver when CHECKPOINT_DB is set.
+
+    CHECKPOINT_DB names a SQLite file (on the Bridge server it lives on
+    the data disk, mounted into the container). With it set, every
+    conversation survives a container restart or a redeploy from git -
+    the thread_id main.py passes is the same before and after, so the
+    patient simply continues where they were. Unset, behaviour is the
+    pre-existing in-memory one, which the tests and local runs rely on.
+
+    One api process writes the file, so SQLite is the right tool here;
+    swapping to PostgresSaver later is a one-line change because both
+    implement the same checkpointer interface.
+    """
+    path = os.getenv("CHECKPOINT_DB", "").strip()
+    if not path:
+        return MemorySaver()
+
+    import sqlite3
+    from langgraph.checkpoint.sqlite import SqliteSaver
+
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    # check_same_thread=False: FastAPI serves turns from a thread pool.
+    # SqliteSaver serialises access with its own lock. WAL mode keeps
+    # readers from blocking the writer and survives an unclean stop.
+    conn = sqlite3.connect(path, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL")
+    saver = SqliteSaver(conn)
+    saver.setup()
+    logger.info("checkpointer: SqliteSaver at %s - conversations survive restarts", path)
+    return saver
+
+
+checkpointer = _build_checkpointer()
 
 # WHO PROVIDES PERSISTENCE DEPENDS ON WHO IS RUNNING THIS GRAPH.
 #
