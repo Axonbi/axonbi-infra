@@ -9845,6 +9845,21 @@ def _reply_ignores_a_refusal(reply_text: str, state: AgentState) -> bool:
         return False
 
     folded_human = _norm_ar(text)
+
+    # A COUNTER-REQUEST IS NOT A BARE REFUSAL. CONFIRMED (tanasuq-production,
+    # 2026-10-06 11:12): the patient was shown a day list, rejected it and
+    # named what she wanted - "الثلاثاء". The router read it as
+    # "decline_and_request" and the reply correctly showed that Tuesday's
+    # times for the SAME doctor - and this check flagged it (twice) as
+    # "brought the same doctor straight back". Naming a day/date is the
+    # opposite of a dead end: the same doctor on the day they asked for is
+    # exactly the right answer.
+    if state.get("turn_action") == "decline_and_request":
+        return False
+    if (tools.resolve_weekday_index(text) is not None
+            or tools._parse_explicit_date(text, date.today()) is not None):
+        return False
+
     reading = state.get("understanding")
     if reading is not None:
         if not reading.get("declines"):
