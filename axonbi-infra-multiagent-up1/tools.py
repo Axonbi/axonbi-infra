@@ -7711,6 +7711,83 @@ def _retire_previous_doctors_branch(session: dict, entity_type: str,
     session["review_shown"] = False
 
 
+_KEYCAP_TEN = "\U0001F51F"
+
+
+def _shown_line_position(line: str) -> Optional[int]:
+    """The list number a reply line starts with ("1️⃣ …", "🔟 …",
+    "⁦1️⃣1️⃣⁩ …", "3. …"), or None."""
+
+    text = (line or "").replace("⁦", "").replace("⁩", "").strip()
+    if text.startswith(_KEYCAP_TEN):
+        return 10
+    text = text.replace("️", "").replace("⃣", "").translate(_ARABIC_DIGIT_MAP)
+    digits = ""
+    for ch in text:
+        if not ch.isdigit():
+            break
+        digits += ch
+    return int(digits) if digits else None
+
+
+def _confirm_doctor_picked_from_shown_list(state: AgentState) -> Optional[str]:
+    """Confirm the doctor the patient picked BY NUMBER from the list in
+    the assistant's last reply, when no doctor is confirmed yet.
+
+    CONFIRMED REAL PRODUCTION FAILURE (tanasuq-production, 2026-10-05
+    13:49, session 201025981330, and again 21:23, session 966567700950):
+    the doctor list came from the medical agent's `find_available_doctors`
+    and was shown again by booking from history. The patient answered
+    "2" / "7"; the model went straight to `get_doctor_schedule_for_booking`
+    without `match_entity_for_booking`, got "missing_doctor", and told
+    the patient "ما قدرت أجيب جدول مواعيد الدكتور" - for doctors with
+    open rotas.
+
+    The number is resolved against the line the patient actually SAW
+    with that number, and the doctor on it must be one a tool returned
+    (`last_list`) - never by position in `last_list` alone, since a reply
+    may show fewer doctors than the tool returned. Anything else is left
+    to the model, exactly as before."""
+
+    session = _get_booking_session(state.get("session_id"))
+    if session.get("doctor_id"):
+        return session["doctor_id"]
+
+    position = _extract_selection_number(_latest_human_text_for_handoff_guard(state))
+    last_list = session.get("last_list") or {}
+    if position is None or last_list.get("entity_type") != "doctor":
+        return None
+
+    shown = understanding_module.last_ai_text_before_latest_human(state.get("messages") or [])
+    line = next(
+        (ln for ln in shown.splitlines() if _shown_line_position(ln) == position),
+        None,
+    )
+    if not line:
+        return None
+
+    normalized_line = _normalize_arabic(line)
+    candidates = []
+    for item in last_list.get("items") or []:
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        names = {item.get(k) for k in ("altName", "name", "formatedName") if item.get(k)}
+        if any(_normalize_arabic(n) in normalized_line for n in names):
+            candidates.append(item)
+    if len({c["id"] for c in candidates}) != 1:
+        return None
+
+    chosen = candidates[0]
+    _retire_previous_doctors_branch(session, "doctor", chosen["id"])
+    session["doctor_id"] = chosen["id"]
+    session["doctor_display_name"] = _arabic_preferred_name(chosen)
+    logger.info(
+        "_confirm_doctor_picked_from_shown_list: position %d on the shown list -> "
+        "doctor_id=%s (%s)", position, chosen["id"], session["doctor_display_name"],
+    )
+    return chosen["id"]
+
+
 @tool
 def match_entity_for_booking(
     state: Annotated[AgentState, InjectedState],
@@ -8821,7 +8898,7 @@ def resolve_available_day(
 
     session_id = state.get("session_id")
     session = _get_booking_session(session_id)
-    doctor_id = session.get("doctor_id")
+    doctor_id = session.get("doctor_id") or _confirm_doctor_picked_from_shown_list(state)
     branch_id = session.get("branch_id")
 
     if not doctor_id:
@@ -9542,7 +9619,7 @@ def list_available_days_for_booking(
 
     session_id = state.get("session_id")
     session = _get_booking_session(session_id)
-    doctor_id = session.get("doctor_id")
+    doctor_id = session.get("doctor_id") or _confirm_doctor_picked_from_shown_list(state)
     branch_id = session.get("branch_id")
 
     if not doctor_id:
@@ -10571,7 +10648,7 @@ def get_doctor_schedule_for_booking(
 
     session_id = state.get("session_id")
     session = _get_booking_session(session_id)
-    doctor_id = session.get("doctor_id")
+    doctor_id = session.get("doctor_id") or _confirm_doctor_picked_from_shown_list(state)
 
     if not doctor_id:
         return {"status": "missing_doctor"}
