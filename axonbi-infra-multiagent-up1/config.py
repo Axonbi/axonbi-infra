@@ -260,6 +260,10 @@ DEFAULT_TIMEZONE: str = os.getenv("DEFAULT_TIMEZONE", "Africa/Cairo")  # Egypt
 #                    (always succeeds; TEST_OTP is accepted as correct)
 #   "authentica"  -> mirrors send_otp5 / verify_otp5 in
 #                    langchain_cancellation.json (api.authentica.sa)
+#   "smsmisr"     -> SMS Misr OTP API (smsmisr.com/api/OTP/). Unlike
+#                    Authentica, SMS Misr only DELIVERS the code: we
+#                    generate it ourselves, store it in memory and verify
+#                    it locally (see tools.send_otp / verify_otp).
 # Defaults to "dummy" so the project runs end-to-end with no external
 # OTP credentials, exactly like the n8n dev setup that ships both a real
 # and a dummy OTP sub-workflow side by side.
@@ -275,6 +279,16 @@ AUTHENTICA_BASE_URL: str = os.getenv(
 AUTHENTICA_API_KEY: str = os.getenv("AUTHENTICA_API_KEY", "")
 AUTHENTICA_TEMPLATE_ID: str = os.getenv("AUTHENTICA_TEMPLATE_ID", "31")
 AUTHENTICA_FALLBACK_EMAIL: str = os.getenv("AUTHENTICA_FALLBACK_EMAIL", "")
+
+# SMS Misr (OTP_PROVIDER=smsmisr). Credentials come from the environment
+# only - never commit them.
+SMSMISR_BASE_URL: str = os.getenv("SMSMISR_BASE_URL", "https://smsmisr.com/api/OTP/")
+SMSMISR_ENVIRONMENT: str = os.getenv("SMSMISR_ENVIRONMENT", "1")  # 1 = live, 2 = test
+SMSMISR_USERNAME: str = os.getenv("SMSMISR_USERNAME", "")
+SMSMISR_PASSWORD: str = os.getenv("SMSMISR_PASSWORD", "")
+SMSMISR_SENDER: str = os.getenv("SMSMISR_SENDER", "")
+SMSMISR_TEMPLATE: str = os.getenv("SMSMISR_TEMPLATE", "")
+SMSMISR_OTP_LENGTH: int = int(os.getenv("SMSMISR_OTP_LENGTH", "6"))
 
 # SMTP config for the Complaint Agent's send_complaint_email tool.
 # Per-clinic recipient list comes from client_config.csv's own

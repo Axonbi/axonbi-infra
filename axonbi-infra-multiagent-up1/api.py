@@ -34,6 +34,12 @@ from config import (
     DOCTORS_API_MAX_RETRIES,
     DOCTORS_API_RETRY_BACKOFF_SECONDS,
     REQUEST_TIMEOUT_SECONDS,
+    SMSMISR_BASE_URL,
+    SMSMISR_ENVIRONMENT,
+    SMSMISR_PASSWORD,
+    SMSMISR_SENDER,
+    SMSMISR_TEMPLATE,
+    SMSMISR_USERNAME,
     SSO_EMAIL,
     SSO_LOGIN_URL,
     SSO_ORGANIZATION_ID,
@@ -632,6 +638,59 @@ def authentica_verify_otp(phone: str, otp: str, email: str = "") -> dict:
                     or body.get("status") is True)
 
     return _result(verified, response.status_code, data=body)
+
+
+# ==========================================================
+# SMS Misr OTP API. Only used when config.OTP_PROVIDER == "smsmisr".
+# The provider just delivers the code we hand it - generation and
+# verification both happen in tools.py.
+# ==========================================================
+
+def smsmisr_send_otp(phone: str, otp: str) -> dict:
+    if not (SMSMISR_USERNAME and SMSMISR_PASSWORD and SMSMISR_SENDER and SMSMISR_TEMPLATE):
+        logger.error("SMS Misr send_otp: SMSMISR_* credentials are not configured")
+        return _result(False, error="not_configured")
+
+    params = {
+        "environment": SMSMISR_ENVIRONMENT,
+        "username": SMSMISR_USERNAME,
+        "password": SMSMISR_PASSWORD,
+        "sender": SMSMISR_SENDER,
+        # SMS Misr wants the international number without "+" (2010...).
+        "mobile": str(phone).lstrip("+"),
+        "template": SMSMISR_TEMPLATE,
+        "otp": otp,
+    }
+
+    # Single attempt on purpose: a retry after a slow-but-delivered request
+    # would text the patient two different codes.
+    response, last_timeout, last_exc = _request_once("get", SMSMISR_BASE_URL, params=params)
+
+    if response is None:
+        if last_timeout:
+            return _result(False, error="timeout")
+        return _result(False, error=str(last_exc) if last_exc else "request_failed")
+
+    # Never log `params` - it carries the account credentials and the code.
+    if response.status_code >= 400:
+        logger.error("SMS Misr send_otp rejected phone=%s status=%s body=%s",
+                     phone, response.status_code, response.text[:500])
+        return _result(False, response.status_code, error="send_otp_failed",
+                       details=[response.text[:300]])
+
+    try:
+        body = response.json()
+    except ValueError:
+        body = {}
+
+    # SMS Misr answers HTTP 200 for failures too; success is code "1901".
+    code = str(body.get("code", "")).strip()
+    if code != "1901":
+        logger.error("SMS Misr send_otp not accepted phone=%s body=%s", phone, response.text[:500])
+        return _result(False, response.status_code, error="send_otp_failed",
+                       details=[str(body.get("message") or response.text[:300])])
+
+    return _result(True, response.status_code, data=body)
 
 
 # ==========================================================

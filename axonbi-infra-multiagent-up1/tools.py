@@ -29,6 +29,7 @@ import ast
 import json
 import logging
 import re
+import secrets
 import smtplib
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -51,6 +52,7 @@ from config import (
     AUTHENTICA_FALLBACK_EMAIL,
     OTP_PROVIDER,
     OTP_TTL_SECONDS,
+    SMSMISR_OTP_LENGTH,
     TEST_OTP,
     SMTP_HOST,
     SMTP_PORT,
@@ -1485,6 +1487,24 @@ def send_otp(state: Annotated[AgentState, InjectedState], phone: str) -> dict:
             logger.error("send_otp: provider did NOT send a code to %r (%s)", normalized,
                          result.get("error") or "unknown error")
             return {"status": "otp_send_failed"}
+        return {"status": "otp_sent"}
+
+    if OTP_PROVIDER == "smsmisr":
+        # SMS Misr only delivers; we own the code. Stored only after the
+        # provider accepted it, so a failed send never leaves a live code.
+        code = "".join(secrets.choice("0123456789") for _ in range(SMSMISR_OTP_LENGTH))
+        result = api.smsmisr_send_otp(normalized, code) or {}
+        if not result.get("success"):
+            reason = " ".join(str(d) for d in (result.get("details") or [])).lower()
+            if "not valid" in reason or "invalid" in reason:
+                logger.warning("send_otp: provider rejected %r as not a valid number", normalized)
+                return {"status": "invalid_phone"}
+            logger.error("send_otp: provider did NOT send a code to %r (%s)", normalized,
+                         result.get("error") or "unknown error")
+            return {"status": "otp_send_failed"}
+        _otp_storage[normalized] = {"otp": code, "created_at": time.time()}
+        _prune_otp_storage()
+        logger.info("OTP sent via smsmisr to %s", normalized)
         return {"status": "otp_sent"}
 
     _otp_storage[normalized] = {"otp": TEST_OTP, "created_at": time.time()}
