@@ -118,7 +118,7 @@ Return ONLY a JSON object with these keys:
 "crisis": suicidal thoughts, wanting to die or "end it", self-harm, or danger to self or others, direct or indirect, including someone with them. Anxiety, sadness, insomnia or asking for a psychiatrist are not.
 "wants_options": cannot choose or does not know (which doctor, which specialty, which day), asks to be shown everything that is available, or asks for other choices, in any wording ("مش عارف", "اعرض لي الكل", "غيره", "what do you have?"). False when they simply name or pick something.
 "asks_price": asks about a price, fee or cost.
-"asks_location": asks where a branch is, its address, map or location pin ("ارسلي اللوكيشن"), or which branch is nearest to a place; also lost on the way there ("ضيعت اللفة", "تهت") - faq, never medical.
+"asks_location": asks where a branch is, its address, map or location pin ("ارسلي اللوكيشن"), or which branch is nearest to a place; also lost on the way there ("ضيعت اللفة/الدخلة", "تهت") - faq, never medical.
 "about_this_hospital": only for intent "other" - true when it concerns THIS hospital although it is not patient care (a job, training, an interview, a supplier, administration); false when it has nothing to do with the hospital (a party, event tickets, food prices, general chat).
 "doctor_name": a doctor's PERSONAL name as used - not the patient's own name ("الموعد لحاتم العنزي" names the patient) (or the doctor referred back to, e.g. "الدكتور اللي قولتي عليه"), else null. "دكتور نفسي" / "دكتور عيون" name a specialty.
 "specialty": the specialty, department or service referred to, in the patient's words, else null.
