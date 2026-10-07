@@ -17269,7 +17269,9 @@ _BARE_AFFIRMATION_RE = re.compile(
     # informal spelling away from "اها", which this regex already
     # matched, and was missed entirely because the list only ever held
     # exact words, never variants of them.
-    r"^\s*(?:اه+ا*|ايه+|أيوه+|ايوه+|ايوا+|نعم|تمام|اوك+|أوك+|ok(?:ay)?|yes|yep|sure|"
+    # A bare "اي" is the Gulf "yes" (tanasuq-production, 2026-10-07 10:51:
+    # "اي" to "تحب أحوّلك لخدمة العملاء؟" was not taken as one).
+    r"^\s*(?:اه+ا*|اي+|ايه+|أيوه+|ايوه+|ايوا+|نعم|تمام|اوك+|أوك+|ok(?:ay)?|yes|yep|sure|"
     r"اكمل|كمل|اه\s*اكمل|ماشي|حاضر|طبعا|أكيد|اكيد)"
     r"\s*[.!؟?،,]*\s*$",
     re.IGNORECASE,
@@ -21561,6 +21563,10 @@ def router(state: AgentState) -> dict:
     if reading is not None and not reading.get("wants_human") and _types_the_word_we_asked_for(state.get("messages") or []):
         reading = {**reading, "wants_human": True, "intent": "human", "confidence": 1.0,
                    "is_ambiguous": False, "answer_to_previous_question": True}
+    if (reading is not None and not reading.get("wants_human")
+            and _yes_to_our_transfer_question(state.get("messages") or [], reading)):
+        reading = {**reading, "wants_human": True, "intent": "human", "confidence": 1.0,
+                   "is_ambiguous": False, "answer_to_previous_question": True}
     if reading is not None and _says_lost_on_the_way(state.get("messages") or []):
         reading = {**reading, "intent": "faq", "asks_location": True, "confidence": 1.0,
                    "is_ambiguous": False, "alternatives": [], "changes_intent": True,
@@ -21800,6 +21806,23 @@ _LOST_ON_THE_WAY_RE = re.compile(
     r"|(?:ما|م)\s*لقي(?:ت|نا)\s*(?:ال)?(?:مستشف|فرع|مبن|مدخل|باب)"
     r"|(?:مو|مب|ما)\s*لاقي\s*(?:ال)?(?:مستشف|فرع|مبن|مدخل|باب)"
 )
+
+
+def _yes_to_our_transfer_question(messages: list, reading: Optional[dict]) -> bool:
+    """Our own LAST question offered customer service and the patient said yes.
+
+    CONFIRMED (tanasuq-production, 2026-10-07 10:51): "ولأي استفسار ثاني، تحب
+    أحوّلك لخدمة العملاء؟" -> "اي" was read as neither yes nor a request for a
+    person; the concierge then wrote "تم تحويلك" with no handoff raised, the
+    verifier turned that into the same question again, and the patient had to
+    type "حولني". Only the question line counts - the greeting menu also
+    mentions transferring, and "كيف أستطيع مساعدتك اليوم؟" offers nothing."""
+
+    last_ai = understanding.last_ai_text_before_latest_human(messages) or ""
+    questions = [line for line in last_ai.splitlines() if "؟" in line or "?" in line]
+    if not questions or not _TRANSFER_OFFER_RE.search(agents.router.normalize(questions[-1])):
+        return False
+    return _patient_confirms(understanding.latest_human_text(messages) or "", reading)
 
 
 def _says_lost_on_the_way(messages: list) -> bool:
