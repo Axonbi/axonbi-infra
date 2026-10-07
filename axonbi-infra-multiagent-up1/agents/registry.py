@@ -311,6 +311,10 @@ never alter or retype the slot value yourself.""",
             "reset_booking_session",
             "request_human_handoff",
             "share_branch_location",
+            # "اقرب فرع ليا من مول العرب؟" mid-booking is the branch
+            # question, answered from the map - see tools.geocode_address.
+            "geocode_address",
+            "find_nearest_branch",
         ),
         job="""\
 ============================================================
@@ -350,6 +354,8 @@ booking availability, not the clinic's service catalogue.""",
             "get_doctor_fees",
             "request_human_handoff",
             "share_branch_location",
+            "geocode_address",
+            "find_nearest_branch",
         ),
         job="""\
 ============================================================
@@ -385,6 +391,8 @@ only ever name a doctor a tool returned in this conversation.""",
             "get_doctor_fees",
             "request_human_handoff",
             "share_branch_location",
+            "geocode_address",
+            "find_nearest_branch",
         ),
         job="""\
 ============================================================
@@ -407,6 +415,14 @@ Never answer a "what services do you offer" question from
 call `list_hospital_services` and show the complete list it returns,
 unchanged. Never state a fee unless they asked about cost and
 `get_doctor_fees` returned it.
+
+NEAREST BRANCH TO A PLACE ("انا قاعد في فندق الماسة ايه اقرب فرع؟", "جاي
+من عند مول العرب", "nearest branch to Cairo Festival City"): the place is
+where THEY are, never a branch name. Call `geocode_address` with the
+place; its `nearest_branch` is the answer - name that branch and its
+distance, never judge it yourself. No place named at all ("ايه اقرب
+فرع؟")? Ask for their area or a nearby landmark first. "not_found" twice:
+give the branches and addresses and let them choose.
 
 PRICING/STAY-DURATION QUESTIONS THE KNOWLEDGE BASE CANNOT ANSWER - the
 knowledge base has no pricing figures at all for inpatient/hospitalization
