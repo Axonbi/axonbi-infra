@@ -148,3 +148,73 @@ def test_a_link_request_with_no_location_topic_is_still_refused():
     ]
     state = {"messages": msgs, "session_id": "log-1007-pin2", "client_id": "t", "understanding": {"asks_location": False}}
     assert tools.share_branch_location.func(state=state, branch_name="النزهة")["status"] != "location_requested"
+
+
+# ----------------------------------------------------------------------
+# 2026-10-07 10:52-10:56: reschedule went in a circle between branches
+# ----------------------------------------------------------------------
+
+def _reschedule_state(session_id):
+    return {"session_id": session_id, "client_id": "t", "messages": [],
+            "templates": {"_timezone": "Asia/Riyadh", "doctors_base_url": "https://x.test"}}
+
+
+def test_a_full_requested_day_moves_to_the_next_same_weekday_with_slots():
+    from datetime import datetime, timedelta
+    from unittest.mock import patch
+    from zoneinfo import ZoneInfo
+    today = datetime.now(ZoneInfo("Asia/Riyadh")).date()
+    asked = today + timedelta(days=7)            # full
+    next_week = asked + timedelta(days=7)         # has slots
+    other_day = asked + timedelta(days=3)         # different weekday - never offered
+
+    def slots(day, hour):
+        return {"slotStart": f"{day}T{hour}:00:00+03:00", "slotEnd": f"{day}T{hour}:30:00+03:00",
+                "isBooked": False, "doctorName": "عمر المديفر", "branchName": "النزهة"}
+
+    calls = []
+
+    def fake(base_url, doctor_ids, from_date, to_date, is_booked=False, **kw):
+        calls.append((from_date, to_date))
+        if len(calls) == 1:
+            items = []
+        else:
+            items = [slots(other_day, 16), slots(next_week, 16), slots(next_week, 17)]
+        return {"success": True, "status_code": 200, "error": None, "data": {"items": items}}
+
+    state = _reschedule_state("log-1007-rs")
+    try:
+        with patch("tools._resolve_doctor_id", return_value={"status": "found", "doctor_id": "D1"}), \
+             patch("tools._doctors_base_url", return_value="https://x.test"), \
+             patch("api.get_doctor_schedule_slots", side_effect=fake):
+            shown = tools.get_available_reschedule_slots.func(
+                state=state, ref_number="TNS-1",
+                from_date=f"{asked}T00:00:00+03:00", to_date=f"{asked}T23:59:00+03:00")
+        assert shown["status"] == "found"
+        assert {s["slotStart"][:10] for s in shown["slots"]} == {next_week.isoformat()}
+        assert len(calls) == 2
+    finally:
+        tools._BOOKING_SESSIONS.pop("log-1007-rs", None)
+
+
+def test_the_next_weekday_tool_says_it_checks_no_availability():
+    assert "does not check availability" in tools.get_next_weekday_date.description
+
+
+def test_yes_to_our_transfer_question_is_a_handoff():
+    from langchain_core.messages import AIMessage, HumanMessage
+    offer = ("إذا كان استفسارك عن التوظيف أو التدريب، تقدر تراسل HR@x.sa 🌷\n"
+             "ولأي استفسار ثاني، تحب أحوّلك لخدمة العملاء؟")
+    msgs = [HumanMessage(content="احتاج شراكة"), AIMessage(content=offer), HumanMessage(content="اي")]
+    assert graph._yes_to_our_transfer_question(msgs, {"intent": "answer", "confirms": False, "declines": False})
+    # a refusal stays a refusal
+    msgs_no = msgs[:-1] + [HumanMessage(content="لا")]
+    assert not graph._yes_to_our_transfer_question(msgs_no, {"declines": True})
+
+
+def test_the_greeting_menu_is_not_a_transfer_offer():
+    from langchain_core.messages import AIMessage, HumanMessage
+    menu = ("👤 التحدث مع أحد ممثلي خدمة العملاء، فقط اطلب مني ذلك وسأقوم بتحويلك\n\n"
+            "كيف أستطيع مساعدتك اليوم؟ 😊")
+    msgs = [HumanMessage(content="هلا"), AIMessage(content=menu), HumanMessage(content="اي")]
+    assert not graph._yes_to_our_transfer_question(msgs, {"intent": "answer"})
