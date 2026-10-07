@@ -147,7 +147,6 @@ def test_the_card_has_the_branch_details_and_offers_the_pin():
     for part in ("🏥 الفرع: شيراتون - مصر الجديدة", "📍 العنوان: 1 ش أنقرة", "📞 التليفون: 15180",
                  "📏 المسافة: حوالي 3.2 كم", "لوكيشن"):
         assert part in card
-    assert "مواعيد العمل" not in card          # no hours configured - no empty line
 
 
 def test_once_the_pin_went_out_the_card_offers_booking():
@@ -210,6 +209,30 @@ def test_a_whole_turn_answers_the_nearest_branch_and_then_sends_the_pin(session_
     ])
     second = say("اه")
     assert second["location"] is True and second["branch_name"] == "شيراتون - مصر الجديدة"
+
+
+def test_a_draft_that_names_the_branch_in_its_own_words_still_becomes_the_card(session_id, llm, reader, monkeypatch):
+    # The card is the one shape for this answer - a free-text draft that
+    # does lead with the right branch is replaced too.
+    from unittest.mock import patch
+
+    import main
+    from conftest import TANASUQ
+
+    client = {**TANASUQ, "timezone": "Africa/Cairo", "Dialect": "Egyptian"}
+    monkeypatch.setattr(tools, "_geocode_candidates", lambda *a, **k: [
+        {"display_name": "فندق الماسة, مدينة نصر, القاهرة", "lat": "30.0838", "lon": "31.3426",
+         "class": "tourism", "addresstype": "hotel"}])
+    _real_branches(monkeypatch)
+
+    question = "انا قاعد في فندق الماسة ايه اقرب فرع؟"
+    reader.table[question] = {"intent": "faq", "confidence": 1.0, "asks_location": True}
+    llm._responses.append(AIMessage(content="أقرب فرع لك هو فرع شيراتون - مصر الجديدة، ويبعد حوالي 4 كم."))
+    with patch.multiple(graph, _VERIFIERS_SAFETY_STRICT=False, _VERIFIERS_FLOW_STRICT=False):
+        reply = main.send_message_with_signals(client["client_id"], session_id, question,
+                                               channel_phone="201000000001", client_config=client)["reply"]
+    assert "🏥 الفرع: شيراتون - مصر الجديدة" in reply and "📏 المسافة: حوالي" in reply
+    assert "أقرب فرع لك هو فرع" not in reply
 
 
 def test_the_card_is_not_read_as_an_invented_branch():

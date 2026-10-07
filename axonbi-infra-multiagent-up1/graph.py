@@ -21599,16 +21599,18 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     # THE NEAREST BRANCH FOUND THIS TURN IS WHAT THE REPLY SAYS. CONFIRMED
     # (elborgdemo staging 2026-10-05): "اقرب فرع للهرم" as the first message
     # found the branch - the pin went out - but the text was the welcome
-    # menu alone. A reply that does not lead with the branch found is
-    # replaced by the card; on a first turn the greeting goes above it.
+    # menu alone. The card is ALWAYS the answer - one fixed shape (branch,
+    # address, phone, hours, distance) whatever the model drafted; on a
+    # first turn the greeting goes above it.
     if not has_tool_calls:
         nearest_result = _nearest_branch_result_this_turn(state.get("messages") or [])
         card, card_branch = _nearest_branch_card(state.get("messages") or [], target_language or "ar")
-        if card and not _reply_names_nearest_first(response.content or "", nearest_result["branches"]):
-            logger.warning(
-                "agent[%s]: the nearest branch found this turn (%r) is not what the reply "
-                "leads with - sending the nearest-branch card instead. Draft: %r",
-                agent_name, card_branch, response.content,
+        if card and response.content != card:
+            leads = _reply_names_nearest_first(response.content or "", nearest_result["branches"])
+            (logger.info if leads else logger.warning)(
+                "agent[%s]: nearest branch found this turn (%r) - sending the "
+                "nearest-branch card (draft %s with it). Draft: %r",
+                agent_name, card_branch, "led" if leads else "did NOT lead", response.content,
             )
             response = AIMessage(content=card)
 
