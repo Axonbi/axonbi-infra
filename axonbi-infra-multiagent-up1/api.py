@@ -684,12 +684,14 @@ def smsmisr_send_otp(phone: str, otp: str) -> dict:
     except ValueError:
         body = {}
 
-    # SMS Misr answers HTTP 200 for failures too; success is code "1901".
-    code = str(body.get("code", "")).strip()
-    if code != "1901":
+    # SMS Misr answers HTTP 200 for failures too. The OTP API's success
+    # reply is {"Code":"4901","SMSID":...,"Cost":...} (capital C; 1901 is
+    # the plain SMS API's code, not this one).
+    code = str({k.lower(): v for k, v in body.items()}.get("code", "")).strip()
+    if code != "4901":
         logger.error("SMS Misr send_otp not accepted phone=%s body=%s", phone, response.text[:500])
         return _result(False, response.status_code, error="send_otp_failed",
-                       details=[str(body.get("message") or response.text[:300])])
+                       details=[response.text[:300]])
 
     return _result(True, response.status_code, data=body)
 
