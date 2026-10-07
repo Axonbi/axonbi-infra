@@ -218,3 +218,24 @@ def test_the_greeting_menu_is_not_a_transfer_offer():
             "كيف أستطيع مساعدتك اليوم؟ 😊")
     msgs = [HumanMessage(content="هلا"), AIMessage(content=menu), HumanMessage(content="اي")]
     assert not graph._yes_to_our_transfer_question(msgs, {"intent": "answer"})
+
+
+# ----------------------------------------------------------------------
+# 2026-10-07 11:29: a pasted reference with a stray space
+# ----------------------------------------------------------------------
+
+def test_a_pasted_reference_is_cleaned_before_the_lookup():
+    assert tools._clean_booking_ref("Booking Reference: APT- CL01-20260930-594") == "APT-CL01-20260930-594"
+    assert tools._clean_booking_ref("APT-CL01-20260930-594") == "APT-CL01-20260930-594"
+    assert tools._clean_booking_ref("GuestBookingNum-2026-10-07-336") == "GuestBookingNum-2026-10-07-336"
+    assert tools._clean_booking_ref("") == ""
+
+
+def test_a_pasted_reference_does_not_switch_the_conversation_to_english():
+    from langchain_core.messages import AIMessage, HumanMessage
+    msgs = [HumanMessage(content="تاجيل موعد"), AIMessage(content="ممكن تعطيني رقم الحجز؟"),
+            HumanMessage(content="Booking Reference: APT- CL01-20260930-594")]
+    assert graph._detect_target_language(msgs) == "ar"
+    # a real switch still switches
+    msgs_en = msgs[:-1] + [HumanMessage(content="can you answer in English please")]
+    assert graph._detect_target_language(msgs_en) == "en"
