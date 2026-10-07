@@ -110,3 +110,16 @@ def test_two_messages_from_one_patient_do_not_run_together():
     import app
     assert app._session_lock("s1") is app._session_lock("s1")
     assert app._session_lock("s1") is not app._session_lock("s2")
+
+
+from langchain_core.messages import HumanMessage as _H
+
+
+def test_lost_on_the_way_idioms_are_a_location_question():
+    for text in ["ضيعت اللفه", "ضيعت اللفة", "في طريق ضيعت الدخله", "توهت", "تهت", "مو لاقي المستشفى", "ما لقيت الفرع"]:
+        assert graph._says_lost_on_the_way([_H(content=text)]), text
+
+
+def test_ordinary_messages_are_not_lost():
+    for text in ["ابي احجز", "ضيعت موعدي", "يبغالي 10 دقائق", "وين الفرع", "تهتم بالاطفال"]:
+        assert not graph._says_lost_on_the_way([_H(content=text)]), text
