@@ -6057,6 +6057,13 @@ _NEUTRAL_DOMAIN_RE = re.compile(
 _NEUTRAL_NUMBER_RE = re.compile(r"\+?\d[\d\s\-()]{3,}\d")
 
 
+_REFERENCE_INNER_SPACE_RE = re.compile(r"(?<=[A-Za-z0-9])\s*-\s*(?=[A-Za-z0-9])")
+_REFERENCE_LABEL_RE = re.compile(
+    r"\b(?:booking|appointment|reservation)?\s*(?:reference|ref|number|no|id)\s*(?:number|no)?\s*[:#]",
+    re.IGNORECASE,
+)
+
+
 def _strip_language_neutral_tokens(text: str) -> str:
     """`text` with every language-neutral token removed.
 
@@ -6069,7 +6076,13 @@ def _strip_language_neutral_tokens(text: str) -> str:
     if not text:
         return ""
 
-    remainder = str(text)
+    # A pasted reference often carries its own English label and a stray
+    # space ("Booking Reference: APT- CL01-20260930-594"). CONFIRMED
+    # (tanasuq-production, 2026-10-07 11:29): the space broke the reference
+    # pattern, "Booking Reference" was left as two English words, and an
+    # Arabic conversation was answered in English.
+    remainder = _REFERENCE_INNER_SPACE_RE.sub("-", str(text))
+    remainder = _REFERENCE_LABEL_RE.sub(" ", remainder)
     for pattern in (
         _NEUTRAL_URL_RE, _NEUTRAL_EMAIL_RE, _NEUTRAL_REFERENCE_RE,
         _NEUTRAL_DOMAIN_RE, _NEUTRAL_NUMBER_RE,
