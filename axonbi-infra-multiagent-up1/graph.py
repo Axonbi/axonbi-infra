@@ -6627,7 +6627,15 @@ def _strip_extra_questions(reply_text: str, templates: dict) -> tuple:
         # CONFIRMED (tanasuq-production, 2026-10-03 06:16): "آسفة، ما
         # قدرنا نرسل رمز التحقق ... الحين. ممكن نكمل ...؟" lost the apology
         # together with the question.
-        statement_end = max(segment.rfind(". "), segment.rfind(".‏ "))
+        # "د." / "Dr." is a title, not the end of a statement: cutting there
+        # sent "ممكن تحدد لي وش السؤال بالضبط عن د." (tanasuq-production,
+        # 2026-10-06 15:38 and 15:39) with the doctor's name gone.
+        statement_end = -1
+        for match in re.finditer(r"\.‏? ", segment):
+            before = segment[:match.start()].rstrip()
+            if re.search(r"(?:^|\s)(?:د|dr|prof|أ)$", before, re.IGNORECASE):
+                continue
+            statement_end = match.start() if match.start() > statement_end else statement_end
         if statement_end > 0:
             kept.append(segment[:statement_end + 1])
 
@@ -11781,6 +11789,28 @@ def _real_branches_reply(state: AgentState, target_language: Optional[str]) -> s
     if target_language == "en":
         return f"Our branches:\n{lines}\n\nWhich branch suits you?"
     return f"فروعنا:\n{lines}\n\nأي فرع يناسبك؟"
+
+
+_UNVERIFIED_AVAILABILITY_MARKERS = (
+    "has no available appointments while no availability tool has run",
+    "never checked with resolve_available_day",
+)
+
+
+def _unverified_availability_reply(description: Optional[str], target_language: Optional[str]) -> str:
+    """A reply that talks about availability nobody looked up is replaced by
+    one question, not by the hand-off text and not left as it is.
+
+    CONFIRMED (tanasuq-production, 2026-10-06 14:04-14:06): "ما عندنا مواعيد
+    متاحة في 3 نوفمبر" and "محجوزة لغاية نهاية أكتوبر" were sent twice with no
+    availability tool run, while the doctor's rota ran to 2027. It names no
+    doctor, day or time, so it cannot itself be a claim."""
+
+    if not any(marker in (description or "") for marker in _UNVERIFIED_AVAILABILITY_MARKERS):
+        return ""
+    if target_language == "en":
+        return "Let me check the real availability rather than guess 🌷\nWhich date would you like me to check?"
+    return "خلني أتأكد لك من المواعيد المتاحة فعليًا بدل ما أخمّن 🌷\nأي تاريخ تحب أشيّك عليه؟"
 
 
 def _substitute_despite_disabled_fallback(description: Optional[str]) -> bool:
@@ -21096,6 +21126,14 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                         normalized = _safe_fallback_reply(state, target_language, description)
                         used_safe_fallback = True
                         break
+                    unverified = _unverified_availability_reply(description, target_language)
+                    if unverified:
+                        logger.error(
+                            "agent[%s]: reply STILL claimed availability nobody checked (%s) - "
+                            "replaced with a question. Draft: %r", agent_name, description, normalized,
+                        )
+                        normalized = unverified
+                        break
                     # INVENTED BRANCHES ARE REPLACED BY THE REAL ONES - see
                     # `_real_branches_reply`. Not the hand-off text: the
                     # patient keeps going with a true list.
@@ -21543,8 +21581,17 @@ def router(state: AgentState) -> dict:
     # The patient ASKED to cancel - in their own words, not as a yes to a
     # cancellation the assistant suggested. What `_cancellation_was_requested`
     # reads, whichever specialist later holds the turn.
-    if (reading and reading.get("cancel_request") and not reading.get("confirms")
-            and state.get("session_id")):
+    #
+    # A reading that says intent "cancel" while ANSWERING the assistant's
+    # question is not that: it is a yes/short reply the model bent into a
+    # cancellation. CONFIRMED (tanasuq-production, 2026-10-06 15:00): "اليوم"
+    # answering "هذا هو موعدك الذي تبغى تلغيه؟" - a question the assistant
+    # itself invented - routed to the cancel flow, and a bare "ااي" 17
+    # minutes later cancelled the appointment.
+    own_request = bool(reading) and not reading.get("confirms") and (
+        reading.get("cancel_request")
+        or (reading.get("intent") == "cancel" and not reading.get("answer_to_previous_question")))
+    if own_request and state.get("session_id"):
         tools._get_booking_session(state["session_id"])["_cancel_requested"] = True
 
     if chosen != previous:
@@ -21632,7 +21679,13 @@ def _assistant_asked_an_optional_question(messages: list) -> bool:
     last_ai = understanding.last_ai_text_before_latest_human(messages) or ""
     questions = [line for line in last_ai.splitlines() if "؟" in line or "?" in line]
     if not questions:
-        return False
+        # The email REQUEST can be a statement with no question mark
+        # ("من فضلك أرسل بريدك الإلكتروني لإضافته للحجز."), and "لا" to it
+        # is still "no email". CONFIRMED (tanasuq-production, 2026-10-06
+        # 13:37): that "لا" was read as a refusal, confirm_booking_review
+        # was blocked and the patient had to ask again to get the review.
+        # A review card always ends in its own question, so it never gets here.
+        return bool(_OPTIONAL_QUESTION_RE.search(agents.router.normalize(last_ai).lower()))
     # "نكمل على نفس رقم الواتساب ده؟" -> "لا" means "another number", not
     # "stop". CONFIRMED (tanasuq-production 2026-10-04 10:39): it was read
     # as a refusal and the patient got "تمام 🌷 إذا احتجت أي شيء ثاني".
@@ -21852,13 +21905,17 @@ def _clarification_question(reading: Optional[dict], english: bool,
 
     options = [name for name in reading.get("alternatives") or [] if name in labels]
 
-    # "مش هقدر اجي" - they can't make it, and have not said whether to
-    # cancel or move it. One natural question offering exactly those two,
-    # unless the clinic authored its own clarification wording.
+    # "مش هقدر اجي" / "يبغالي ١٠ دقايق" / an apology - they are late or
+    # cannot make it, and have not said what they want done. Cancelling is
+    # NEVER what we offer: the patient asked for nothing of the kind
+    # (tanasuq-production, 2026-10-06 15:00 - a patient on the way to the
+    # hospital had their appointment cancelled). Offer a person, or moving
+    # it - unless the clinic authored its own clarification wording.
     if set(options) == {"cancel", "reschedule"} and not (templates or {}).get(
             "msg_clarify_intent_en" if english else "msg_clarify_intent"):
-        return ("Sure 🌷 Would you like to cancel the appointment, or move it to another day?"
-                if english else "أكيد 🌷 تحب نلغي الموعد، ولا نأجله ليوم تاني؟")
+        return ("Of course 🌷 Would you like me to connect you with customer service, "
+                "or move your appointment to another time?"
+                if english else "أكيد 🌷 تحب أحولك لخدمة العملاء، ولا تحب نأجل موعدك؟")
 
     if len(options) < 2:
         options = list(_CLARIFY_DEFAULT_OPTIONS.get(reading.get("intent"), _CLARIFY_APPOINTMENT_OPTIONS))
@@ -22581,12 +22638,12 @@ _CANCEL_NOT_ASKED_PAYLOAD = {
 
 def _cancellation_was_requested(state: AgentState) -> bool:
     """The patient asked to cancel in their own words at some point in this
-    conversation (recorded by the router), or the cancel/reschedule flow
-    owned the previous turn. A yes to the assistant's own suggestion is
-    neither."""
+    conversation (recorded by the router). A yes to the assistant's own
+    suggestion, or merely being routed into the cancel flow, is not that."""
 
-    if state.get("previous_agent") in ("cancel", "reschedule"):
-        return True
+    # Owning the previous turn is NOT proof: the router can be moved into the
+    # cancel flow by a misread yes (see the router note above), and that
+    # misread must not authorise the cancellation itself.
     session = tools._BOOKING_SESSIONS.get(state.get("session_id") or "") or {}
     return bool(session.get("_cancel_requested"))
 
