@@ -4624,6 +4624,10 @@ _LOCATION_QUESTION_DIRECTIVE = (
     "plain from the addresses. For the map pin, call `share_branch_location` "
     "with the exact branch name above (the one they asked about, chose or "
     "booked). Then carry on with whatever was in progress.\n"
+    "If they say they are LOST or missed the turn/entrance (\"ضيعت اللفة\", "
+    "\"ضيعت الدخلة\", \"تهت\"), that is this question: do NOT ask what they "
+    "mean. Give the branches and addresses above and ask which branch they "
+    "are heading to, so you can send its map pin.\n"
 )
 
 
