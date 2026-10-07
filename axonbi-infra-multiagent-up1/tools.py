@@ -1556,11 +1556,19 @@ def verify_otp(state: Annotated[AgentState, InjectedState], phone: str, otp: str
 
     record = _otp_storage.get(normalized)
 
+    # Diagnostics only - never the code itself.
     if not record:
+        logger.warning("verify_otp: no pending code for %r (pending numbers: %s) - sent to a different number, "
+                       "expired and pruned, or sent by another process", normalized, sorted(_otp_storage))
         return {"status": "otp_invalid"}
 
     if time.time() - record["created_at"] > OTP_TTL_SECONDS:
+        logger.warning("verify_otp: code for %r expired", normalized)
         return {"status": "otp_invalid"}
+
+    if str(otp).strip() != str(record["otp"]):
+        logger.warning("verify_otp: wrong code for %r (got %d chars, expected %d)",
+                       normalized, len(str(otp).strip()), len(str(record["otp"])))
 
     if str(otp).strip() == str(record["otp"]):
         _mark_phone_verified(state, phone)
