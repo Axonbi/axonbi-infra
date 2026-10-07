@@ -12391,6 +12391,14 @@ def _client_branches_viewbox() -> Optional[str]:
     return f"{min(lons) - margin_deg},{max(lats) + margin_deg},{max(lons) + margin_deg},{min(lats) - margin_deg}"
 
 
+def _branches_country_code() -> Optional[str]:
+    """The country every branch in branches_geo.csv is in ("eg"), or None
+    when the CSV does not say or its rows disagree."""
+
+    codes = {r.get("country_code") for r in load_branches_geo().values() if r.get("country_code")}
+    return codes.pop() if len(codes) == 1 else None
+
+
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Great-circle distance between two coordinate pairs, in km."""
 
@@ -12526,8 +12534,15 @@ def geocode_address(
     if not address:
         return {"status": "not_found"}
 
-    timezone_name = str((state.get("templates") or {}).get("_timezone") or DEFAULT_TIMEZONE).strip().lower()
-    country_code = _TIMEZONE_ISO_COUNTRY.get(timezone_name)
+    # THE BRANCHES' OWN COUNTRY FIRST, the timezone only when the CSV does
+    # not say. CONFIRMED (Rovan demo 2026-10-07 14:55:38): the demo ran on
+    # the tanasuq-saudi client row (Asia/Riyadh), so "فندق الماسة" was
+    # searched in Saudi Arabia and resolved to a hotel in Mecca, 1282 km
+    # from both Cairo branches.
+    country_code = _branches_country_code()
+    if not country_code:
+        timezone_name = str((state.get("templates") or {}).get("_timezone") or DEFAULT_TIMEZONE).strip().lower()
+        country_code = _TIMEZONE_ISO_COUNTRY.get(timezone_name)
     viewbox = _client_branches_viewbox()
     language = conversation_language(state)
 

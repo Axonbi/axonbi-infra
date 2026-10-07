@@ -1121,6 +1121,9 @@ def _all_branches_geo() -> Dict[str, dict]:
             "latitude": latitude,
             "longitude": longitude,
             "working_hours": (row.get("working_hours") or "").strip(),
+            # ISO-3166 alpha-2 ("eg") - where the branches actually are,
+            # which the client row's timezone does not always say.
+            "country_code": (row.get("country_code") or "").strip().lower(),
         }
     return result
 

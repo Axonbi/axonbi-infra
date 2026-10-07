@@ -1,6 +1,6 @@
-branch_name,latitude,longitude,working_hours
-Sheikh Zayed,30.0712,30.9455,
-الشيخ زايد,30.0712,30.9455,
-Sheraton - Heliopolis,30.0985,31.3800,
-شيراتون - مصر الجديدة,30.0985,31.3800,
-شيراتون - هليوبوليس,30.0985,31.3800,
+branch_name,latitude,longitude,working_hours,country_code
+Sheikh Zayed,30.0712,30.9455,,eg
+الشيخ زايد,30.0712,30.9455,,eg
+Sheraton - Heliopolis,30.0985,31.3800,,eg
+شيراتون - مصر الجديدة,30.0985,31.3800,,eg
+شيراتون - هليوبوليس,30.0985,31.3800,,eg
