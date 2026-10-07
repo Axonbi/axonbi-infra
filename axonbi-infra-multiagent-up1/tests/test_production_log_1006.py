@@ -123,3 +123,28 @@ def test_lost_on_the_way_idioms_are_a_location_question():
 def test_ordinary_messages_are_not_lost():
     for text in ["ابي احجز", "ضيعت موعدي", "يبغالي 10 دقائق", "وين الفرع", "تهتم بالاطفال"]:
         assert not graph._says_lost_on_the_way([_H(content=text)]), text
+
+
+def test_a_link_request_after_the_address_still_sends_the_pin():
+    """tanasuq-production 2026-10-07 10:19: 'ارسل رابط' after the branch address was refused."""
+    from langchain_core.messages import AIMessage, HumanMessage
+    msgs = [
+        HumanMessage(content="وين فرع النزهة"),
+        AIMessage(content="فرع النزهة عنوانه: 7282 أبي سفيان بن حرب، النزهة، الرياض."),
+        HumanMessage(content="ارسل رابط"),
+        AIMessage(content="", tool_calls=[{"name": "share_branch_location", "args": {"branch_name": "النزهة"}, "id": "t1"}]),
+    ]
+    state = {"messages": msgs, "session_id": "log-1007-pin", "client_id": "t", "understanding": {"asks_location": False}}
+    assert tools.share_branch_location.func(state=state, branch_name="النزهة")["status"] == "location_requested"
+
+
+def test_a_link_request_with_no_location_topic_is_still_refused():
+    from langchain_core.messages import AIMessage, HumanMessage
+    msgs = [
+        HumanMessage(content="ابي احجز"),
+        AIMessage(content="أي تخصص؟"),
+        HumanMessage(content="ارسل رابط"),
+        AIMessage(content="", tool_calls=[{"name": "share_branch_location", "args": {"branch_name": "النزهة"}, "id": "t1"}]),
+    ]
+    state = {"messages": msgs, "session_id": "log-1007-pin2", "client_id": "t", "understanding": {"asks_location": False}}
+    assert tools.share_branch_location.func(state=state, branch_name="النزهة")["status"] != "location_requested"
