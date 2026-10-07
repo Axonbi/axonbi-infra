@@ -14,6 +14,7 @@ beyond request/response shaping and error handling.
 """
 
 import logging
+import threading
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -27,6 +28,24 @@ import main as agent  # unmodified from this point of view: send_message()
 
 config.configure_logging()
 logger = logging.getLogger("app")
+
+
+# ONE TURN AT A TIME PER CONVERSATION. `chat` runs in a thread pool, so two
+# messages from the same patient a few seconds apart ran concurrently: both
+# read the same history, both wrote to it, and the replies could arrive in
+# the wrong order (tanasuq-production, 2026-10-06 15:38:18 / 15:38:22 and
+# 14:05:02 / 14:05:08 - "اي احد" was answered while "طبيب نفسي" was still
+# being processed). The second message now waits for the first to finish.
+_SESSION_LOCKS: dict = {}
+_SESSION_LOCKS_GUARD = threading.Lock()
+
+
+def _session_lock(session_id: str) -> threading.Lock:
+    with _SESSION_LOCKS_GUARD:
+        if len(_SESSION_LOCKS) > 5000:
+            for key in [k for k, v in _SESSION_LOCKS.items() if not v.locked()]:
+                del _SESSION_LOCKS[key]
+        return _SESSION_LOCKS.setdefault(session_id, threading.Lock())
 
 
 def _log_startup_banner() -> None:
@@ -201,11 +220,12 @@ def chat(req: ChatRequest) -> ChatResponse:
         )
 
     try:
-        result = agent.send_message_with_signals(
-            req.client_id, req.session_id, req.message,
-            channel_phone=req.channel_phone, bsuid=req.bsuid,
-            client_config=resolved_config, message_id=req.message_id,
-        )
+        with _session_lock(req.session_id):
+            result = agent.send_message_with_signals(
+                req.client_id, req.session_id, req.message,
+                channel_phone=req.channel_phone, bsuid=req.bsuid,
+                client_config=resolved_config, message_id=req.message_id,
+            )
     except GraphRecursionError:
         # The turn hit the step ceiling - something looped instead of
         # answering. The patient must still get a message: a 500 here

@@ -8563,11 +8563,23 @@ def _fees_requested(state: AgentState) -> bool:
     reading = state.get("understanding")
     if reading is None or reading.get("asks_price"):
         return True
-    humans = [m for m in (state.get("messages") or []) if getattr(m, "type", None) == "human"]
+    all_messages = state.get("messages") or []
+    humans = [m for m in all_messages if getattr(m, "type", None) == "human"]
     for message in humans[-2:]:
         content = getattr(message, "content", "")
         if _PRICE_WORDS_RE.search(content if isinstance(content, str) else str(content)):
             return True
+    # The patient is ANSWERING our price follow-up ("أي دكتور تود تعرف سعر
+    # الجلسة عنده؟" -> "2" / "أصيلا الحسن"). CONFIRMED (tanasuq-production,
+    # 2026-10-06 15:38-15:40): three refusals in a row and the price was
+    # never given. Only the last question WE asked counts.
+    for message in reversed(all_messages):
+        if getattr(message, "type", None) != "ai":
+            continue
+        content = getattr(message, "content", "")
+        text = content if isinstance(content, str) else str(content)
+        questions = [line for line in text.splitlines() if "؟" in line or "?" in line]
+        return bool(questions) and bool(_PRICE_WORDS_RE.search(questions[-1]))
     return False
 
 
@@ -8824,6 +8836,138 @@ def get_patient_info(state: Annotated[AgentState, InjectedState], mobile_number:
     }
 
 
+_ISO_DATE_RE = re.compile(r"(?<!\d)(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)")
+_DMY_DATE_RE = re.compile(r"(?<!\d)(\d{1,2})\s*[/\-.]\s*(\d{1,2})(?:\s*[/\-.]\s*(\d{2,4}))?(?!\d)")
+# Words that mean "the NEXT such weekday" - a bare weekday reply may only
+# be matched against the days just shown when none of these is present.
+_NEXT_OCCURRENCE_WORDS = {"الجاي", "الجايه", "الجاى", "القادم", "القادمه", "بعده", "بعدها", "بعد", "التالي", "next", "after"}
+
+
+_MONTH_NAMES = {
+    1: ("يناير", "كانون الثاني", "january", "jan"),
+    2: ("فبراير", "شباط", "february", "feb"),
+    3: ("مارس", "اذار", "march", "mar"),
+    4: ("ابريل", "نيسان", "april", "apr"),
+    5: ("مايو", "ايار", "may"),
+    6: ("يونيو", "يونيه", "حزيران", "june", "jun"),
+    7: ("يوليو", "يوليه", "تموز", "july", "jul"),
+    8: ("اغسطس", "august", "aug"),
+    9: ("سبتمبر", "ايلول", "september", "sep", "sept"),
+    10: ("اكتوبر", "تشرين الاول", "october", "oct"),
+    11: ("نوفمبر", "تشرين الثاني", "november", "nov"),
+    12: ("ديسمبر", "كانون الاول", "december", "dec"),
+}
+
+
+def _fold_month_text(text: str) -> str:
+    folded = str(text or "").translate(_ARABIC_DIGIT_MAP).lower()
+    for src in "أإآ":
+        folded = folded.replace(src, "ا")
+    return folded.replace("ة", "ه").replace("ى", "ي")
+
+
+def _month_named(text: Optional[str]) -> Optional[int]:
+    """The month a patient NAMED ("نوفمبر", "3 نوفمبر", "November"), or
+    None. Whole words only, so "اب" / "may" inside another word is ignored."""
+
+    folded = _fold_month_text(text)
+    if not folded:
+        return None
+    for number, names in _MONTH_NAMES.items():
+        for name in names:
+            if re.search(r"(?<![^\W\d_])" + re.escape(name) + r"(?![^\W\d_])", folded):
+                return number
+    return None
+
+
+def _parse_named_month_date(text: str, today: date) -> Optional[date]:
+    """"3 نوفمبر" / "نوفمبر 3" / "3 November" -> that calendar date (next
+    occurrence when no year is typed)."""
+
+    month = _month_named(text)
+    if not month:
+        return None
+    folded = _fold_month_text(text)
+    numbers = [int(n) for n in re.findall(r"(?<!\d)(\d{1,2})(?!\d)", folded)]
+    year_match = re.search(r"(?<!\d)(20\d{2})(?!\d)", folded)
+    days = [n for n in numbers if 1 <= n <= 31]
+    if not days:
+        return None
+    try:
+        if year_match:
+            return date(int(year_match.group(1)), month, days[0])
+        candidate = date(today.year, month, days[0])
+        if candidate < today:
+            candidate = date(today.year + 1, month, days[0])
+        return candidate
+    except ValueError:
+        return None
+
+
+def _parse_explicit_date(text: Optional[str], today: date) -> Optional[date]:
+    """A calendar date the patient typed (\"18/10\", \"الاحد 18/10/2026\",
+    \"2026-10-18\", Arabic-Indic digits too) or None.
+
+    CONFIRMED REAL PRODUCTION FAILURE (tanasuq-production, 2026-10-06):
+    after being offered \"الأحد 18/10/2026\" the patient replied \"18/10\"
+    (-> unrecognized day) and then \"الاحد 18/10/2026\" (-> the weekday
+    word won and the DATE was dropped, so 11/10 - the Sunday they had
+    just turned down - was shown again). A typed date is the most
+    specific answer there is and has to win over the weekday word.
+    Without a year the next occurrence on/after today is used."""
+
+    if not text:
+        return None
+    raw = str(text).translate(_ARABIC_DIGIT_MAP)
+
+    match = _ISO_DATE_RE.search(raw)
+    if match:
+        year, month, day = (int(g) for g in match.groups())
+        try:
+            return date(year, month, day)
+        except ValueError:
+            return None
+
+    match = _DMY_DATE_RE.search(raw)
+    if not match:
+        return _parse_named_month_date(raw, today)
+    day, month = int(match.group(1)), int(match.group(2))
+    year_text = match.group(3)
+    try:
+        if year_text:
+            year = int(year_text)
+            if year < 100:
+                year += 2000
+            return date(year, month, day)
+        candidate = date(today.year, month, day)
+        if candidate < today:
+            candidate = date(today.year + 1, month, day)
+        return candidate
+    except ValueError:
+        return None
+
+
+def _date_from_last_shown_days(session: dict, target_weekday: int, weekday_text: str) -> Optional[date]:
+    """The date of `target_weekday` in the day list the patient was JUST
+    shown, so a bare \"الاحد\" means the Sunday on screen (18/10) and not
+    the nearest Sunday overall (11/10, already declined)."""
+
+    last = session.get("last_list") or {}
+    if last.get("entity_type") != "day":
+        return None
+    words = {w for w in re.split(r"[\s/،,]+", str(weekday_text or "").lower()) if w}
+    if words & {_fold_weekday_token(w) for w in _NEXT_OCCURRENCE_WORDS} or words & _NEXT_OCCURRENCE_WORDS:
+        return None
+    for item in last.get("items") or []:
+        try:
+            shown = date.fromisoformat(str(item.get("date"))[:10])
+        except (ValueError, TypeError, AttributeError):
+            continue
+        if shown.weekday() == target_weekday:
+            return shown
+    return None
+
+
 @tool
 def resolve_available_day(
     state: Annotated[AgentState, InjectedState],
@@ -8855,7 +8999,32 @@ def resolve_available_day(
     if not doctor_id:
         return {"status": "missing_doctor"}
 
-    target_weekday = resolve_weekday_index(weekday_name)
+    _tz_name = (state.get("templates") or {}).get("_timezone", DEFAULT_TIMEZONE)
+    try:
+        _today = datetime.now(ZoneInfo(_tz_name)).date()
+    except Exception:
+        _today = datetime.now(ZoneInfo(DEFAULT_TIMEZONE)).date()
+
+    # A typed DATE beats a weekday word; a bare weekday after a shown day
+    # list means the one on screen. See the two helpers above.
+    exact_date = _parse_explicit_date(weekday_name, _today)
+    said_weekday = resolve_weekday_index(weekday_name)
+    if exact_date is not None and said_weekday is not None and said_weekday != exact_date.weekday():
+        # "الاثنين 3 نوفمبر" when 3 November is a Tuesday: one of the two is
+        # wrong, and picking either silently books a day nobody asked for.
+        return {
+            "status": "weekday_date_mismatch",
+            "date_display": exact_date.strftime("%d/%m/%Y"),
+            "weekday_display": _display_weekday_name(exact_date.weekday(), conversation_language(state)),
+            "said_weekday_display": _display_weekday_name(said_weekday, conversation_language(state)),
+            "instruction": "Tell the patient the date and the weekday they gave do not match "
+                           "and ask which one they mean. Do not offer any other day yet.",
+        }
+    target_weekday = exact_date.weekday() if exact_date else said_weekday
+    if exact_date is None and target_weekday is not None and not after_date:
+        exact_date = _date_from_last_shown_days(session, target_weekday, weekday_name)
+        if exact_date:
+            logger.info("resolve_available_day: bare weekday %r matched to shown date %s", weekday_name, exact_date)
     if target_weekday is None:
         # NOT "error" - the two need completely different handling.
         # "error" means the lookup itself broke and the patient should
@@ -8864,6 +9033,16 @@ def resolve_available_day(
         # to ask which day they meant. Falling back to "show the
         # soonest date" is exactly how a day the patient named used to
         # get silently discarded.
+        month = _month_named(weekday_name)
+        if month:
+            # A month with no day ("نوفمبر"): not an unrecognised word - ask
+            # which day, instead of telling the patient a month is not a day.
+            return {
+                "status": "month_without_day", "month": month,
+                "instruction": "The patient named a month but no day. Ask which day or weekday "
+                               "in that month they want. Do not say anything about availability "
+                               "in that month until a day has been checked.",
+            }
         logger.warning("resolve_available_day: unrecognized weekday_name=%r", weekday_name)
         return {"status": "unrecognized_day", "weekday_text": weekday_name}
 
@@ -8941,6 +9120,11 @@ def resolve_available_day(
 
     now = datetime.now(tz)
     horizon_days = 42  # matches the confirmed production booking window
+    if exact_date is not None:
+        # A day the patient named beyond the usual window must still be
+        # CHECKED, not assumed empty (tanasuq-production, 2026-10-06 14:04:
+        # "no appointments in November" said with nothing looked up).
+        horizon_days = min(max(horizon_days, (exact_date - now.date()).days + 2), 365)
     from_date = now.isoformat()
     to_date = (now + timedelta(days=horizon_days)).isoformat()
 
@@ -8996,6 +9180,8 @@ def resolve_available_day(
         if dt.weekday() != target_weekday:
             continue
         if after_dt and dt.date() <= after_dt:
+            continue
+        if exact_date and dt.date() != exact_date:
             continue
         candidates.append((dt, wire_dt))
 
@@ -9989,6 +10175,49 @@ def _review_card_was_shown(state: AgentState) -> bool:
     return False
 
 
+def _name_is_the_doctor(session: dict, patient_full_name: str) -> bool:
+    """True when the "patient" name is the doctor's own name (every word of
+    it appears in the chosen doctor's name). CONFIRMED (tanasuq-production,
+    2026-10-06 14:02): a review card went out with الاسم: عمر المديفر - the
+    doctor being booked - because the name asked for was never supplied."""
+
+    doctor = (session or {}).get("doctor_display_name") or ""
+    given = set(re.findall(r"[^\W\d_]{2,}", _normalize_arabic(patient_full_name or "").lower(), re.UNICODE))
+    doctor_words = set(re.findall(r"[^\W\d_]{2,}", _normalize_arabic(doctor).lower(), re.UNICODE))
+    doctor_words -= {"د", "دكتور", "الدكتور", "dr"}
+    return bool(given) and bool(doctor_words) and given <= doctor_words
+
+
+_REPLY_NAME_RE = re.compile(r"(?:اسمي|إسمي|أسمي|الاسم|الإسم|اسم|إسم|my name is|name is)\s*[:\-]?\s*([^\n،,.!؟?]+)", re.IGNORECASE)
+_REPLY_EMAIL_RE = re.compile(r"[\w.+\-]+@[\w\-]+\.[\w.\-]+")
+
+
+def _review_reply_corrects_card(state: AgentState, card_name: str, card_email: str = "") -> str:
+    """"name" / "email" when the patient's latest message carries a value
+    that differs from the review card, else "". A yes that also supplies a
+    different name or email is a correction, not a confirmation."""
+
+    humans = [m for m in (state.get("messages") or []) if getattr(m, "type", None) == "human"]
+    if not humans:
+        return ""
+    content = getattr(humans[-1], "content", "")
+    text = content if isinstance(content, str) else str(content)
+
+    def tokens(value: str) -> set:
+        return set(re.findall(r"[^\W\d_]{2,}", _normalize_arabic(value or "").lower(), re.UNICODE))
+
+    named = _REPLY_NAME_RE.search(text)
+    if named:
+        given, on_card = tokens(named.group(1)), tokens(card_name)
+        if given and on_card and not (given & on_card):
+            return "name"
+
+    for found in _REPLY_EMAIL_RE.findall(text):
+        if card_email and found.lower() != card_email.strip().lower():
+            return "email"
+    return ""
+
+
 @tool
 def confirm_booking_review(
     state: Annotated[AgentState, InjectedState],
@@ -10044,7 +10273,37 @@ def confirm_booking_review(
         )
         return {"status": "card_not_shown"}
 
+    correction = _review_reply_corrects_card(state, patient_full_name, email)
+    if correction:
+        # CONFIRMED IN PRODUCTION (tanasuq, 2026-10-06 21:25): the card showed
+        # "لطيفه الجربوع" and the patient answered "نعم إسم خالد النصيان".
+        # The yes was taken and the booking went out under the wrong person.
+        logger.warning(
+            "confirm_booking_review: refusing for session_id=%s - the patient's reply "
+            "corrects the card (%s); card name=%r email=%r",
+            session_id, correction, patient_full_name, email,
+        )
+        return {
+            "status": "card_corrected_by_patient",
+            "correction": correction,
+            "instruction": (
+                "The patient's reply is NOT a plain yes - it gives a different "
+                f"{correction}. Do not confirm or book. Use the value the patient just "
+                "wrote, show the review card again with it, and wait for a new yes."
+            ),
+        }
+
     session = _get_booking_session(session_id)
+    if _name_is_the_doctor(session, patient_full_name):
+        logger.warning(
+            "confirm_booking_review: refusing for session_id=%s - patient_full_name=%r is the "
+            "doctor's own name", session_id, patient_full_name,
+        )
+        return {
+            "status": "missing_patient_name",
+            "instruction": "That is the DOCTOR's name, not the patient's. Ask the patient for "
+                           "their own full name before showing the review card.",
+        }
     if not session.get("selected_slot"):
         # CONFIRMED IN PRODUCTION (2026-09-30 12:22): a review card was
         # built with the doctor's working hours as the "time" because no
@@ -10282,6 +10541,12 @@ def create_new_booking(
             "create_new_booking: refusing to book with patient_full_name=%r "
             "(session_id=%s) - not a real full name (need at least 2 parts)",
             patient_full_name, session_id,
+        )
+        return {"status": "missing_patient_name"}
+    if _name_is_the_doctor(_get_booking_session(session_id), patient_full_name):
+        logger.warning(
+            "create_new_booking: refusing - patient_full_name=%r is the doctor's own name "
+            "(session_id=%s)", patient_full_name, session_id,
         )
         return {"status": "missing_patient_name"}
 
