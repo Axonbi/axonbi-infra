@@ -49,6 +49,21 @@ _INVALID_PHONE_GUIDANCE = (
     "Never say a code was sent, and do not call send_otp for this number."
 )
 
+# The nearest-branch answer, shared by geocode_address (`nearest_branch`)
+# and find_nearest_branch (`branches`), which return the same ranking.
+_NEAREST_BRANCH_GUIDANCE = (
+    "the FIRST branch is the one nearest to the place the patient named - "
+    "say so with its `distance_km` (\"حوالي N كم\"), and its address and "
+    "phone as returned; the other branch's distance may follow, but never "
+    "call any other branch the nearest. If `unusually_far` is true, the "
+    "place found is probably a different one with the same name: name the "
+    "branch, say the distance looks too large, and ask which city/area they "
+    "are in. For the map pin: if they asked where to go / for the location, "
+    "call `share_branch_location` with that branch's exact `name` this "
+    "turn; otherwise offer it (\"تحب أبعتلك لوكيشن الفرع؟\") and call it "
+    "once they say yes."
+)
+
 
 RESULT_GUIDANCE: dict = {
 
@@ -646,6 +661,42 @@ RESULT_GUIDANCE: dict = {
             "named a complaint without separately naming a person - no "
             "handoff was raised. Ask them whether they want a staff "
             "member first.",
+    },
+
+    # ------------------------------------------------------------------
+    "geocode_address": {
+        "found":
+            "If there is a `nearest_branch`: " + _NEAREST_BRANCH_GUIDANCE
+            + " If there is none, the branches could not be measured - give "
+            "the branches with their addresses instead and never guess "
+            "which one is nearer.",
+        "ambiguous": (
+            "The place the patient named exists in SEVERAL different "
+            "locations (a store chain, a mall, a common area name) and they "
+            "did not say which, so do NOT pick one. Show `candidates` as a "
+            "short numbered list using each `label` exactly as returned, in "
+            "the patient's language, and ask ONE short question: which one "
+            "do they mean - or which area/neighbourhood are they in? When "
+            "they answer with a number, call `find_nearest_branch` with "
+            "`place_option` = THAT candidate's `option` number (no "
+            "coordinates). If none of the candidates is theirs and they give "
+            "an area or street instead, call `geocode_address` again with "
+            "the place name plus that area (e.g. \"كارفور مدينة نصر\"). Never "
+            "name a nearest branch before one of these tools returned it."
+        ),
+        "not_found":
+            "The map does not know this place - a normal outcome for a short "
+            "or informal name, not an error. Never search a fragment of it "
+            "as a branch name. Ask ONCE for a fuller address (their area, a "
+            "nearby street or landmark); if that is not found either, give "
+            "the branches with their addresses and let them choose.",
+    },
+    "find_nearest_branch": {
+        "found": "`branches[0]`: " + _NEAREST_BRANCH_GUIDANCE,
+        "needs_place_choice":
+            "The patient has not said which of the offered places they "
+            "meant. Show `candidates` again as a numbered list and ask "
+            "which one - never measure from a place they did not choose.",
     },
 }
 

@@ -45,6 +45,10 @@ KEEP_BACKUPS="${KEEP_BACKUPS:-10}"
 # been edited on the server, and silently replacing them from a branch
 # is how a clinic loses its own configuration. Add them here if you
 # ever decide the branch is authoritative for those too.
+#
+# branches_geo.csv is the one exception: the branches' map coordinates
+# (the Booking API has none) live in the branch, and without the file the
+# nearest-branch search silently answers nothing.
 FILES=(
   graph.py tools.py prompts.py rag.py main.py app.py config.py
   state.py api.py progress.py start.py
@@ -52,6 +56,7 @@ FILES=(
   agents/__init__.py agents/router.py agents/registry.py
   agents/sections.py agents/response_contract.py agents/hard_rules.py
   agents/semantic_router.py
+  branches_geo.csv
 )
 
 # The regression suite. Downloaded and RUN against the new code before
@@ -66,6 +71,7 @@ TEST_FILES=(
   tests/test_english_fixed_texts.py tests/test_faq_answer_and_greeting.py
   tests/test_routing_followups.py
   tests/test_production_log_1002.py tests/test_production_log_1001_evening.py tests/test_reply_quality_round.py tests/test_production_log_1003.py tests/test_review_no_and_invented_branches.py tests/test_cms_migration.py tests/test_production_log_1004.py tests/test_doctor_names_not_branches.py
+  tests/test_geocode_ambiguity.py tests/test_place_pick.py tests/test_nearest_to_place.py
 )
 
 RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; DIM=$'\033[2m'; OFF=$'\033[0m'

@@ -28,6 +28,7 @@ should decide" replaces every heuristic classifier):
 import ast
 import json
 import logging
+import math
 import re
 import secrets
 import smtplib
@@ -62,6 +63,8 @@ from config import (
     SMTP_USE_TLS,
     SMTP_USE_SSL,
     COMPLAINT_WEBHOOK_URL,
+    NOMINATIM_USER_AGENT,
+    load_branches_geo,
 )
 import requests
 from state import AgentState
@@ -12207,11 +12210,12 @@ def share_branch_location(
        or how to get there - not merely named, picked or confirmed a
        branch (e.g. during booking).
     2. The branch is REAL: `match_entity_info` (entity_type="branch")
-       matched it this turn or earlier in this conversation. Never a
+       matched it, or `geocode_address`/`find_nearest_branch` returned it
+       as the nearest, this turn or earlier in this conversation. Never a
        guessed or invented name.
     A repeat request about a branch you already resolved still needs this
     call - answering from memory sends no pin. `branch_name` must be the
-    exact `name` field `match_entity_info` returned.
+    exact `name` field that tool returned.
 
     It sends nothing itself: still give the address in text in this reply.
     Returns {"status": "location_requested", "branch_name": branch_name},
@@ -12312,6 +12316,413 @@ def share_branch_location(
     return {"status": "location_requested", "branch_name": branch_name}
 
 
+# ==========================================================
+# Nearest branch to a place (real geocoding, real branch data - no LLM
+# guessing of coordinates, distance, or branch identity anywhere here)
+# ==========================================================
+#
+# "انا قاعد في فندق الماسة ايه اقرب فرع؟" / "nearest branch to Cairo
+# Festival City": the place is geocoded with OpenStreetMap's Nominatim and
+# measured against the branches' own coordinates (branches_geo.csv - the
+# Booking API has none). Ported from the elborgdemo branch.
+
+_NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+
+# ISO-3166 alpha-2 codes for Nominatim's `countrycodes` param, keyed by
+# the same lowercased timezone names as _TIMEZONE_COUNTRY_CODES (that one
+# is DIALLING codes - "20" for Egypt - which Nominatim does not accept).
+_TIMEZONE_ISO_COUNTRY = {
+    "africa/cairo": "eg",
+    "asia/riyadh": "sa",
+    "asia/dubai": "ae",
+    "asia/kuwait": "kw",
+    "asia/qatar": "qa",
+    "asia/bahrain": "bh",
+    "asia/muscat": "om",
+    "asia/amman": "jo",
+    "asia/beirut": "lb",
+    "asia/baghdad": "iq",
+    "africa/tripoli": "ly",
+    "africa/tunis": "tn",
+    "africa/algiers": "dz",
+    "africa/casablanca": "ma",
+    "africa/khartoum": "sd",
+}
+
+# The nearest real branch further than this means the geocoder most likely
+# matched a same-named place elsewhere in the country (CONFIRMED on
+# elborgdemo: "النزهة" resolved to a village on the Red Sea, ~530 km from
+# every Cairo branch). Anywhere in Greater Cairo/Giza is well inside it.
+_UNUSUALLY_FAR_KM = 100
+
+# Two results closer than this are the same place for the patient's purpose
+# (the same building listed twice, two entrances of one mall).
+_GEOCODE_SAME_PLACE_KM = 1.5
+
+# Nominatim kinds that are an AREA (a district, a city, a neighbourhood),
+# not a single building: "الهرم" the district is one place to search from,
+# however many pyramids also carry the word.
+_AREA_ADDRESSTYPES = {
+    "suburb", "neighbourhood", "quarter", "city_district", "district", "borough",
+    "city", "town", "village", "hamlet", "municipality", "county", "state", "region",
+}
+
+# The places offered to a patient for an ambiguous name, per session. The
+# option coordinates in the tool result get shortened by history compaction,
+# so the model could not pass the chosen place's coordinates on and used a
+# generic city centre instead.
+_PENDING_PLACES: dict = {}
+
+
+def _client_branches_viewbox() -> Optional[str]:
+    """A Nominatim `viewbox` ("left,top,right,bottom") around this
+    deployment's own branches, padded ~50 km - a SOFT bias (never
+    `bounded=1`), so a short common name ("النزهة") prefers the one near
+    the branches over a same-named village elsewhere in the country.
+    None when no branch has coordinates."""
+
+    rows = load_branches_geo().values()
+    lats = [r["latitude"] for r in rows if isinstance(r.get("latitude"), (int, float))]
+    lons = [r["longitude"] for r in rows if isinstance(r.get("longitude"), (int, float))]
+    if not lats or not lons:
+        return None
+
+    margin_deg = 0.5
+    return f"{min(lons) - margin_deg},{max(lats) + margin_deg},{max(lons) + margin_deg},{min(lats) - margin_deg}"
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance between two coordinate pairs, in km."""
+
+    r_earth_km = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+    )
+    return r_earth_km * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _geocode_candidates(address: str, country_code: Optional[str],
+                        viewbox: Optional[str] = None, language: Optional[str] = None,
+                        limit: int = 5) -> list:
+    """Up to `limit` Nominatim results for `address`, best first; an empty
+    list on no match or failure. A name that exists more than once (a
+    store chain, a common neighbourhood name) comes back as several
+    results - see geocode_address for how those are told apart."""
+
+    params = {"q": address, "format": "json", "limit": limit}
+    if country_code:
+        params["countrycodes"] = country_code
+    if viewbox:
+        params["viewbox"] = viewbox
+    if language:
+        params["accept-language"] = language
+
+    try:
+        response = requests.get(
+            _NOMINATIM_URL, params=params,
+            headers={"User-Agent": NOMINATIM_USER_AGENT}, timeout=8,
+        )
+        response.raise_for_status()
+        results = response.json()
+    except Exception:
+        logger.exception("geocode_address: Nominatim request failed for address=%r", address)
+        return []
+
+    return [r for r in (results or []) if isinstance(r, dict)]
+
+
+def _is_area_result(result: dict) -> bool:
+    if result.get("class") in ("place", "boundary"):
+        return True
+    return (result.get("addresstype") or result.get("type")) in _AREA_ADDRESSTYPES
+
+
+def _distinct_places(results: list) -> list:
+    """The results as distinct places: coordinates parsed, results within
+    `_GEOCODE_SAME_PLACE_KM` of an earlier (better) one dropped."""
+
+    places = []
+    for result in results:
+        try:
+            latitude = float(result["lat"])
+            longitude = float(result["lon"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if any(
+            _haversine_km(latitude, longitude, place["latitude"], place["longitude"])
+            < _GEOCODE_SAME_PLACE_KM
+            for place in places
+        ):
+            continue
+        places.append({
+            "latitude": latitude,
+            "longitude": longitude,
+            "display_name": result.get("display_name") or "",
+            "is_area": _is_area_result(result),
+        })
+    return places
+
+
+def _place_name(place: dict) -> str:
+    """The place's own name (the first part of its address), normalised."""
+    first = (place.get("display_name") or "").split(",")[0]
+    return " ".join(_normalize_arabic(first).split())
+
+
+def _same_name_branches(places: list) -> list:
+    """The places that carry the SAME name as the best one: several stores
+    of one chain ("كارفور"). A different name that merely contains the
+    patient's word ("الهرم الأحمر" for "الهرم") is a different place,
+    not another branch of the same one."""
+    name = _place_name(places[0])
+    return [p for p in places if name and _place_name(p) == name]
+
+
+def _short_place_label(display_name: str, parts: int = 3) -> str:
+    """"Carrefour, Road 9, Maadi, Cairo, Egypt" -> "Carrefour, Road 9, Maadi":
+    enough for a patient to tell two of them apart."""
+
+    pieces = [p.strip() for p in (display_name or "").split(",") if p.strip()]
+    return ", ".join(pieces[:parts]) or (display_name or "")
+
+
+def _geo_name_key(name: Optional[str]) -> str:
+    """Join key between an API branch name and a branches_geo.csv row:
+    normalised, filler-stripped ("فرع الشيخ زايد" == "الشيخ زايد"), and
+    punctuation/spacing ignored ("Sheraton - Heliopolis" ==
+    "Sheraton-Heliopolis")."""
+
+    key = _normalize_arabic(_strip_entity_filler(name or ""))
+    return re.sub(r"[\W_]+", "", key)
+
+
+@tool
+def geocode_address(
+    state: Annotated[AgentState, InjectedState],
+    address: str,
+) -> dict:
+    """Turn a place the patient named (an address, a district, a mall, a
+    hotel, a landmark) into real coordinates via OpenStreetMap, and find
+    the clinic's branch nearest to it. Use it for any "which branch is
+    nearest to me / to <place>" question. Never estimate coordinates, a
+    distance or the nearest branch yourself.
+
+    `address`: the patient's own place text, close to verbatim (drop
+    filler like "أنا قاعد في" but do not translate or add detail) - e.g.
+    "فندق الماسة", "مول العرب", "سيتي ستارز", "Cairo Festival City".
+
+    Returns:
+    {"status": "found", "latitude", "longitude", "display_name",
+     "nearest_branch": <find_nearest_branch's own result>}
+    {"status": "ambiguous", "candidates": [{"option", "label",
+      "latitude", "longitude"}, ...]}   # the name exists in several places
+    {"status": "not_found"}  # ask for a fuller address / nearby landmark
+    {"status": "error"}"""
+
+    address = (address or "").strip()
+    if not address:
+        return {"status": "not_found"}
+
+    timezone_name = str((state.get("templates") or {}).get("_timezone") or DEFAULT_TIMEZONE).strip().lower()
+    country_code = _TIMEZONE_ISO_COUNTRY.get(timezone_name)
+    viewbox = _client_branches_viewbox()
+    language = conversation_language(state)
+
+    # First biased to the clinic's own country AND its branches' area -
+    # a short local name is then far more likely to resolve to the right
+    # one at all.
+    candidates = _geocode_candidates(address, country_code, viewbox, language) if country_code else []
+
+    # Wider retry: drop the area bias but KEEP the country. With no country
+    # at all Nominatim answers with same-named places anywhere in the world
+    # ("سيتي ستارز" -> a laundromat in New York), and every result may be
+    # shown to the patient as a choice. Only when the clinic's country is
+    # unknown is the search left fully open.
+    if not candidates:
+        candidates = _geocode_candidates(address, country_code, None, language)
+
+    places = _distinct_places(candidates)
+    _PENDING_PLACES.pop(str(state.get("session_id")), None)
+
+    if not places:
+        logger.info("geocode_address: Nominatim returned no match for address=%r", address)
+        return {"status": "not_found"}
+
+    # AN AREA IS ONE PLACE. "الهرم" is the district; Nominatim also lists
+    # هرم خوفو / الهرم الأحمر, and the patient was asked which pyramid
+    # they meant (elborgdemo staging 2026-10-05).
+    areas = [p for p in places if p.get("is_area")]
+    if areas:
+        places = areas[:1]
+
+    # A PLACE THAT EXISTS MORE THAN ONCE IS NOT ONE PLACE. "أقرب فرع
+    # لكارفور" - there are dozens of Carrefour stores, so when the name
+    # resolves to more than one distinct place OF THAT SAME NAME the
+    # patient is asked which. Results that only contain the word are not
+    # other branches of it: the best match is taken.
+    places = _same_name_branches(places) or places[:1]
+    if len(places) > 1:
+        options = [
+            {
+                "option": index,
+                "label": _short_place_label(place["display_name"]),
+                "latitude": place["latitude"],
+                "longitude": place["longitude"],
+            }
+            for index, place in enumerate(places, 1)
+        ]
+        logger.info(
+            "geocode_address: address=%r matches %d different places - asking which one: %s",
+            address, len(options), [o["label"] for o in options],
+        )
+        _PENDING_PLACES[str(state.get("session_id"))] = options
+        return {"status": "ambiguous", "candidates": options}
+
+    top = places[0]
+    logger.info(
+        "geocode_address: address=%r -> lat=%s lon=%s (%s)",
+        address, top["latitude"], top["longitude"], top["display_name"],
+    )
+
+    result = {
+        "status": "found",
+        "latitude": top["latitude"],
+        "longitude": top["longitude"],
+        "display_name": top["display_name"],
+    }
+    # THE NEAREST BRANCH COMES WITH IT. Finding the place is only step
+    # one, and the model stopped there (elborgdemo staging 2026-10-05:
+    # "مول المرشدي" was found and the patient got the whole branch list).
+    try:
+        nearest = find_nearest_branch.func(state, latitude=top["latitude"], longitude=top["longitude"])
+    except Exception:  # noqa: BLE001
+        logger.warning("geocode_address: find_nearest_branch raised for address=%r", address, exc_info=True)
+        nearest = None
+    if isinstance(nearest, dict) and nearest.get("status") not in (None, "error", "not_configured", "not_found"):
+        result["nearest_branch"] = nearest
+    return result
+
+
+@tool
+def find_nearest_branch(
+    state: Annotated[AgentState, InjectedState],
+    latitude: float = 0.0,
+    longitude: float = 0.0,
+    place_option: int = 0,
+) -> dict:
+    """The clinic's branches sorted by distance from a point. Normally
+    you do not need it: `geocode_address` already returns
+    `nearest_branch`. After `geocode_address` returned "ambiguous" and the
+    patient chose one of the places, call it with `place_option` = that
+    option number (leave the coordinates out). Never pass coordinates you
+    estimated yourself.
+
+    Returns {"status": "found", "branches": [{"name", "address", "phone",
+    "working_hours", "distance_km"}, ...] nearest first, "unusually_far":
+    true only when the nearest is over 100 km away},
+    {"status": "needs_place_choice", "candidates": [...]},
+    {"status": "not_found"} / {"status": "not_configured"} / {"status": "error"}."""
+
+    pending = _PENDING_PLACES.get(str(state.get("session_id")))
+    if pending:
+        chosen = next((o for o in pending if o["option"] == place_option), None)
+        if chosen:
+            latitude, longitude = chosen["latitude"], chosen["longitude"]
+        elif not any(_haversine_km(latitude, longitude, o["latitude"], o["longitude"]) < 1
+                     for o in pending):
+            return {"status": "needs_place_choice",
+                    "candidates": [{"option": o["option"], "label": o["label"]} for o in pending]}
+    elif not (latitude or longitude):
+        # A place number with no list on file (the process restarted, or
+        # another lookup replaced it) - never measure from 0,0.
+        return {"status": "not_found"}
+
+    base_url = _doctors_base_url(state)
+    if not base_url:
+        logger.warning(
+            "find_nearest_branch called but no doctors_base_url is configured for client_id=%s",
+            state.get("client_id"),
+        )
+        return {"status": "not_configured"}
+
+    geo_rows = load_branches_geo()
+    if not geo_rows:
+        logger.warning("find_nearest_branch: branches_geo.csv has no usable rows")
+        return {"status": "not_found"}
+
+    # The CSV is keyed by name, but the API may answer in either language
+    # ("Sheikh Zayed" / "الشيخ زايد") and with or without "فرع" - every
+    # name-like field of the API item is tried against a normalised index.
+    geo_index = {}
+    for raw_name, geo in geo_rows.items():
+        geo_index.setdefault(_geo_name_key(raw_name), geo)
+
+    language = conversation_language(state)
+    result = api.get_branches(base_url, page_size=200, language=language)
+    if not result["success"]:
+        logger.error(
+            "find_nearest_branch: get_branches failed: status_code=%s error=%s",
+            result.get("status_code"), result.get("error"),
+        )
+        return _api_error(result)
+
+    items = (result["data"] or {}).get("items", [])
+
+    ranked = []
+    for item in items:
+        name = _preferred_name(item, language) or item.get("name")
+        geo = None
+        for candidate_name in (name, item.get("name"), item.get("altName"), item.get("formatedName")):
+            if candidate_name:
+                geo = geo_rows.get(str(candidate_name).strip()) or geo_index.get(_geo_name_key(candidate_name))
+                if geo:
+                    break
+        if not geo:
+            continue
+        ranked.append({
+            "name": name,
+            "address": item.get("address"),
+            "phone": item.get("mobile"),
+            "working_hours": geo.get("working_hours") or None,
+            "distance_km": round(_haversine_km(latitude, longitude, geo["latitude"], geo["longitude"]), 1),
+        })
+
+    if not ranked:
+        logger.warning(
+            "find_nearest_branch: %d branch(es) returned by the API, none matched a row "
+            "in branches_geo.csv (API names: %s)",
+            len(items), [i.get("name") for i in items],
+        )
+        return {"status": "not_found"}
+
+    ranked.sort(key=lambda b: b["distance_km"])
+    for branch in ranked:
+        # Real branch names from the API - see `_remember_branch_name`.
+        _remember_branch_name(state, branch["name"])
+
+    logger.info(
+        "find_nearest_branch: lat=%s lon=%s -> nearest=%r (%.1f km)",
+        latitude, longitude, ranked[0]["name"], ranked[0]["distance_km"],
+    )
+
+    result = {"status": "found", "branches": ranked}
+
+    # Not a tool failure - the distance is real - but a signal that the
+    # geocoder probably matched a same-named place elsewhere, for the
+    # reply to say rather than hide.
+    if ranked[0]["distance_km"] > _UNUSUALLY_FAR_KM:
+        result["unusually_far"] = True
+        logger.warning(
+            "find_nearest_branch: nearest real branch is %.1f km away - likely the "
+            "wrong same-named place was geocoded", ranked[0]["distance_km"],
+        )
+
+    return result
+
+
 ALL_TOOLS = [
     validate_phone_format,
     compare_phone,
@@ -12348,4 +12759,6 @@ ALL_TOOLS = [
     send_complaint_email,
     request_human_handoff,
     share_branch_location,
+    geocode_address,
+    find_nearest_branch,
 ]

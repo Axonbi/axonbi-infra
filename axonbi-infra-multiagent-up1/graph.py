@@ -1407,6 +1407,308 @@ def _deterministic_day_and_slot_resolution(state: AgentState, agent_name: str) -
 
 
 # ==========================================================
+# Nearest branch to a place - answered from the map in code
+# ==========================================================
+#
+# Ported from the elborgdemo branch, where each of these was a confirmed
+# staging failure: the model searched a branch NAMED the place ("معنديش
+# فرع اسمه الهرم"), stopped after finding the place without naming the
+# nearest branch, re-showed a "which of these places?" list after the
+# patient had answered "1", and sent the welcome menu alone while the
+# nearest branch had been found. See tools.geocode_address.
+
+def _agent_holds_tools(agent_name: str, *tool_names: str) -> bool:
+    """True when `agent_name`'s registry tool subset contains every one
+    of `tool_names`. The hooks below call tools directly (`.func`) and so
+    bypass `_tool_node`'s allow-list - they apply the same boundary."""
+
+    held = {getattr(t, "name", "") for t in agents.tools_for(agent_name)}
+    return all(name in held for name in tool_names)
+
+
+def _list_position(text: str) -> int:
+    """The position a bare-number answer names ("2", "٢", "رقم 2"), or 0."""
+
+    digits = re.sub(r"\D", "", text.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")))
+    return int(digits) if digits else 0
+
+
+def _last_reply_before(messages: list, index: int) -> str:
+    """The text of the assistant's reply just before messages[index]."""
+
+    for message in reversed(messages[:index]):
+        if getattr(message, "type", None) == "ai" and getattr(message, "content", ""):
+            content = message.content
+            return content if isinstance(content, str) else str(content)
+    return ""
+
+
+def _reply_before_shows(messages: list, index: int, name: Optional[str]) -> bool:
+    """Whether the reply the patient answered shows `name` - spelling
+    variants, the article and spacing ignored, since the model rewords a
+    label now and then."""
+
+    if not name:
+        return False
+
+    def norm(value: str) -> str:
+        value = tools._normalize_arabic(value).replace("ئ", "ي").replace("ؤ", "و")
+        return " ".join(re.sub(r"^ال(?=\w{2})", "", word) for word in value.split())
+
+    return norm(name) in norm(_last_reply_before(messages, index))
+
+
+def _deterministic_place_pick(state: AgentState, agent_name: str):
+    """When the patient answers "which of these places?" (geocode_address
+    found the name in several places) with a BARE NUMBER, find the
+    nearest branch to that place in code.
+
+    CONFIRMED (elborgdemo staging 2026-10-05): five Carrefour stores were
+    offered, the patient replied "1" - twice - and the model showed the
+    same five again each time instead of calling
+    find_nearest_branch(place_option=1).
+
+    Only when the reply just before shows the chosen place (any part of
+    its address after the shared name); anything else goes to the model."""
+
+    if not _agent_holds_tools(agent_name, "find_nearest_branch"):
+        return None
+
+    session_id = state.get("session_id")
+    pending = tools._PENDING_PLACES.get(str(session_id)) or []
+    if not pending:
+        return None
+
+    messages = state.get("messages") or []
+    index = _latest_human_index(messages)
+    if index < 0:
+        return None
+    content = getattr(messages[index], "content", "")
+    text = (content if isinstance(content, str) else str(content)).strip()
+    if not _POSITIONAL_ANSWER_RE.match(text):
+        return None
+    position = _list_position(text)
+    chosen = next((o for o in pending if o.get("option") == position), None)
+    if not chosen:
+        return None
+
+    parts = [p.strip() for p in re.split(r"[,،]", chosen.get("label") or "") if p.strip()]
+    if not any(_reply_before_shows(messages, index, part) for part in parts[1:] or parts):
+        logger.info(
+            "_deterministic_place_pick: the reply before %r does not show option %d "
+            "- the model takes this turn (session_id=%s)", text, position, session_id,
+        )
+        return None
+
+    try:
+        payload = tools.find_nearest_branch.func(state, place_option=position)
+    except Exception:  # noqa: BLE001
+        logger.warning("_deterministic_place_pick: find_nearest_branch raised for "
+                       "session_id=%s - handing the turn to the model", session_id, exc_info=True)
+        return None
+    if not isinstance(payload, dict) or payload.get("status") in (None, "needs_place_choice", "error", "not_configured"):
+        return None
+
+    tools._PENDING_PLACES.pop(str(session_id), None)
+    logger.info("_deterministic_place_pick: option %d (%r) -> find_nearest_branch status=%r for session_id=%s",
+                position, chosen.get("label"), payload.get("status"), session_id)
+    return _forge_tool_pair("find_nearest_branch", {"place_option": position}, payload)
+
+
+# "اقرب فرع لسيتي ستارز" / "ايه اقرب فرع ليا من مول العرب" / "أقرب عيادة
+# عند الماسة": the place the patient names AFTER the question. A pronoun
+# ("ليا", "ليكم") is not a place - see _NOT_A_PLACE.
+_NEAREST_TO_PLACE_RE = re.compile(
+    r"[اأإ]قرب\s+(?:فرع|عياد[ةه]|مكان)(?:\s+(?:لل|ل)?(?:عياد[ةه]|مركز))?"
+    r"(?:\s+ل[يى](?:ا|ه|ك|كي|كم|نا|ها|هم)?)?\s*"
+    r"(?:(?:من\s+عند|من|عند|جنب|قريب\s+من|ف[يى])\s+(?P<a>.+)|لل(?P<b>\S.*)|ل(?P<c>\S.*))$"
+)
+_NEAREST_TO_PLACE_EN_RE = re.compile(
+    r"\b(?:nearest|closest)\s+(?:branch|clinic|location)(?:\s+is)?\s+"
+    r"(?:to|from|near|around)\s+(?P<a>.+)$",
+    re.IGNORECASE,
+)
+# "انا قاعد في فندق الماسة ايه اقرب فرع؟": the place named BEFORE the
+# question. Without the question in the same message ("انا جاي من عند مول
+# العرب") it counts only as the answer to a nearest-branch exchange - see
+# `_place_in_nearest_question`.
+_WHERE_I_AM_RE = re.compile(
+    r"(?:^|\s)(?:[اأإ]نا\s+)?(?:قاعد|ساكن|موجود|جاي|نازل|مقيم|واقف)[ةه]?\s+"
+    r"(?:(?:من\s+)?عند|من|ف[يى]|ف|جنب|قريب\s+من)\s+(?P<p>.+)$"
+)
+_NEAREST_QUESTION_TAIL_RE = re.compile(
+    r"\s*[,،.؟?!-]*\s*(?:و\s*)?(?:(?:هو|طب|طيب)\s+)?(?:(?:ايه|إيه|ايش|فين|وين|انهي|أنهي|اي|أي|ما|مين)\s+)?"
+    r"(?:هو\s+)?[اأإ]قرب\s+(?:فرع|عياد[ةه]).*$"
+)
+_NEAREST_CUE_RE = re.compile(r"[اأإ]قرب\s+(?:فرع|عياد[ةه])|nearest|closest", re.IGNORECASE)
+_NOT_A_PLACE = {
+    "يه", "يا", "يك", "يكي", "ينا", "يها", "يهم", "يكم", "ي", "ك", "كم", "me", "us", "you", "here",
+    "الحجز", "الكشف", "حجز", "كشف",
+}
+
+
+def _clean_place(place: Optional[str]) -> Optional[str]:
+    place = (place or "").strip().strip("؟?.!،,-").strip()
+    place = re.sub(r"^(?:عند|منطقة|منطقه)\s+", "", place)
+    if not place or place.lower() in _NOT_A_PLACE or len(place) < 3:
+        return None
+    return place
+
+
+def _place_in_nearest_question(text: str, previous_reply: str = "") -> Optional[str]:
+    """The place a nearest-branch question names, or None.
+
+    `previous_reply` is the assistant's message the patient answered: a
+    bare "انا جاي من عند مول العرب" names a place for the nearest branch
+    only when that exchange was about the nearest branch."""
+
+    text = (text or "").strip().rstrip("؟?. ")
+
+    match = _NEAREST_TO_PLACE_RE.search(text)
+    if match:
+        if match.group("a"):
+            return _clean_place(match.group("a"))
+        if match.group("b"):
+            return _clean_place("ال" + match.group("b"))
+        return _clean_place(match.group("c"))
+
+    match = _NEAREST_TO_PLACE_EN_RE.search(text)
+    if match:
+        return _clean_place(match.group("a"))
+
+    match = _WHERE_I_AM_RE.search(text)
+    if match:
+        place, asks = _NEAREST_QUESTION_TAIL_RE.subn("", match.group("p"))
+        if asks or _NEAREST_CUE_RE.search(previous_reply or ""):
+            return _clean_place(place)
+    return None
+
+
+def _deterministic_nearest_to_place(state: AgentState, agent_name: str):
+    """A nearest-branch question that names a place is looked up on the
+    map in code (geocode_address, whose result carries the nearest
+    branch, or the "which one?" choice for a chain) before the model's
+    turn.
+
+    CONFIRMED (elborgdemo staging 2026-10-05): "ايه اقرب فرع للهرم" got
+    "معنديش فرع اسمه الهرم" and the branch list - the model looked for a
+    branch called الهرم and never looked the place up."""
+
+    if not _agent_holds_tools(agent_name, "geocode_address", "find_nearest_branch"):
+        return None
+
+    messages = state.get("messages") or []
+    index = _latest_human_index(messages)
+    if index < 0:
+        return None
+    if _tool_results_since_latest_human(messages, ("geocode_address", "find_nearest_branch")):
+        return None  # already looked up on an earlier hop of this turn
+    content = getattr(messages[index], "content", "")
+    place = _place_in_nearest_question(content if isinstance(content, str) else str(content),
+                                       _last_reply_before(messages, index))
+    if not place:
+        return None
+
+    try:
+        payload = tools.geocode_address.func(state, address=place)
+    except Exception:  # noqa: BLE001
+        logger.warning("_deterministic_nearest_to_place: geocode_address raised for %r", place, exc_info=True)
+        return None
+    if not isinstance(payload, dict) or payload.get("status") not in ("found", "ambiguous"):
+        logger.info("_deterministic_nearest_to_place: %r -> %r - the model takes this turn",
+                    place, (payload or {}).get("status") if isinstance(payload, dict) else None)
+        return None
+
+    nearest_branch = payload.get("nearest_branch") if isinstance(payload.get("nearest_branch"), dict) else {}
+    nearest = (nearest_branch.get("branches") or [{}])[0]
+    logger.info("_deterministic_nearest_to_place: %r -> %s (nearest=%r)", place, payload.get("status"),
+                (nearest or {}).get("name"))
+    return _forge_tool_pair("geocode_address", {"address": place}, payload)
+
+
+def _nearest_branch_result_this_turn(messages: list) -> Optional[dict]:
+    """The nearest-branch answer found this turn (find_nearest_branch, or
+    a geocode_address result carrying `nearest_branch`), or None."""
+
+    for message in reversed(_tool_results_since_latest_human(messages, ("geocode_address", "find_nearest_branch"))):
+        try:
+            payload = json.loads(message.content) if isinstance(message.content, str) else None
+        except ValueError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if getattr(message, "name", None) == "geocode_address":
+            payload = payload.get("nearest_branch")
+        if isinstance(payload, dict) and payload.get("status") == "found" and payload.get("branches"):
+            return payload
+    return None
+
+
+def _pin_sent_this_turn(messages: list, branch_name: str) -> bool:
+    for message in _tool_results_since_latest_human(messages, ("share_branch_location",)):
+        content = str(getattr(message, "content", ""))
+        if "location_requested" in content and branch_name in content:
+            return True
+    return False
+
+
+def _reply_names_nearest_first(reply: str, branches: list) -> bool:
+    """Whether the reply names the nearest branch, and names it before any
+    other branch - with two branches, a reply that mentions both but leads
+    with the farther one reads as the wrong answer."""
+
+    squashed = tools._geo_name_key(reply)
+    positions = []
+    for branch in branches:
+        key = tools._geo_name_key(branch.get("name"))
+        positions.append(squashed.find(key) if key else -1)
+    if not positions or positions[0] < 0:
+        return False
+    return all(p < 0 or p >= positions[0] for p in positions[1:])
+
+
+def _nearest_branch_card(messages: list, language: str) -> tuple:
+    """(card text, branch name) for the nearest branch found this turn;
+    (None, None) when there is nothing to show or the distance needs the
+    model's care (`unusually_far`)."""
+
+    result = _nearest_branch_result_this_turn(messages)
+    if not result or result.get("unusually_far"):
+        return None, None
+    branch = result["branches"][0] or {}
+    name = (branch.get("name") or "").strip()
+    if not name:
+        return None, None
+
+    index = _latest_human_index(messages)
+    asked = getattr(messages[index], "content", "") if index >= 0 else ""
+    place = _place_in_nearest_question(asked if isinstance(asked, str) else str(asked),
+                                       _last_reply_before(messages, index) if index >= 0 else "")
+    pin_sent = _pin_sent_this_turn(messages, name)
+
+    distance = branch.get("distance_km")
+    if language == "en":
+        lines = [f"The nearest branch to you{f' from {place}' if place else ''} is:", "",
+                 f"🏥 Branch: {name}"]
+        labels = ("📍 Address", "📞 Phone", "⏰ Working hours", "📏 Distance")
+        closing = (f"I've sent you its location on the map. Would you like to book at {name}?"
+                   if pin_sent else "Would you like me to send you the branch location on the map?")
+        distance_text = f"about {distance} km" if distance is not None else None
+    else:
+        lines = [f"أقرب فرع ليك{f' من {place}' if place else ''} هو:", "", f"🏥 الفرع: {name}"]
+        labels = ("📍 العنوان", "📞 التليفون", "⏰ مواعيد العمل", "📏 المسافة")
+        closing = (f"بعتلك لوكيشن الفرع على الخريطة. تحب أحجزلك ميعاد في {name}؟"
+                   if pin_sent else "تحب أبعتلك لوكيشن الفرع على الخريطة؟")
+        distance_text = f"حوالي {distance} كم" if distance is not None else None
+    for label, value in zip(labels, (branch.get("address"), branch.get("phone"),
+                                     branch.get("working_hours"), distance_text)):
+        if value:
+            lines.append(f"{label}: {value}")
+    lines += ["", closing]
+    return "\n".join(lines), name
+
+
+# ==========================================================
 # Nodes
 # ==========================================================
 
@@ -4619,9 +4921,12 @@ _LOCATION_QUESTION_DIRECTIVE = (
     "{addresses}\n\n"
     "Answer from these addresses only. A place or district they name (\"أقرب "
     "للنظيم\") is where THEY are, never a branch name - do not search it as "
-    "one and never answer that there is no branch by that name. Give the "
-    "branches with their districts; say which is nearer only when it is "
-    "plain from the addresses. For the map pin, call `share_branch_location` "
+    "one and never answer that there is no branch by that name. Which branch "
+    "is NEARER to a place they name comes only from `geocode_address` (call "
+    "it with the place; its `nearest_branch` is the answer, already in this "
+    "turn's tool results if it ran) - never judge it from the addresses "
+    "yourself; without that tool, give the branches with their districts. "
+    "For the map pin, call `share_branch_location` "
     "with the exact branch name above (the one they asked about, chose or "
     "booked). Then carry on with whatever was in progress.\n"
     "If they say they are LOST or missed the turn/entrance (\"ضيعت اللفة\", "
@@ -20494,6 +20799,12 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     if slot_lock_pair is not None:
         deterministic_pairs.extend(slot_lock_pair)
         history = history + list(slot_lock_pair)
+    # A NEAREST-BRANCH QUESTION NAMING A PLACE, or a number picking one of
+    # the places offered for it - see `_deterministic_nearest_to_place`.
+    place_pair = _deterministic_place_pick(state, agent_name) or _deterministic_nearest_to_place(state, agent_name)
+    if place_pair is not None:
+        deterministic_pairs.extend(place_pair)
+        history = history + list(place_pair)
     schedule_pairs = _deterministic_single_doctor_confirmation(state, agent_name)
     if not schedule_pairs:
         schedule_pairs = _deterministic_doctor_schedule_lookup(state, agent_name)
@@ -21284,6 +21595,22 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         if carded != response.content:
             logger.warning("agent[%s]: review card had no branch line - added the branch on file", agent_name)
             response = AIMessage(content=carded)
+
+    # THE NEAREST BRANCH FOUND THIS TURN IS WHAT THE REPLY SAYS. CONFIRMED
+    # (elborgdemo staging 2026-10-05): "اقرب فرع للهرم" as the first message
+    # found the branch - the pin went out - but the text was the welcome
+    # menu alone. A reply that does not lead with the branch found is
+    # replaced by the card; on a first turn the greeting goes above it.
+    if not has_tool_calls:
+        nearest_result = _nearest_branch_result_this_turn(state.get("messages") or [])
+        card, card_branch = _nearest_branch_card(state.get("messages") or [], target_language or "ar")
+        if card and not _reply_names_nearest_first(response.content or "", nearest_result["branches"]):
+            logger.warning(
+                "agent[%s]: the nearest branch found this turn (%r) is not what the reply "
+                "leads with - sending the nearest-branch card instead. Draft: %r",
+                agent_name, card_branch, response.content,
+            )
+            response = AIMessage(content=card)
 
     # A SAUDI/GULF CLINIC GETS NO EGYPTIAN FIXED WORDING - see
     # `_localize_egyptian_wording_for_gulf`.

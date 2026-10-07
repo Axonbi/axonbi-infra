@@ -305,6 +305,14 @@ SMSMISR_OTP_LENGTH: int = int(os.getenv("SMSMISR_OTP_LENGTH", "6"))
 # already confirmed working for this same system's WhatsApp messaging).
 COMPLAINT_WEBHOOK_URL: str = os.getenv("COMPLAINT_WEBHOOK_URL", "")
 
+# Nearest-branch search (tools.geocode_address) uses OpenStreetMap's public
+# Nominatim service, whose usage policy requires a real, identifying
+# User-Agent on every request - a generic one risks the shared instance
+# rate-limiting or blocking this traffic. Point it at a real contact.
+NOMINATIM_USER_AGENT: str = os.getenv(
+    "NOMINATIM_USER_AGENT", "axonbi-clinic-assistant/1.0 (ops@axonbi.com)"
+)
+
 SMTP_HOST: str = os.getenv("SMTP_HOST", "")
 SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USERNAME: str = os.getenv("SMTP_USERNAME", "")
@@ -1067,6 +1075,60 @@ def _all_dialect_templates() -> Dict[str, dict]:
 
     rows = _read_csv_rows("dialect_templates.csv")
     return {row["Dialect"].strip(): row for row in rows if row.get("Dialect")}
+
+
+# ==========================================================
+# Branch geo-data (branches_geo.csv)
+# ==========================================================
+#
+# The ONE thing api.get_branches genuinely does not return: lat/lng (and,
+# optionally, working hours). Everything else about a branch - name,
+# address, phone - is live from the Booking API and must never be
+# duplicated here. Searched like the other CSVs (AGENT_DATA_DIR first,
+# then the project root, where the committed copy lives).
+#
+# A branch may be listed under several names (the API's English `name`,
+# its Arabic `altName`, a common spelling) with the same coordinates -
+# tools.find_nearest_branch joins API branches to these rows by name, so
+# an extra alias costs nothing and a missing one silently drops that
+# branch from every distance ranking.
+
+BRANCHES_GEO_CSV_FILENAME = "branches_geo.csv"
+
+
+@lru_cache(maxsize=1)
+def _all_branches_geo() -> Dict[str, dict]:
+    """branch_name -> {"latitude", "longitude", "working_hours"}, loaded
+    once and cached. A row naming no real branch is never looked up -
+    dead data until corrected, not an error."""
+
+    result: Dict[str, dict] = {}
+    for row in _read_csv_rows(BRANCHES_GEO_CSV_FILENAME):
+        name = (row.get("branch_name") or "").strip()
+        if not name:
+            continue
+        try:
+            latitude = float(row.get("latitude"))
+            longitude = float(row.get("longitude"))
+        except (TypeError, ValueError):
+            logger.warning(
+                "branches_geo.csv: skipping %r - latitude/longitude is not a "
+                "valid number (%r, %r)",
+                name, row.get("latitude"), row.get("longitude"),
+            )
+            continue
+        result[name] = {
+            "latitude": latitude,
+            "longitude": longitude,
+            "working_hours": (row.get("working_hours") or "").strip(),
+        }
+    return result
+
+
+def load_branches_geo() -> Dict[str, dict]:
+    """Public accessor for `_all_branches_geo`."""
+
+    return _all_branches_geo()
 
 
 def get_client_config(client_id: str) -> Optional[dict]:
