@@ -1048,6 +1048,7 @@ def lookup_appointment(
     # docstring. The argument is still accepted so no tool call breaks;
     # it is simply not trusted.
     language = conversation_language(state)
+    ref_number = _clean_booking_ref(ref_number)
 
     if use_channel_identity:
         channel_phone = state.get("channel_phone")
@@ -4722,6 +4723,22 @@ def find_available_doctors(
 _LOOKS_LIKE_BOOKING_REF_RE = re.compile(r"[A-Za-z]{2,}[A-Za-z0-9]*-[A-Za-z0-9]")
 
 
+def _clean_booking_ref(value: Optional[str]) -> str:
+    """A booking reference as the booking system writes it: no label, no
+    spaces around its hyphens. CONFIRMED (tanasuq-production, 2026-10-07
+    11:29): "Booking Reference: APT- CL01-20260930-594" was searched with
+    the space in it, matched only partially, and the patient was told their
+    (correct) reference was wrong."""
+
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"^(?:booking|appointment|reservation)?\s*(?:reference|ref|number|no|id)\s*(?:number|no)?\s*[:#]\s*",
+                  "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*-\s*", "-", text)
+    return text.strip()
+
+
 def _resolve_doctor_id(state: AgentState, ref_number: str, language: Optional[str]) -> dict:
     """Internal helper: look up a booking by its reference number and
     return its doctorId, so schedule/slot tools know which doctor to
@@ -4730,6 +4747,7 @@ def _resolve_doctor_id(state: AgentState, ref_number: str, language: Optional[st
     status matching lookup_appointment's own conventions."""
 
     base_url = _base_url(state)
+    ref_number = _clean_booking_ref(ref_number)
     result = api.get_bookings_by_ref(_cms_base_url(state), ref_number, language=language, sso=_sso(state))
 
     if not result["success"]:
