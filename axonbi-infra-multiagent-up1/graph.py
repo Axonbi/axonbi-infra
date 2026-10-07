@@ -21529,6 +21529,11 @@ def router(state: AgentState) -> dict:
     if reading is not None and not reading.get("wants_human") and _types_the_word_we_asked_for(state.get("messages") or []):
         reading = {**reading, "wants_human": True, "intent": "human", "confidence": 1.0,
                    "is_ambiguous": False, "answer_to_previous_question": True}
+    if reading is not None and _says_lost_on_the_way(state.get("messages") or []):
+        reading = {**reading, "intent": "faq", "asks_location": True, "confidence": 1.0,
+                   "is_ambiguous": False, "alternatives": [], "changes_intent": True,
+                   "answer_to_previous_question": False, "cancel_request": False,
+                   "cancel_confirmed": False, "confirms": False, "declines": False}
     decision = agents.semantic_router.decide(reading, _turn_facts(state), _routing_thresholds())
 
     if decision.agent is None:
@@ -21748,6 +21753,26 @@ def _types_the_word_we_asked_for(messages: list) -> bool:
         return False
     return any(_norm_ar(m).strip() == typed for m in _INVITED_WORD_RE.findall(
         understanding.last_ai_text_before_latest_human(messages) or ""))
+
+
+# "ضيعت اللفة" / "ضيعت الدخلة" / "توهت" - a Gulf idiom for being lost on the
+# way to the hospital. CONFIRMED (tanasuq-production, 2026-10-07 08:52 and
+# 09:02-09:33): read as medical ("pull over somewhere safe"), as the HR email
+# and, after a lateness question, as an ambiguous cancel/reschedule - five
+# different wrong answers to someone standing outside looking for the door.
+# The reading cannot be trusted with an idiom it has never seen, so the
+# patient's own words decide this one.
+_LOST_ON_THE_WAY_RE = re.compile(
+    r"(?:ضيع|ضع)(?:ت|نا)\s*(?:ال)?(?:لفه|دخله|طريق|مدخل|موقع|مكان)"
+    r"|(?:توه|ته)(?:ت|نا)(?!\w)"
+    r"|(?:ما|م)\s*لقي(?:ت|نا)\s*(?:ال)?(?:مستشف|فرع|مبن|مدخل|باب)"
+    r"|(?:مو|مب|ما)\s*لاقي\s*(?:ال)?(?:مستشف|فرع|مبن|مدخل|باب)"
+)
+
+
+def _says_lost_on_the_way(messages: list) -> bool:
+    text = _norm_ar((understanding.latest_human_text(messages) or "").strip())
+    return bool(text) and len(text.split()) <= 8 and bool(_LOST_ON_THE_WAY_RE.search(text))
 
 
 def _understand_turn(state: AgentState) -> Optional[dict]:
