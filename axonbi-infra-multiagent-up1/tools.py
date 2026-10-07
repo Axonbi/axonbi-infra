@@ -5039,6 +5039,11 @@ def get_next_weekday_date(
     get_available_reschedule_slots): the next occurrence STRICTLY AFTER
     it - use it for "الاثنين اللي بعده" instead of asking them to clarify.
 
+    It only names the CALENDAR date - it does not check availability. Never
+    call that date "متاح" / available until `get_available_reschedule_slots`
+    has returned slots on it (that tool moves to the next same weekday with
+    slots by itself when the asked-for day has none).
+
     Returns {"status": "found", "date": "YYYY-MM-DD", "weekday_name":
     "Thursday"} or {"status": "error"} (unrecognized day or bad after_date)."""
 
@@ -5230,6 +5235,111 @@ def get_doctor_schedule(
     return {"status": "found", "schedules": schedules}
 
 
+def _reschedule_slots_from_items(items: list, timezone_name: str, language: str) -> tuple:
+    """(slots, same_day_removed): API slot items -> the slot dicts this flow
+    shows, minus booked, past and same-day ones."""
+
+    # Defense in depth: exclude any item explicitly marked isBooked=True,
+    # even though is_booked=False was already sent as a request filter -
+    # other endpoints in this same system have been observed to not
+    # always respect their own request filters (e.g. the inverted
+    # from_date/to_date range issue), so don't rely on the request filter
+    # alone for something this important (double-booking a doctor).
+    items = [i for i in (items or []) if i.get("isBooked") is not True]
+    slots = []
+    for item in items:
+        # TWO VALUES, DELIBERATELY. `slot_start`/`slot_end` are the WIRE
+        # format - byte for byte what this flow has always passed back to
+        # `reschedule_appointment` and on to the booking API, and
+        # changing them would move every appointment this system writes.
+        # `local_start` is the same instant on the clinic's clock, and is
+        # the only one the patient ever sees. See `to_clinic_local`.
+        slot_start = to_local_wallclock(item.get("slotStart"), timezone_name)
+        slot_end = to_local_wallclock(item.get("slotEnd"), timezone_name)
+        local_start = to_clinic_local(item.get("slotStart"), timezone_name)
+        slots.append({
+            "slotStart": slot_start,
+            "slotEnd": slot_end,
+            "_localStart": local_start,
+            "date_display": _display_date(local_start),
+            "weekday_display": _display_weekday(local_start, language),
+            "time_display": _display_time_12h(local_start, language),
+            "doctorName": item.get("doctorName"),
+            # Ids cms-api's Bookings/Update needs to move the booking to
+            # this slot - carried on the slot so the locked slot has them.
+            "branchId": item.get("branchId"),
+            "branchName": item.get("branchName"),
+            "doctorId": item.get("doctorId"),
+            "serviceId": item.get("serviceId"),
+            "spaceId": item.get("spaceId"),
+            "scheduleId": item.get("scheduleId"),
+            "serviceName": _service_name(item, language),
+            # servicePrice is deliberately NOT returned: fees are private
+            # by default and must only ever be revealed through
+            # `get_doctor_fees` when the user explicitly asks. Confirmed
+            # real issue - a price the model could see in the slot list
+            # ended up printed in the availability message unprompted.
+        })
+
+    # Exclude slots that have already passed - a slot for TODAY earlier
+    # than right now must never still be offered (observed directly:
+    # 9:00 AM was still shown while the conversation was happening at
+    # ~5pm the same day). Compared in the client's own local timezone,
+    # matching how slotStart itself was already converted.
+    try:
+        now_local = _local_now_naive(timezone_name)
+        slots = [
+            s for s in slots
+            if s["_localStart"] and datetime.fromisoformat(s["_localStart"]) > now_local
+        ]
+    except Exception:
+        logger.exception("get_available_reschedule_slots: failed to filter past slots, showing all")
+
+    return _drop_same_day_slots(slots, timezone_name)
+
+
+def _single_query_day(from_date: str, to_date: str) -> Optional[date]:
+    """The calendar day a [from_date, to_date] query covers, when it covers
+    exactly one; else None."""
+
+    try:
+        start = datetime.fromisoformat(str(from_date)).date()
+        end = datetime.fromisoformat(str(to_date)).date()
+    except (TypeError, ValueError):
+        return None
+    return start if start == end else None
+
+
+_RESCHEDULE_LOOKAHEAD_DAYS = 42
+
+
+def _nearest_reschedule_weekday_slots(base_url: str, doctor_id, requested_day: date,
+                                      timezone_name: str, language: str) -> list:
+    """The bookable slots on the first date AFTER `requested_day` that falls on
+    the same weekday and really has open slots, within the usual window."""
+
+    window_start = datetime.combine(requested_day + timedelta(days=1), datetime.min.time())
+    window_end = datetime.combine(requested_day + timedelta(days=_RESCHEDULE_LOOKAHEAD_DAYS),
+                                  datetime.max.time().replace(microsecond=0))
+    result = api.get_doctor_schedule_slots(
+        base_url, doctor_ids=[doctor_id],
+        from_date=window_start.isoformat(), to_date=window_end.isoformat(), is_booked=False,
+        page_size=1000, language=language,
+    )
+    if not result.get("success"):
+        logger.error("_nearest_reschedule_weekday_slots: API call failed: status_code=%s error=%s",
+                     result.get("status_code"), result.get("error"))
+        return []
+    slots, _ = _reschedule_slots_from_items((result.get("data") or {}).get("items", []),
+                                            timezone_name, language)
+    same_weekday = [s for s in slots
+                    if datetime.fromisoformat(s["_localStart"]).weekday() == requested_day.weekday()]
+    if not same_weekday:
+        return []
+    first_day = min(datetime.fromisoformat(s["_localStart"]).date() for s in same_weekday)
+    return [s for s in same_weekday if datetime.fromisoformat(s["_localStart"]).date() == first_day]
+
+
 @tool
 def get_available_reschedule_slots(
     state: Annotated[AgentState, InjectedState],
@@ -5304,72 +5414,36 @@ def get_available_reschedule_slots(
         logger.error("get_available_reschedule_slots API call failed: status_code=%s error=%s", result.get("status_code"), result.get("error"))
         return _api_error(result)
 
-    items = (result["data"] or {}).get("items", [])
-    if not items:
-        return {"status": "not_found"}
-
-    # Defense in depth: exclude any item explicitly marked isBooked=True,
-    # even though is_booked=False was already sent as a request filter -
-    # other endpoints in this same system have been observed to not
-    # always respect their own request filters (e.g. the inverted
-    # from_date/to_date range issue), so don't rely on the request filter
-    # alone for something this important (double-booking a doctor).
-    items = [i for i in items if i.get("isBooked") is not True]
-    if not items:
-        return {"status": "not_found"}
-
     timezone_name = (state.get("templates") or {}).get("_timezone", DEFAULT_TIMEZONE)
     language = conversation_language(state)
-    slots = []
-    for item in items:
-        # TWO VALUES, DELIBERATELY. `slot_start`/`slot_end` are the WIRE
-        # format - byte for byte what this flow has always passed back to
-        # `reschedule_appointment` and on to the booking API, and
-        # changing them would move every appointment this system writes.
-        # `local_start` is the same instant on the clinic's clock, and is
-        # the only one the patient ever sees. See `to_clinic_local`.
-        slot_start = to_local_wallclock(item.get("slotStart"), timezone_name)
-        slot_end = to_local_wallclock(item.get("slotEnd"), timezone_name)
-        local_start = to_clinic_local(item.get("slotStart"), timezone_name)
-        slots.append({
-            "slotStart": slot_start,
-            "slotEnd": slot_end,
-            "_localStart": local_start,
-            "date_display": _display_date(local_start),
-            "weekday_display": _display_weekday(local_start, language),
-            "time_display": _display_time_12h(local_start, language),
-            "doctorName": item.get("doctorName"),
-            # Ids cms-api's Bookings/Update needs to move the booking to
-            # this slot - carried on the slot so the locked slot has them.
-            "branchId": item.get("branchId"),
-            "branchName": item.get("branchName"),
-            "doctorId": item.get("doctorId"),
-            "serviceId": item.get("serviceId"),
-            "spaceId": item.get("spaceId"),
-            "scheduleId": item.get("scheduleId"),
-            "serviceName": _service_name(item, language),
-            # servicePrice is deliberately NOT returned: fees are private
-            # by default and must only ever be revealed through
-            # `get_doctor_fees` when the user explicitly asks. Confirmed
-            # real issue - a price the model could see in the slot list
-            # ended up printed in the availability message unprompted.
-        })
+    slots, same_day_removed = _reschedule_slots_from_items(
+        (result["data"] or {}).get("items", []), timezone_name, language,
+    )
 
-    # Exclude slots that have already passed - a slot for TODAY earlier
-    # than right now must never still be offered (observed directly:
-    # 9:00 AM was still shown while the conversation was happening at
-    # ~5pm the same day). Compared in the client's own local timezone,
-    # matching how slotStart itself was already converted.
-    try:
-        now_local = _local_now_naive(timezone_name)
-        slots = [
-            s for s in slots
-            if s["_localStart"] and datetime.fromisoformat(s["_localStart"]) > now_local
-        ]
-    except Exception:
-        logger.exception("get_available_reschedule_slots: failed to filter past slots, showing all")
+    # A DAY WITH NOTHING LEFT IS NOT THE END OF THE ANSWER.
+    #
+    # CONFIRMED (tanasuq-production, 2026-10-07 10:52-10:56): moving an
+    # appointment with a doctor who works Wednesdays, the patient said
+    # "الاربعاء" and was told "الدكتور غير متوفر يوم الأربعاء" (only TODAY's
+    # Wednesday had been checked - same-day is not allowed), then offered
+    # "أقرب يوم اثنين متاح 12/10" which had no slots, then "أقرب يوم أربعاء
+    # متاح 07/10" - today, the appointment being moved. Ten messages in a
+    # circle. When the one day asked for has nothing, the next same-weekday
+    # date that really has slots is found here, in code.
+    if not slots:
+        requested_day = _single_query_day(from_date, to_date)
+        if requested_day is not None:
+            nearest = _nearest_reschedule_weekday_slots(
+                base_url, resolved["doctor_id"], requested_day, timezone_name, language,
+            )
+            if nearest:
+                logger.info(
+                    "get_available_reschedule_slots: %s had no bookable slot - offering the "
+                    "next same weekday with slots instead (%s)",
+                    requested_day.isoformat(), nearest[0]["date_display"],
+                )
+                slots = nearest
 
-    slots, same_day_removed = _drop_same_day_slots(slots, timezone_name)
     if not slots:
         return {"status": "same_day_not_allowed" if same_day_removed else "not_found"}
 
