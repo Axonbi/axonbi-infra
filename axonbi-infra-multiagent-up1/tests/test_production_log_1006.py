@@ -239,3 +239,11 @@ def test_a_pasted_reference_does_not_switch_the_conversation_to_english():
     # a real switch still switches
     msgs_en = msgs[:-1] + [HumanMessage(content="can you answer in English please")]
     assert graph._detect_target_language(msgs_en) == "en"
+
+
+def test_a_bare_edit_is_changing_an_appointment_not_a_person():
+    from langchain_core.messages import HumanMessage
+    for text in ["تعديل", "تعديل موعد", "ابي اعدل موعدي", "تغيير الموعد"]:
+        assert graph._bare_edit_request([HumanMessage(content=text)]), text
+    for text in ["تعديل الوصفة", "تعديل للوصفه", "تعديل اسمي", "ابي موظف"]:
+        assert not graph._bare_edit_request([HumanMessage(content=text)]), text

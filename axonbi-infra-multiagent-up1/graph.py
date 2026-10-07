@@ -21879,6 +21879,10 @@ def router(state: AgentState) -> dict:
             and _yes_to_our_transfer_question(state.get("messages") or [], reading)):
         reading = {**reading, "wants_human": True, "intent": "human", "confidence": 1.0,
                    "is_ambiguous": False, "answer_to_previous_question": True}
+    if (reading is not None and reading.get("intent") == "human"
+            and _bare_edit_request(state.get("messages") or [])):
+        reading = {**reading, "intent": "reschedule", "wants_human": False, "confidence": 1.0,
+                   "is_ambiguous": False}
     if reading is not None and _says_lost_on_the_way(state.get("messages") or []):
         reading = {**reading, "intent": "faq", "asks_location": True, "confidence": 1.0,
                    "is_ambiguous": False, "alternatives": [], "changes_intent": True,
@@ -22118,6 +22122,19 @@ _LOST_ON_THE_WAY_RE = re.compile(
     r"|(?:ما|م)\s*لقي(?:ت|نا)\s*(?:ال)?(?:مستشف|فرع|مبن|مدخل|باب)"
     r"|(?:مو|مب|ما)\s*لاقي\s*(?:ال)?(?:مستشف|فرع|مبن|مدخل|باب)"
 )
+
+
+# "تعديل" ON ITS OWN is changing an appointment. CONFIRMED (tanasuq-production,
+# 2026-10-07 14:55): a first message "تعديل" was read as wanting a person
+# (the prompt's "تعديل الوصفة" -> human rule, stretched to the bare word) and
+# the patient was handed off without being asked anything. A prescription or
+# any other object named after it still goes to a person.
+_BARE_EDIT_RE = re.compile(r"^\s*(?:ابي|ابغي|ابغى|اريد|بدي|عايز)?\s*(?:تعديل|اعدل|عدل|تغيير|اغير)"
+                           r"(?:\s*(?:ال)?(?:موعد|موعدي|الموعد|حجز|حجزي|الحجز))?\s*[.!؟?]*\s*$")
+
+
+def _bare_edit_request(messages: list) -> bool:
+    return bool(_BARE_EDIT_RE.match(_norm_ar(understanding.latest_human_text(messages) or "")))
 
 
 def _yes_to_our_transfer_question(messages: list, reading: Optional[dict]) -> bool:
