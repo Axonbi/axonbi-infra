@@ -4626,8 +4626,10 @@ _LOCATION_QUESTION_DIRECTIVE = (
     "booked). Then carry on with whatever was in progress.\n"
     "If they say they are LOST or missed the turn/entrance (\"ضيعت اللفة\", "
     "\"ضيعت الدخلة\", \"تهت\"), that is this question: do NOT ask what they "
-    "mean. Give the branches and addresses above and ask which branch they "
-    "are heading to, so you can send its map pin.\n"
+    "mean and do NOT describe the hospital. Give only the branches and "
+    "addresses above, then ask ONE question: \"جاي أي فرع؟\" (which branch "
+    "are they heading to) - not whether they want the map. When they answer, "
+    "send that branch's pin with `share_branch_location`.\n"
 )
 
 
