@@ -983,6 +983,163 @@ def _deterministic_slot_lock(state: AgentState, agent_name: str):
     return _forge_tool_pair("select_appointment_slot", {"user_input": text}, payload)
 
 
+_RESCHEDULE_SLOT_TOOLS = ("get_available_reschedule_slots", "get_available_slots_for_booking")
+
+
+def _last_reschedule_slots_call(messages: list) -> Optional[dict]:
+    """The arguments of the `get_available_reschedule_slots` call behind
+    the slot list the patient is looking at, or None when the latest
+    slot list shown came from somewhere else (or there is none)."""
+
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if getattr(msg, "type", None) != "tool" or getattr(msg, "name", None) not in _RESCHEDULE_SLOT_TOOLS:
+            continue
+        if msg.name != "get_available_reschedule_slots":
+            return None
+        call_id = getattr(msg, "tool_call_id", None)
+        for j in range(i - 1, -1, -1):
+            for call in getattr(messages[j], "tool_calls", None) or []:
+                if call.get("id") == call_id:
+                    return dict(call.get("args") or {})
+        return None
+    return None
+
+
+def _deterministic_reschedule_slot_pick(state: AgentState, agent_name: str):
+    """When the patient answers the RESCHEDULE slot list with a bare
+    number or a clock time, work out which slot that is in code and
+    re-check it is still open, rather than leaving both to the model.
+    Returns the forged (AIMessage, ToolMessage) pair, or None.
+
+    CONFIRMED REAL PRODUCTION FAILURE (lab-ezz, session
+    201034430258+medtown2, 2026-10-07 12:52:39): the reschedule list
+    showed "5️⃣ 10:30 صباحًا", the patient answered "١٠ ونص", and the
+    reschedule agent - with no tool call at all - replied that 10:30 was
+    not available. `_deterministic_slot_lock` covers exactly this for a
+    new booking; reschedule has no `select_appointment_slot`, so nothing
+    covered it here.
+
+    The re-fetch uses the same arguments as the list the patient saw,
+    which also grounds the reply's times in a tool result from this
+    turn. The pick is resolved against the list AS SHOWN, so a slot
+    taken in the meantime cannot shift a bare number onto a different
+    time."""
+
+    if not config.DETERMINISTIC_SLOT_LOCK:
+        return None
+
+    if agent_name != "reschedule":
+        return None
+
+    if not _agent_holds_tools(agent_name, "get_available_reschedule_slots"):
+        return None
+
+    session_id = state.get("session_id")
+    session = tools._get_booking_session(session_id)
+    last_list = session.get("last_list") or {}
+    if last_list.get("entity_type") != "slot":
+        return None
+    shown = [s for s in (last_list.get("items") or []) if isinstance(s, dict)]
+    if not shown:
+        return None
+
+    messages = state.get("messages") or []
+    index = _latest_human_index(messages)
+    if index < 0:
+        return None
+
+    if _tool_results_since_latest_human(
+        messages, ("get_available_reschedule_slots", "reschedule_appointment"),
+    ):
+        return None
+
+    args = _last_reschedule_slots_call(messages)
+    if not args:
+        return None
+
+    content = getattr(messages[index], "content", "")
+    text = (content if isinstance(content, str) else str(content)).strip()
+
+    picked = None
+    position = None
+    if _POSITIONAL_ANSWER_RE.match(text):
+        number = int(re.sub(r"\D", "", text.translate(tools._ARABIC_DIGIT_MAP)))
+        if 1 <= number <= len(shown):
+            position, picked = number, shown[number - 1]
+    else:
+        named_time = _requested_clock_time_in_latest_human(messages)
+        wanted = tools._parse_clock_time(named_time) if named_time else None
+        if wanted:
+            matches = tools._slots_at_clock_time(shown, wanted)
+            if len(matches) == 1:
+                picked = matches[0]
+                position = shown.index(picked) + 1
+
+    if picked is None:
+        return None  # out of range, no time, or more than one match - the model asks
+
+    try:
+        payload = tools.get_available_reschedule_slots.func(state, **args)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "_deterministic_reschedule_slot_pick: get_available_reschedule_slots "
+            "raised for session_id=%s - handing the turn to the model", session_id,
+            exc_info=True,
+        )
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    still_open = payload.get("status") == "found" and any(
+        tools._same_instant(slot.get("slotStart"), picked.get("slotStart"))
+        and slot.get("branchId") == picked.get("branchId")
+        for slot in payload.get("slots") or []
+    )
+
+    chosen = {
+        "position_in_list_shown": position,
+        "weekday_display": picked.get("weekday_display"),
+        "date_display": picked.get("date_display"),
+        "time_display": picked.get("time_display"),
+        "branchName": picked.get("branchName"),
+        "slotStart": picked.get("slotStart"),
+        "slotEnd": picked.get("slotEnd"),
+    }
+    if still_open:
+        payload = {
+            **payload,
+            "patient_picked": chosen,
+            "next_step": (
+                "The patient's answer \"" + text + "\" is slot "
+                + str(position) + " of the list they were shown, and it IS "
+                "still open. Do NOT say it is unavailable and do NOT show the "
+                "list again. Go to the reschedule confirmation step: old "
+                "appointment vs this new time, then ask them to confirm. "
+                "When they confirm, pass this slot's slotStart/slotEnd "
+                "unchanged."
+            ),
+        }
+    else:
+        payload = {
+            **payload,
+            "patient_picked_taken": chosen,
+            "next_step": (
+                "The time they picked (" + str(chosen["time_display"]) + ") "
+                "was open when the list was shown but is no longer free. "
+                "Say exactly that, and show the slots in this result, "
+                "numbered, so they can pick again."
+            ),
+        }
+
+    logger.info(
+        "_deterministic_reschedule_slot_pick: %r -> slot %s (%s) still_open=%s "
+        "for session_id=%s", text, position, chosen["time_display"], still_open, session_id,
+    )
+    return _forge_tool_pair("get_available_reschedule_slots", args, payload)
+
+
 def _deterministic_service_pick(state: AgentState, agent_name: str):
     """When the patient's message is a BARE NUMBER answering a service
     or test list, resolve it in code rather than leaving that resolution
@@ -3909,10 +4066,18 @@ _PERIOD_WORD_FRAGMENT = (
     r"ظهرًا|ظهر|ضهر|عصر|ليلا|ليل|am|pm)"
 )
 
+# "١٠ ونص", "9 وربع", "11 الا ربع" - a time as clearly as "10:30" is.
+# See `tools._clock_fraction` for the production failure.
+_CLOCK_FRACTION_FRAGMENT = (
+    r"(?:و\s*(?:ال)?(?:نصف?|ربع|تلت|ثلث)|[اإأ]?لا\s*(?:ربع|تلت|ثلث))(?!\w)"
+)
+
 _MULTI_INTENT_TIME_RE = re.compile(
-    r"(?:ال)?ساع[ةه]\s*\d{1,2}(?:\s*:\s*\d{2})?"
+    r"(?:ال)?ساع[ةه]\s*\d{1,2}(?:\s*:\s*\d{2}|\s*" + _CLOCK_FRACTION_FRAGMENT + r")?"
     r"(?:\s*" + _PERIOD_WORD_FRAGMENT + r")?|"
     r"\d{1,2}\s*:\s*\d{2}(?:\s*" + _PERIOD_WORD_FRAGMENT + r")?|"
+    r"\d{1,2}\s*" + _CLOCK_FRACTION_FRAGMENT
+    + r"(?:\s*" + _PERIOD_WORD_FRAGMENT + r")?|"
     r"\d{1,2}\s*" + _PERIOD_WORD_FRAGMENT + r"\b",
     re.IGNORECASE,
 )
@@ -20198,6 +20363,10 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     if slot_lock_pair is not None:
         deterministic_pairs.extend(slot_lock_pair)
         history = history + list(slot_lock_pair)
+    reschedule_pick_pair = _deterministic_reschedule_slot_pick(state, agent_name)
+    if reschedule_pick_pair is not None:
+        deterministic_pairs.extend(reschedule_pick_pair)
+        history = history + list(reschedule_pick_pair)
     service_pick_pair = _deterministic_service_pick(state, agent_name)
     if service_pick_pair is not None:
         deterministic_pairs.extend(service_pick_pair)

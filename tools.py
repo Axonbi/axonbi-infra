@@ -2383,6 +2383,34 @@ _PERIOD_WORDS_NOON = ("ظهرا", "ظهرًا", "الظهر", "ضهرا", "ال�
 
 _CLOCK_TIME_RE = re.compile(r"(?<!\d)([01]?\d|2[0-3])\s*(?::\s*([0-5]\d))?(?!\d)")
 
+# THE SPOKEN QUARTERS: "١٠ ونص", "9 وربع", "11 الا ربع", "4 وتلت".
+#
+# CONFIRMED REAL PRODUCTION FAILURE (lab-ezz, session
+# 201034430258+medtown2, 2026-10-07 12:52:39): the list showed
+# "5️⃣ 10:30 صباحًا", the patient answered "١٠ ونص", and the parser
+# read only the "10" - minute None, "any slot in that hour" - so the
+# reply told her 10:30 was not available. Read against the normalized
+# text, right after the hour.
+_CLOCK_FRACTION_RE = re.compile(
+    r"^\s*(?:(?P<plus>و\s*(?:ال)?(?:نصف?|ربع|تلت|ثلث))"
+    r"|(?P<minus>(?:ا?لا|غير)\s*(?:ربع|تلت|ثلث)))(?!\w)"
+)
+_CLOCK_FRACTION_MINUTES = (("نص", 30), ("ربع", 15), ("تلت", 20), ("ثلث", 20))
+
+
+def _clock_fraction(after_hour: str) -> Optional[int]:
+    """+minutes for "ونص"/"وربع"/"وتلت", -minutes for "الا ربع"/
+    "الا تلت", or None - read from the text right after the hour."""
+
+    match = _CLOCK_FRACTION_RE.match(after_hour or "")
+    if not match:
+        return None
+    words = match.group("plus") or match.group("minus")
+    for word, minutes in _CLOCK_FRACTION_MINUTES:
+        if word in words:
+            return minutes if match.group("plus") else -minutes
+    return None
+
 
 def _parse_clock_time(text: Optional[str]) -> Optional[dict]:
     """The clock time in `text`, or None.
@@ -2409,6 +2437,15 @@ def _parse_clock_time(text: Optional[str]) -> Optional[dict]:
 
     hour = int(match.group(1))
     minute = int(match.group(2)) if match.group(2) else None
+
+    if minute is None:
+        fraction = _clock_fraction(normalized[match.end():])
+        if fraction is not None and fraction > 0:
+            minute = fraction
+        elif fraction is not None:
+            # "11 الا ربع" is 10:45; "1 الا ربع" is 12:45.
+            minute = 60 + fraction
+            hour = 12 if hour == 1 else (23 if hour == 0 else hour - 1)
 
     period = None
     for word in _PERIOD_WORDS_NOON:
