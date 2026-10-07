@@ -12177,6 +12177,14 @@ def share_branch_location(
             text = content if isinstance(content, str) else str(content or "")
 
             if msg_type == "human":
+                # The latest message was already judged above. It is still
+                # in `history` when the tool call is not the last message,
+                # and judged again here it ended the walk as "a different
+                # topic" - CONFIRMED (tanasuq-production, 2026-10-07 10:19):
+                # "ارسل رابط" right after the branch address was refused
+                # ("ما أقدر أرسل رابط الموقع") though the address WAS the topic.
+                if text.strip() and text.strip() == latest_text.strip():
+                    continue
                 if _LOCATION_REQUEST_CUE_RE.search(text):
                     location_asked = True
                     break
