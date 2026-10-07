@@ -662,9 +662,10 @@ def smsmisr_send_otp(phone: str, otp: str) -> dict:
         "otp": otp,
     }
 
+    # POST with the parameters in the query string (curl -X POST -G).
     # Single attempt on purpose: a retry after a slow-but-delivered request
     # would text the patient two different codes.
-    response, last_timeout, last_exc = _request_once("get", SMSMISR_BASE_URL, params=params)
+    response, last_timeout, last_exc = _request_once("post", SMSMISR_BASE_URL, params=params)
 
     if response is None:
         if last_timeout:
