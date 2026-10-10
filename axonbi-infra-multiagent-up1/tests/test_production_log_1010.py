@@ -141,9 +141,15 @@ def test_the_check_is_registered_and_substitutes():
 
 
 def test_the_substitute_names_the_real_reason():
-    refused = _after({"status": "booking_refused", "reason": ["Patient already has a booking with this doctor on the same day"]})
-    text = graph._safe_fallback_reply(refused, "en", "unverified existing booking")
-    assert "not completed" in text and "same day" in text and "confirmed" not in text
+    cms = "Patient already has a booking with this doctor on the same day"
+    refused = _after({"status": "booking_refused", "reason": [cms]})
+    # The system's message as it is, then the offer of a staff member - nothing else.
+    assert graph._safe_fallback_reply(refused, "ar", "unverified existing booking") == f"{cms}\nتحب أحولك لموظف؟"
+    assert graph._safe_fallback_reply(refused, "en", "unverified existing booking") == (
+        f"{cms}\nWould you like me to transfer you to a staff member?")
+    # "نعم" to it is a yes to a transfer the assistant really offered.
+    offer = _state([AIMessage(content=f"{cms}\nتحب أحولك لموظف؟"), HumanMessage(content="نعم")])
+    assert graph._assistant_offered_a_transfer(offer["messages"])
 
     own = _after({"status": "patient_has_booking_that_day", "appointment": {
         "doctorName": "سمر الخليفي", "weekday_display": "السبت", "date_display": "17/10/2026",
