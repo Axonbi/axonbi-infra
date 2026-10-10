@@ -476,6 +476,29 @@ RESULT_GUIDANCE: dict = {
             "tell the patient plainly which detail wasn't accepted, ask "
             "for a corrected one, and book again with it. Never describe "
             "this as a temporary technical problem.",
+        "patient_has_booking_that_day":
+            "THE NEW BOOKING WAS NOT CREATED. The clinic's system already "
+            "holds a booking for this patient with this same doctor on "
+            "that day - the one in `appointment` - and does not allow a "
+            "second one. Tell them that booking's real details from "
+            "`appointment` (doctor, branch, date, time, reference), "
+            "exactly as given - never the time they were trying to book. "
+            "Then ask ONE question: keep that booking, or choose another "
+            "day. Do NOT ask for their name or email again.",
+        "booking_refused":
+            "THE BOOKING WAS NOT CREATED - the clinic's system refused it, "
+            "and not because of the patient's name, phone or email "
+            "(`reason` carries the system's own words, if any). Say "
+            "plainly that the booking could not be completed AND WHY, "
+            "from `reason`, in plain words - e.g. a reason saying the "
+            "patient already has a booking with this doctor that day "
+            "means a second booking with the same doctor on the same day "
+            "is not possible. Never say "
+            "or imply it is booked or confirmed, never give a time for any "
+            "booking no tool returned, and do NOT ask for their name or "
+            "email again. "
+            "Offer one next step: another time, or our customer service "
+            "team.",
         "phone_not_verified":
             "mobile_number is neither the channel identity nor verified "
             "in this conversation (no successful compare_phone, no "

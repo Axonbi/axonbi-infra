@@ -462,7 +462,7 @@ def test_the_understanding_prompt_states_the_refusal_rule_compactly():
     assert "A no moves nothing forward" in prompt
     assert "Never true together with declines" in prompt
     # Still a compact prompt - the refusal rule is a few lines, not a list.
-    assert len(prompt) < 9000
+    assert len(prompt) < 9100  # +46 for the cancellation-call example (2026-10-10)
 
 
 # ----------------------------------------------------------------------

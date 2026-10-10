@@ -130,7 +130,7 @@ EXAMPLES (the pattern, not the words - other keys omitted):
 - ASSISTANT: "هل تريد إلغاء الموعد؟" / PATIENT: "أكيد" -> {{"intent": "cancel", "answer_to_previous_question": true, "confirms": true, "cancel_confirmed": true}}
 - ASSISTANT: "تحب أدور لك على دكتور ثاني؟" / PATIENT: "لا" -> {{"intent": "answer", "answer_to_previous_question": true, "declines": true}}
 - ASSISTANT: "عندك دكتور أو تخصص معيّن في بالك؟" / PATIENT: "المديفر" -> {{"intent": "booking", "answer_to_previous_question": true, "doctor_name": "المديفر"}} (a bare name or surname answering "which doctor?" is a doctor, never a symptom)
-- nothing asked yet / PATIENT: "ابي اعرف موعدي" -> {{"intent": "answer", "cancel_request": false}} (seeing an appointment is not cancelling or moving it)
+- nothing asked yet / PATIENT: "ابي اعرف موعدي" / "وصلني اتصال بالغاء الموعد، عندي موعد اليوم؟" -> {{"intent": "answer", "cancel_request": false}} (seeing or checking an appointment is not cancelling it)
 - ASSISTANT: "تحب نجرب يوم ثاني؟" / PATIENT: "لا خلاص ثبت موعدي" -> {{"intent": "answer", "answer_to_previous_question": true, "declines": true, "confirms": false}}
 - ASSISTANT: "عندك دكتور أو تخصص معيّن؟" / PATIENT: "لا، زيارة مريض" -> {{"intent": "faq", "declines": true, "changes_intent": true, "about_this_hospital": true}}
 - nothing asked yet / PATIENT: "ابغى اعرف عن اصيلا والعنود" -> {{"intent": "faq", "doctor_name": "اصيلا، العنود"}} (first names of doctors, not branches)

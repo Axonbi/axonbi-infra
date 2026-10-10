@@ -756,6 +756,18 @@ def _shape_appointment(item: dict, timezone_name: str = DEFAULT_TIMEZONE, langua
     shaped["date_display"] = _display_date(local_from)
     shaped["time_display"] = _display_time_12h(local_from, language)
     shaped["weekday_display"] = _display_weekday(local_from, language)
+    # "today"/"tomorrow" on the clinic's calendar, so "اليوم عندي موعد ايش"
+    # can be answered from the list instead of with "which one?".
+    shaped["day_relation"] = None
+    try:
+        visit_day = datetime.fromisoformat(local_from).date() if local_from else None
+        today = _local_now_naive(timezone_name).date()
+        if visit_day == today:
+            shaped["day_relation"] = "today"
+        elif visit_day == today + timedelta(days=1):
+            shaped["day_relation"] = "tomorrow"
+    except (ValueError, TypeError):
+        pass
     shaped["id"] = item.get("id")
     shaped["status"] = item.get("status")
 
@@ -10509,15 +10521,19 @@ def _is_failed_slot(session: dict, doctor_id, branch_id, slot_start: str) -> boo
     )
 
 
-def _patient_booking_at(state: AgentState, mobile_number: str, slot_start: str, doctor_id) -> Optional[dict]:
+def _patient_booking_at(state: AgentState, mobile_number: str, slot_start: str, doctor_id,
+                        same_day: bool = False) -> Optional[dict]:
     """The patient's own active booking with this doctor at exactly this
-    instant, or None. Best-effort: any lookup failure returns None so the
+    instant - or, with `same_day`, at any time on that slot's clinic-local
+    date - or None. Best-effort: any lookup failure returns None so the
     caller falls back to its normal failure reply."""
 
     base_url = _cms_base_url(state)
     phone = normalize_phone_number(mobile_number, state) or mobile_number
     if not base_url or not phone or not slot_start:
         return None
+    timezone_name = (state.get("templates") or {}).get("_timezone") or DEFAULT_TIMEZONE
+    slot_day = (to_clinic_local(slot_start, timezone_name) or "")[:10]
     try:
         result = api.get_bookings_by_phone(
             base_url, phone, language=conversation_language(state),
@@ -10538,9 +10554,42 @@ def _patient_booking_at(state: AgentState, mobile_number: str, slot_start: str, 
             continue
         if doctor_id and item.get("doctorId") and str(item.get("doctorId")) != str(doctor_id):
             continue
-        if _same_instant(item.get("bookingTimeFrom"), slot_start):
+        if same_day:
+            if slot_day and (to_clinic_local(item.get("bookingTimeFrom"), timezone_name) or "")[:10] == slot_day:
+                return item
+        elif _same_instant(item.get("bookingTimeFrom"), slot_start):
             return item
     return None
+
+
+def _patient_booking_that_day(state: AgentState, mobile_number: str, slot_start: str, doctor_id) -> Optional[dict]:
+    """A refused booking explained by the patient's OWN booking with this
+    doctor on that day: {"status": "patient_has_booking_that_day",
+    "appointment": {...}}, or None.
+
+    tanasuq-production, 2026-10-10 (from the patient's screenshot - no log
+    survived): after the patient's "Yes" the reservation was refused, and
+    the replies relayed it as "you already have a booking with Dr. Samar
+    Alkhelfi on the same day". A refusal that is not about the patient's
+    details came back as "invalid_details", so they were asked for their
+    name and email again, and finally told "it is already confirmed" for
+    a 12:00 the clinic says it never held. They turned up at 12:00. The
+    booking the clinic does hold, if any, is looked up and shown as it
+    is."""
+
+    existing = _patient_booking_at(state, mobile_number, slot_start, doctor_id, same_day=True)
+    if not existing:
+        return None
+    timezone_name = (state.get("templates") or {}).get("_timezone") or DEFAULT_TIMEZONE
+    logger.warning(
+        "create_new_booking: refused - the patient already holds booking id=%s ref=%s with this "
+        "doctor on that day (session_id=%s)",
+        existing.get("id"), existing.get("bookingRefNum"), state.get("session_id"),
+    )
+    return {
+        "status": "patient_has_booking_that_day",
+        "appointment": _shape_appointment(existing, timezone_name, conversation_language(state)),
+    }
 
 
 def _success_if_patient_already_booked(state: AgentState, session_id, mobile_number: str, slot_start: str, doctor_id) -> Optional[dict]:
@@ -10594,6 +10643,8 @@ def create_new_booking(
     {"status": "slot_unavailable"}
     {"status": "missing_doctor"} / {"status": "missing_branch"}
     {"status": "invalid_details", "rejected": [{"field": ..., "message": ...}]}
+    {"status": "patient_has_booking_that_day", "appointment": {...}}
+    {"status": "booking_refused", "reason": [...]}
     {"status": "phone_not_verified"}
     {"status": "missing_patient_name"}
     {"status": "not_configured"} / {"status": "error"}"""
@@ -10911,6 +10962,9 @@ def create_new_booking(
         already = _success_if_patient_already_booked(state, session_id, normalized_mobile, slot_start, doctor_id)
         if already:
             return already
+        that_day = _patient_booking_that_day(state, normalized_mobile, slot_start, doctor_id)
+        if that_day:
+            return that_day
         # Never offer this exact slot again in this booking - but only
         # when the API actually REFUSED it (4xx, or 200 with isSuccess=false).
         # A timeout/5xx says nothing about the slot, and a rejection of the
@@ -10935,8 +10989,17 @@ def create_new_booking(
         # time on something they could fix in one message. Pass the
         # rejected field(s) back so the reply can name what needs
         # correcting instead of blaming a generic outage.
-        if result.get("error") == "validation_error" and details:
+        if result.get("error") == "validation_error" and details and patient_field_rejected:
             return {"status": "invalid_details", "rejected": details}
+        # REFUSED, AND NOT FOR THE PATIENT'S DETAILS. Reported as
+        # invalid_details, this sent the patient back to re-type a name
+        # and email that were never the problem (tanasuq-production,
+        # 2026-10-10 - see `_patient_booking_that_day`).
+        if api_refused:
+            return {
+                "status": "booking_refused",
+                "reason": [d.get("message") for d in details if d.get("message")],
+            }
         return {"status": "error"}
 
     new_booking_id = result["data"]
