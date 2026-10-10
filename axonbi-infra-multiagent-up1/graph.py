@@ -11887,12 +11887,12 @@ def _booking_not_made_reply(state: AgentState, is_english: bool) -> str:
 
     reasons = [str(r).strip() for r in (result.get("reason") or []) if str(r).strip()]
     if status == "booking_refused" and reasons:
-        reason = "، ".join(reasons[:2])
+        # The system's own message as it is, and the offer of a person -
+        # nothing added around it (explicit instruction, 2026-10-10).
+        reason = "\n".join(reasons[:2])
         if is_english:
-            return (f"Sorry, the booking was not completed - our system refused it: \"{reason}\" 🌷\n"
-                    "Would you like to choose another time, or shall I connect you with customer service?")
-        return (f"عذرًا، الحجز ما تم - النظام رفضه: \"{reason}\" 🌷\n"
-                "تحب تختار وقت ثاني، ولا أحوّلك لخدمة العملاء؟")
+            return f"{reason}\nWould you like me to transfer you to a staff member?"
+        return f"{reason}\nتحب أحولك لموظف؟"
 
     if is_english:
         return ("Sorry, the booking was not completed in our system 🌷\n"
