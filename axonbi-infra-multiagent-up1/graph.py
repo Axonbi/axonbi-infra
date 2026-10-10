@@ -988,6 +988,13 @@ def _deterministic_slot_lock(state: AgentState, agent_name: str):
     if session.get("selected_slot"):
         return None  # already locked - nothing for this hook to do
 
+    if not session.get("doctor_id"):
+        # A time is a time WITH a doctor. Locked without one, the
+        # same-number step can never open and the times come back for
+        # every pick (tanasuq-production, 2026-10-10 14:31).
+        logger.info("_deterministic_slot_lock: no doctor on file - not locking a time")
+        return None
+
     messages = state.get("messages") or []
     index = _latest_human_index(messages)
     if index < 0:
@@ -22577,6 +22584,14 @@ def _clear_abandoned_booking_context(chosen: Optional[str], previous: Optional[s
         )
         return
 
+    if _answers_the_booking_on_screen(session, reading):
+        logger.info(
+            "router: %s -> booking answering the %s list on screen for the doctor on file "
+            "(session_id=%s) - the same booking, not clearing it",
+            previous, (session.get("last_list") or {}).get("entity_type"), session_id,
+        )
+        return
+
     stale_keys = ("doctor_id", "branch_id", "specialty_ids", "known_doctor_names", "selected_slot")
     present = [key for key in stale_keys if session.get(key)]
     if not present:
@@ -22589,6 +22604,36 @@ def _clear_abandoned_booking_context(chosen: Optional[str], previous: Optional[s
     )
     for key in stale_keys:
         session.pop(key, None)
+    # The days or times on screen were that doctor's. Left behind, a "1"
+    # locked one of them into a booking with no doctor - see
+    # `_answers_the_booking_on_screen`.
+    if (session.get("last_list") or {}).get("entity_type") in ("slot", "day"):
+        session.pop("last_list", None)
+
+
+def _answers_the_booking_on_screen(session: dict, reading: Optional[dict]) -> bool:
+    """A doctor is on file, the last list shown is that booking's days or
+    times, and the patient's message answers it naming nothing new: the
+    booking continues, whichever agent showed the list.
+
+    CONFIRMED (tanasuq-production, 2026-10-10 14:31, session
+    966501650466): concierge had shown د. العنود الخليفة's times (4:00,
+    8:00). The patient's "1" moved the turn to booking, which wiped the
+    doctor and branch as abandoned but left the times; "1" then locked
+    4:00 into a booking with no doctor, and every pick after it - "1",
+    "1️⃣", "١", "4 مساء" - was answered with the same two times, because
+    the same-number step needs a doctor."""
+
+    if not session.get("doctor_id"):
+        return False
+    if (session.get("last_list") or {}).get("entity_type") not in ("slot", "day"):
+        return False
+    reading = reading or {}
+    if not reading.get("answer_to_previous_question"):
+        return False
+    entities = reading.get("entities") or {}
+    return not (reading.get("doctor_name") or reading.get("specialty")
+                or entities.get("doctor") or entities.get("service"))
 
 
 def route_to_specialist(state: AgentState) -> str:
