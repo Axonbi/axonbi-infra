@@ -318,3 +318,58 @@ def test_slots_at_another_branch_are_dropped():
     kept = tools.api._only_branches(mixed, ["b-manar"])
     assert [i["branchId"] for i in kept["data"]["items"]] == ["b-manar"]
     assert tools.api._only_branches({"success": True, "data": {"items": [_slot(15, 10, "x")]}}, None)["data"]["items"]
+
+
+# ----------------------------------------------------------------------
+# 14:31 (966501650466): concierge showed العنود الخليفة's times; "1" moved
+# the turn to booking, the doctor was wiped, the time was locked anyway,
+# and every pick after it got the same two times back.
+# ----------------------------------------------------------------------
+
+_TIMES = {"entity_type": "slot", "items": [
+    {"slotStart": "2026-10-11T16:00:00", "time_display": "4:00 مساءً"},
+    {"slotStart": "2026-10-11T20:00:00", "time_display": "8:00 مساءً"},
+]}
+_PICK = {"intent": "booking", "answer_to_previous_question": True, "confirms": True, "entities": {}}
+
+
+def _on_screen_session():
+    tools._BOOKING_SESSIONS.pop(_SID, None)
+    session = tools._get_booking_session(_SID)
+    session.update({"doctor_id": "dr-anoud", "branch_id": "b-manar", "last_list": dict(_TIMES)})
+    return session
+
+
+def test_a_pick_from_the_times_on_screen_keeps_the_booking():
+    session = _on_screen_session()
+    try:
+        graph._clear_abandoned_booking_context("booking", "concierge", "semantic: booking", _SID,
+                                               reading=_PICK, turn=9)
+        assert session["doctor_id"] == "dr-anoud" and session["branch_id"] == "b-manar"
+        assert session["last_list"]["entity_type"] == "slot"
+    finally:
+        tools._BOOKING_SESSIONS.pop(_SID, None)
+
+
+def test_a_new_doctor_still_clears_and_takes_the_old_times_with_it():
+    session = _on_screen_session()
+    try:
+        graph._clear_abandoned_booking_context(
+            "booking", "concierge", "semantic: booking", _SID,
+            reading={"intent": "booking", "answer_to_previous_question": False, "doctor_name": "سعد الماضي"},
+            turn=9)
+        assert not session.get("doctor_id") and not session.get("last_list")
+    finally:
+        tools._BOOKING_SESSIONS.pop(_SID, None)
+
+
+def test_no_time_is_locked_without_a_doctor():
+    tools._BOOKING_SESSIONS.pop(_SID, None)
+    session = tools._get_booking_session(_SID)
+    session["last_list"] = dict(_TIMES)
+    try:
+        with patch.object(graph.config, "DETERMINISTIC_SLOT_LOCK", True):
+            assert graph._deterministic_slot_lock(_state([HumanMessage(content="1")]), "booking") is None
+        assert not session.get("selected_slot")
+    finally:
+        tools._BOOKING_SESSIONS.pop(_SID, None)
