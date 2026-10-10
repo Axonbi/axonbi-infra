@@ -252,3 +252,63 @@ def test_todays_appointment_is_marked():
 
 def test_a_cancellation_call_question_is_not_a_cancel_request():
     assert "وصلني اتصال بالغاء الموعد" in understanding.PROMPT
+
+
+# ----------------------------------------------------------------------
+# The doctor's days shown are the days that can be booked (أحمد يوسف,
+# 12:46: rota Sun/Mon/Tue, bookable Wed 14 / Thu 15 / Sat 17)
+# ----------------------------------------------------------------------
+
+def _slot(day, hour, branch="b-manar"):
+    return {"slotStart": f"2026-10-{day:02d}T{hour:02d}:00:00+03:00",
+            "slotEnd": f"2026-10-{day:02d}T{hour:02d}:30:00+03:00",
+            "isBooked": False, "branchId": branch, "serviceName": "جلسة استشاره نفسيه تناسق"}
+
+
+_ROTA = {"success": True, "data": {"items": [
+    {"branchId": "b-manar", "branchName": "المنار", "recurringDaysNames": [d],
+     "fromDateTime": f"2026-09-01T{f}:00:00+03:00", "toDateTime": f"2026-12-31T{t}:00:00+03:00",
+     "serviceName": "جلسة استشاره نفسيه تناسق"}
+    for d, f, t in (("Sunday", "14", "20"), ("Monday", "11", "17"), ("Tuesday", "14", "21"))]}}
+
+_OPEN = {"success": True, "data": {"items": [
+    _slot(14, 10), _slot(14, 15), _slot(15, 10), _slot(15, 13), _slot(17, 11), _slot(17, 16),
+    _slot(18, 14), _slot(19, 11), _slot(20, 14),
+]}}
+
+
+def _schedule_with(open_slots):
+    tools._BOOKING_SESSIONS.pop(_SID, None)
+    session = tools._get_booking_session(_SID)
+    session.update({"doctor_id": "dr-ahmad", "doctor_display_name": "أحمد يوسف"})
+    fixed_now = datetime(2026, 10, 10, 12, 46)
+    try:
+        with patch.object(tools.api, "get_doctor_schedule", return_value=_ROTA), \
+             patch.object(tools.api, "get_doctor_schedule_slots", return_value=open_slots), \
+             patch.object(tools.api, "get_branches", return_value={"success": False}), \
+             patch.object(tools, "_local_now_naive", return_value=fixed_now):
+            return tools.get_doctor_schedule_for_booking.func(state=_state())
+    finally:
+        tools._BOOKING_SESSIONS.pop(_SID, None)
+
+
+def test_bookable_days_off_the_rota_are_shown_with_their_hours():
+    result = _schedule_with(_OPEN)
+    days = {row["recurringDaysNames"][0]: row for row in result["schedules"]}
+    assert set(days) == {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Saturday"}
+    assert days["Wednesday"]["fromDateTime"][11:16] == "10:00"
+    assert days["Wednesday"]["toDateTime"][11:16] == "15:30"
+    assert days["Wednesday"]["branchName"] == "المنار"
+
+
+def test_a_rota_that_matches_the_slots_gets_nothing_added():
+    only_rota_days = {"success": True, "data": {"items": [_slot(18, 14), _slot(19, 11), _slot(20, 14)]}}
+    result = _schedule_with(only_rota_days)
+    assert sorted(r["recurringDaysNames"][0] for r in result["schedules"]) == ["Monday", "Sunday", "Tuesday"]
+
+
+def test_slots_at_another_branch_are_dropped():
+    mixed = {"success": True, "data": {"items": [_slot(14, 10), _slot(15, 10, branch="b-nuzha")]}}
+    kept = tools.api._only_branches(mixed, ["b-manar"])
+    assert [i["branchId"] for i in kept["data"]["items"]] == ["b-manar"]
+    assert tools.api._only_branches({"success": True, "data": {"items": [_slot(15, 10, "x")]}}, None)["data"]["items"]

@@ -9524,6 +9524,43 @@ def _weekdays_with_open_slots(state, base_url: str, doctor_id: str, branch_id: s
     return {slot.weekday() for slot in slots}
 
 
+def _open_slot_spans(state, base_url: str, doctor_id: str, branch_id: str,
+                     timezone_name: str, window_days: int):
+    """Open slots at this branch within the booking window, as
+    [(start, end, service_name)] in clinic-local time, or None when the
+    lookup failed. Same query as `_open_slots_on_day`, keeping the end
+    and the service so a weekday can be shown with its real hours."""
+
+    try:
+        tz = ZoneInfo(timezone_name)
+    except Exception:
+        tz = ZoneInfo(DEFAULT_TIMEZONE)
+    now_local = datetime.now(tz)
+    result = api.get_doctor_schedule_slots(
+        base_url, doctor_ids=[doctor_id], branch_ids=[branch_id],
+        from_date=now_local.isoformat(),
+        to_date=(now_local + timedelta(days=window_days)).isoformat(),
+        is_booked=False, page_size=200, language=conversation_language(state),
+    )
+    if not result["success"]:
+        logger.warning("_open_slot_spans: lookup failed (status_code=%s)", result.get("status_code"))
+        return None
+    now_naive = _local_now_naive(timezone_name)
+    spans = []
+    for item in (result["data"] or {}).get("items", []):
+        if item.get("isBooked") is True:
+            continue
+        start, end = (to_clinic_local(item.get(k), timezone_name) for k in ("slotStart", "slotEnd"))
+        try:
+            start_dt = datetime.fromisoformat(start) if start else None
+            end_dt = datetime.fromisoformat(end) if end else start_dt
+        except ValueError:
+            continue
+        if start_dt and start_dt > now_naive:
+            spans.append((start_dt, end_dt, _service_name(item, conversation_language(state))))
+    return sorted(spans, key=lambda s: s[0])
+
+
 _ARABIC_WEEKDAY_BY_INDEX = {
     0: "الاثنين", 1: "الثلاثاء", 2: "الأربعاء", 3: "الخميس",
     4: "الجمعة", 5: "السبت", 6: "الأحد",
@@ -9617,6 +9654,7 @@ def _mark_fully_booked_schedule_days(state, base_url: str, doctor_id: str,
     today = datetime.now(tz).date()
 
     open_weekdays_by_branch = {}
+    spans_by_branch = {}
 
     for row in schedules:
         branch_id = row.get("branchId")
@@ -9635,9 +9673,13 @@ def _mark_fully_booked_schedule_days(state, base_url: str, doctor_id: str,
         starts_on = _schedule_row_effective_from(row)
 
         if branch_id not in open_weekdays_by_branch:
-            open_weekdays_by_branch[branch_id] = _weekdays_with_open_slots(
+            spans = _open_slot_spans(
                 state, base_url, doctor_id, branch_id, timezone_name,
                 DOCTOR_AVAILABILITY_WINDOW_DAYS,
+            )
+            spans_by_branch[branch_id] = spans
+            open_weekdays_by_branch[branch_id] = (
+                None if spans is None else {start.weekday() for start, _end, _svc in spans}
             )
 
         open_weekdays = open_weekdays_by_branch[branch_id]
@@ -9667,7 +9709,65 @@ def _mark_fully_booked_schedule_days(state, base_url: str, doctor_id: str,
             names, branch_id, DOCTOR_AVAILABILITY_WINDOW_DAYS,
         )
 
-    return schedules
+    return schedules + _rows_for_open_days_off_the_rota(schedules, spans_by_branch)
+
+
+def _rows_for_open_days_off_the_rota(schedules: list, spans_by_branch: dict) -> list:
+    """Rows for weekdays that HAVE open slots at a branch but appear on
+    none of that branch's rota rows - with the hours the slots really
+    run.
+
+    CONFIRMED (tanasuq-production, 2026-10-10 12:46): د. أحمد يوسف's
+    schedule at المنار read Sunday/Monday/Tuesday, and the very next turn's
+    bookable days were Wednesday 14/10, Thursday 15/10 and Saturday 17/10.
+    The rota and the bookable slots are two different records in the
+    clinic's system; what the patient can book is the slots, so the days
+    shown are made to include every day they can actually book."""
+
+    covered: dict = {}
+    template: dict = {}
+    for row in schedules:
+        branch_id = row.get("branchId")
+        if not branch_id:
+            continue
+        template.setdefault(branch_id, row)
+        for name in row.get("recurringDaysNames") or []:
+            index = _ENGLISH_WEEKDAY_INDEX.get(str(name).strip().lower())
+            if index is not None:
+                covered.setdefault(branch_id, set()).add(index)
+
+    added = []
+    for branch_id, spans in spans_by_branch.items():
+        if not spans or branch_id not in template:
+            continue
+        by_weekday: dict = {}
+        for start, end, service in spans:
+            by_weekday.setdefault(start.weekday(), []).append((start, end, service))
+        for weekday in sorted(by_weekday):
+            if weekday in covered.get(branch_id, set()):
+                continue
+            day_spans = by_weekday[weekday]
+            first = day_spans[0][0]
+            earliest = min(s[0].time() for s in day_spans)
+            latest = max((s[1] or s[0]).time() for s in day_spans)
+            services = [s[2] for s in day_spans if s[2]]
+            row = dict(template[branch_id])
+            row.update({
+                "recurringDaysNames": [_ENGLISH_WEEKDAY_BY_INDEX[weekday]],
+                "fromDateTime": datetime.combine(first.date(), earliest).isoformat(),
+                "toDateTime": datetime.combine(first.date(), latest).isoformat(),
+                "serviceName": max(set(services), key=services.count) if services else row.get("serviceName"),
+                "effectiveFrom": None,
+                "fully_booked": False,
+                "from_open_slots": True,
+            })
+            added.append(row)
+            logger.info(
+                "_rows_for_open_days_off_the_rota: branch %s has open slots on %s, which no rota "
+                "row lists - showing it with the slots' hours",
+                branch_id, _ENGLISH_WEEKDAY_BY_INDEX[weekday],
+            )
+    return added
 
 
 def _parse_iso_date(value):

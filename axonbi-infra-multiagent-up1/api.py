@@ -1014,10 +1014,36 @@ def get_doctor_schedule_slots(
         payload["branchIds"] = branch_ids
 
     if _cms_sso_for(base_url) is not None:
-        return _cms_first(base_url, lambda: _cms_bookable_slots(base_url, payload, language),
-                          lambda portal: _post_json(f"{portal}/api/Doctors/GetDoctorScheduleSlots", payload, client_id=client_id, language=language),
-                          "Doctors/GetBookableScheduleSlots")
-    return _post_json(url, payload, client_id=client_id, language=language)
+        result = _cms_first(base_url, lambda: _cms_bookable_slots(base_url, payload, language),
+                            lambda portal: _post_json(f"{portal}/api/Doctors/GetDoctorScheduleSlots", payload, client_id=client_id, language=language),
+                            "Doctors/GetBookableScheduleSlots")
+    else:
+        result = _post_json(url, payload, client_id=client_id, language=language)
+    return _only_branches(result, branch_ids)
+
+
+def _only_branches(result: dict, branch_ids: Optional[list]) -> dict:
+    """Drop slots at any other branch than the ones asked for.
+
+    The branch filter is sent, but nothing checked that it was applied:
+    a slot at another branch shown under "المتاحة في المنار" is a day the
+    patient cannot book there (tanasuq-production, 2026-10-10 12:47 - the
+    days offered for المنار were not days on the doctor's المنار rota). A
+    slot that carries no branchId is kept."""
+
+    if not branch_ids or not isinstance(result, dict) or not result.get("success") \
+            or not isinstance(result.get("data"), dict):
+        return result
+    wanted = {str(b) for b in branch_ids}
+    items = result["data"].get("items") or []
+    kept = [i for i in items if not i.get("branchId") or str(i.get("branchId")) in wanted]
+    if len(kept) != len(items):
+        logger.warning(
+            "get_doctor_schedule_slots: dropped %d slot(s) at other branches than %s - the "
+            "branch filter was not applied upstream", len(items) - len(kept), sorted(wanted),
+        )
+        result["data"] = {**result["data"], "items": kept, "totalCount": len(kept)}
+    return result
 
 
 def _cms_bookable_slots(base_url: str, payload: dict, language: Optional[str]) -> dict:
