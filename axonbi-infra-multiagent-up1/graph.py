@@ -5542,6 +5542,9 @@ def _keycap(position: int) -> str:
     return "".join(_KEYCAPS[int(d) - 1] for d in str(position))
 
 
+_APPOINTMENT_DAY_LABELS = {"today": "اليوم", "tomorrow": "بكرة"}
+
+
 def _build_appointment_choice_directive(messages: list) -> str:
     """Pre-build the numbered list of a patient's OWN appointments, in
     the exact order `lookup_appointment` returned them.
@@ -5594,6 +5597,9 @@ def _build_appointment_choice_directive(messages: list) -> str:
             appt.get("time_display"),
         ]
         detail = " - ".join(str(p).strip() for p in parts if p and str(p).strip())
+        relation = _APPOINTMENT_DAY_LABELS.get(appt.get("day_relation") or "")
+        if relation:
+            detail = f"{detail} ({relation})"
         lines.append(f"{_keycap(index)} {detail}")
 
     block = "\n".join(lines)
@@ -5613,7 +5619,13 @@ def _build_appointment_choice_directive(messages: list) -> str:
         "[BEGIN-EXACT-TEXT]\n"
         f"{block}\n"
         "[END-EXACT-TEXT]\n\n"
-        "Introduce the list in one short sentence, then ask ONLY which "
+        "IF THE PATIENT ASKED ABOUT ONE DAY (\"اليوم عندي موعد؟\", \"موعدي "
+        "بكرة\", a date) and exactly ONE row is on that day - rows on today "
+        "or tomorrow are marked so - answer about that row directly: its "
+        "doctor, branch, date and time, and that it is still active in our "
+        "system. Do not show the list and do not ask which one. If NO row is "
+        "on that day, say so plainly, then show the list.\n\n"
+        "Otherwise, introduce the list in one short sentence, then ask ONLY which "
         "number they mean - one question, nothing else. Pass their answer "
         "straight through to `check_booking_status` as `ref_number`; it "
         "resolves the position itself, so never work out the reference "
@@ -10213,6 +10225,13 @@ def _reply_denies_availability_without_lookup(reply_text: str, state: AgentState
     if not _AVAILABILITY_DENIAL_RE.search(_norm_ar(reply_text)):
         return False
 
+    # "Nothing today" needs no lookup: same-day booking is not offered at
+    # all. Flagged, "مافي 10 اكتوبر ؟" (asked on 10 October) got a
+    # rewrite-then-substitute instead of that answer (tanasuq-production,
+    # 2026-10-10 12:48).
+    if _patient_asked_for_today(state):
+        return False
+
     messages = state.get("messages", []) or []
 
     # SCOPED TO THIS TURN, NOT TO THE WHOLE OF THE CURRENT DOCTOR.
@@ -11825,15 +11844,61 @@ def _unverified_availability_reply(description: Optional[str], target_language: 
     availability tool run, while the doctor's rota ran to 2027. It names no
     doctor, day or time, so it cannot itself be a claim."""
 
+    # NOT "بدل ما أخمّن" - telling the patient the assistant was about to
+    # guess is not something they should ever read (tanasuq-production,
+    # 2026-10-10 12:48, sent twice in a row to "مافي 10 اكتوبر ؟").
     if not any(marker in (description or "") for marker in _UNVERIFIED_AVAILABILITY_MARKERS):
         return ""
     if target_language == "en":
-        return "Let me check the real availability rather than guess 🌷\nWhich date would you like me to check?"
-    return "خلني أتأكد لك من المواعيد المتاحة فعليًا بدل ما أخمّن 🌷\nأي تاريخ تحب أشيّك عليه؟"
+        return "Which date would you like me to check the available appointments for? 🌷"
+    return "أي تاريخ تحب أشوف لك المواعيد المتاحة فيه؟ 🌷"
 
 
 def _substitute_despite_disabled_fallback(description: Optional[str]) -> bool:
+    # A booking that does not exist must never reach the patient as one:
+    # they act on it and turn up (tanasuq-production, 2026-10-10).
+    if "unverified existing booking" in (description or ""):
+        return True
     return _SAFE_FALLBACK_FABRICATED_AVAILABILITY and "fabricated appointment" in (description or "")
+
+
+def _booking_not_made_reply(state: AgentState, is_english: bool) -> str:
+    """Instead of a reply claiming a booking nothing returned: that the
+    booking was NOT made, and WHY, from the latest `create_new_booking`
+    result - the patient's own booking with that doctor that day, or the
+    system's refusal in its own words. Built only from tool values."""
+
+    result = {}
+    for message in reversed(state.get("messages") or []):
+        if getattr(message, "type", None) == "tool" and getattr(message, "name", None) == "create_new_booking":
+            result = parse_tool_content(message) or {}
+            break
+    status = result.get("status")
+
+    if status == "patient_has_booking_that_day":
+        appt = result.get("appointment") or {}
+        when = " ".join(str(appt.get(k)).strip() for k in ("weekday_display", "date_display", "time_display") if appt.get(k))
+        doctor = appt.get("doctorName") or ""
+        if is_english:
+            return (f"We can't book a second appointment with {doctor} on the same day - you already "
+                    f"have one with them on {when} 🌷\nWould you like to keep it, or choose another day?")
+        return (f"ما نقدر نحجز لك موعد ثاني مع {doctor} في نفس اليوم، لأن عندك حجز {when} مع نفس الطبيب 🌷\n"
+                "تحب تثبت هذا الموعد ولا تختار يوم ثاني؟")
+
+    reasons = [str(r).strip() for r in (result.get("reason") or []) if str(r).strip()]
+    if status == "booking_refused" and reasons:
+        reason = "، ".join(reasons[:2])
+        if is_english:
+            return (f"Sorry, the booking was not completed - our system refused it: \"{reason}\" 🌷\n"
+                    "Would you like to choose another time, or shall I connect you with customer service?")
+        return (f"عذرًا، الحجز ما تم - النظام رفضه: \"{reason}\" 🌷\n"
+                "تحب تختار وقت ثاني، ولا أحوّلك لخدمة العملاء؟")
+
+    if is_english:
+        return ("Sorry, the booking was not completed in our system 🌷\n"
+                "Would you like to choose another time, or shall I connect you with customer service?")
+    return ("عذرًا، الحجز ما تم في النظام 🌷\n"
+            "تحب تختار وقت ثاني، ولا أحوّلك لخدمة العملاء؟")
 
 
 def _safe_fallback_reply(
@@ -11877,6 +11942,9 @@ def _safe_fallback_reply(
 
     is_english = (target_language or "").strip().lower().startswith("en")
     desc = (failure_description or "").lower()
+
+    if "unverified existing booking" in desc:
+        return _booking_not_made_reply(state, is_english)
 
     # Ordered so a more specific match wins over a more general one when
     # a description could plausibly match more than one category.
@@ -14741,6 +14809,12 @@ _REPLY_VERIFIERS = (
         "appointment has ever been looked up in this conversation",
     ),
     (
+        lambda reply, state, agent_name: _reply_claims_an_unverified_booking(reply, state),
+        lambda reply, state: _UNVERIFIED_BOOKING_CORRECTION_DIRECTIVE,
+        "reply told the patient they have a booking or that it is confirmed, but "
+        "no tool in this conversation returned one - unverified existing booking",
+    ),
+    (
         lambda reply, state, agent_name: _reply_invents_availability(reply, state),
         lambda reply, state: _AVAILABILITY_CORRECTION_DIRECTIVE,
         "reply stated an appointment date/time that NO availability tool returned "
@@ -16721,6 +16795,89 @@ _CANCELLATION_CORRECTION_DIRECTIVE = (
 )
 
 
+# "عندك حجز/موعد", "موعدك مؤكد", "you already have a booking", "it is
+# already confirmed" - an EXISTING booking stated as fact. Conditionals
+# and negations ("لو عندك موعد", "ما عندك حجز", "if you have") are not.
+_HAS_BOOKING_CLAIM_RE = re.compile(
+    r"(?<!لو )(?<!اذا )(?<!ما )(?<!لا )عندك\s*(?:حجز|موعد)|"
+    r"(?<!if )\byou\s+(?:already\s+)?have\s+(?:a|an|another)\s+(?:booking|appointment)"
+)
+_CONFIRMED_BOOKING_CLAIM_RE = re.compile(
+    r"(?:موعدك|حجزك)\s*(?:مؤكد|متاكد|ثابت|قائم|موجود)|"
+    r"\b(?:it|this|that|your\s+(?:appointment|booking))\s+is\s+(?:already\s+)?confirmed"
+)
+
+# A tool result that shows the patient really holds a booking.
+_BOOKING_EXISTS_STATUSES = frozenset({
+    "found_one", "found_many", "active", "success", "success_ref_pending",
+    "patient_has_booking_that_day",
+})
+
+
+def _reply_claims_an_unverified_booking(reply_text: str, state: AgentState) -> bool:
+    """True when the reply tells the patient they HAVE a booking, or that
+    it is confirmed, while no tool in this conversation returned one.
+
+    tanasuq-production, 2026-10-10 (patient's screenshot): after a
+    refused reservation the reply said "You already have a booking with
+    Dr. Samar Alkhelfi on Saturday, 10 October 2026 at 12:00 PM. If you
+    want to keep this appointment, it is already confirmed." The clinic
+    held no such booking; the patient turned up at 12:00. `_CLAIM_GATES`
+    catches "your booking is confirmed" as a NEW booking, not this."""
+
+    if not reply_text:
+        return False
+    # Split on full stops too: "...at 12:00 PM. If you want to keep it,
+    # it is already confirmed. Anything else?" is one question-ended
+    # segment for `_split_sentences`, and the claim inside it is not a
+    # question.
+    sentences = [
+        part for line in reply_text.splitlines()
+        for part in re.split(r"(?<=[.!?؟])\s+", line)
+    ]
+    statements = [
+        _norm_ar(s).lower() for s in sentences
+        if s.strip() and not _QUESTION_MARK_RE.search(s.strip())
+    ]
+    has_claim = any(_HAS_BOOKING_CLAIM_RE.search(s) for s in statements)
+    confirmed_claim = any(_CONFIRMED_BOOKING_CLAIM_RE.search(s) for s in statements)
+    if not (has_claim or confirmed_claim):
+        return False
+    refused_with_reason = False
+    for msg in state.get("messages", []) or []:
+        if getattr(msg, "type", None) != "tool":
+            continue
+        data = parse_tool_content(msg)
+        if not isinstance(data, dict):
+            continue
+        if data.get("status") in _BOOKING_EXISTS_STATUSES:
+            return False
+        if data.get("status") == "booking_refused" and data.get("reason"):
+            refused_with_reason = True
+    # Relaying the system's own refusal ("you already have a booking with
+    # this doctor that day, so a second one is not possible") is the
+    # reason the patient is owed. Calling it CONFIRMED is not.
+    if refused_with_reason and not confirmed_claim:
+        return False
+    return True
+
+
+_UNVERIFIED_BOOKING_CORRECTION_DIRECTIVE = (
+    "============================================================\n"
+    "YOU SAID THE PATIENT HAS A BOOKING NOTHING RETURNED - REWRITE\n"
+    "============================================================\n"
+    "Your previous draft told the patient they have a booking, or that "
+    "an appointment is confirmed. No tool in this conversation returned "
+    "such a booking: `create_new_booking` did not succeed, and no lookup "
+    "found one. A patient told this will turn up at the clinic for an "
+    "appointment that does not exist.\n\n"
+    "Never say they have a booking or that it is confirmed. Say plainly "
+    "that the booking was not completed, and offer one next step: "
+    "another time, or our customer service team.\n\n"
+    "Rewrite the reply now.\n\n"
+)
+
+
 def _build_out_of_scope_block(templates: dict, language: str = "ar") -> str:
     """The clinic's scope refusal, as ONE fixed text.
 
@@ -17025,6 +17182,59 @@ def _build_review_card_phone_directive(state: AgentState, session_id: str) -> st
     return _REVIEW_CARD_PHONE_DIRECTIVE.format(phone=normalized)
 
 
+def _patient_asked_for_today(state: AgentState) -> bool:
+    """The patient's latest message names TODAY - "اليوم", "النهارده", or
+    today's date ("١٠ اكتوبر" on 10 October) - and same-day booking is
+    not offered."""
+
+    if config.ALLOW_SAME_DAY_BOOKING:
+        return False
+    messages = state.get("messages") or []
+    templates = state.get("templates") or {}
+    named = _relative_date_in_latest_human(messages, templates)
+    if named and named.get("offset_days") == 0:
+        return True
+    index = _latest_human_index(messages)
+    if index < 0:
+        return False
+    content = getattr(messages[index], "content", "")
+    text = content if isinstance(content, str) else str(content)
+    timezone_name = templates.get("_timezone") or tools.DEFAULT_TIMEZONE
+    today = tools._local_now_naive(timezone_name).date()
+    try:
+        return tools._parse_explicit_date(text, today) == today
+    except Exception:  # noqa: BLE001
+        return False
+
+
+_SAME_DAY_NOTICE = {
+    "ar": "للأسف ما نقدر نحجز في نفس اليوم 🌷",
+    "en": "Unfortunately we can't book an appointment for the same day 🌷",
+}
+
+
+def _same_day_notice(reply_text: str, state: AgentState, target_language: str) -> str:
+    """When the patient asked for TODAY, the reply opens by saying today
+    cannot be booked.
+
+    CONFIRMED (tanasuq-production, 2026-10-10 12:47): the patient asked
+    for "اليوم", then "اليوم السبت ١٠ اكتوبر", and was shown other days and
+    then Saturday 17/10's times with no word about today - until "مافي 10
+    اكتوبر ؟". The directive saying so was prose and was not followed;
+    the sentence is put first here instead."""
+
+    if not isinstance(reply_text, str) or not reply_text.strip():
+        return reply_text
+    session = tools._BOOKING_SESSIONS.get(state.get("session_id") or "") or {}
+    if not session.get("doctor_id") or not _patient_asked_for_today(state):
+        return reply_text
+    folded = _norm_ar(reply_text).lower()
+    if "نفس اليوم" in folded or "same day" in folded or "same-day" in folded:
+        return reply_text
+    notice = _SAME_DAY_NOTICE["en" if target_language == "en" else "ar"]
+    return f"{notice}\n{reply_text}"
+
+
 def _review_card_branch_fix(reply_text: str, state: AgentState, target_language: str) -> str:
     """The review card always carries the branch on file.
 
@@ -17044,11 +17254,24 @@ def _review_card_branch_fix(reply_text: str, state: AgentState, target_language:
     segments = [_normalize_for_compare(s) for s in _split_sentences(reply_text)]
     if not any(c in s for s in segments if s for c in confirmations):
         return reply_text
-    if "🏥" in reply_text or str(branch) in reply_text:
-        return reply_text
-
     label = "Branch" if target_language == "en" else "الفرع"
     lines = reply_text.split("\n")
+
+    # A branch line with a QUESTION or nothing for its value is filled in
+    # too. CONFIRMED (tanasuq-production, 2026-10-10, patient's
+    # screenshot): the card read "🏥 الفرع: أي فرع تفضلين؟" and the patient
+    # answered "Yes" to it.
+    for i, line in enumerate(lines):
+        if "🏥" not in line:
+            continue
+        value = line.split(":", 1)[1].strip() if ":" in line else ""
+        if not value or "؟" in value or "?" in value:
+            lines[i] = f"🏥 {label}: {branch}"
+            return "\n".join(lines)
+        return reply_text
+    if str(branch) in reply_text:
+        return reply_text
+
     # Above the doctor line where the card has one, else under its heading.
     at = next((i for i, line in enumerate(lines) if "👨" in line), 1)
     lines.insert(at, f"🏥 {label}: {branch}")
@@ -21314,6 +21537,13 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         if carded != response.content:
             logger.warning("agent[%s]: review card had no branch line - added the branch on file", agent_name)
             response = AIMessage(content=carded)
+
+    # TODAY IS REFUSED FIRST, IN CODE - see `_same_day_notice`.
+    if not has_tool_calls and agent_name in ("booking", "concierge", "reschedule"):
+        noticed = _same_day_notice(response.content, state, target_language)
+        if noticed != response.content:
+            logger.warning("agent[%s]: the patient asked for today - same-day notice put first", agent_name)
+            response = AIMessage(content=noticed)
 
     # A SAUDI/GULF CLINIC GETS NO EGYPTIAN FIXED WORDING - see
     # `_localize_egyptian_wording_for_gulf`.
