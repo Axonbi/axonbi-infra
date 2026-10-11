@@ -295,7 +295,27 @@ def _load_and_embed(file_path: str) -> list:
     return list(zip(chunks, vectors))
 
 
+_PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+
+def _resolve_kb_path(file_path: str) -> str:
+    """The configured path as given when it exists; otherwise the same
+    path under the project folder, then under its knowledge_base/ folder.
+    A relative path is otherwise read against the process's working
+    directory, which differs between launchers (systemd, langgraph dev,
+    the Docker image)."""
+
+    if not file_path or os.path.isabs(file_path) or os.path.exists(file_path):
+        return file_path
+    for candidate in (os.path.join(_PROJECT_ROOT, file_path),
+                      os.path.join(_PROJECT_ROOT, "knowledge_base", os.path.basename(file_path))):
+        if os.path.exists(candidate):
+            return candidate
+    return file_path
+
+
 def _get_cached_chunks(file_path: str) -> list:
+    file_path = _resolve_kb_path(file_path)
     try:
         mtime = os.path.getmtime(file_path)
     except OSError:
@@ -362,6 +382,7 @@ def list_services(file_path: str, language: str = "ar") -> list:
     if not file_path:
         return []
 
+    file_path = _resolve_kb_path(file_path)
     try:
         with open(file_path, encoding="utf-8") as f:
             text = f.read()

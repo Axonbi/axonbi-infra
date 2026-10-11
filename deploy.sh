@@ -27,7 +27,7 @@
 set -euo pipefail
 
 REPO="${REPO:-Axonbi/axonbi-infra}"
-BRANCH="${BRANCH:-multiagent-up1}"
+BRANCH="${BRANCH:-elborgdemo}"
 APP_DIR="${APP_DIR:-/opt/langgraph}"
 BACKUP_ROOT="${BACKUP_ROOT:-/opt/langgraph-backups}"
 SERVICES="${SERVICES:-cancel-agent-api.service langgraph-dev.service}"
@@ -35,17 +35,28 @@ HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8001/chat}"
 HEALTH_CLIENT="${HEALTH_CLIENT:-medtown2}"
 KEEP_BACKUPS="${KEEP_BACKUPS:-10}"
 
-# The files this script owns. Deliberately ONLY source code: the CSVs
-# and knowledge_base/ are per-clinic data that may legitimately have
-# been edited on the server, and silently replacing them from a branch
-# is how a clinic loses its own configuration. Add them here if you
-# ever decide the branch is authoritative for those too.
+# The files this script owns.
 FILES=(
   graph.py tools.py prompts.py rag.py main.py app.py config.py
   state.py api.py progress.py start.py tool_result_guidance.py
   agents/__init__.py agents/router.py agents/registry.py
   agents/sections.py agents/response_contract.py agents/hard_rules.py
 )
+
+# This branch's clinic data, edited on GitHub and so authoritative here.
+# Leaving it out shipped the code without the data it reads: the nearest
+# branch found no branch coordinates and the FAQ found no knowledge base.
+# A server copy that differs is backed up before it is replaced, like
+# the code. DEPLOY_DATA=0 deploys the code alone.
+DATA_FILES=(branches_geo.csv knowledge_base/EZZLAB.txt)
+[[ "${DEPLOY_DATA:-1}" == "0" ]] || FILES+=("${DATA_FILES[@]}")
+
+# Where a file goes under $APP_DIR. config.py reads a CSV from data/
+# before the project root, so a CSV already living in data/ is replaced
+# there - one installed at the root would sit behind it, never read.
+dest() {
+  if [[ "$1" == *.csv && -f "$APP_DIR/data/$1" ]]; then printf 'data/%s' "$1"; else printf '%s' "$1"; fi
+}
 
 RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; DIM=$'\033[2m'; OFF=$'\033[0m'
 say()  { printf '%s\n' "$*"; }
@@ -114,7 +125,8 @@ done
 ok "every file parses"
 
 CHANGED=(); for f in "${FILES[@]}"; do
-  if [[ ! -f "$APP_DIR/$f" ]] || ! cmp -s "$STAGE/$f" "$APP_DIR/$f"; then CHANGED+=("$f"); fi
+  d="$(dest "$f")"
+  if [[ ! -f "$APP_DIR/$d" ]] || ! cmp -s "$STAGE/$f" "$APP_DIR/$d"; then CHANGED+=("$f"); fi
 done
 
 if [[ ${#CHANGED[@]} -eq 0 ]]; then
@@ -135,14 +147,16 @@ fi
 BACKUP="$BACKUP_ROOT/$(date +%Y-%m-%d-%H%M%S)"
 step "Backing up to $BACKUP"
 for f in "${CHANGED[@]}"; do
-  [[ -f "$APP_DIR/$f" ]] && install -D -m 644 "$APP_DIR/$f" "$BACKUP/$f"
+  d="$(dest "$f")"
+  [[ -f "$APP_DIR/$d" ]] && install -D -m 644 "$APP_DIR/$d" "$BACKUP/$d"
 done
 ok "backup written"
 
 step "Installing"
 for f in "${CHANGED[@]}"; do
-  install -D -m 644 "$STAGE/$f" "$APP_DIR/$f"
-  printf '  %s\n' "$f"
+  d="$(dest "$f")"
+  install -D -m 644 "$STAGE/$f" "$APP_DIR/$d"
+  printf '  %s\n' "$d"
 done
 ok "installed"
 
