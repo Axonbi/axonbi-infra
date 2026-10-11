@@ -1021,11 +1021,11 @@ def _deterministic_slot_lock(state: AgentState, agent_name: str):
         )
         return None
 
-    if isinstance(payload, dict) and payload.get("status") == "slot_unavailable":
-        # The pick is a time the booking system already refused. Hand the
-        # model that result (and its guidance to fetch fresh times)
-        # rather than leaving it to re-list the old times from memory.
-        logger.info("_deterministic_slot_lock: %r is a time that already failed to book", text)
+    if isinstance(payload, dict) and payload.get("status") in ("slot_unavailable", "ambiguous_pick"):
+        # The pick is a time the booking system already refused, or a
+        # number that is both an option and an hour. Hand the model that
+        # result and its guidance rather than leaving it to guess.
+        logger.info("_deterministic_slot_lock: %r -> %s", text, payload.get("status"))
         return _forge_tool_pair("select_appointment_slot", {"user_input": text}, payload)
 
     if not isinstance(payload, dict) or payload.get("status") != "selected":
@@ -5681,8 +5681,9 @@ def _build_appointment_display_directive(messages: list) -> str:
     if not appt:
         return ""
 
+    name_line = f"👤 الاسم: {appt.get('patientFullName')}\n" if appt.get("patientFullName") else ""
     block = (
-        f"👤 الاسم: {appt.get('patientFullName', '')}\n"
+        f"{name_line}"
         f"👨\u200d⚕️ الطبيب: {appt.get('doctorName', '')}\n"
         f"🏥 الفرع: {appt.get('branchName', '')}\n"
         f"🗓️ التاريخ: {appt.get('date_display', '')}\n"
@@ -17189,6 +17190,23 @@ def _build_review_card_phone_directive(state: AgentState, session_id: str) -> st
     return _REVIEW_CARD_PHONE_DIRECTIVE.format(phone=normalized)
 
 
+def _card_name_is_the_doctor_fix(reply_text: str) -> str:
+    """A card whose 👤 name line repeats the 👨‍⚕️ doctor line loses the
+    name line. CONFIRMED (tanasuq-production, 2026-10-10 16:54,
+    966566802947): "👤 الاسم: مشاعل الشعلان / 👨‍⚕️ الطبيب: مشاعل الشعلان"."""
+
+    if not isinstance(reply_text, str) or "👤" not in reply_text:
+        return reply_text
+    lines = reply_text.split("\n")
+
+    def _value(line):
+        return _norm_ar(line.split(":", 1)[1]) if ":" in line else ""
+
+    doctors = {_value(line) for line in lines if "👨" in line and _value(line)}
+    kept = [line for line in lines if not ("👤" in line and _value(line) and _value(line) in doctors)]
+    return "\n".join(kept) if len(kept) != len(lines) else reply_text
+
+
 def _patient_asked_for_today(state: AgentState) -> bool:
     """The patient's latest message names TODAY - "اليوم", "النهارده", or
     today's date ("١٠ اكتوبر" on 10 October) - and same-day booking is
@@ -18950,16 +18968,29 @@ def _reply_skips_same_number_question_when_ready(reply_text: str, state: AgentSt
 
     # NB6's own question already appeared earlier in this conversation
     # - a direct phone request now is a legitimate follow-up (e.g. they
-    # said "no"), not a fresh skip.
+    # said "no"), not a fresh skip. But only while the conversation is
+    # STILL at the phone step: every reply since that question asked for
+    # the number too. A reply in between about something else means the
+    # question was left unanswered (tanasuq, 2026-10-10 16:31: NB6 asked,
+    # the patient asked about another day, the bot answered that, and
+    # "هنا مو مشكله" then got "من فضلك أرسل رقم الجوال مع رمز الدولة").
     from langchain_core.messages import AIMessage as _AIMessage4
+    since_question = None
     for msg in (state.get("messages") or []):
-        if isinstance(msg, _AIMessage4):
-            content = getattr(msg, "content", "")
-            text = content if isinstance(content, str) else str(content or "")
-            text_folded = _norm_ar(text)
-            if (_SAME_WHATSAPP_QUESTION_RE.search(text_folded)
-                    or _NEW_BOOKING_SAME_NUMBER_QUESTION_RE.search(text_folded)):
-                return False
+        if not isinstance(msg, _AIMessage4):
+            continue
+        content = getattr(msg, "content", "")
+        text = content if isinstance(content, str) else str(content or "")
+        if not text.strip():
+            continue
+        text_folded = _norm_ar(text)
+        if (_SAME_WHATSAPP_QUESTION_RE.search(text_folded)
+                or _NEW_BOOKING_SAME_NUMBER_QUESTION_RE.search(text_folded)):
+            since_question = []
+        elif since_question is not None:
+            since_question.append(text_folded)
+    if since_question is not None and all(_ASKS_FOR_PHONE_DIRECTLY_RE.search(t) for t in since_question):
+        return False
 
     return True
 
@@ -21545,6 +21576,13 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
             logger.warning("agent[%s]: review card had no branch line - added the branch on file", agent_name)
             response = AIMessage(content=carded)
 
+    # NO "👤 الاسم: <the doctor>" - see `_card_name_is_the_doctor_fix`.
+    if not has_tool_calls:
+        unnamed = _card_name_is_the_doctor_fix(response.content)
+        if unnamed != response.content:
+            logger.warning("agent[%s]: card named the doctor as the patient - name line dropped", agent_name)
+            response = AIMessage(content=unnamed)
+
     # TODAY IS REFUSED FIRST, IN CODE - see `_same_day_notice`.
     if not has_tool_calls and agent_name in ("booking", "concierge", "reschedule"):
         noticed = _same_day_notice(response.content, state, target_language)
@@ -22995,6 +23033,37 @@ _CANCEL_NOT_ASKED_PAYLOAD = {
 }
 
 
+# ONE DOCTOR AT A TIME. The booking session holds ONE doctor; several
+# `match_entity_for_booking(entity_type="doctor")` calls in one response
+# each overwrite it, and whichever ran last wins - the reply then talks
+# about one doctor while the session books another (tanasuq, 2026-10-10
+# 15:19: three doctors matched in one batch, days of one shown under the
+# name of another).
+_SEVERAL_DOCTORS_PAYLOAD = {
+    "status": "one_doctor_at_a_time",
+    "message": (
+        "Not run - several doctors were matched in one response, and the "
+        "booking holds one doctor at a time, so none of them was confirmed. "
+        "If the patient named one doctor, match only that one. If they just "
+        "want the soonest appointment in a specialty, use "
+        "find_best_doctor_in_specialty(criteria=\"soonest\"). Otherwise ask "
+        "them which doctor they want."
+    ),
+}
+
+
+def _several_doctor_matches(calls: list) -> list:
+    """The doctor `match_entity_for_booking` calls of one response, when
+    there is more than one distinct doctor among them."""
+
+    doctor_calls = [tc for tc in calls
+                    if tc.get("name") == "match_entity_for_booking"
+                    and str((tc.get("args") or {}).get("entity_type") or "").strip().lower() == "doctor"
+                    and str((tc.get("args") or {}).get("user_input") or "").strip()]
+    names = {str(tc["args"]["user_input"]).strip() for tc in doctor_calls}
+    return doctor_calls if len(names) > 1 else []
+
+
 def _cancellation_was_requested(state: AgentState) -> bool:
     """The patient asked to cancel in their own words at some point in this
     conversation (recorded by the router). A yes to the assistant's own
@@ -23034,6 +23103,10 @@ def _gated_tool_calls(state: AgentState) -> list:
             already = {tc.get("id") for tc, _ in gated}
             gated += [(tc, _NOT_AT_PHONE_STEP_PAYLOAD) for tc in calls
                       if tc.get("name") in _NEW_BOOKING_IDENTITY_TOOLS and tc.get("id") not in already]
+
+    already = {tc.get("id") for tc, _ in gated}
+    gated += [(tc, _SEVERAL_DOCTORS_PAYLOAD) for tc in _several_doctor_matches(calls)
+              if tc.get("id") not in already]
 
     return gated
 
