@@ -736,6 +736,14 @@ def _shape_appointment(item: dict, timezone_name: str = DEFAULT_TIMEZONE, langua
                 shaped[name] = item[key]
                 break
 
+    # A patient name that IS the doctor's name is not the patient's name
+    # (a booking saved with the doctor's name in the name field) - it is
+    # left out rather than shown as "👤 الاسم: <the doctor>".
+    if shaped.get("patientFullName") and shaped.get("doctorName") and (
+        _normalize_arabic(str(shaped["patientFullName"])) == _normalize_arabic(str(shaped["doctorName"]))
+    ):
+        shaped["patientFullName"] = None
+
     # THE CLINIC'S OWN CLOCK - see `to_clinic_local`.
     #
     # A booking's stored time came from a slotStart, and slotStart is a
@@ -2118,6 +2126,47 @@ def _selected_reschedule_slot(state: AgentState) -> Optional[dict]:
     return slot if isinstance(slot, dict) else None
 
 
+def _slot_the_patient_agreed_to(state: AgentState, locked: Optional[dict], key: str) -> Optional[dict]:
+    """The locked slot - or, when the confirmation the patient just said
+    yes to names a DIFFERENT time from the list on file, that slot,
+    re-locked under `key`.
+
+    CONFIRMED (tanasuq-production, 2026-10-10 18:44-18:46, 966535300750):
+    6:00 was locked from "تمام ٣"; the patient asked for 3:00, was told
+    "فيه موعد الساعة 3:00 مساءً ... تحب أأكد؟", said "تمام", and the
+    reschedule was sent at 6:00. What the patient agreed to is the time
+    on the screen they answered."""
+
+    if not locked:
+        return locked
+    shown = _normalize_arabic(understanding_module.last_ai_text_before_latest_human(state.get("messages") or []))
+    if not shown:
+        return locked
+    locked_time = _normalize_arabic(str(locked.get("time_display") or ""))
+    if not locked_time or locked_time in shown:
+        return locked
+    session = _get_booking_session(state.get("session_id"))
+    last_list = session.get("last_list") or {}
+    if last_list.get("entity_type") != "slot":
+        return locked
+    on_screen = [
+        slot for slot in last_list.get("items") or []
+        if isinstance(slot, dict) and slot.get("time_display")
+        and _normalize_arabic(str(slot["time_display"])) in shown
+        and (not locked.get("date_display") or slot.get("date_display") == locked.get("date_display"))
+    ]
+    if len(on_screen) != 1:
+        return locked
+    chosen = dict(on_screen[0])
+    session[key] = chosen
+    logger.warning(
+        "%s: the confirmation the patient answered names %s, not the locked %s - "
+        "re-locking to the time they agreed to (session_id=%s)",
+        key, chosen.get("time_display"), locked.get("time_display"), state.get("session_id"),
+    )
+    return chosen
+
+
 def _same_instant(left: Optional[str], right: Optional[str]) -> bool:
     """Do two slot timestamps name the same moment?
 
@@ -2614,6 +2663,29 @@ def _slot_matches_clock_time(slot: dict, wanted: dict) -> bool:
 
 def _slots_at_clock_time(slots: list, wanted: dict) -> list:
     return [slot for slot in (slots or []) if _slot_matches_clock_time(slot, wanted)]
+
+
+def _position_or_hour(slots: list, position: Optional[int], wanted: Optional[dict]) -> list:
+    """The two slots a bare number can mean, when they differ: the one AT
+    that position and the one starting at that hour. [] when the number
+    is not both, or both readings are the same slot.
+
+    CONFIRMED (tanasuq-production, 2026-10-10 18:42, 966535300750): the
+    times were 3:00, 5:00, 6:00 and "تمام ٣" was locked as option 3, 6:00.
+    The patient meant three o'clock, said so, was told "نعم، فيه 3:00" -
+    and the reschedule went to the booking system at 6:00."""
+
+    if position is None or not wanted or not (1 <= position <= len(slots or [])):
+        return []
+    by_time = _slots_at_clock_time(slots, wanted)
+    at_position = slots[position - 1]
+    if not by_time or any(slot is at_position or slot == at_position for slot in by_time):
+        return []
+    # "5" on a half-hourly list is 5:00 and 5:30 by the clock - the hour
+    # itself is the one it names.
+    on_the_hour = [slot for slot in by_time
+                   if _slot_matches_clock_time(slot, {**wanted, "minute": 0})]
+    return [at_position, (on_the_hour or by_time)[0]]
 
 
 def _extract_selection_number(user_input: str) -> Optional[int]:
@@ -4444,6 +4516,7 @@ def find_available_doctors(
             return {"status": "branch_not_matched"}
 
         branch_ids = [matched_branch["id"]]
+        _retire_previous_doctors_branch(session, "branch", matched_branch["id"])
         session["branch_id"] = matched_branch["id"]
         session["branch_display_name"] = _arabic_preferred_name(matched_branch)
         # Same class of gap as get_doctor_schedule_for_booking /
@@ -5035,8 +5108,9 @@ def get_next_weekday_date(
     calendar date on the clinic's calendar. ALWAYS call this - never work
     out a date yourself - and pass the patient's own word unchanged.
 
-    `after_date` omitted: the next such day counting from TODAY (today
-    itself if it already is that weekday).
+    `after_date` omitted: the next such day AFTER today - today is never
+    returned, since same-day booking is not taken ("اليوم" itself comes
+    back "same_day_not_allowed").
     `after_date` given ("YYYY-MM-DD", e.g. from an earlier call or from
     get_available_reschedule_slots): the next occurrence STRICTLY AFTER
     it - use it for "الاثنين اللي بعده" instead of asking them to clarify.
@@ -5057,7 +5131,12 @@ def get_next_weekday_date(
     # tool's own docstring forbids. See `resolve_relative_date`.
     # Checked BEFORE the weekday map so "بكره" cannot be mistaken
     # for anything in it.
+    import config as _config
+    same_day_allowed = getattr(_config, "ALLOW_SAME_DAY_BOOKING", False)
+
     relative = resolve_relative_date(weekday_name, timezone_name)
+    if relative and not after_date and relative.get("offset_days") == 0 and not same_day_allowed:
+        return {"status": "same_day_not_allowed"}
     if relative and not after_date:
         logger.info(
             "get_next_weekday_date: %r is a relative date -> %s (%s)",
@@ -5090,6 +5169,12 @@ def get_next_weekday_date(
     else:
         reference = datetime.now(tz).date()
         days_ahead = (target_weekday - reference.weekday()) % 7
+        if days_ahead == 0 and not same_day_allowed:
+            # TODAY IS NEVER OFFERED - same-day booking is not taken.
+            # CONFIRMED (tanasuq-production, 2026-10-10 12:12 and 18:39,
+            # 966535300750): "السبت الساعة ٢" on a Saturday was answered
+            # "أقرب يوم سبت متاح هو 10/10/2026" - that day.
+            days_ahead = 7
 
     target_date = reference + timedelta(days=days_ahead)
     english_name = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][target_weekday]
@@ -5561,6 +5646,14 @@ def select_reschedule_slot(state: Annotated[AgentState, InjectedState], user_inp
                 )
                 return {"status": "out_of_range", "list_size": len(slots)}
         else:
+            both = _position_or_hour(slots, position, wanted_time)
+            if both:
+                logger.info(
+                    "select_reschedule_slot: %r is option %d (%s) or the hour %s - asking which",
+                    user_input, position, both[0].get("time_display"), both[1].get("time_display"),
+                )
+                return {"status": "ambiguous_pick",
+                        "candidates": [dict(slot) for slot in both]}
             chosen = slots[position - 1]
     else:
         # Not a number - match the TIME they typed against each
@@ -5690,7 +5783,7 @@ def reschedule_appointment(
     # booking API exactly as typed - moving the appointment to the wrong
     # instant. Retrying ("حاول تاني") reran the identical wrong write
     # every time, because nothing had ever locked the actual slot.
-    locked_slot = _selected_reschedule_slot(state)
+    locked_slot = _slot_the_patient_agreed_to(state, _selected_reschedule_slot(state), "selected_reschedule_slot")
     remembered = None
     if locked_slot and locked_slot.get("slotStart"):
         if not _same_instant(new_time_from, locked_slot.get("slotStart")):
@@ -7790,6 +7883,23 @@ def _retire_previous_doctors_branch(session: dict, entity_type: str,
     a new DOCTOR has to retire the branch for exactly the same reason.
     """
 
+    if entity_type == "branch" and new_id:
+        # A DIFFERENT BRANCH means the time chosen at the old one is not a
+        # time at this one. CONFIRMED (tanasuq-production, 2026-10-10
+        # 16:31-16:35, 966534089903): 21/10 5:30 was locked at المنار, the
+        # patient switched to النزهة, and the booking went on to the phone
+        # question with the المنار time still locked.
+        previous_branch = session.get("branch_id")
+        if previous_branch and str(previous_branch) != str(new_id) and session.get("selected_slot"):
+            logger.info(
+                "match_entity_for_booking: branch changed (%s -> %s) - dropping the "
+                "time chosen at the previous branch", previous_branch, new_id,
+            )
+            session["selected_slot"] = None
+            session["slots_shown"] = False
+            session["review_shown"] = False
+        return
+
     if entity_type != "doctor" or not new_id:
         return
 
@@ -7857,27 +7967,41 @@ def _confirm_doctor_picked_from_shown_list(state: AgentState) -> Optional[str]:
     if session.get("doctor_id"):
         return session["doctor_id"]
 
-    position = _extract_selection_number(_latest_human_text_for_handoff_guard(state))
+    patient_text = _latest_human_text_for_handoff_guard(state)
+    position = _extract_selection_number(patient_text)
     last_list = session.get("last_list") or {}
-    if position is None or last_list.get("entity_type") != "doctor":
+    if last_list.get("entity_type") != "doctor":
         return None
 
     shown = understanding_module.last_ai_text_before_latest_human(state.get("messages") or [])
-    line = next(
-        (ln for ln in shown.splitlines() if _shown_line_position(ln) == position),
-        None,
-    )
-    if not line:
-        return None
 
-    normalized_line = _normalize_arabic(line)
-    candidates = []
-    for item in last_list.get("items") or []:
-        if not isinstance(item, dict) or not item.get("id"):
-            continue
-        names = {item.get(k) for k in ("altName", "name", "formatedName") if item.get(k)}
-        if any(_normalize_arabic(n) in normalized_line for n in names):
-            candidates.append(item)
+    def _names(item):
+        return {item.get(k) for k in ("altName", "name", "formatedName") if item.get(k)}
+
+    items = [i for i in last_list.get("items") or [] if isinstance(i, dict) and i.get("id")]
+    if position is not None:
+        line = next(
+            (ln for ln in shown.splitlines() if _shown_line_position(ln) == position),
+            None,
+        )
+        if not line:
+            return None
+        normalized_line = _normalize_arabic(line)
+        candidates = [i for i in items if any(_normalize_arabic(n) in normalized_line for n in _names(i))]
+    else:
+        # A NAME from the reply on screen - "نوره متى متاحه؟" after a reply
+        # naming نورة العتيبي (tanasuq-production, 2026-10-10 20:49,
+        # 966500096796: answered "ما عندي جدول مواعيد" for a doctor who
+        # works Thursdays). Only doctors that reply named are candidates,
+        # so a first name shared with someone not on screen is no match.
+        normalized_shown = _normalize_arabic(shown)
+        patient_words = set(_normalize_arabic(patient_text or "").split())
+        candidates = [
+            i for i in items
+            if any(_normalize_arabic(n) in normalized_shown for n in _names(i))
+            and any(word in patient_words
+                    for n in _names(i) for word in _normalize_arabic(n).split() if len(word) >= 3)
+        ]
     if len({c["id"] for c in candidates}) != 1:
         return None
 
@@ -7886,8 +8010,9 @@ def _confirm_doctor_picked_from_shown_list(state: AgentState) -> Optional[str]:
     session["doctor_id"] = chosen["id"]
     session["doctor_display_name"] = _arabic_preferred_name(chosen)
     logger.info(
-        "_confirm_doctor_picked_from_shown_list: position %d on the shown list -> "
-        "doctor_id=%s (%s)", position, chosen["id"], session["doctor_display_name"],
+        "_confirm_doctor_picked_from_shown_list: %s on the shown list -> "
+        "doctor_id=%s (%s)", f"position {position}" if position is not None else "name",
+        chosen["id"], session["doctor_display_name"],
     )
     return chosen["id"]
 
@@ -8702,7 +8827,7 @@ def _preferred_name(entity: dict, language: str = "ar") -> str:
 
 
 _PRICE_WORDS_RE = re.compile(
-    r"سعر|اسعار|أسعار|تكلف|رسوم|بكام|بكم|كم (?:ال)?(?:سعر|كشف|حق)|حق الكشف|فلوس|"
+    r"سعر|اسعار|أسعار|تكلف|رسوم|بكام|بكم|كم (?:ال)?(?:سعر|كشف|حق)|حق الكشف|فلوس|ثمن|كشفي|"
     r"price|cost|fee|how much",
     re.IGNORECASE,
 )
@@ -10784,7 +10909,7 @@ def create_new_booking(
     # returned that very slot as "2026-09-14T07:24:00+00:00". The
     # patient was told 10:24 was no longer available, picked it again,
     # and was told the same thing. The booking never completed.
-    locked_slot = _selected_slot(state)
+    locked_slot = _slot_the_patient_agreed_to(state, _selected_slot(state), "selected_slot")
     if locked_slot and locked_slot.get("slotStart"):
         if not _same_instant(slot_start, locked_slot.get("slotStart")):
             logger.warning(
@@ -11660,6 +11785,14 @@ def select_appointment_slot(state: Annotated[AgentState, InjectedState], user_in
                 )
                 return {"status": "out_of_range", "list_size": len(slots)}
         else:
+            both = _position_or_hour(slots, position, wanted_time)
+            if both:
+                logger.info(
+                    "select_appointment_slot: %r is option %d (%s) or the hour %s - asking which",
+                    user_input, position, both[0].get("time_display"), both[1].get("time_display"),
+                )
+                return {"status": "ambiguous_pick",
+                        "candidates": [dict(slot) for slot in both]}
             chosen = slots[position - 1]
     else:
         # Not a number - match the TIME they typed against each
@@ -11773,6 +11906,22 @@ def find_best_doctor_in_specialty(
     criteria = (criteria or "soonest").strip().lower()
     if criteria not in ("soonest", "cheapest"):
         criteria = "soonest"
+    # "Cheapest" is a price, and a price is only given when asked.
+    # CONFIRMED (tanasuq-production, 2026-10-10 20:48, 966500096796):
+    # "ابي الافضل والموعد الاقرب" was answered with the soonest doctor AND
+    # "أرخص دكتور ... 150 ريال" - nobody had asked about cost.
+    if criteria == "cheapest" and not _fees_requested(state):
+        logger.warning(
+            "find_best_doctor_in_specialty: cheapest refused for session_id=%s - the "
+            "patient has not asked about price", state.get("session_id"),
+        )
+        return {
+            "status": "not_requested",
+            "instruction": (
+                "The patient did NOT ask about price. Do not search by price and do not "
+                "mention any fee - answer what they asked (e.g. the soonest appointment)."
+            ),
+        }
 
     base_url = _doctors_base_url(state)
     if not base_url:
