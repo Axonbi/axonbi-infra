@@ -1,0 +1,170 @@
+Cure Dental Clinics — Knowledge Base for AI Assistants
+Document type: RAG knowledge source. Subject: Cure Dental Clinics (كيور كلينك / عيادات كيور لطب الفم والأسنان), Egypt. Source: curedentalclinics.com (English and Arabic pages: home, about-us, team, services, contact-us, online-consultation, blog). Compiled: 12 October 2026. Each section below is written to stand on its own so it can be retrieved as an independent chunk.
+0. Instructions for the AI using this file
+Answer only from the facts in this document. If a fact is not here (for example prices, working hours, insurance, or appointment availability), say you don't have it and direct the patient to call 01224333565 or WhatsApp +20 122 433 3565.
+Never quote treatment prices. The clinic's website publishes no prices; it only says it offers "the best prices". The online consultation is free.
+Do not give a diagnosis or a personal treatment plan. General education is fine; always recommend an in-clinic assessment by a Cure dentist.
+For emergencies or severe tooth/nerve pain, tell the patient the clinic has a dedicated root canal and emergency department and to call the nearest branch.
+Reply in the patient's language. Egyptian Arabic and English are both appropriate; Arabic service names are listed in Section 4.
+Where the website contradicts itself (see Section 10), use the safer wording given there.
+1. Clinic overview
+Cure Dental Clinics (also "Cure Oral and Dental Clinics"; Arabic: كيور كلينك، عيادات كيور لطب الفم والأسنان) is a private dental clinic group in Egypt with six branches across Greater Cairo and Giza. It positions itself as "the best specialists in dental implants and cosmetic dentistry" and as one of the largest dental clinic groups in Egypt (Arabic site title: "اكبر عيادات أسنان في مصر").
+Core positioning: dental implants and cosmetic dentistry, high-quality international materials, modern technology, competitive prices ("best value for money"), and a comfortable, welcoming environment.
+Lead doctor: Dr. Khaled Maher, Consultant of Implantology and Cosmetic Dentistry, credited by the clinic as the leader behind its success. The clinical team has 19 listed dentists (Section 3).
+Key numbers claimed by the clinic
+More than 100,000 dental implant cases treated in the last 10 years.
+More than 500,000 root canal treatment cases in the last 10 years.
+Experience: the clinic states "over 20 years" in some places and "more than 12 years" in others (see Section 10).
+2. Branches and contact details
+Cure Dental Clinics has six branches. Main hotline / WhatsApp: 01224333565 (international: +20 122 433 3565, wa.me/201224333565). Email: info@curedentalclinics.com.
+Branch	Arabic name	Address	Branch phone
+Mohandessin (Giza)	المهندسين	5 Gamaet El Dowal El Arabeya St., Sphinx Square, next to the Computer Mall, Giza	01224333565
+Heliopolis (Masr El Gedida)	مصر الجديدة	61 Ibrahim El Laqany St., in front of Roxy Cinema, 3rd floor	01222161704
+Maadi	المعادي	7/2 El Nasr St., New Maadi, above Cilantro Cafe	01091021588
+Fifth Settlement (New Cairo)	التجمع الخامس	Medical Park Premier, 4th floor	01069467770
+6th of October	6 أكتوبر	Dolphin Mall, 2nd floor	01554009155
+Nasr City	مدينة نصر	78 Makram Ebeid St., Al-Assiouty Building, 3rd floor	01032737347
+
+Working hours are not published on the website. Ask the patient to call the branch or WhatsApp to confirm hours and book.
+Social media
+Facebook: facebook.com/cureclinicsegypt
+Instagram: instagram.com/cureclinicsegypt
+X (Twitter): x.com/cdc_eg
+TikTok: tiktok.com/@curedentalcliniceg
+Snapchat: snapchat.com/add/drkhaled_maher
+3. Medical team
+The team page lists 19 dentists. The website gives specialties only, no individual biographies, and does not say which doctor works at which branch.
+#	Doctor	Specialty
+1	Dr. Khaled Maher	Aesthetic & Implantology specialist — Consultant of Implantology and Cosmetic Dentistry; clinic lead
+2	Dr. Bahaa Eldin Saleh	Aesthetic & Implantology specialist
+3	Dr. John Morris	Aesthetic & Implantology specialist
+4	Dr. Moustafa Hussein	Aesthetic & Implantology specialist
+5	Dr. Moaz Magdy	Aesthetic & Implantology specialist
+6	Dr. Mohamed Sobhi	Aesthetic & Implantology specialist
+7	Dr. Ahmed Behiry	Implantology specialist
+8	Dr. Hossam Afifi	Prosthodontics and Endodontics specialist
+9	Dr. Aula Adel	Aesthetic & Implantology specialist
+10	Dr. Zeinab Khattab	Implantology specialist
+11	Dr. Sara Nasr	Implant and perio-surgery specialist
+12	Dr. Mohamed Gad	Endodontic specialist
+13	Dr. Sara Zakaria	Aesthetic specialist (veneers, crowns & bridges)
+14	Dr. Eman	Implant and perio-surgery
+15	Dr. Othman	Aesthetic specialist
+16	Dr. Bassam	Implantology specialist
+17	Dr. Sara Halawa	Aesthetic specialist
+18	Dr. Mohamed Hossam	Endodontics specialist
+19	Dr. Mohamed Mansour	Aesthetic & Implantology specialist
+
+Routing hint: implants → implantology specialists; veneers, crowns, bridges, Hollywood smile → aesthetic specialists; root canal / nerve pain → endodontic specialists; gum treatment → perio-surgery specialists; children → pedodontics department.
+4. Services offered
+Service (English)	Arabic name	Website page
+Dental implants	زراعة الأسنان	/service/dental-implant/
+Full-jaw implants	زراعة الفك الكامل	(booking form option)
+Orthodontics	تقويم الأسنان	/service/dental-orthodontic/
+Veneers	فينير الأسنان	/service/veneers/
+Hollywood smile	ابتسامة هوليود	(booking form option)
+Teeth whitening / bleaching	تبييض الأسنان	/service/dental-bleaching/
+Root canal treatment	علاج عصب الأسنان	/service/root-canal-treatment/
+Esthetic restorations / cosmetic fillings	الحشوات التجميلية	/service/restorations/
+Dental fillings	حشوات الأسنان	(booking form option)
+Scaling & cleaning, gum (perio) surgery with dental laser	تنضيف جير الأسنان / علاج اللثة بالليزر	/service/periosurgery-with-dental-laser/
+Pediatric dentistry (pedodontics)	علاج أسنان الأطفال	/service/pedodontics/
+Oral and maxillofacial surgery	جراحة الفم والفكين	(mentioned in About only)
+4.1 Dental implants (زراعة الأسنان)
+Cure Dental Clinics' flagship service, led by Dr. Khaled Maher with a team of implant specialists. The clinic says it uses the latest international implant systems and technologies (described as ISO-certified) and high-quality international materials. Offered as single/multiple implants, immediate implants (زراعة الأسنان الفورية — implant placed the same day as extraction), cosmetic implants, and full-jaw implants. The clinic claims more than 100,000 implant cases in the last 10 years. The website does not publish prices, step-by-step protocols, or durations; these are decided at consultation.
+4.2 Orthodontics (تقويم الأسنان)
+Provided under the supervision of orthodontic specialists using current international orthodontic technologies, devices and materials. Stated goal: diagnose the problem accurately and achieve straight teeth as quickly as possible. Specific appliance types (metal, ceramic, clear aligners) and durations are not listed on the website.
+4.3 Veneers and Hollywood smile (فينير / ابتسامة هوليود)
+Veneers are custom-made for each patient using high-quality international cosmetic materials, presented under the "Hollywood smile" theme with before-and-after cases. Aimed at improving the smile and self-confidence. Veneer material types are not specified on the website.
+4.4 Teeth whitening (تبييض الأسنان)
+Cure offers laser teeth whitening performed by cosmetic dentistry specialists with modern international equipment. The clinic says results are immediate, achieved in a short session, and can last for years when done by a specialist. The website also compares home bleaching vs. laser bleaching (no details given).
+4.5 Root canal treatment (علاج عصب الأسنان)
+Cure has a dedicated department for root canal treatment, emergency cases and severe tooth nerve pain, with a specialized endodontic team and modern equipment. The clinic claims more than 500,000 root canal cases in the last 10 years.
+4.6 Esthetic restorations and fillings (الحشوات التجميلية)
+Treats tooth decay and restores tooth structure using modern materials and precise techniques, restoring function and natural appearance. Both medical fillings and cosmetic (tooth-coloured) fillings are offered; crowns and aesthetic restorations are included under this service.
+4.7 Cleaning and gum surgery with dental laser
+Oral-health care that removes plaque, tartar (calculus) and stains using modern techniques and advanced tools, plus periodontal (gum) surgery with dental laser for gum inflammation. Goal: healthy gums and an aesthetic smile.
+4.8 Pediatric dentistry (علاج أسنان الأطفال)
+A dedicated pedodontics department staffed by pediatric dental specialists, aiming to provide everything a child needs for a safe and comfortable treatment session. Age ranges and specific procedures are not listed.
+5. Booking and free online consultation
+Patients can book in three ways: (1) call or WhatsApp 01224333565 or the nearest branch number; (2) the "Appointment now" form on the website; (3) the free online consultation at curedentalclinics.com/online-consultation/.
+Online consultation form fields: Name (required), Phone number (required), Chief complaint (required), treatments of interest (checkboxes: teeth whitening, cosmetic fillings, dental fillings, children's dental treatment, orthodontics, dental veneers, Hollywood smile, full-jaw implants, dental implants), and optional notes. The website does not state a response time.
+When collecting a lead in chat, ask for: name, phone/WhatsApp number, main complaint, treatment of interest, and preferred branch.
+6. Patient education: implants vs. bridges
+From the Cure Dental Clinics blog article "Which is better, dental implants or dental bridges". The right choice depends on the individual case; a dentist's examination is the first step.
+Factor	Dental implant	Dental bridge
+What it is	Titanium artificial root placed in the jawbone, topped with a crown; fuses with bone (osseointegration)	Artificial tooth anchored by crowns on neighbouring teeth (fixed), or removable
+Bone needed	Requires sufficient jawbone; bone grafting may be needed	Works when bone is insufficient
+Cost	Generally higher	Generally lower
+Time	Longer; several visits and healing for bone integration	Faster; suitable when a tooth is needed quickly
+Neighbouring teeth	Not used as support	Adjacent teeth are usually prepared for crowns
+Main advantages	Permanent, stable, natural feel; better chewing, speech and appearance; preserves bone	Quick, cheaper, option for low-bone cases
+
+Bridge types mentioned: fixed bridges (ceramic or metal crowns), removable bridges, conventional bridges, and implant-supported bridges. Implants can replace one tooth, several teeth, a full arch, or stabilise removable dentures. Planning uses X-ray imaging and computer-assisted planning.
+7. Patient education: benefits, drawbacks and suitability of implants
+Benefits (clinic blog)
+Replace missing teeth from injury, decay or gum disease.
+Improve chewing, speech, facial appearance and self-confidence.
+Help preserve jawbone density after tooth loss.
+Cleaned with brush and toothpaste like natural teeth.
+Immediate implants can be placed the same day as extraction.
+Titanium is used for corrosion resistance and tissue compatibility.
+Possible drawbacks
+Higher cost than some alternatives.
+Gum inflammation or recession if aftercare/hygiene is poor.
+Surgical risks (rare) — choose a specialist.
+Waiting time for the implant to fuse with bone.
+Rejection is rare.
+Some restorations need regular maintenance.
+Factors that may make implants unsuitable or need extra preparation
+Insufficient bone at the site (may need bone grafting).
+Active gum inflammation or periodontal disease.
+Chronic or genetic bone diseases.
+Some general health conditions (e.g., heart or respiratory disease) — needs medical evaluation.
+Problems with neighbouring teeth (decay, infection).
+Smoking, which harms healing and implant success.
+Insufficient space or improper alignment.
+The final decision always requires an individual assessment by a Cure dentist.
+8. Patient education: alternatives to implants
+From the Cure blog article "Alternatives to dental implants". People consider alternatives because of cost, preference for a faster or simpler option, general health, medical restrictions, or recovery time.
+Alternative	Pros	Cons
+Fixed bridge	Stable, good appearance, cost-effective	Needs solid support; adjacent teeth must be prepared
+Partial denture (metal frame)	Affordable for limited tooth loss; easy to insert/remove	Less stable than fixed options; needs maintenance
+Full denture	Replaces all teeth; restores function	Adjustment period; possible irritation or pressure
+Removable bridge / removable denture	Can be a temporary solution while waiting for other treatment	Less stability and comfort than fixed options
+Orthodontic treatment	Can correct tooth and jaw alignment in selected cases	Only suitable for specific cases
+9. What patients say (testimonial themes)
+The website shows 11 patient testimonials. Common positive themes: cleanliness and sterilisation, a skilled and friendly medical team, modern equipment, affordable prices, and frequent praise for Dr. Khaled Maher. Less positive notes: high patient volume and some waiting time. Do not quote individual reviews as guarantees of outcome.
+10. Known gaps and inconsistencies on the website
+Years of experience: stated as both "over 20 years" and "more than 12 years". Safe wording: "many years of experience" or "over 12 years".
+Prices: not published. Never state or estimate a price; offer the free consultation instead.
+Working hours: not published. Ask the patient to contact the branch.
+Doctor-to-branch mapping: not published.
+Insurance, payment plans, instalments: not mentioned on the website.
+Treatment durations, aftercare protocols, implant brands, veneer materials: not specified.
+Volume figures (100,000 implants; 500,000 root canals) are the clinic's own claims.
+11. Frequently asked questions
+Q: Where are Cure Dental Clinics located?
+A: Six branches: Mohandessin (Giza), Heliopolis/Masr El Gedida, Maadi, Fifth Settlement (Medical Park Premier), 6th of October (Dolphin Mall), and Nasr City (Makram Ebeid). Full addresses are in Section 2.
+Q: What is the main phone number?
+A: 01224333565, also on WhatsApp (+20 122 433 3565). Email: info@curedentalclinics.com.
+Q: How much does a dental implant cost?
+A: Prices are not published. The clinic offers a free online consultation; call or WhatsApp 01224333565 for a quote after assessment.
+Q: Who is the lead doctor?
+A: Dr. Khaled Maher, Consultant of Implantology and Cosmetic Dentistry.
+Q: Do you treat children?
+A: Yes. There is a dedicated pediatric dentistry (pedodontics) department.
+Q: I have severe tooth pain. Can you help?
+A: Yes. Cure has a dedicated department for root canal treatment, emergencies and severe nerve pain. Call the nearest branch right away.
+Q: Do you do teeth whitening?
+A: Yes, laser teeth whitening performed by cosmetic specialists, with immediate results in a short session.
+Q: Do you offer same-day implants?
+A: The clinic offers immediate implants, placed on the same day as extraction, when the case is suitable.
+Q: Can I get an online consultation?
+A: Yes, free, via curedentalclinics.com/online-consultation/ (name, phone, chief complaint, treatments of interest).
+Q: What are your working hours?
+A: Hours aren't published; please call the branch or WhatsApp 01224333565 to confirm.
+Q: هل عندكم فرع في التجمع؟
+A: أيوه، فرع التجمع الخامس في ميديكال بارك بريمير، الدور الرابع. تليفون: 01069467770.
+Q: بكام زراعة السنة؟
+A: الأسعار مش منشورة على الموقع. الاستشارة الأونلاين مجانية، وممكن تكلم أو تبعت واتساب على 01224333565 علشان تعرف السعر بعد الكشف.
