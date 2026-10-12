@@ -488,9 +488,13 @@ def llm_model_id(model: str) -> str:
 # convert itself into unverified output.
 OPENAI_TIMEOUT_SECONDS: float = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "45"))
 
-# Booking or moving an appointment TO the same calendar day is not offered:
-# the clinic needs notice. Set ALLOW_SAME_DAY_BOOKING=true to lift it.
-ALLOW_SAME_DAY_BOOKING: bool = os.getenv("ALLOW_SAME_DAY_BOOKING", "false").strip().lower() in ("1", "true", "yes", "on")
+# SAME-DAY BOOKING IS THE CMS'S CALL, PER DOCTOR. Each practitioner's own
+# booking rules (US_5.4.5.3: a cutoff of X hours before a slot, a maximum
+# number of cases per day) decide whether today's slots are bookable, and
+# the API returns only what may be booked. So today's open slots are
+# offered like any other day's. ALLOW_SAME_DAY_BOOKING=false brings back
+# the old blanket rule (no booking or moving TO today at all).
+ALLOW_SAME_DAY_BOOKING: bool = os.getenv("ALLOW_SAME_DAY_BOOKING", "true").strip().lower() in ("1", "true", "yes", "on")
 
 # Pinned rather than left to the API default of 1.0 - see the comment
 # on graph._llm. Every task this agent performs is closer to

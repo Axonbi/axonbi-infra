@@ -190,7 +190,8 @@ def _today():
     return tools._local_now_naive(_TZ).date()
 
 
-def test_today_gets_the_same_day_notice_first():
+def test_today_gets_the_same_day_notice_first(monkeypatch):
+    monkeypatch.setattr(graph.config, "ALLOW_SAME_DAY_BOOKING", False)  # the old blanket rule
     days = "🗓️ مواعيد أحمد يوسف المتاحة في المنار:\n1️⃣ الأربعاء 14/10/2026\nأي يوم يناسبك؟"
     try:
         for text in ("اليوم", f"اليوم السبت {_today().day} اكتوبر"):
@@ -200,7 +201,8 @@ def test_today_gets_the_same_day_notice_first():
         tools._BOOKING_SESSIONS.pop(_SID, None)
 
 
-def test_todays_date_alone_counts_as_today():
+def test_todays_date_alone_counts_as_today(monkeypatch):
+    monkeypatch.setattr(graph.config, "ALLOW_SAME_DAY_BOOKING", False)  # the old blanket rule
     months = ["يناير", "فبراير", "مارس", "ابريل", "مايو", "يونيو", "يوليو",
               "اغسطس", "سبتمبر", "اكتوبر", "نوفمبر", "ديسمبر"]
     text = f"مافي {_today().day} {months[_today().month - 1]} ؟"
@@ -210,7 +212,8 @@ def test_todays_date_alone_counts_as_today():
         tools._BOOKING_SESSIONS.pop(_SID, None)
 
 
-def test_no_double_notice_and_no_notice_for_another_day():
+def test_no_double_notice_and_no_notice_for_another_day(monkeypatch):
+    monkeypatch.setattr(graph.config, "ALLOW_SAME_DAY_BOOKING", False)  # the old blanket rule
     try:
         already = "للأسف ما نقدر نحجز في نفس اليوم 🌷\nتحب يوم ثاني؟"
         assert graph._same_day_notice(already, _today_state("اليوم"), "ar") == already
@@ -219,7 +222,8 @@ def test_no_double_notice_and_no_notice_for_another_day():
         tools._BOOKING_SESSIONS.pop(_SID, None)
 
 
-def test_nothing_today_is_not_an_unverified_availability_denial():
+def test_nothing_today_is_not_an_unverified_availability_denial(monkeypatch):
+    monkeypatch.setattr(graph.config, "ALLOW_SAME_DAY_BOOKING", False)  # the old blanket rule
     try:
         state = _today_state("اليوم")
         assert not graph._reply_denies_availability_without_lookup("ما فيه مواعيد متاحة اليوم", state)
