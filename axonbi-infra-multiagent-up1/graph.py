@@ -64,6 +64,7 @@ import tools
 from prompts import build_agent_system_prompt, build_system_prompt
 from state import AgentState
 import llm_usage
+import pii_vault
 import tool_result_guidance
 import understanding
 
@@ -74,6 +75,26 @@ logger = logging.getLogger(__name__)
 # LLM (bound to every tool) - api.py/config.py's OPENAI_* settings,
 # UNCHANGED from the old project
 # ==========================================================
+
+class _PiiMaskingChatOpenAI(ChatOpenAI):
+    """ChatOpenAI that, for a client with `pii_tokens` on, sends the model
+    placeholders instead of patient data and puts the real values back in
+    what it returns - see pii_vault.py. Every binding (`bind_tools`,
+    `bind`) ends in this `invoke`, so the main turn, verifier retries,
+    forced tool calls, understanding and the router all go through it.
+    With the feature off it is plain ChatOpenAI."""
+
+    def invoke(self, input, config=None, *, stop=None, **kwargs):
+        vault = pii_vault.active_vault()
+        if vault is None:
+            return super().invoke(input, config, stop=stop, **kwargs)
+        stats: dict = {}
+        masked = pii_vault.mask_input(vault, input, stats)
+        response = super().invoke(masked, config, stop=stop, **kwargs)
+        restored = pii_vault.unmask_output(vault, response, stats)
+        pii_vault.log_call(pii_vault._current.get(), stats, masked, debug=vault.get("debug"))
+        return restored
+
 
 def _make_llm(model: str, **kwargs):
     """The chat client for `model`, for config.LLM_PROVIDER.
@@ -100,7 +121,7 @@ def _make_llm(model: str, **kwargs):
         )
 
     if config.LLM_PROVIDER == "openrouter":
-        return ChatOpenAI(
+        return _PiiMaskingChatOpenAI(
             model=config.llm_model_id(model),
             api_key=config.llm_api_key() or "sk-not-configured",
             base_url=config.OPENROUTER_BASE_URL,
@@ -111,7 +132,7 @@ def _make_llm(model: str, **kwargs):
             **kwargs,
         )
 
-    return ChatOpenAI(model=model, api_key=config.OPENAI_API_KEY or "sk-not-configured", **kwargs)
+    return _PiiMaskingChatOpenAI(model=model, api_key=config.OPENAI_API_KEY or "sk-not-configured", **kwargs)
 
 
 # TEMPERATURE IS PINNED, NOT LEFT TO THE API DEFAULT (1.0).
@@ -20376,6 +20397,9 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     language, even for a conversation that had been purely English from
     its first message."""
 
+    # Patient data as placeholders for this node's model calls - see pii_vault.py.
+    pii_vault.attach(state)
+
     target_language = _detect_target_language(state["messages"])
     language_directive = _LANGUAGE_DIRECTIVE.get(target_language, "")
 
@@ -22076,6 +22100,8 @@ def router(state: AgentState) -> dict:
     previous = state.get("active_agent")
     messages = state["messages"]
 
+    # Patient data as placeholders for this node's model calls - see pii_vault.py.
+    pii_vault.attach(state)
     reading = _understand_turn(state)
     if reading is not None and not reading.get("wants_human") and _types_the_word_we_asked_for(state.get("messages") or []):
         reading = {**reading, "wants_human": True, "intent": "human", "confidence": 1.0,
