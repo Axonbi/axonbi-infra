@@ -120,7 +120,7 @@ Return ONLY a JSON object with these keys:
 "asks_price": asks about a price, fee or cost.
 "asks_location": asks where a branch is, its address, map or location pin ("ارسلي اللوكيشن"), or which branch is nearest to a place; also lost on the way there ("ضيعت اللفة/الدخلة", "تهت") - faq, never medical.
 "about_this_hospital": only for intent "other" - true when it concerns THIS hospital although it is not patient care (a job, training, an interview, a supplier, administration); false when it has nothing to do with the hospital (a party, event tickets, food prices, general chat).
-"doctor_name": a doctor's PERSONAL name as used - not the patient's own name ("الموعد لحاتم العنزي" names the patient) (or the doctor referred back to, e.g. "الدكتور اللي قولتي عليه"), else null. "دكتور نفسي" / "دكتور عيون" name a specialty.
+"doctor_name": a doctor's PERSONAL name as used - not the patient's own name ("الموعد لحاتم العنزي", "باسم فاطمة العمري" name the patient) (or the doctor referred back to, e.g. "الدكتور اللي قولتي عليه"), else null. "دكتور نفسي" / "دكتور عيون" name a specialty.
 "specialty": the specialty, department or service referred to, in the patient's words, else null.
 "entities": {{"branch", "date", "time", "booking_reference", "phone", "service", "topic"}} - values this message gives, as written ("بكرة" stays "بكرة"), else null. "topic" only for a request outside patient care: 1-3 words naming it in the patient's language (e.g. "التدريب").
 "reason": at most 8 words, for internal logs.
