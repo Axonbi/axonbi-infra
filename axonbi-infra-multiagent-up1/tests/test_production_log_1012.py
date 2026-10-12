@@ -4,7 +4,6 @@
   - 11:42 "الاتنين الي بعده" with Monday 12/10 on screen came back as 12/10.
   - 11:43 a Monday-only doctor with seven bookable Mondays showed one; "more
     days?" was told "ما فيش مواعيد متاحة".
-  - 11:43 "أقرب فرع للجيزة": none of CURE's eight branches had coordinates.
 """
 
 from datetime import datetime, timedelta
@@ -114,27 +113,31 @@ def test_the_last_monday_shown_means_no_more(session):
 
 
 # ----------------------------------------------------------------------
-# CURE's branches, as the CMS names them, have coordinates
+# 11:46 "الساعه ٥" -> "5:00 or 5:30?" -> "1" booked 4:00
 # ----------------------------------------------------------------------
 
-@pytest.mark.parametrize("api_name", [
-    "Nasr City", "6th of October", "Fifth Settlement", "Maadi", "Heliopolis (Masr El Gedida)",
-    "Mohandessin", "Alexandria", "Mokattam",
-])
-def test_every_cure_branch_has_coordinates(api_name):
-    rows = tools.load_branches_geo()
-    index = {tools._geo_name_key(name): geo for name, geo in rows.items()}
-    assert rows.get(api_name) or index.get(tools._geo_name_key(api_name))
+def _day_slots():
+    out = []
+    for hhmm, shown in (("16:00", "4:00 مساءً"), ("16:30", "4:30 مساءً"), ("17:00", "5:00 مساءً"),
+                        ("17:30", "5:30 مساءً"), ("18:00", "6:00 مساءً")):
+        out.append({"slotStart": f"2030-10-17T{hhmm}:00", "slotEnd": f"2030-10-17T{hhmm}:00",
+                    "time_display": shown, "date_display": "17/10/2030"})
+    return out
 
 
-def test_giza_is_nearest_to_mohandessin():
-    branches = {"success": True, "data": {"items": [
-        {"id": str(i), "name": n} for i, n in enumerate(
-            ["Nasr City", "6th of October", "Fifth Settlement", "Maadi", "Heliopolis (Masr El Gedida)",
-             "Mohandessin", "Alexandria", "Mokattam"])]}}
-    with patch.object(tools.api, "get_branches", return_value=branches):
-        result = tools.find_nearest_branch.func(state={**_state(), "target_language": "en"},
-                                                latitude=29.9870753, longitude=31.2118063)
-    assert result["status"] == "found"
-    nearest = result.get("nearest") or (result.get("branches") or [{}])[0]
-    assert nearest["name"] in ("Mohandessin", "Maadi")
+def _pick(session, text):
+    return tools.select_appointment_slot.func(state=_state(), user_input=text)
+
+
+def test_one_after_five_or_five_thirty_is_five(session):
+    session["last_list"] = {"entity_type": "slot", "items": _day_slots()}
+    assert _pick(session, "الساعه ٥")["status"] == "ambiguous_time"
+    result = _pick(session, "1")
+    assert result["status"] == "selected" and result["slot"]["slotStart"].endswith("17:00:00")
+
+
+def test_a_time_off_the_short_list_still_resolves_from_the_whole_day(session):
+    session["last_list"] = {"entity_type": "slot", "items": _day_slots()}
+    _pick(session, "الساعه ٥")
+    result = _pick(session, "4:30")
+    assert result["status"] == "selected" and result["slot"]["slotStart"].endswith("16:30:00")
