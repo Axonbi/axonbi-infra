@@ -255,3 +255,15 @@ def test_a_whole_turn_sends_the_model_no_patient_value(monkeypatch):
     assert phones_asked and CHANNEL in phones_asked[0].replace("+", "")
     assert "⟦" not in result["reply"]
     assert f"عندك موعد باسم {NAME} رقم الحجز {REF}" in result["reply"]
+
+
+def test_pii_debug_logs_what_the_model_received_for_every_conversation(sid, caplog):
+    import logging
+    caplog.set_level(logging.INFO, logger="pii_vault")
+    pii_vault.begin_turn(sid, {"_pii_tokens": True, "_pii_debug": True}, CHANNEL, [], None)
+    assert pii_vault.active_vault()["debug"] is True
+    row = {"client_id": "rovan-test", "Dialect": "Egyptian", "base_url": "http://booking.test",
+           "pii_tokens": "true", "pii_debug": "true"}
+    assert config.get_messages("rovan-test", client_row_override=row)["_pii_debug"] is True
+    pii_vault.log_call(sid, {}, [HumanMessage(content="⟦NAME_1⟧")], debug=True)
+    assert "what the model received" in caplog.text and "⟦NAME_1⟧" in caplog.text

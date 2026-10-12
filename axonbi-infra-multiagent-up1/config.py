@@ -1302,9 +1302,10 @@ def get_messages(client_id: str, dialect: Optional[str] = None, client_row_overr
     )
     # PATIENT DATA AS PLACEHOLDERS FOR THE MODEL - see pii_vault.py. Per
     # client, from its n8n row: `pii_tokens` true/1 turns it on;
-    # `pii_debug_phone` logs what the model received for that one number.
+    # `pii_debug` true/1 logs what the model received, on every call - for a
+    # test flow only.
     merged["_pii_tokens"] = str(client_row.get("pii_tokens") or "").strip().lower() in ("1", "true", "yes", "on")
-    merged["_pii_debug_phone"] = str(client_row.get("pii_debug_phone") or "").strip()
+    merged["_pii_debug"] = str(client_row.get("pii_debug") or "").strip().lower() in ("1", "true", "yes", "on")
     # SSO account for cms-api, also per client. Keys are named after the env
     # vars, like CMS_API_BASE_URL. Anything missing falls back to the
     # environment (api._sso_settings).
