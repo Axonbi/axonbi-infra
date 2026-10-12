@@ -1214,6 +1214,20 @@ def _deterministic_doctor_schedule_lookup(state: AgentState, agent_name: str) ->
     return pairs
 
 
+def _names_another_day(text: str, offered: dict, state: AgentState) -> bool:
+    """The patient's words name a day ("انهارده", "بكره", "الخميس") that is
+    not the one day the assistant offered."""
+
+    timezone_name = (state.get("templates") or {}).get("_timezone") or tools.DEFAULT_TIMEZONE
+    relative = tools.resolve_relative_date(text, timezone_name)
+    if relative:
+        return relative.get("date") != offered.get("date")
+    weekday = tools.resolve_weekday_index(text)
+    if weekday is None:
+        return False
+    return weekday != tools.resolve_weekday_index(str(offered.get("weekday_name") or ""))
+
+
 def _deterministic_slots_for_accepted_day(state: AgentState, agent_name: str) -> list:
     """The assistant offered ONE day ("أقرب موعد ... الأربعاء 07/10 - أي
     يوم يناسبك؟") and the patient said yes: fetch that day's real slots
@@ -1239,6 +1253,11 @@ def _deterministic_slots_for_accepted_day(state: AgentState, agent_name: str) ->
         return []
     if _tool_results_since_latest_human(messages, (
             "get_available_slots_for_booking", "select_appointment_slot", "resolve_available_day")):
+        return []
+    # A REPLY NAMING ANOTHER DAY IS NOT A YES TO THIS ONE. CONFIRMED (Rovan,
+    # 2026-10-12 11:10): "تحب تحجز في يوم الاثنين 19/10؟" -> "انهارده" was
+    # read as a yes, and 19/10's times were shown instead of today's.
+    if _names_another_day(_latest_human_text(messages), items[0], state):
         return []
 
     from_date, to_date = items[0].get("from_date"), items[0].get("to_date")
