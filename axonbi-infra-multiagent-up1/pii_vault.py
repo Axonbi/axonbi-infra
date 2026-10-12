@@ -24,6 +24,9 @@ How a value becomes known:
 Once known, a value is replaced wherever it appears: system prompt,
 history, tool results, the understanding prompt.
 
+With `pii_debug` on in the client's n8n row (a test flow), every model
+call also logs exactly what the model received - tokens, no real values.
+
 One log line per model call - counts only, never a value:
   pii[<session>]: masked=4 (NAME×1, PHONE×2, REF×1) unmasked=3 unknown=0 leaks=0
 `leaks` counts a phone/email found in a tool result that no field name
@@ -157,8 +160,7 @@ def begin_turn(session_id: str, templates: Optional[dict], channel_phone: Option
         return
     vault = _vault(session_id)
     vault["enabled"] = True
-    debug_phone = re.sub(r"\D", "", templates.get("_pii_debug_phone") or "")
-    vault["debug"] = bool(debug_phone) and debug_phone == re.sub(r"\D", "", channel_phone or "")
+    vault["debug"] = bool(templates.get("_pii_debug"))
     for variant in _phone_variants(channel_phone or ""):
         _register(vault, "PHONE", variant)
     messages = list(history or [])
