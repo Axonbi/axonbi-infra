@@ -107,3 +107,9 @@ def test_today_is_not_a_yes_to_next_week(monkeypatch):
         assert not graph._names_another_day(f"تمام {same_weekday}", _offered_next_week(), state)
     finally:
         tools._BOOKING_SESSIONS.pop(_SID, None)
+
+
+def test_bism_names_the_patient_not_a_doctor():
+    # tanasuq 2026-10-12 14:37: "الساعة ٤ باسم فاطمة العمري" -> "ما لقيت دكتور باسم فاطمة العمري"
+    import understanding
+    assert "باسم فاطمة العمري" in understanding.PROMPT
