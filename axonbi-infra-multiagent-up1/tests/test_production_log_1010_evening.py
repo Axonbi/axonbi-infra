@@ -269,7 +269,8 @@ def test_a_phone_demand_right_after_a_no_is_allowed():
 # Today is never offered
 # ----------------------------------------------------------------------
 
-def test_todays_weekday_is_next_week():
+def test_todays_weekday_is_next_week(monkeypatch):
+    monkeypatch.setattr(graph.config, "ALLOW_SAME_DAY_BOOKING", False)  # the old blanket rule
     today = datetime.now(ZoneInfo(_TZ)).date()
     name = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][today.weekday()]
     result = tools.get_next_weekday_date.func(weekday_name=name, timezone_name=_TZ)
@@ -277,7 +278,8 @@ def test_todays_weekday_is_next_week():
     assert (datetime.strptime(result["date"], "%Y-%m-%d").date() - today).days == 7
 
 
-def test_today_itself_is_refused():
+def test_today_itself_is_refused(monkeypatch):
+    monkeypatch.setattr(graph.config, "ALLOW_SAME_DAY_BOOKING", False)  # the old blanket rule
     result = tools.get_next_weekday_date.func(weekday_name="اليوم", timezone_name=_TZ)
     assert result["status"] == "same_day_not_allowed"
     assert tool_result_guidance.guidance_for("get_next_weekday_date", result)
