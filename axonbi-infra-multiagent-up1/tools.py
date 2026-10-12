@@ -9061,6 +9061,27 @@ def _parse_explicit_date(text: Optional[str], today: date) -> Optional[date]:
         return None
 
 
+def _says_next_occurrence(weekday_text: str) -> bool:
+    words = {w for w in re.split(r"[\s/،,]+", str(weekday_text or "").lower()) if w}
+    return bool(words & {_fold_weekday_token(w) for w in _NEXT_OCCURRENCE_WORDS} or words & _NEXT_OCCURRENCE_WORDS)
+
+
+def _shown_date_for_weekday(session: dict, target_weekday: int) -> Optional[date]:
+    """The date of `target_weekday` in the day list on screen, if any."""
+
+    last = session.get("last_list") or {}
+    if last.get("entity_type") != "day":
+        return None
+    for item in last.get("items") or []:
+        try:
+            shown = date.fromisoformat(str(item.get("date"))[:10])
+        except (ValueError, TypeError, AttributeError):
+            continue
+        if shown.weekday() == target_weekday:
+            return shown
+    return None
+
+
 def _date_from_last_shown_days(session: dict, target_weekday: int, weekday_text: str) -> Optional[date]:
     """The date of `target_weekday` in the day list the patient was JUST
     shown, so a bare \"الاحد\" means the Sunday on screen (18/10) and not
@@ -9139,6 +9160,15 @@ def resolve_available_day(
         exact_date = _date_from_last_shown_days(session, target_weekday, weekday_name)
         if exact_date:
             logger.info("resolve_available_day: bare weekday %r matched to shown date %s", weekday_name, exact_date)
+    # "الاتنين اللي بعده" / "الاتنين الجاي": the one AFTER the Monday on screen,
+    # or after today when none is. CONFIRMED (2026-10-12 11:42): with Monday
+    # 12/10 (today) on screen, "الاتنين الي بعده" came back as 12/10 again -
+    # the word only stopped the match to the shown day, and the nearest
+    # Monday was that same day.
+    if (exact_date is None and target_weekday is not None and not after_date
+            and _says_next_occurrence(weekday_name)):
+        after_date = (_shown_date_for_weekday(session, target_weekday) or _today).isoformat()
+        logger.info("resolve_available_day: %r is the next one - after %s", weekday_name, after_date)
     if target_weekday is None:
         # NOT "error" - the two need completely different handling.
         # "error" means the lookup itself broke and the patient should
@@ -10093,6 +10123,13 @@ def list_available_days_for_booking(
     offset = max(0, offset)
     limit = max(1, limit)
 
+    # "MORE DAYS" CONTINUE AFTER THE DAYS ON SCREEN, whatever offset the
+    # model passed - it guessed 3 after a list of one (2026-10-12 11:43).
+    shown_days = [str(i.get("date"))[:10] for i in ((session.get("last_list") or {}).get("items") or [])
+                  if (session.get("last_list") or {}).get("entity_type") == "day" and i.get("date")]
+    if offset > 0 and shown_days:
+        offset = sum(1 for d in all_dates if d <= max(shown_days))
+
     if offset >= len(all_dates):
         # The patient has already been shown every available day and
         # asked for more - say so plainly rather than silently repeating
@@ -10118,7 +10155,6 @@ def list_available_days_for_booking(
     # is your appointment" something the next turn can actually honour.
     verified_calls = 0
     MAX_VERIFY_CALLS = 8
-    consumed = 0
 
     # ONE DATE PER WEEKDAY.
     #
@@ -10140,22 +10176,15 @@ def list_available_days_for_booking(
     # old `limit=1` produced, arrived at because it is true rather than
     # by capping the list.
     seen_weekdays = set()
+    picked: set = set()
+    candidates = all_dates[offset:]
 
-    for date_iso in all_dates[offset:]:
-        if len(days) >= limit:
-            break
-
+    def _try_day(date_iso):
+        nonlocal verified_calls
         slot_times = sorted(by_date[date_iso])
         first = slot_times[0]
-
-        if first.weekday() in seen_weekdays:
-            consumed += 1
-            continue
-
         day_start = datetime.combine(first.date(), datetime.min.time(), tzinfo=first.tzinfo)
         day_end = datetime.combine(first.date(), datetime.max.time().replace(microsecond=0), tzinfo=first.tzinfo)
-
-        consumed += 1
 
         if verified_calls < MAX_VERIFY_CALLS:
             verified_calls += 1
@@ -10171,17 +10200,13 @@ def list_available_days_for_booking(
                     "offering a date that cannot be booked",
                     date_iso,
                 )
-                continue
+                return None
 
             if real_slots:
-                # Describe the day from the per-day lookup, which is what
-                # the patient will actually be shown next.
                 slot_times = real_slots
                 first = slot_times[0]
 
-        seen_weekdays.add(first.weekday())
-
-        days.append({
+        return {
             "date": date_iso,
             "weekday_name": english_weekday_names[first.weekday()],
             "weekday_display": _display_weekday(first.isoformat(), language),
@@ -10191,7 +10216,31 @@ def list_available_days_for_booking(
             "lastTime": _display_time_12h(slot_times[-1].isoformat(), language),
             "from_date": day_start.isoformat(),
             "to_date": day_end.isoformat(),
-        })
+        }
+
+    # First the doctor's different weekdays, then - when there are not
+    # enough of them to fill the list - the same weekday in the following
+    # weeks. CONFIRMED (2026-10-12 11:43): a Monday-only doctor had seven
+    # bookable Mondays; one was shown, the other six were counted as
+    # "shown" by the one-per-weekday rule, and "more days?" got "ما فيش
+    # مواعيد متاحة".
+    for second_pass in (False, True):
+        for date_iso in candidates:
+            if len(days) >= limit:
+                break
+            if date_iso in picked:
+                continue
+            weekday = date.fromisoformat(date_iso).weekday()
+            if not second_pass and weekday in seen_weekdays:
+                continue
+            picked.add(date_iso)
+            day = _try_day(date_iso)
+            if day is None:
+                continue
+            seen_weekdays.add(weekday)
+            days.append(day)
+
+    days.sort(key=lambda d: d["date"])
 
     if not days:
         logger.warning(
@@ -10201,7 +10250,9 @@ def list_available_days_for_booking(
         )
         return {"status": "not_found" if offset == 0 else "no_more_days"}
 
-    shown_through = offset + consumed
+    # The next page starts after the LAST day shown - nothing between is
+    # skipped for good.
+    shown_through = sum(1 for d in all_dates if d <= days[-1]["date"])
 
     # REMEMBER THE DAYS, exactly as they are about to be shown.
     #
