@@ -605,6 +605,25 @@ def _drop_same_day_slots(slots: list, timezone_name: str) -> tuple:
     return kept, len(slots) - len(kept)
 
 
+def _booking_lead_time(now: datetime) -> datetime:
+    """The earliest slot start a patient may be offered, naive wall-clock.
+
+    With same-day booking open the CMS decides, per doctor (US_5.4.5.3:
+    each practitioner's own cutoff of X hours before a slot), and its
+    bookable-slots endpoint already leaves out what is too close - so
+    anything still in the future may be offered. CONFIRMED (Rovan,
+    2026-10-12 11:09): a fixed 12-hour lead here dropped today's 8:30 pm,
+    9:00 and 9:30 slots, and the patient was offered next Monday instead.
+    With same-day booking off, the old 12-hour lead stands."""
+
+    import config
+
+    naive = now.replace(tzinfo=None)
+    if getattr(config, "ALLOW_SAME_DAY_BOOKING", False):
+        return naive
+    return naive + timedelta(hours=12)
+
+
 def _local_now_naive(timezone_name: str = DEFAULT_TIMEZONE) -> datetime:
     """"Now", as a NAIVE local datetime.
 
@@ -5028,7 +5047,7 @@ _RELATIVE_DATE_OFFSETS = (
     # "اليومين" is NOT here on purpose: "اليومين الجايين" is the next
     # two days, not today, and reading it as today would answer a
     # different question than the one asked.
-    (0, ("النهارده", "النهاردة", "اليوم", "today", "tonight")),
+    (0, ("النهارده", "النهاردة", "انهارده", "انهاردة", "اليوم", "today", "tonight")),
 )
 
 
@@ -9442,7 +9461,7 @@ def resolve_available_day(
     # TypeError - CONFIRMED REAL PRODUCTION CRASH: "can't compare
     # offset-naive and offset-aware datetimes" at `dt <= lead_time`,
     # which took down the whole turn.
-    lead_time = now.replace(tzinfo=None) + timedelta(hours=12)  # 12h minimum advance booking lead
+    lead_time = _booking_lead_time(now)
     after_dt = None
     if after_date:
         try:
@@ -10312,7 +10331,7 @@ def list_available_days_for_booking(
     horizon_days = 42  # same booking window resolve_available_day uses
     # Naive for the same reason as resolve_available_day's - it is
     # compared against wall-clock slot times.
-    lead_time = now.replace(tzinfo=None) + timedelta(hours=12)  # same 12h minimum advance lead
+    lead_time = _booking_lead_time(now)
 
     result = api.get_doctor_schedule_slots(
         base_url, doctor_ids=[doctor_id], branch_ids=[branch_id],

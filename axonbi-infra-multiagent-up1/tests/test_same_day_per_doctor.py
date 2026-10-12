@@ -62,3 +62,48 @@ def test_the_old_rule_can_still_be_switched_back(monkeypatch):
     monkeypatch.setattr(config, "ALLOW_SAME_DAY_BOOKING", False)
     result = tools.get_next_weekday_date.func(weekday_name="اليوم", timezone_name=_TZ)
     assert result["status"] == "same_day_not_allowed"
+
+
+# ----------------------------------------------------------------------
+# Rovan, 2026-10-12 11:09-11:10: today's 8:30 pm slot was dropped by a
+# fixed 12-hour lead, and "انهارده" was read as a yes to next Monday.
+# ----------------------------------------------------------------------
+
+def test_no_fixed_lead_when_the_cms_decides():
+    now = _now()
+    assert tools._booking_lead_time(now) == now.replace(tzinfo=None)
+
+
+def test_the_old_lead_stands_when_same_day_is_off(monkeypatch):
+    monkeypatch.setattr(config, "ALLOW_SAME_DAY_BOOKING", False)
+    now = _now()
+    assert tools._booking_lead_time(now) == now.replace(tzinfo=None) + timedelta(hours=12)
+
+
+def test_egyptian_today_is_today():
+    assert tools.resolve_relative_date("انهارده", _TZ)["offset_days"] == 0
+
+
+def _offered_next_week():
+    day = _now().date() + timedelta(days=7)
+    names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    return {"date": day.isoformat(), "weekday_name": names[day.weekday()],
+            "from_date": f"{day.isoformat()}T00:00:00", "to_date": f"{day.isoformat()}T23:59:59"}
+
+
+def test_today_is_not_a_yes_to_next_week(monkeypatch):
+    import graph
+    monkeypatch.setattr(config, "DETERMINISTIC_DAY_RESOLUTION", True)
+    tools._BOOKING_SESSIONS.pop(_SID, None)
+    tools._get_booking_session(_SID).update({
+        "doctor_id": "dr", "branch_id": "b", "last_list": {"entity_type": "day", "items": [_offered_next_week()]}})
+    try:
+        state = {**_state("انهارده"), "understanding": {"confirms": True, "answer_to_previous_question": True}}
+        assert graph._deterministic_slots_for_accepted_day(state, "booking") == []
+        assert graph._names_another_day("انهارده", _offered_next_week(), state)
+        assert not graph._names_another_day("اه", _offered_next_week(), state)
+        same_weekday = ["الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد"][
+            (_now().date() + timedelta(days=7)).weekday()]
+        assert not graph._names_another_day(f"تمام {same_weekday}", _offered_next_week(), state)
+    finally:
+        tools._BOOKING_SESSIONS.pop(_SID, None)
