@@ -10315,7 +10315,33 @@ def _reply_denies_availability_without_lookup(reply_text: str, state: AgentState
         if getattr(msg, "name", None) in _AVAILABILITY_LOOKUP_TOOLS:
             return False
 
+    # ...or the day they just named was ALREADY looked up for this doctor
+    # and had nothing. CONFIRMED (tanasuq-production 2026-10-12 17:07):
+    # today's slots had come back empty a minute earlier; "12/10/2026" got
+    # "no appointments that day", was flagged, replaced with "أي تاريخ تحب؟",
+    # and the patient typed the same date again into the same loop.
+    if _named_day_already_found_empty(state):
+        return False
+
     return True
+
+
+def _named_day_already_found_empty(state: AgentState) -> bool:
+    session = tools._BOOKING_SESSIONS.get(state.get("session_id") or "") or {}
+    empty = (session.get("empty_days") or {}).get(session.get("doctor_id") or "") or []
+    if not empty:
+        return False
+    timezone_name = (state.get("templates") or {}).get("_timezone") or tools.DEFAULT_TIMEZONE
+    today = tools._local_now_naive(timezone_name).date()
+    named = None
+    if tools._patient_says_today(state):
+        named = today
+    else:
+        try:
+            named = tools._parse_explicit_date(tools._latest_human_text_for_handoff_guard(state), today)
+        except Exception:  # noqa: BLE001
+            named = None
+    return named is not None and named.isoformat() in empty
 
 
 _AVAILABILITY_DENIAL_CORRECTION_DIRECTIVE = (
@@ -21826,9 +21852,72 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
 
         updates["greeted"] = True
 
+    if not getattr(response, "tool_calls", None):
+        deterministic_pairs = deterministic_pairs + _missed_location_pin_pair(state, response, target_language)
+
     updates["messages"] = deterministic_pairs + [_tag_author(response, agent_name)]
 
     return updates
+
+
+def _missed_location_pin_pair(state: AgentState, response, target_language: Optional[str]) -> list:
+    """They asked where a branch is, ONE branch is the answer, and the reply
+    gave its address without calling `share_branch_location` - so no map pin
+    was sent. The call is made here, as the forged tool-call pair the
+    handoff already uses; main._turn_signals reads it like a real one.
+
+    CONFIRMED (tanasuq-production 2026-10-12 17:12): "موقع العيادة بحي
+    النزهه ابيه" got فرع النزهة's address and services, and no pin.
+
+    The branch must be one this conversation really knows: the branch
+    `match_entity_info` matched this turn, else the only real branch the
+    reply names. Nothing when several are named - that is a "which one?"."""
+
+    messages = state.get("messages") or []
+    index = _latest_human_index(messages)
+    if index < 0:
+        return []
+    latest = understanding.latest_human_text(messages) or ""
+    reading = state.get("understanding") or {}
+    if not (reading.get("asks_location") or tools._LOCATION_REQUEST_CUE_RE.search(latest.lower())):
+        return []
+
+    this_turn = messages[index + 1:]
+    if any(getattr(m, "name", None) == "share_branch_location" for m in this_turn):
+        return []
+
+    branch = None
+    for msg in this_turn:
+        if getattr(msg, "name", None) != "match_entity_info":
+            continue
+        try:
+            payload = json.loads(str(getattr(msg, "content", "")))
+        except (TypeError, ValueError):
+            continue
+        item = payload.get("item") if isinstance(payload, dict) and payload.get("status") == "matched" else None
+        if isinstance(item, dict) and (item.get("name") or item.get("altName")) and "formatedName" not in item:
+            branch = item.get("name") or item.get("altName")
+
+    if branch is None and reading.get("asks_location"):
+        reply = _norm_ar(str(getattr(response, "content", "") or ""))
+        named = [n for n in _real_branch_names(state, target_language)
+                 if _norm_ar(n.replace("فرع", "").strip()) and _norm_ar(n.replace("فرع", "").strip()) in reply]
+        if len(named) == 1:
+            branch = named[0]
+
+    if not branch:
+        return []
+
+    logger.info("agent: location asked and %r is the answer, but share_branch_location was not called "
+                "- sending the pin from code (session_id=%s)", branch, state.get("session_id"))
+    call_id = f"call_location_{uuid.uuid4().hex[:12]}"
+    return [
+        AIMessage(content="", tool_calls=[{"id": call_id, "name": "share_branch_location",
+                                           "args": {"branch_name": branch}}]),
+        ToolMessage(content=json.dumps({"status": "location_requested", "branch_name": branch},
+                                       ensure_ascii=False),
+                    name="share_branch_location", tool_call_id=call_id),
+    ]
 
 
 

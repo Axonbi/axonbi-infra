@@ -9325,6 +9325,38 @@ def _parse_explicit_date(text: Optional[str], today: date) -> Optional[date]:
         return None
 
 
+# The patient's own word for TODAY. Read from their latest message, not
+# from the tool argument: the model passes "Monday" for "الاتنين اليوم".
+_TODAY_WORD_RE = re.compile(r"(?:^|[\s،,.])(?:اليوم|النهارده|انهارده|today)(?:$|[\s،,.؟?!])")
+
+
+def _patient_says_today(state) -> bool:
+    text = _latest_human_text_for_handoff_guard(state)
+    return bool(_TODAY_WORD_RE.search(_normalize_arabic(text)))
+
+
+def _patient_names_a_day(state, today: date) -> bool:
+    """Their latest message names a day - today, or a typed date."""
+
+    if _patient_says_today(state):
+        return True
+    try:
+        return _parse_explicit_date(_latest_human_text_for_handoff_guard(state), today) is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _remember_empty_day(session: dict, doctor_id: Optional[str], day_iso: str) -> None:
+    """A per-day slot lookup for this doctor found nothing: a later "no
+    appointments on <that day>" is backed by it (graph's unchecked-denial
+    gate reads this)."""
+
+    if doctor_id and day_iso:
+        session.setdefault("empty_days", {}).setdefault(doctor_id, [])
+        if day_iso not in session["empty_days"][doctor_id]:
+            session["empty_days"][doctor_id].append(day_iso)
+
+
 def _says_next_occurrence(weekday_text: str) -> bool:
     words = {w for w in re.split(r"[\s/،,]+", str(weekday_text or "").lower()) if w}
     return bool(words & {_fold_weekday_token(w) for w in _NEXT_OCCURRENCE_WORDS} or words & _NEXT_OCCURRENCE_WORDS)
@@ -9420,6 +9452,13 @@ def resolve_available_day(
                            "and ask which one they mean. Do not offer any other day yet.",
         }
     target_weekday = exact_date.weekday() if exact_date else said_weekday
+    # "الاتنين اليوم" on a Monday is TODAY, not the Monday on screen.
+    # CONFIRMED (tanasuq-production 2026-10-12 17:06): with 19/10 on
+    # screen it was resolved to 19/10 - the model passes only "Monday".
+    if (exact_date is None and target_weekday == _today.weekday() and not after_date
+            and _patient_says_today(state)):
+        exact_date = _today
+        logger.info("resolve_available_day: %r with 'today' in the message is today %s", weekday_name, _today)
     if exact_date is None and target_weekday is not None and not after_date:
         exact_date = _date_from_last_shown_days(session, target_weekday, weekday_name)
         if exact_date:
@@ -10491,7 +10530,18 @@ def list_available_days_for_booking(
     # model passed - it guessed 3 after a list of one (2026-10-12 11:43).
     shown_days = [str(i.get("date"))[:10] for i in ((session.get("last_list") or {}).get("items") or [])
                   if (session.get("last_list") or {}).get("entity_type") == "day" and i.get("date")]
-    if offset > 0 and shown_days:
+    # NOT when they named a day: "اليوم" with today over is answered with
+    # the nearest days again, not the ones after the list. CONFIRMED
+    # (tanasuq-production 2026-10-12 17:05): 13-15/10 were on screen, today
+    # was over, and the reply showed 17-19/10 as if they had asked for more.
+    try:
+        _named_a_day = _patient_names_a_day(state, _local_now_naive(
+            (state.get("templates") or {}).get("_timezone", DEFAULT_TIMEZONE)).date())
+    except Exception:  # noqa: BLE001
+        _named_a_day = False
+    if _named_a_day:
+        offset = 0
+    elif offset > 0 and shown_days:
         offset = sum(1 for d in all_dates if d <= max(shown_days))
 
     if offset >= len(all_dates):
@@ -11803,6 +11853,19 @@ def get_available_slots_for_booking(
 
     if not slots:
         logger.info("get_available_slots_for_booking: not_found - all slots were in the past relative to now")
+        day_iso = str(from_date or "")[:10]
+        _remember_empty_day(session, doctor_id, day_iso)
+        try:
+            is_today = day_iso == _local_now_naive(timezone_name).date().isoformat()
+        except Exception:  # noqa: BLE001
+            is_today = False
+        if is_today:
+            return {
+                "status": "not_found",
+                "day": "today",
+                "_guidance": "Today's appointments with this doctor are over. Say that in one line, "
+                             "then call list_available_days_for_booking (offset 0) and show the nearest days.",
+            }
         return {"status": "not_found"}
 
     # Never re-offer a slot that already failed to book in this booking -

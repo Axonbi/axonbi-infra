@@ -132,3 +132,136 @@ def test_continue_mid_conversation_is_still_a_confirmation():
                 HumanMessage(content="كمل الحجز")]
     assert graph._build_booking_entry_directive(messages, "log-1012-continue", "booking",
                                                 {"intent": "booking"}) == ""
+
+
+# ----------------------------------------------------------------------
+# 17:05-17:08 session 201000625084 (Dr Ahmed Youssef, today's slots over)
+# ----------------------------------------------------------------------
+# - "اليوم": today was over; the reply showed 17-19/10 (the days AFTER the
+#   13-15/10 on screen) and said nothing about today.
+# - "الاتنين اليوم" was resolved to the Monday on screen, 19/10.
+# - "12/10/2026": "no appointments that day" was flagged as unchecked although
+#   today had come back empty a minute earlier, replaced with "أي تاريخ تحب؟",
+#   and the patient typed the same date again.
+
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+_TZ = "Asia/Riyadh"
+_SID2 = "log-1012-today"
+
+
+def _today():
+    return datetime.now(ZoneInfo(_TZ)).date()
+
+
+@pytest.fixture
+def today_session():
+    tools._BOOKING_SESSIONS.pop(_SID2, None)
+    s = tools._get_booking_session(_SID2)
+    s.update({"doctor_id": "dr-ahmed", "branch_id": "b-manar"})
+    yield s
+    tools._BOOKING_SESSIONS.pop(_SID2, None)
+
+
+def _state_with(text):
+    return {"session_id": _SID2, "messages": [HumanMessage(content=text)],
+            "templates": {"_timezone": _TZ, "_doctors_base_url": "https://x.test", "_base_url": "https://x.test"}}
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("اليوم", True), ("الاتنين اليوم", True), ("النهارده", True), ("today please", True),
+    ("الاتنين", False), ("اي يوم", False),
+])
+def test_the_patients_own_word_for_today(text, expected):
+    assert tools._patient_says_today(_state_with(text)) is expected
+
+
+def test_weekday_with_today_is_today_not_the_one_on_screen(today_session):
+    today = _today()
+    next_week = today + timedelta(days=7)
+    today_session["last_list"] = {"entity_type": "day", "items": [{"date": next_week.isoformat()}]}
+    weekday = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][today.weekday()]
+    seen = {}
+
+    def get_slots(base_url, doctor_ids, from_date, to_date, **kwargs):
+        seen.setdefault("from", str(from_date)[:10])
+        return {"success": True, "data": {"items": []}}
+
+    with patch.object(tools.api, "get_doctor_schedule_slots", side_effect=get_slots):
+        tools.resolve_available_day.func(state=_state_with(f"{weekday} اليوم"), weekday_name=weekday)
+    assert seen.get("from") == today.isoformat()
+
+
+def test_a_day_found_empty_backs_a_later_no_appointments_reply(today_session):
+    today = _today()
+    tools._remember_empty_day(today_session, "dr-ahmed", today.isoformat())
+    state = _state_with(today.strftime("%d/%m/%Y"))
+    assert graph._named_day_already_found_empty(state)
+    other = _state_with((today + timedelta(days=2)).strftime("%d/%m/%Y"))
+    assert not graph._named_day_already_found_empty(other)
+
+
+def test_asking_for_today_shows_the_nearest_days_not_the_ones_after_the_list(today_session):
+    today = _today()
+    days = [today + timedelta(days=i) for i in range(1, 9)]
+    items = [{"slotStart": f"{d.isoformat()}T{h}:00:00+03:00", "slotEnd": f"{d.isoformat()}T{h}:30:00+03:00",
+              "isBooked": False, "branchId": "b-manar", "serviceName": "جلسة"} for d in days for h in (16, 17)]
+
+    def get_slots(base_url, doctor_ids, from_date, to_date, **kwargs):
+        lo, hi = str(from_date)[:10], str(to_date)[:10]
+        return {"success": True, "data": {"items": [i for i in items if lo <= i["slotStart"][:10] <= hi]}}
+
+    today_session["last_list"] = {"entity_type": "day", "items": [{"date": d.isoformat()} for d in days[:3]]}
+    with patch.object(tools.api, "get_doctor_schedule_slots", side_effect=get_slots):
+        result = tools.list_available_days_for_booking.func(state=_state_with("اليوم"), offset=3)
+    assert result["days"][0]["date"] == days[0].isoformat()
+
+
+# ----------------------------------------------------------------------
+# 17:12 "موقع العيادة بحي النزهه ابيه": the address went out, the pin did not
+# ----------------------------------------------------------------------
+
+import json
+
+from langchain_core.messages import ToolMessage
+
+import main
+
+
+def _location_turn(text, tool_name="match_entity_info", payload=None):
+    payload = payload or {"status": "matched", "item": {"id": "b-nozha", "name": "النزهة",
+                                                        "address": "7282 أبي سفيان بن حرب، النزهة، الرياض"}}
+    return {"session_id": "log-1012-pin", "templates": {}, "understanding": {"intent": "faq", "asks_location": True},
+            "messages": [HumanMessage(content=text),
+                         AIMessage(content="", tool_calls=[{"id": "c1", "name": tool_name, "args": {}}]),
+                         ToolMessage(content=json.dumps(payload, ensure_ascii=False), name=tool_name,
+                                     tool_call_id="c1")]}
+
+
+_ADDRESS_REPLY = AIMessage(content="عنوان فرع النزهة هو: 7282 أبي سفيان بن حرب، النزهة، الرياض")
+
+
+def test_a_location_question_answered_without_the_pin_sends_it_from_code():
+    pair = graph._missed_location_pin_pair(_location_turn("موقع العيادة بحي النزهه ابيه"), _ADDRESS_REPLY, "ar")
+    signals = main._turn_signals(pair)
+    assert signals["location"] is True and signals["branch_name"] == "النزهة"
+
+
+def test_no_second_pin_when_the_model_already_sent_it():
+    state = _location_turn("موقع فرع النزهة", tool_name="share_branch_location",
+                           payload={"status": "location_requested", "branch_name": "النزهة"})
+    assert graph._missed_location_pin_pair(state, _ADDRESS_REPLY, "ar") == []
+
+
+def test_no_pin_when_they_did_not_ask_where():
+    state = _location_turn("ابي احجز في النزهة")
+    state["understanding"] = {"intent": "booking"}
+    assert graph._missed_location_pin_pair(state, _ADDRESS_REPLY, "ar") == []
+
+
+def test_no_pin_for_a_doctor_match():
+    state = _location_turn("وين د. احمد يوسف", payload={"status": "matched",
+                                                       "item": {"id": "d1", "formatedName": "أحمد يوسف"}})
+    state["understanding"] = {"intent": "faq"}
+    assert graph._missed_location_pin_pair(state, AIMessage(content="د. أحمد يوسف"), "ar") == []
