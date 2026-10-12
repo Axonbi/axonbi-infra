@@ -204,6 +204,13 @@ def turn_action(reading: Optional[dict], facts: TurnFacts) -> Optional[str]:
     if (facts.optional_question and (declines or facts.bare_refusal)
             and not carries_new_request(reading, flow)):
         return ACTION_ANSWER
+    # A BARE "لا" carries no new request, whatever the reading attached to
+    # it. CONFIRMED (2026-10-12 09:30): "لا" to the email question came back
+    # with entities_present [branch, date, doctor, time] - taken from the
+    # conversation, not the message - so the rule above passed it over, the
+    # review was blocked and the booking ended at "ما عندي مشكلة".
+    if facts.optional_question and facts.bare_refusal:
+        return ACTION_ANSWER
     if facts.bare_refusal and not confirms:
         return ACTION_DECLINE
     if (reading.get("changes_intent") and intent in SPECIALISTS + ("human",)
