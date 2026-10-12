@@ -4136,6 +4136,12 @@ _CONFIRMATION_WORD_RE = re.compile(
 )
 
 
+# "كمل الحجز", "اكمل الحجز", "تابع الحجز" - see `_build_booking_entry_directive`.
+_CONTINUE_BOOKING_RE = re.compile(
+    r"(?:^|\s)(?:كمل|كملي|اكمل|نكمل|تابع|اتابع)\s*(?:ال)?(?:حجز|موعد|معاد|ميعاد)"
+)
+
+
 _DONT_KNOW_RE = re.compile(
     r"^\s*(?:"
     r"مش\s*عارف\w*|مش\s*عارفه|ما\s*ادري|مااادري|ما\s*اعرف|لا\s*اعرف|"
@@ -4812,16 +4818,30 @@ def _build_booking_entry_directive(messages: list, session_id: str, agent_name: 
     # weigh against everything else - but the reply is now emitted
     # directly from code, so a false positive here replaces a real answer
     # with the opening question. It has to be exact.
-    if not _BARE_BOOKING_REQUEST_RE.search(folded):
-        return ""
+    # "كمل الحجز هنا" AS THE OPENING MESSAGE - the website's "continue on
+    # WhatsApp" button - has nothing to continue: it asks to book.
+    # CONFIRMED (tanasuq-production 2026-10-12 12:22): "كمل" read as a
+    # confirmation, the rung stood down, and the model asked STEP NB6's
+    # "نكمل الحجز على نفس رقم الواتساب ده؟" with no doctor or time - the
+    # premature-NB6 gate caught it at the cost of two more model calls.
+    opens_by_continuing = (bool(_CONTINUE_BOOKING_RE.search(folded))
+                           and not _last_ai_reply_text(messages)
+                           and not (tools._BOOKING_SESSIONS.get(session_id or "") or {}).get("doctor_id"))
+    if not opens_by_continuing:
+        if not _BARE_BOOKING_REQUEST_RE.search(folded):
+            return ""
 
-    # Confirming, cancelling or moving something is not opening a new
-    # booking, whatever nouns the sentence happens to contain.
-    if _CONFIRMATION_WORD_RE.search(folded):
-        return ""
+        # Confirming, cancelling or moving something is not opening a new
+        # booking, whatever nouns the sentence happens to contain.
+        if _CONFIRMATION_WORD_RE.search(folded):
+            return ""
 
     scores = agents.router.score_message(text)
     for other in ("cancel", "reschedule", "complaint"):
+        # The keyword scores carry no "كمل" cue - an opening "كمل الحجز"
+        # scores 0 everywhere, and 0 >= 0 is not another intent.
+        if opens_by_continuing and not scores.get(other, 0):
+            continue
         if scores.get(other, 0) >= scores.get("booking", 0):
             return ""
 
@@ -22022,6 +22042,21 @@ def _assistant_asked_an_optional_question(messages: list) -> bool:
     return bool(_OPTIONAL_QUESTION_RE.search(agents.router.normalize(questions[-1]).lower()))
 
 
+# OUR OWN previous question offered a NEW booking. Only question lines
+# count: the greeting menu lists "حجز موعد جديد" on a line of its own, and
+# "هل هذا هو الموعد الجديد؟" (a reschedule's new time) is not an offer.
+_NEW_BOOKING_OFFER_RE = re.compile(
+    r"(?:حجز|احجز|تحجز|نحجز)\s*(?:لك\s*)?موعد\s*جديد|حجز\s*جديد|"
+    r"new\s*(?:booking|appointment)"
+)
+
+
+def _assistant_offered_a_new_booking(messages: list) -> bool:
+    last_ai = understanding.last_ai_text_before_latest_human(messages) or ""
+    questions = [agents.router.normalize(line) for line in last_ai.splitlines() if "؟" in line or "?" in line]
+    return any(_NEW_BOOKING_OFFER_RE.search(q) for q in questions)
+
+
 def _assistant_offered_a_transfer(messages: list) -> bool:
     last_ai = agents.router.normalize(understanding.last_ai_text_before_latest_human(messages))
     return bool(last_ai) and bool(_TRANSFER_OFFER_RE.search(last_ai))
@@ -22060,6 +22095,7 @@ def _turn_facts(state: AgentState, previous: Optional[str] = None,
         transfer_offered=_assistant_offered_a_transfer(messages),
         optional_question=_assistant_asked_an_optional_question(messages),
         booking_underway=bool(session.get("doctor_id")),
+        new_booking_offered=_assistant_offered_a_new_booking(messages),
         bare_list_position=bool(_BARE_LIST_POSITION_RE.match(latest)),
         list_on_screen=last_list.get("entity_type") if isinstance(last_list, dict) else None,
         previous_cannot_book=previous in agents.router._CANNOT_COMPLETE_A_BOOKING,

@@ -7017,6 +7017,26 @@ def _doctors_named_in(state: AgentState, base_url: str, text: str, items: Option
     return found
 
 
+_CITY_PREFIX_RE = re.compile(r"^(?:في|فى|بال|لل|ال|ب|ل)(?=\S{3,})")
+
+
+def _branches_in_city(items: list, user_input: str) -> list:
+    """The branches whose city (or address) is a word the patient typed,
+    with a leading preposition dropped: "للرياض" / "بالرياض" -> "رياض"."""
+
+    words = [_CITY_PREFIX_RE.sub("", w) for w in _normalize_arabic(user_input or "").split()]
+    words = [w for w in words if len(w) >= 3 and w not in ("فرع", "اقرب", "قريب", "فروع")]
+    if not words:
+        return []
+    found = []
+    for b in items:
+        place = _normalize_arabic(" ".join(str(b.get(k) or "") for k in ("cityName", "address")))
+        place_words = {_CITY_PREFIX_RE.sub("", w) for w in place.replace("،", " ").replace(",", " ").split()}
+        if any(w in place_words for w in words):
+            found.append(b)
+    return found
+
+
 @tool
 def match_entity_info(
     state: Annotated[AgentState, InjectedState],
@@ -7359,6 +7379,31 @@ def match_entity_info(
                 )
                 _remember_list(state, "doctor", named_doctors)
                 return {"status": "is_a_doctor", "doctors": named_doctors}
+            # A CITY, NOT A BRANCH NAME. CONFIRMED (tanasuq-production
+            # 2026-10-12 12:48): "اقرب فرع للرياض" searched "للرياض" and the
+            # reply opened with 'ما لقيت فرع اسمه "للرياض"' before listing
+            # the two Riyadh branches. The branches in that city are the answer.
+            in_city = _branches_in_city(items, user_input)
+            if in_city:
+                shaped_city = [
+                    {
+                        "id": b.get("id"),
+                        "name": _arabic_preferred_name(b) or b.get("name"),
+                        "altName": b.get("altName"),
+                        "address": b.get("address"),
+                        "cityName": b.get("cityName"),
+                    }
+                    for b in in_city
+                ]
+                logger.info("match_entity_info: %r names a city - returning its %d branch(es)",
+                            user_input, len(shaped_city))
+                _remember_list(state, "branch", shaped_city)
+                return {
+                    "status": "list",
+                    "items": shaped_city,
+                    "_guidance": "These are the branches in the city the patient named - list them; "
+                                 "do not say a branch by that name was not found.",
+                }
             # Don't leave the patient with a bare "couldn't find it" -
             # hand back the branches that ARE currently available, so
             # the reply can say "لم أجد فرعًا باسم [x]، هذه الفروع
