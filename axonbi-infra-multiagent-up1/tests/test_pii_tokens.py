@@ -267,3 +267,12 @@ def test_pii_debug_logs_what_the_model_received_for_every_conversation(sid, capl
     assert config.get_messages("rovan-test", client_row_override=row)["_pii_debug"] is True
     pii_vault.log_call(sid, {}, [HumanMessage(content="⟦NAME_1⟧")], debug=True)
     assert "what the model received" in caplog.text and "⟦NAME_1⟧" in caplog.text
+
+
+def test_the_server_can_turn_it_on_for_a_client_whose_column_does_not_arrive(monkeypatch):
+    row = {"client_id": "tanasuq-saudi", "Dialect": "Egyptian", "base_url": "http://booking.test"}
+    monkeypatch.setenv("PII_TOKENS_CLIENTS", "rovan, tanasuq-saudi")
+    assert config.get_messages("tanasuq-saudi", client_row_override=row)["_pii_tokens"] is True
+    assert config.get_messages("someone-else", client_row_override={**row, "client_id": "someone-else"})["_pii_tokens"] is False
+    monkeypatch.delenv("PII_TOKENS_CLIENTS")
+    assert config.get_messages("tanasuq-saudi", client_row_override=row)["_pii_tokens"] is False
