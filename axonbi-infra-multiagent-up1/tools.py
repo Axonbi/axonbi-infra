@@ -2478,6 +2478,7 @@ def _remember_list(state: AgentState, entity_type: str, items: list) -> None:
     items = list(items or [])
 
     session["last_list"] = {"entity_type": entity_type, "items": list(items)}
+    session.pop("slots_before_ambiguity", None)
 
     if entity_type in ("branch", "doctor"):
         bucket = session.setdefault(
@@ -2496,6 +2497,24 @@ def _remember_list(state: AgentState, entity_type: str, items: list) -> None:
         "_remember_list: session_id=%s entity_type=%s count=%d",
         session_id, entity_type, len(items),
     )
+
+
+def _remember_ambiguous_slots(state: AgentState, session: dict, all_slots: list, candidates: list) -> None:
+    """"الساعه ٥" matched 5:00 and 5:30, and the reply asks which: those two
+    become the list on screen, so "1" is 5:00. CONFIRMED (2026-10-12 11:46):
+    "1" was resolved against the whole day's list and booked 4:00. The
+    day's full list is kept, so a time off the short list still resolves."""
+
+    _remember_list(state, "slot", [dict(c) for c in candidates])
+    session["slots_before_ambiguity"] = list(all_slots)
+
+
+def _full_day_for_a_time_off_the_short_list(session: dict, slots: list, wanted_time, user_input: str) -> list:
+    full = session.get("slots_before_ambiguity")
+    if (full and wanted_time and _extract_selection_number(user_input) is None
+            and not _slots_at_clock_time(slots, wanted_time)):
+        return full
+    return slots
 
 
 def _remember_branch_name(state: AgentState, name: Optional[str]) -> None:
@@ -5642,6 +5661,7 @@ def select_reschedule_slot(state: Annotated[AgentState, InjectedState], user_inp
     slots = last_list.get("items") or []
 
     wanted_time = _parse_clock_time(user_input)
+    slots = _full_day_for_a_time_off_the_short_list(session, slots, wanted_time, user_input)
     position = _extract_selection_number(user_input)
 
     if position is not None:
@@ -5691,6 +5711,7 @@ def select_reschedule_slot(state: Annotated[AgentState, InjectedState], user_inp
                     user_input, len(by_time),
                     [slot.get("time_display") for slot in by_time],
                 )
+                _remember_ambiguous_slots(state, session, slots, by_time)
                 return {
                     "status": "ambiguous_time",
                     "candidates": [dict(slot) for slot in by_time],
@@ -11842,6 +11863,7 @@ def select_appointment_slot(state: Annotated[AgentState, InjectedState], user_in
     slots = last_list.get("items") or []
 
     wanted_time = _parse_clock_time(user_input)
+    slots = _full_day_for_a_time_off_the_short_list(session, slots, wanted_time, user_input)
 
     position = _extract_selection_number(user_input)
     if position is not None:
@@ -11909,6 +11931,7 @@ def select_appointment_slot(state: Annotated[AgentState, InjectedState], user_in
                     user_input, len(by_time),
                     [slot.get("time_display") for slot in by_time],
                 )
+                _remember_ambiguous_slots(state, session, slots, by_time)
                 return {
                     "status": "ambiguous_time",
                     "candidates": [dict(slot) for slot in by_time],
