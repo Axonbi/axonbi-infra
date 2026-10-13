@@ -21860,6 +21860,14 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     return updates
 
 
+# The assistant offering a map pin, and the assistant saying it sent one -
+# our own wording (folded: أ->ا, ة->ه).
+_LOCATION_OFFER_RE = re.compile(r"(?:ارسل|ابعت|ابعث)\s*لك\s*(?:ال)?موقع|send\s+you\s+the\s+(?:location|pin|map)")
+_LOCATION_SENT_CLAIM_RE = re.compile(
+    r"(?:ارسلت|بعتت|بعثت|ارسلنا)\s*لك\s*(?:ال)?موقع|(?:راح|رح|حا|ح)\s*ارسل\s*لك\s*(?:ال)?موقع|"
+    r"sent\s+you\s+the\s+(?:location|pin|map)")
+
+
 def _missed_location_pin_pair(state: AgentState, response, target_language: Optional[str]) -> list:
     """They asked where a branch is, ONE branch is the answer, and the reply
     gave its address without calling `share_branch_location` - so no map pin
@@ -21879,7 +21887,17 @@ def _missed_location_pin_pair(state: AgentState, response, target_language: Opti
         return []
     latest = understanding.latest_human_text(messages) or ""
     reading = state.get("understanding") or {}
-    if not (reading.get("asks_location") or tools._LOCATION_REQUEST_CUE_RE.search(latest.lower())):
+    reply_text = str(getattr(response, "content", "") or "")
+    last_ai = understanding.last_ai_text_before_latest_human(messages) or ""
+    asked_now = bool(reading.get("asks_location") or tools._LOCATION_REQUEST_CUE_RE.search(latest.lower()))
+    # "ايه" to "تحب أرسل لك موقع الفرع على الخريطة؟", and a reply that SAYS the
+    # pin was sent. CONFIRMED (tanasuq-production, 2026-10-13 12:55-12:57):
+    # "ايه", "ما ارسلت", "لم ترسله لي" carry no location word, so nothing was
+    # sent, while the replies said "أرسلت لك موقع فرع النزهة" three times.
+    accepted_offer = bool(reading.get("confirms")) and bool(
+        _LOCATION_OFFER_RE.search(_norm_ar(last_ai).lower()))
+    claims_sent = bool(_LOCATION_SENT_CLAIM_RE.search(_norm_ar(reply_text).lower()))
+    if not (asked_now or accepted_offer or claims_sent):
         return []
 
     this_turn = messages[index + 1:]
@@ -21898,12 +21916,14 @@ def _missed_location_pin_pair(state: AgentState, response, target_language: Opti
         if isinstance(item, dict) and (item.get("name") or item.get("altName")) and "formatedName" not in item:
             branch = item.get("name") or item.get("altName")
 
-    if branch is None and reading.get("asks_location"):
-        reply = _norm_ar(str(getattr(response, "content", "") or ""))
+    # The only real branch the reply names; else the one the offer named.
+    for text in ((reply_text, last_ai) if branch is None else ()):
+        folded = _norm_ar(text)
         named = [n for n in _real_branch_names(state, target_language)
-                 if _norm_ar(n.replace("فرع", "").strip()) and _norm_ar(n.replace("فرع", "").strip()) in reply]
+                 if _norm_ar(n.replace("فرع", "").strip()) and _norm_ar(n.replace("فرع", "").strip()) in folded]
         if len(named) == 1:
             branch = named[0]
+            break
 
     if not branch:
         return []

@@ -12876,6 +12876,7 @@ def share_branch_location(
         )
         return {"status": "not_requested", "reason": "no_explicit_location_request"}
 
+    branch_name = _pin_branch(state, branch_name)
     logger.info(
         "share_branch_location: session_id=%s client_id=%s branch_name=%r",
         state.get("session_id"), state.get("client_id"), branch_name,
@@ -12887,6 +12888,64 @@ def share_branch_location(
     # out of the raw message history.
     _remember_branch_name(state, branch_name)
     return {"status": "location_requested", "branch_name": branch_name}
+
+
+def _branch_key(name) -> str:
+    text = _normalize_arabic(str(name or ""))
+    for filler in ("فرع", "حي", "branch"):
+        text = re.sub(r"(?:^|\s)" + filler + r"(?:\s|$)", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _configured_branch_names(state: AgentState) -> list:
+    """The clinic's own branch names: its n8n `branches` field, then every
+    branch a tool returned in this conversation."""
+
+    names = []
+    raw = (state.get("raw_client_config") or {}).get("branches")
+    if isinstance(raw, str):
+        names.extend(re.split(r"[,،;|\n]+", raw))
+    elif isinstance(raw, list):
+        names.extend(item.get("name") if isinstance(item, dict) else item for item in raw)
+    names.extend(sorted(get_known_entity_names(state.get("session_id"), "branch")))
+    out, seen = [], set()
+    for name in names:
+        name = str(name or "").strip().strip("\"'[]{}")
+        key = _branch_key(name)
+        if len(key) >= 2 and key not in seen and "{" not in name and ":" not in name:
+            seen.add(key)
+            out.append(name)
+    return out
+
+
+def _pin_branch(state: AgentState, branch_name: str) -> str:
+    """The branch whose pin is sent: the ONE branch the patient's own
+    location request names, when the model passed another; and the
+    clinic's own spelling of it, which is what n8n looks up.
+
+    CONFIRMED (tanasuq-production, 2026-10-13 12:54): "ابي موقع تناسق حي
+    النزهه" was answered with فرع النزهة's address and المنار's pin."""
+
+    configured = _configured_branch_names(state)
+    if not configured:
+        return branch_name
+    asked_in = ""
+    for msg in reversed(state.get("messages") or []):
+        if getattr(msg, "type", None) == "human":
+            text = str(getattr(msg, "content", "") or "")
+            if _LOCATION_REQUEST_CUE_RE.search(text.lower()):
+                asked_in = text
+                break
+    folded = f" {_branch_key(asked_in)} "
+    named = list({_branch_key(n): n for n in configured if f" {_branch_key(n)} " in folded}.values())
+    if len(named) == 1 and _branch_key(named[0]) != _branch_key(branch_name):
+        logger.warning(
+            "share_branch_location: the patient asked for %r - pin sent for it, not for %r",
+            named[0], branch_name,
+        )
+        return named[0]
+    same = next((n for n in configured if _branch_key(n) == _branch_key(branch_name)), None)
+    return same or branch_name
 
 
 ALL_TOOLS = [
