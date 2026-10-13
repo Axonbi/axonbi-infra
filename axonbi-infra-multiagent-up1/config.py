@@ -152,9 +152,12 @@ _ENV_DOCTORS_BASE_URL_OVERRIDE: Optional[str] = os.getenv("DOCTORS_API_BASE_URL"
 # token from the SSO login. Credentials come from the environment ONLY -
 # this repo is public.
 _ENV_CMS_BASE_URL_OVERRIDE: Optional[str] = os.getenv("CMS_API_BASE_URL") or None
-_DEFAULT_CMS_BASE_URL: str = "https://cms-api.tanasuq.med.sa"
+# No built-in host: each clinic supplies its own cms_base_url (client
+# config) or CMS_API_BASE_URL. Empty -> "not_configured", never another
+# tenant's server.
+_DEFAULT_CMS_BASE_URL: str = ""
 
-SSO_LOGIN_URL: str = os.getenv("SSO_LOGIN_URL", "https://sso.tanasuq.med.sa/api/Auth/Login")
+SSO_LOGIN_URL: str = os.getenv("SSO_LOGIN_URL", "")
 SSO_EMAIL: str = os.getenv("SSO_EMAIL", "")
 # The clinic's organizationId, sent with the login when set (the integration
 # account is scoped to one organization).
@@ -245,7 +248,7 @@ CANCELLABLE_STATUS_CODES = (STATUS_NEW, STATUS_CONFIRMED)
 # instead. This constant is ONLY the fallback for the rare client row
 # missing the column entirely.
 
-DEFAULT_TIMEZONE: str = os.getenv("DEFAULT_TIMEZONE", "Asia/Riyadh")
+DEFAULT_TIMEZONE: str = os.getenv("DEFAULT_TIMEZONE", "Africa/Cairo")  # Egypt
 
 
 # ==========================================================

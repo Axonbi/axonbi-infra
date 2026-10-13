@@ -76,3 +76,10 @@ def test_rag_falls_back_to_every_chunk_when_embeddings_are_unavailable(tmp_path)
     kb.write_text("فقرة أولى.\n\nفقرة ثانية.", encoding="utf-8")
     chunks = rag._all_chunks_fallback(str(kb))
     assert chunks and all(isinstance(c, tuple) for c in chunks)
+
+
+def test_egypt_is_the_default_country():
+    import os
+    if not os.environ.get("DEFAULT_TIMEZONE"):
+        assert config.DEFAULT_TIMEZONE == "Africa/Cairo"
+    assert config._DEFAULT_CMS_BASE_URL == ""

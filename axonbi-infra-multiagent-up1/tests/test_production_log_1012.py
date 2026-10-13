@@ -4,6 +4,7 @@
   - 11:42 "الاتنين الي بعده" with Monday 12/10 on screen came back as 12/10.
   - 11:43 a Monday-only doctor with seven bookable Mondays showed one; "more
     days?" was told "ما فيش مواعيد متاحة".
+  - 11:43 "أقرب فرع للجيزة": none of CURE's eight branches had coordinates.
 """
 
 from datetime import datetime, timedelta
@@ -110,6 +111,33 @@ def test_the_last_monday_shown_means_no_more(session):
     mondays = _mondays(2)
     session["last_list"] = {"entity_type": "day", "items": [{"date": m.isoformat()} for m in mondays]}
     assert _days(session, offset=2, mondays=mondays)["status"] == "no_more_days"
+
+
+# ----------------------------------------------------------------------
+# CURE's branches, as the CMS names them, have coordinates
+# ----------------------------------------------------------------------
+
+@pytest.mark.parametrize("api_name", [
+    "Nasr City", "6th of October", "Fifth Settlement", "Maadi", "Heliopolis (Masr El Gedida)",
+    "Mohandessin", "Alexandria", "Mokattam",
+])
+def test_every_cure_branch_has_coordinates(api_name):
+    rows = tools.load_branches_geo()
+    index = {tools._geo_name_key(name): geo for name, geo in rows.items()}
+    assert rows.get(api_name) or index.get(tools._geo_name_key(api_name))
+
+
+def test_giza_is_nearest_to_mohandessin():
+    branches = {"success": True, "data": {"items": [
+        {"id": str(i), "name": n} for i, n in enumerate(
+            ["Nasr City", "6th of October", "Fifth Settlement", "Maadi", "Heliopolis (Masr El Gedida)",
+             "Mohandessin", "Alexandria", "Mokattam"])]}}
+    with patch.object(tools.api, "get_branches", return_value=branches):
+        result = tools.find_nearest_branch.func(state={**_state(), "target_language": "en"},
+                                                latitude=29.9870753, longitude=31.2118063)
+    assert result["status"] == "found"
+    nearest = result.get("nearest") or (result.get("branches") or [{}])[0]
+    assert nearest["name"] in ("Mohandessin", "Maadi")
 
 
 # ----------------------------------------------------------------------
