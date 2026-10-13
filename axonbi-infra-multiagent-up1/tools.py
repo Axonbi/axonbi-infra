@@ -42,6 +42,7 @@ from langchain_core.tools import tool
 from langgraph.prebuilt import InjectedState
 
 import api
+import system_alerts
 import rag
 from config import (
     DEFAULT_TIMEZONE,
@@ -1423,6 +1424,8 @@ def cancel_appointment(
 
     if result["success"]:
         return {"status": "success"}
+
+    system_alerts.report(state, "cancel", result)
 
     # THE REASON, NOT A BARE "error".
     #
@@ -6027,6 +6030,7 @@ def reschedule_appointment(
     )
 
     if not result["success"]:
+        system_alerts.report(state, "reschedule", result)
         logger.error(
             "reschedule_appointment API call failed: booking_id=%s status_code=%s error=%s",
             booking_id, result.get("status_code"), result.get("error"),
@@ -11404,6 +11408,7 @@ def create_new_booking(
     )
 
     if not result["success"]:
+        system_alerts.report(state, "create_booking", result)
         details = result.get("details") or []
         logger.error(
             "create_new_booking API call failed: status_code=%s error=%s rejected_fields=%s",
