@@ -40,6 +40,10 @@ from config import (
     SMSMISR_SENDER,
     SMSMISR_TEMPLATE,
     SMSMISR_USERNAME,
+    OURSMS_BASE_URL,
+    OURSMS_BODY,
+    OURSMS_SENDER,
+    OURSMS_TOKEN,
     SSO_EMAIL,
     SSO_LOGIN_URL,
     SSO_ORGANIZATION_ID,
@@ -645,6 +649,48 @@ def authentica_verify_otp(phone: str, otp: str, email: str = "") -> dict:
 # The provider just delivers the code we hand it - generation and
 # verification both happen in tools.py.
 # ==========================================================
+
+def oursms_send_otp(phone: str, otp: str) -> dict:
+    """Deliver `otp` by OurSMS (api.oursms.com/msgs/sms). Success is a list
+    whose job has accepted >= 1 and rejected == 0."""
+
+    if not (OURSMS_TOKEN and OURSMS_SENDER):
+        logger.error("OurSMS send_otp: OURSMS_TOKEN / OURSMS_SENDER are not configured")
+        return _result(False, error="not_configured")
+
+    payload = {
+        "src": OURSMS_SENDER,
+        # International number without "+" (9665...).
+        "dests": [str(phone).lstrip("+")],
+        "body": OURSMS_BODY.replace("{code}", str(otp)),
+        "msgClass": "transactional",
+        "validity": 5,
+        "dlr": 1,
+    }
+    headers = {"Authorization": f"Bearer {OURSMS_TOKEN}", "Content-Type": "application/json"}
+
+    # Single attempt: a retry after a slow-but-delivered request would text
+    # the patient two different codes. Never log the payload or headers.
+    response, last_timeout, last_exc = _request_once("post", OURSMS_BASE_URL, json=payload, headers=headers)
+    if response is None:
+        if last_timeout:
+            return _result(False, error="timeout")
+        return _result(False, error=str(last_exc) if last_exc else "request_failed")
+
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    job = body[0] if isinstance(body, list) and body else (body if isinstance(body, dict) else {})
+
+    if response.status_code >= 400 or not (int(job.get("accepted") or 0) >= 1 and int(job.get("rejected") or 0) == 0):
+        logger.error("OurSMS send_otp not accepted phone=%s status=%s body=%s",
+                     phone, response.status_code, response.text[:500])
+        reason = job.get("enNotes") or job.get("statusDesc") or job.get("message") or response.text[:300]
+        return _result(False, response.status_code, error="send_otp_failed", details=[str(reason)])
+
+    return _result(True, response.status_code, data=job)
+
 
 def smsmisr_send_otp(phone: str, otp: str) -> dict:
     if not (SMSMISR_USERNAME and SMSMISR_PASSWORD and SMSMISR_SENDER and SMSMISR_TEMPLATE):
