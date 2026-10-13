@@ -203,9 +203,13 @@ def test_same_day_slots_are_dropped_unless_allowed(monkeypatch):
     assert tools._drop_same_day_slots(list(slots), "Asia/Riyadh") == (slots, 0)
 
 
-def test_asking_for_today_gets_the_same_day_answer_not_todays_times():
+def test_asking_for_today_gets_the_same_day_answer_not_todays_times(monkeypatch):
     from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
     import json
+    import config
+    # The refusal is the ALLOW_SAME_DAY_BOOKING=false path; same-day is open
+    # by default since d2df6d0 (test_same_day_per_doctor covers that side).
+    monkeypatch.setattr(config, "ALLOW_SAME_DAY_BOOKING", False)
     msgs = [HumanMessage(content="عايز اعدل موعدي"),
             AIMessage(content="", tool_calls=[{"id": "1", "name": "lookup_appointment", "args": {}}]),
             ToolMessage(content=json.dumps({"status": "found_one", "appointment": {"ref": "X"}}),

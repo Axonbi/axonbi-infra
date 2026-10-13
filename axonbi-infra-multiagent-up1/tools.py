@@ -7017,6 +7017,26 @@ def _doctors_named_in(state: AgentState, base_url: str, text: str, items: Option
     return found
 
 
+_CITY_PREFIX_RE = re.compile(r"^(?:في|فى|بال|لل|ال|ب|ل)(?=\S{3,})")
+
+
+def _branches_in_city(items: list, user_input: str) -> list:
+    """The branches whose city (or address) is a word the patient typed,
+    with a leading preposition dropped: "للرياض" / "بالرياض" -> "رياض"."""
+
+    words = [_CITY_PREFIX_RE.sub("", w) for w in _normalize_arabic(user_input or "").split()]
+    words = [w for w in words if len(w) >= 3 and w not in ("فرع", "اقرب", "قريب", "فروع")]
+    if not words:
+        return []
+    found = []
+    for b in items:
+        place = _normalize_arabic(" ".join(str(b.get(k) or "") for k in ("cityName", "address")))
+        place_words = {_CITY_PREFIX_RE.sub("", w) for w in place.replace("،", " ").replace(",", " ").split()}
+        if any(w in place_words for w in words):
+            found.append(b)
+    return found
+
+
 @tool
 def match_entity_info(
     state: Annotated[AgentState, InjectedState],
@@ -7359,6 +7379,31 @@ def match_entity_info(
                 )
                 _remember_list(state, "doctor", named_doctors)
                 return {"status": "is_a_doctor", "doctors": named_doctors}
+            # A CITY, NOT A BRANCH NAME. CONFIRMED (tanasuq-production
+            # 2026-10-12 12:48): "اقرب فرع للرياض" searched "للرياض" and the
+            # reply opened with 'ما لقيت فرع اسمه "للرياض"' before listing
+            # the two Riyadh branches. The branches in that city are the answer.
+            in_city = _branches_in_city(items, user_input)
+            if in_city:
+                shaped_city = [
+                    {
+                        "id": b.get("id"),
+                        "name": _arabic_preferred_name(b) or b.get("name"),
+                        "altName": b.get("altName"),
+                        "address": b.get("address"),
+                        "cityName": b.get("cityName"),
+                    }
+                    for b in in_city
+                ]
+                logger.info("match_entity_info: %r names a city - returning its %d branch(es)",
+                            user_input, len(shaped_city))
+                _remember_list(state, "branch", shaped_city)
+                return {
+                    "status": "list",
+                    "items": shaped_city,
+                    "_guidance": "These are the branches in the city the patient named - list them; "
+                                 "do not say a branch by that name was not found.",
+                }
             # Don't leave the patient with a bare "couldn't find it" -
             # hand back the branches that ARE currently available, so
             # the reply can say "لم أجد فرعًا باسم [x]، هذه الفروع
@@ -8117,6 +8162,21 @@ def match_entity_for_booking(
     entity_type = (entity_type or "").strip().lower()
     if entity_type not in ("doctor", "branch"):
         return {"matched": False, "ambiguous": False, "status": "error"}
+
+    # AN E-MAIL ADDRESS IS NEVER A DOCTOR OR BRANCH NAME. CONFIRMED
+    # (tanasuq-production, 2026-10-06 08:20): "salm1387@gmail.com" went
+    # through the doctor fetch, a widened second fetch, and came back as
+    # 'no doctor named salm1387@gmail.com'. Skip the API entirely.
+    if re.search(r"[^\s@]+@[^\s@]+\.[A-Za-z]{2,}", str(user_input or "")):
+        return {
+            "matched": False,
+            "ambiguous": False,
+            "_guidance": (
+                "The patient typed an e-mail address, not a doctor or branch name. "
+                "Do not say no doctor/branch was found by that name and do not repeat the "
+                "address. Ask once, plainly, which doctor or specialty they want."
+            ),
+        }
 
     session_id = state.get("session_id")
     session = _get_booking_session(session_id)
@@ -9265,6 +9325,38 @@ def _parse_explicit_date(text: Optional[str], today: date) -> Optional[date]:
         return None
 
 
+# The patient's own word for TODAY. Read from their latest message, not
+# from the tool argument: the model passes "Monday" for "الاتنين اليوم".
+_TODAY_WORD_RE = re.compile(r"(?:^|[\s،,.])(?:اليوم|النهارده|انهارده|today)(?:$|[\s،,.؟?!])")
+
+
+def _patient_says_today(state) -> bool:
+    text = _latest_human_text_for_handoff_guard(state)
+    return bool(_TODAY_WORD_RE.search(_normalize_arabic(text)))
+
+
+def _patient_names_a_day(state, today: date) -> bool:
+    """Their latest message names a day - today, or a typed date."""
+
+    if _patient_says_today(state):
+        return True
+    try:
+        return _parse_explicit_date(_latest_human_text_for_handoff_guard(state), today) is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _remember_empty_day(session: dict, doctor_id: Optional[str], day_iso: str) -> None:
+    """A per-day slot lookup for this doctor found nothing: a later "no
+    appointments on <that day>" is backed by it (graph's unchecked-denial
+    gate reads this)."""
+
+    if doctor_id and day_iso:
+        session.setdefault("empty_days", {}).setdefault(doctor_id, [])
+        if day_iso not in session["empty_days"][doctor_id]:
+            session["empty_days"][doctor_id].append(day_iso)
+
+
 def _says_next_occurrence(weekday_text: str) -> bool:
     words = {w for w in re.split(r"[\s/،,]+", str(weekday_text or "").lower()) if w}
     return bool(words & {_fold_weekday_token(w) for w in _NEXT_OCCURRENCE_WORDS} or words & _NEXT_OCCURRENCE_WORDS)
@@ -9360,6 +9452,13 @@ def resolve_available_day(
                            "and ask which one they mean. Do not offer any other day yet.",
         }
     target_weekday = exact_date.weekday() if exact_date else said_weekday
+    # "الاتنين اليوم" on a Monday is TODAY, not the Monday on screen.
+    # CONFIRMED (tanasuq-production 2026-10-12 17:06): with 19/10 on
+    # screen it was resolved to 19/10 - the model passes only "Monday".
+    if (exact_date is None and target_weekday == _today.weekday() and not after_date
+            and _patient_says_today(state)):
+        exact_date = _today
+        logger.info("resolve_available_day: %r with 'today' in the message is today %s", weekday_name, _today)
     if exact_date is None and target_weekday is not None and not after_date:
         exact_date = _date_from_last_shown_days(session, target_weekday, weekday_name)
         if exact_date:
@@ -9653,7 +9752,7 @@ def resolve_available_day(
     # 04/10 and 11/10 Sundays had nothing open - and the reply showed
     # 18/10's times as if it were the Sunday they asked for. Said only
     # when it happened, so it costs nothing otherwise.
-    skipped = _nearer_weekday_dates(lead_time.date(), after_dt, target_weekday, chosen_date)
+    skipped = [] if exact_date else _nearer_weekday_dates(lead_time.date(), after_dt, target_weekday, chosen_date)
     if skipped:
         result["nearer_dates_without_slots"] = [
             f"{_display_weekday(d.isoformat(), language)} {_display_date(d.isoformat())}" for d in skipped
@@ -10431,7 +10530,18 @@ def list_available_days_for_booking(
     # model passed - it guessed 3 after a list of one (2026-10-12 11:43).
     shown_days = [str(i.get("date"))[:10] for i in ((session.get("last_list") or {}).get("items") or [])
                   if (session.get("last_list") or {}).get("entity_type") == "day" and i.get("date")]
-    if offset > 0 and shown_days:
+    # NOT when they named a day: "اليوم" with today over is answered with
+    # the nearest days again, not the ones after the list. CONFIRMED
+    # (tanasuq-production 2026-10-12 17:05): 13-15/10 were on screen, today
+    # was over, and the reply showed 17-19/10 as if they had asked for more.
+    try:
+        _named_a_day = _patient_names_a_day(state, _local_now_naive(
+            (state.get("templates") or {}).get("_timezone", DEFAULT_TIMEZONE)).date())
+    except Exception:  # noqa: BLE001
+        _named_a_day = False
+    if _named_a_day:
+        offset = 0
+    elif offset > 0 and shown_days:
         offset = sum(1 for d in all_dates if d <= max(shown_days))
 
     if offset >= len(all_dates):
@@ -11743,6 +11853,19 @@ def get_available_slots_for_booking(
 
     if not slots:
         logger.info("get_available_slots_for_booking: not_found - all slots were in the past relative to now")
+        day_iso = str(from_date or "")[:10]
+        _remember_empty_day(session, doctor_id, day_iso)
+        try:
+            is_today = day_iso == _local_now_naive(timezone_name).date().isoformat()
+        except Exception:  # noqa: BLE001
+            is_today = False
+        if is_today:
+            return {
+                "status": "not_found",
+                "day": "today",
+                "_guidance": "Today's appointments with this doctor are over. Say that in one line, "
+                             "then call list_available_days_for_booking (offset 0) and show the nearest days.",
+            }
         return {"status": "not_found"}
 
     # Never re-offer a slot that already failed to book in this booking -
@@ -12753,6 +12876,7 @@ def share_branch_location(
         )
         return {"status": "not_requested", "reason": "no_explicit_location_request"}
 
+    branch_name = _pin_branch(state, branch_name)
     logger.info(
         "share_branch_location: session_id=%s client_id=%s branch_name=%r",
         state.get("session_id"), state.get("client_id"), branch_name,
@@ -12764,6 +12888,64 @@ def share_branch_location(
     # out of the raw message history.
     _remember_branch_name(state, branch_name)
     return {"status": "location_requested", "branch_name": branch_name}
+
+
+def _branch_key(name) -> str:
+    text = _normalize_arabic(str(name or ""))
+    for filler in ("فرع", "حي", "branch"):
+        text = re.sub(r"(?:^|\s)" + filler + r"(?:\s|$)", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _configured_branch_names(state: AgentState) -> list:
+    """The clinic's own branch names: its n8n `branches` field, then every
+    branch a tool returned in this conversation."""
+
+    names = []
+    raw = (state.get("raw_client_config") or {}).get("branches")
+    if isinstance(raw, str):
+        names.extend(re.split(r"[,،;|\n]+", raw))
+    elif isinstance(raw, list):
+        names.extend(item.get("name") if isinstance(item, dict) else item for item in raw)
+    names.extend(sorted(get_known_entity_names(state.get("session_id"), "branch")))
+    out, seen = [], set()
+    for name in names:
+        name = str(name or "").strip().strip("\"'[]{}")
+        key = _branch_key(name)
+        if len(key) >= 2 and key not in seen and "{" not in name and ":" not in name:
+            seen.add(key)
+            out.append(name)
+    return out
+
+
+def _pin_branch(state: AgentState, branch_name: str) -> str:
+    """The branch whose pin is sent: the ONE branch the patient's own
+    location request names, when the model passed another; and the
+    clinic's own spelling of it, which is what n8n looks up.
+
+    CONFIRMED (tanasuq-production, 2026-10-13 12:54): "ابي موقع تناسق حي
+    النزهه" was answered with فرع النزهة's address and المنار's pin."""
+
+    configured = _configured_branch_names(state)
+    if not configured:
+        return branch_name
+    asked_in = ""
+    for msg in reversed(state.get("messages") or []):
+        if getattr(msg, "type", None) == "human":
+            text = str(getattr(msg, "content", "") or "")
+            if _LOCATION_REQUEST_CUE_RE.search(text.lower()):
+                asked_in = text
+                break
+    folded = f" {_branch_key(asked_in)} "
+    named = list({_branch_key(n): n for n in configured if f" {_branch_key(n)} " in folded}.values())
+    if len(named) == 1 and _branch_key(named[0]) != _branch_key(branch_name):
+        logger.warning(
+            "share_branch_location: the patient asked for %r - pin sent for it, not for %r",
+            named[0], branch_name,
+        )
+        return named[0]
+    same = next((n for n in configured if _branch_key(n) == _branch_key(branch_name)), None)
+    return same or branch_name
 
 
 ALL_TOOLS = [
