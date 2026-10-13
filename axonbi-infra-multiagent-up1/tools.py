@@ -5555,6 +5555,7 @@ def get_available_reschedule_slots(
     # متاح 07/10" - today, the appointment being moved. Ten messages in a
     # circle. When the one day asked for has nothing, the next same-weekday
     # date that really has slots is found here, in code.
+    requested_empty = None
     if not slots:
         requested_day = _single_query_day(from_date, to_date)
         if requested_day is not None:
@@ -5568,6 +5569,10 @@ def get_available_reschedule_slots(
                     requested_day.isoformat(), nearest[0]["date_display"],
                 )
                 slots = nearest
+                requested_empty = {
+                    "date_display": requested_day.strftime("%d/%m/%Y"),
+                    "weekday_display": _display_weekday_name(requested_day.weekday(), language),
+                }
 
     if not slots:
         return {"status": "same_day_not_allowed" if same_day_removed else "not_found"}
@@ -5625,6 +5630,9 @@ def get_available_reschedule_slots(
     # no doctorId. Session-only: the model is shown `slots` without it.
     _remember_list(state, "slot", [dict(slot, _doctor_id=resolved["doctor_id"]) for slot in slots])
 
+    if requested_empty:
+        # The day they asked for had nothing; these slots are a later one.
+        return {"status": "found", "slots": slots, "requested_day_had_no_slots": requested_empty}
     return {"status": "found", "slots": slots}
 
 
