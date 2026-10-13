@@ -17303,6 +17303,33 @@ _SAME_DAY_NOTICE = {
 }
 
 
+def _requested_day_empty_notice(reply_text: str, state: AgentState, target_language: str) -> str:
+    """When the day the patient asked for had no slot and this turn's
+    times are for a later same weekday, the reply opens by saying so.
+
+    CONFIRMED (bridge-production, 2026-10-13 13:05): "أقرب يوم أربعاء متاح
+    هو 14/10/2026 - يناسبك؟" -> "اه", and the reply listed 28/10's times
+    with no word that 14/10 had none; the same again for 21/10."""
+
+    if not isinstance(reply_text, str) or not reply_text.strip():
+        return reply_text
+    messages = state.get("messages") or []
+    index = _latest_human_index(messages)
+    empty = None
+    for msg in messages[index + 1:] if index >= 0 else []:
+        if getattr(msg, "name", None) == "get_available_reschedule_slots":
+            payload = parse_tool_content(msg) or {}
+            empty = payload.get("requested_day_had_no_slots") or empty
+    if not empty or not empty.get("date_display"):
+        return reply_text
+    if empty["date_display"] in reply_text:
+        return reply_text
+    day = f"{empty.get('weekday_display') or ''} {empty['date_display']}".strip()
+    if target_language == "en":
+        return f"{day} has no available appointments 🌷\n{reply_text}"
+    return f"يوم {day} ما فيه مواعيد متاحة 🌷\n{reply_text}"
+
+
 def _same_day_notice(reply_text: str, state: AgentState, target_language: str) -> str:
     """When the patient asked for TODAY, the reply opens by saying today
     cannot be booked.
@@ -21648,6 +21675,13 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
             logger.warning("agent[%s]: card named the doctor as the patient - name line dropped", agent_name)
             response = AIMessage(content=unnamed)
 
+    # THE DAY ASKED FOR WAS EMPTY, SAID FIRST - see `_requested_day_empty_notice`.
+    if not has_tool_calls and agent_name in ("reschedule", "concierge"):
+        told = _requested_day_empty_notice(response.content, state, target_language)
+        if told != response.content:
+            logger.warning("agent[%s]: the asked-for day had no slots - said so above the later day's times", agent_name)
+            response = AIMessage(content=told)
+
     # TODAY IS REFUSED FIRST, IN CODE - see `_same_day_notice`.
     if not has_tool_calls and agent_name in ("booking", "concierge", "reschedule"):
         noticed = _same_day_notice(response.content, state, target_language)
@@ -21902,6 +21936,14 @@ def _missed_location_pin_pair(state: AgentState, response, target_language: Opti
 
     this_turn = messages[index + 1:]
     if any(getattr(m, "name", None) == "share_branch_location" for m in this_turn):
+        return []
+
+    # A branch they asked for that does not exist gets no pin of another
+    # one. CONFIRMED (bridge-production, 2026-10-13 13:19): "ممكن عنوان
+    # النرجس؟" -> "ما لقيت فرع اسمه النرجس ... عندنا بريدج النزهة" went out
+    # with بريدج النزهة's pin.
+    lookups = [parse_tool_content(m) or {} for m in this_turn if getattr(m, "name", None) == "match_entity_info"]
+    if lookups and not any(l.get("status") == "matched" for l in lookups):
         return []
 
     branch = None
