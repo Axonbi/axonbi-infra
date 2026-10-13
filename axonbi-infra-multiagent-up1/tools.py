@@ -29,6 +29,7 @@ import ast
 import json
 import logging
 import re
+import secrets
 import smtplib
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -51,6 +52,8 @@ from config import (
     AUTHENTICA_FALLBACK_EMAIL,
     OTP_PROVIDER,
     OTP_TTL_SECONDS,
+    SMSMISR_OTP_LENGTH,
+    OURSMS_OTP_LENGTH,
     TEST_OTP,
     SMTP_HOST,
     SMTP_PORT,
@@ -1527,6 +1530,26 @@ def send_otp(state: Annotated[AgentState, InjectedState], phone: str) -> dict:
             return {"status": "otp_send_failed"}
         return {"status": "otp_sent"}
 
+    if OTP_PROVIDER in ("smsmisr", "oursms"):
+        # SMS Misr / OurSMS only deliver; we own the code. Stored only after
+        # the provider accepted it, so a failed send never leaves a live code.
+        length = OURSMS_OTP_LENGTH if OTP_PROVIDER == "oursms" else SMSMISR_OTP_LENGTH
+        code = "".join(secrets.choice("0123456789") for _ in range(length))
+        send = api.oursms_send_otp if OTP_PROVIDER == "oursms" else api.smsmisr_send_otp
+        result = send(normalized, code) or {}
+        if not result.get("success"):
+            reason = " ".join(str(d) for d in (result.get("details") or [])).lower()
+            if "not valid" in reason or "invalid" in reason:
+                logger.warning("send_otp: provider rejected %r as not a valid number", normalized)
+                return {"status": "invalid_phone"}
+            logger.error("send_otp: provider did NOT send a code to %r (%s)", normalized,
+                         result.get("error") or "unknown error")
+            return {"status": "otp_send_failed"}
+        _otp_storage[normalized] = {"otp": code, "created_at": time.time()}
+        _prune_otp_storage()
+        logger.info("OTP sent via %s to %s", OTP_PROVIDER, normalized)
+        return {"status": "otp_sent"}
+
     _otp_storage[normalized] = {"otp": TEST_OTP, "created_at": time.time()}
     _prune_otp_storage()
     logger.info("OTP sent for %s (test otp=%s)", normalized, TEST_OTP)
@@ -1576,11 +1599,19 @@ def verify_otp(state: Annotated[AgentState, InjectedState], phone: str, otp: str
 
     record = _otp_storage.get(normalized)
 
+    # Diagnostics only - never the code itself.
     if not record:
+        logger.warning("verify_otp: no pending code for %r (pending numbers: %s) - sent to a different number, "
+                       "expired and pruned, or sent by another process", normalized, sorted(_otp_storage))
         return {"status": "otp_invalid"}
 
     if time.time() - record["created_at"] > OTP_TTL_SECONDS:
+        logger.warning("verify_otp: code for %r expired", normalized)
         return {"status": "otp_invalid"}
+
+    if str(otp).strip() != str(record["otp"]):
+        logger.warning("verify_otp: wrong code for %r (got %d chars, expected %d)",
+                       normalized, len(str(otp).strip()), len(str(record["otp"])))
 
     if str(otp).strip() == str(record["otp"]):
         _mark_phone_verified(state, phone)
