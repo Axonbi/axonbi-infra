@@ -915,6 +915,24 @@ PROGRESS_TIMEOUT_SECONDS: float = float(os.getenv("PROGRESS_TIMEOUT_SECONDS", "5
 
 
 # ==========================================================
+# System-failure alerts (system_alerts.py)
+# ==========================================================
+# Every create/cancel/reschedule the CMS does not accept is POSTed here,
+# so n8n can email the team the failed request and the analytics
+# dashboard can mark the conversation as a system failure. Empty: the
+# failure is only logged. A client_config row can override it with
+# `webhook_system_failure`.
+SYSTEM_FAILURE_WEBHOOK_URL: str = os.getenv("SYSTEM_FAILURE_WEBHOOK_URL", "").strip()
+
+# Sent as the X-Webhook-Secret header, so the n8n webhook can drop
+# anything that is not from us.
+SYSTEM_FAILURE_WEBHOOK_SECRET: str = os.getenv("SYSTEM_FAILURE_WEBHOOK_SECRET", "").strip()
+
+# Short: the alert is sent off the patient's path and must never pile up.
+SYSTEM_FAILURE_TIMEOUT_SECONDS: float = float(os.getenv("SYSTEM_FAILURE_TIMEOUT_SECONDS", "5"))
+
+
+# ==========================================================
 # Logging
 # ==========================================================
 

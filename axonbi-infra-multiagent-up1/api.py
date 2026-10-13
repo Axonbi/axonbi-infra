@@ -54,6 +54,31 @@ def _result(success: bool, status_code: Optional[int] = None, data=None, error: 
             "details": details or []}
 
 
+# The request behind a failed result, for system_alerts. Kept OFF the
+# result dict on purpose: results flow into tool returns and the model's
+# context, and a request body carries the patient's name and number.
+# Thread-local because /chat runs each turn on its own worker thread.
+_LAST_FAILURE = threading.local()
+
+
+def _note_failure(result: dict, method: str, url: str, body, response) -> dict:
+    if not result.get("success"):
+        _LAST_FAILURE.value = {
+            "result": result,
+            "request": {"method": method.upper(), "url": url, "body": body},
+            "response": {"status_code": result.get("status_code"),
+                         "body": response.text[:2000] if response is not None else None},
+        }
+    return result
+
+
+def failure_context(result: dict) -> Optional[dict]:
+    """The request and response behind THIS failed result, if this thread
+    recorded it (identity check, so an older failure is never misattributed)."""
+    last = getattr(_LAST_FAILURE, "value", None)
+    return last if last is not None and last["result"] is result else None
+
+
 def _validation_details(response) -> list:
     """Pull field-level validation complaints out of a 4xx body.
 
@@ -466,7 +491,7 @@ def _cms_request(method: str, base_url: Optional[str], path: str, language: Opti
 
     if not base_url:
         logger.error("cms-api base URL is not configured (CMS_API_BASE_URL / cms_base_url) - cannot call %s", path)
-        return _result(False, error="not_configured")
+        return _note_failure(_result(False, error="not_configured"), method, path, kwargs.get("json", kwargs.get("params")), None)
 
     url = f"{base_url}{path}"
     response, last_timeout, last_exc = None, False, None
@@ -474,7 +499,7 @@ def _cms_request(method: str, base_url: Optional[str], path: str, language: Opti
     for attempt in (1, 2):
         token = _get_sso_token(force_refresh=(attempt == 2), sso=sso)
         if not token:
-            return _result(False, error="authentication_error")
+            return _note_failure(_result(False, error="authentication_error"), method, url, kwargs.get("json", kwargs.get("params")), response)
 
         headers = _headers(language=language)
         headers["Authorization"] = f"Bearer {token}"
@@ -490,40 +515,40 @@ def _cms_request(method: str, base_url: Optional[str], path: str, language: Opti
     if response is None:
         if last_timeout:
             logger.warning("cms-api request timed out: %s", url)
-            return _result(False, error="timeout")
+            return _note_failure(_result(False, error="timeout"), method, url, kwargs.get("json", kwargs.get("params")), response)
         logger.error("cms-api request failed: %s error=%s", url, last_exc)
-        return _result(False, error=str(last_exc) if last_exc else "request_failed")
+        return _note_failure(_result(False, error=str(last_exc) if last_exc else "request_failed"), method, url, kwargs.get("json", kwargs.get("params")), response)
 
     if response.status_code >= 500:
         logger.error("cms-api server error: %s status=%s body=%s", url, response.status_code, response.text[:500])
-        return _result(False, response.status_code, error="server_error")
+        return _note_failure(_result(False, response.status_code, error="server_error"), method, url, kwargs.get("json", kwargs.get("params")), response)
 
     if response.status_code in (401, 403):
         logger.error("cms-api AUTHENTICATION/AUTHORIZATION error (%s) even after a fresh login: %s body=%s",
                      response.status_code, url, response.text[:500])
-        return _result(False, response.status_code, error="authentication_error")
+        return _note_failure(_result(False, response.status_code, error="authentication_error"), method, url, kwargs.get("json", kwargs.get("params")), response)
 
     if response.status_code == 404:
         logger.error("cms-api endpoint NOT FOUND (404): %s body=%s", url, response.text[:300])
-        return _result(False, response.status_code, error="endpoint_not_found")
+        return _note_failure(_result(False, response.status_code, error="endpoint_not_found"), method, url, kwargs.get("json", kwargs.get("params")), response)
 
     if response.status_code >= 400:
         details = _validation_details(response)
         logger.error("cms-api validation error: %s status=%s body=%s rejected_fields=%s",
                      url, response.status_code, response.text[:500],
                      [d["field"] for d in details] or "unknown")
-        return _result(False, response.status_code, error="validation_error", details=details)
+        return _note_failure(_result(False, response.status_code, error="validation_error", details=details), method, url, kwargs.get("json", kwargs.get("params")), response)
 
     try:
         body = response.json()
     except ValueError:
-        return _result(False, response.status_code, error="invalid_json_response")
+        return _note_failure(_result(False, response.status_code, error="invalid_json_response"), method, url, kwargs.get("json", kwargs.get("params")), response)
 
     if not body:
-        return _result(False, response.status_code, error="empty_response")
+        return _note_failure(_result(False, response.status_code, error="empty_response"), method, url, kwargs.get("json", kwargs.get("params")), response)
 
     if not body.get("isSuccess"):
-        return _result(False, response.status_code, data=body, error="api_reported_failure")
+        return _note_failure(_result(False, response.status_code, data=body, error="api_reported_failure"), method, url, kwargs.get("json", kwargs.get("params")), response)
 
     return _result(True, response.status_code, data=body.get("data", {}))
 
@@ -723,12 +748,12 @@ def _post_json(url: str, payload: dict, client_id: Optional[str] = None, languag
 
     if response is None:
         if last_timeout:
-            return _result(False, error="timeout")
-        return _result(False, error=str(last_exc) if last_exc else "request_failed")
+            return _note_failure(_result(False, error="timeout"), "post", url, payload, response)
+        return _note_failure(_result(False, error=str(last_exc) if last_exc else "request_failed"), "post", url, payload, response)
 
     if response.status_code >= 500:
         logger.error("Doctors/Specialties API server error: %s status=%s body=%s - giving up after %d attempt(s)", url, response.status_code, response.text[:1000], max_attempts)
-        return _result(False, response.status_code, error="server_error")
+        return _note_failure(_result(False, response.status_code, error="server_error"), "post", url, payload, response)
 
     if response.status_code == 404:
         # A wrong endpoint PATH, not a bad request - this is a bug in our
@@ -739,7 +764,7 @@ def _post_json(url: str, payload: dict, client_id: Optional[str] = None, languag
             "Doctors/Specialties API endpoint NOT FOUND (404) - check the URL path is correct: %s body=%s",
             url, response.text[:500],
         )
-        return _result(False, response.status_code, error="endpoint_not_found")
+        return _note_failure(_result(False, response.status_code, error="endpoint_not_found"), "post", url, payload, response)
 
     if response.status_code >= 400:
         details = _validation_details(response)
@@ -748,18 +773,18 @@ def _post_json(url: str, payload: dict, client_id: Optional[str] = None, languag
             url, response.status_code, response.text[:1000],
             [d["field"] for d in details] or "unknown", payload,
         )
-        return _result(False, response.status_code, error="validation_error", details=details)
+        return _note_failure(_result(False, response.status_code, error="validation_error", details=details), "post", url, payload, response)
 
     try:
         body = response.json()
     except ValueError:
-        return _result(False, response.status_code, error="invalid_json_response")
+        return _note_failure(_result(False, response.status_code, error="invalid_json_response"), "post", url, payload, response)
 
     if not body:
-        return _result(False, response.status_code, error="empty_response")
+        return _note_failure(_result(False, response.status_code, error="empty_response"), "post", url, payload, response)
 
     if not body.get("isSuccess"):
-        return _result(False, response.status_code, data=body, error="api_reported_failure")
+        return _note_failure(_result(False, response.status_code, data=body, error="api_reported_failure"), "post", url, payload, response)
 
     return _result(True, response.status_code, data=body.get("data", {}))
 
@@ -1217,17 +1242,17 @@ def _put_json(url: str, payload: dict, client_id: Optional[str] = None) -> dict:
     if response is None:
         if last_timeout:
             logger.warning("Request timed out: %s", url)
-            return _result(False, error="timeout")
+            return _note_failure(_result(False, error="timeout"), "put", url, payload, response)
         logger.exception("Request failed: %s", url)
-        return _result(False, error=str(last_exc) if last_exc else "request_failed")
+        return _note_failure(_result(False, error=str(last_exc) if last_exc else "request_failed"), "put", url, payload, response)
 
     if response.status_code >= 500:
         logger.error("GuestBookings/Update server error: %s status=%s payload=%s body=%s", url, response.status_code, payload, response.text[:1000])
-        return _result(False, response.status_code, error="server_error")
+        return _note_failure(_result(False, response.status_code, error="server_error"), "put", url, payload, response)
 
     if response.status_code == 404:
         logger.error("GuestBookings/Update endpoint NOT FOUND (404): %s payload=%s body=%s", url, payload, response.text[:500])
-        return _result(False, response.status_code, error="endpoint_not_found")
+        return _note_failure(_result(False, response.status_code, error="endpoint_not_found"), "put", url, payload, response)
 
     if response.status_code >= 400:
         details = _validation_details(response)
@@ -1236,18 +1261,18 @@ def _put_json(url: str, payload: dict, client_id: Optional[str] = None) -> dict:
             url, response.status_code, payload, response.text[:1000], dict(response.headers),
             [d["field"] for d in details] or "unknown",
         )
-        return _result(False, response.status_code, error="validation_error", details=details)
+        return _note_failure(_result(False, response.status_code, error="validation_error", details=details), "put", url, payload, response)
 
     try:
         body = response.json()
     except ValueError:
-        return _result(False, response.status_code, error="invalid_json_response")
+        return _note_failure(_result(False, response.status_code, error="invalid_json_response"), "put", url, payload, response)
 
     if not body:
-        return _result(False, response.status_code, error="empty_response")
+        return _note_failure(_result(False, response.status_code, error="empty_response"), "put", url, payload, response)
 
     if not body.get("isSuccess"):
-        return _result(False, response.status_code, data=body, error="api_reported_failure")
+        return _note_failure(_result(False, response.status_code, data=body, error="api_reported_failure"), "put", url, payload, response)
 
     return _result(True, response.status_code, data=body.get("data", {}))
 
