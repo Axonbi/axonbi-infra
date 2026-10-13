@@ -290,6 +290,15 @@ SMSMISR_SENDER: str = os.getenv("SMSMISR_SENDER", "")
 SMSMISR_TEMPLATE: str = os.getenv("SMSMISR_TEMPLATE", "")
 SMSMISR_OTP_LENGTH: int = int(os.getenv("SMSMISR_OTP_LENGTH", "6"))
 
+# OurSMS (OTP_PROVIDER=oursms, api.oursms.com). Like SMS Misr it only
+# delivers the code we generate and verify. Token from the environment
+# only - never commit it. OURSMS_BODY must contain "{code}".
+OURSMS_BASE_URL: str = os.getenv("OURSMS_BASE_URL", "https://api.oursms.com/msgs/sms")
+OURSMS_TOKEN: str = os.getenv("OURSMS_TOKEN", "")
+OURSMS_SENDER: str = os.getenv("OURSMS_SENDER", "")
+OURSMS_BODY: str = os.getenv("OURSMS_BODY", "رمز التحقق: {code} صالح لمدة 5 دقائق")
+OURSMS_OTP_LENGTH: int = int(os.getenv("OURSMS_OTP_LENGTH", "4"))
+
 # SMTP config for the Complaint Agent's send_complaint_email tool.
 # Per-clinic recipient list comes from client_config.csv's own
 # "complaint_email_to" column (see get_messages) - the SMTP server

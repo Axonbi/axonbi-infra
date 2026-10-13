@@ -54,6 +54,7 @@ from config import (
     OTP_PROVIDER,
     OTP_TTL_SECONDS,
     SMSMISR_OTP_LENGTH,
+    OURSMS_OTP_LENGTH,
     TEST_OTP,
     SMTP_HOST,
     SMTP_PORT,
@@ -1532,11 +1533,13 @@ def send_otp(state: Annotated[AgentState, InjectedState], phone: str) -> dict:
             return {"status": "otp_send_failed"}
         return {"status": "otp_sent"}
 
-    if OTP_PROVIDER == "smsmisr":
-        # SMS Misr only delivers; we own the code. Stored only after the
-        # provider accepted it, so a failed send never leaves a live code.
-        code = "".join(secrets.choice("0123456789") for _ in range(SMSMISR_OTP_LENGTH))
-        result = api.smsmisr_send_otp(normalized, code) or {}
+    if OTP_PROVIDER in ("smsmisr", "oursms"):
+        # SMS Misr / OurSMS only deliver; we own the code. Stored only after
+        # the provider accepted it, so a failed send never leaves a live code.
+        length = OURSMS_OTP_LENGTH if OTP_PROVIDER == "oursms" else SMSMISR_OTP_LENGTH
+        code = "".join(secrets.choice("0123456789") for _ in range(length))
+        send = api.oursms_send_otp if OTP_PROVIDER == "oursms" else api.smsmisr_send_otp
+        result = send(normalized, code) or {}
         if not result.get("success"):
             reason = " ".join(str(d) for d in (result.get("details") or [])).lower()
             if "not valid" in reason or "invalid" in reason:
@@ -1547,7 +1550,7 @@ def send_otp(state: Annotated[AgentState, InjectedState], phone: str) -> dict:
             return {"status": "otp_send_failed"}
         _otp_storage[normalized] = {"otp": code, "created_at": time.time()}
         _prune_otp_storage()
-        logger.info("OTP sent via smsmisr to %s", normalized)
+        logger.info("OTP sent via %s to %s", OTP_PROVIDER, normalized)
         return {"status": "otp_sent"}
 
     _otp_storage[normalized] = {"otp": TEST_OTP, "created_at": time.time()}
