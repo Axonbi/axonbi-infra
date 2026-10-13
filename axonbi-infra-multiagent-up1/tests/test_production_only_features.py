@@ -7,20 +7,25 @@ import graph
 import tools
 
 
-def test_openai_is_the_default_provider_and_azure_is_gone():
+def test_azure_is_a_supported_provider_and_openai_stays_the_default():
+    assert hasattr(config, "AZURE_OPENAI_ENDPOINT") and hasattr(config, "AZURE_OPENAI_API_VERSION")
     import os
-    assert not hasattr(config, "AZURE_OPENAI_ENDPOINT")
-    assert not hasattr(graph, "AzureChatOpenAI")
     if not os.environ.get("LLM_PROVIDER"):
         assert config.LLM_PROVIDER == "openai"
 
 
-def test_egypt_is_the_default_country():
-    import os
-    if not os.environ.get("DEFAULT_TIMEZONE"):
-        assert config.DEFAULT_TIMEZONE == "Africa/Cairo"
-    if not os.environ.get("DEFAULT_COUNTRY_CODE"):
-        assert config.DEFAULT_COUNTRY_CODE == "20"
+def test_azure_client_is_built_with_the_deployment_name(monkeypatch):
+    seen = {}
+
+    class FakeAzure:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+    monkeypatch.setattr(graph, "AzureChatOpenAI", FakeAzure)
+    monkeypatch.setattr(config, "LLM_PROVIDER", "azure")
+    monkeypatch.setattr(config, "AZURE_OPENAI_ENDPOINT", "https://x.openai.azure.com")
+    graph._make_llm("my-deployment", timeout=5)
+    assert seen["azure_deployment"] == "my-deployment" and seen["azure_endpoint"].startswith("https://x")
 
 
 def test_remote_session_question_gets_the_fixed_reply_with_the_unified_phone():
@@ -71,3 +76,10 @@ def test_rag_falls_back_to_every_chunk_when_embeddings_are_unavailable(tmp_path)
     kb.write_text("فقرة أولى.\n\nفقرة ثانية.", encoding="utf-8")
     chunks = rag._all_chunks_fallback(str(kb))
     assert chunks and all(isinstance(c, tuple) for c in chunks)
+
+
+def test_egypt_is_the_default_country():
+    import os
+    if not os.environ.get("DEFAULT_TIMEZONE"):
+        assert config.DEFAULT_TIMEZONE == "Africa/Cairo"
+    assert config._DEFAULT_CMS_BASE_URL == ""

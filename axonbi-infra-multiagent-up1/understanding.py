@@ -116,7 +116,7 @@ Return ONLY a JSON object with these keys:
 "cancel_request": this message asks for an existing appointment to be cancelled. Saying it WAS cancelled is not.
 "cancel_confirmed": ONLY when the previous message asked to confirm cancelling a specific appointment and this clearly says yes. "تم تاكيد الموعد مسبقا" (already confirmed) is not.
 "crisis": suicidal thoughts, wanting to die or "end it", self-harm, or danger to self or others, direct or indirect, including someone with them. Anxiety, sadness, insomnia or asking for a psychiatrist are not.
-"wants_options": cannot choose or does not know (which doctor, which specialty, which day), asks to be shown everything that is available, or asks for other choices, in any wording ("مش عارف", "اعرض لي الكل", "غيره", "what do you have?"). False when they simply name or pick something.
+"wants_options": cannot choose or does not know (which doctor, which specialty, which day), asks to be shown everything that is available, or asks for other choices, in any wording ("مش عارف", "اعرض لي الكل", "غيره", "دكتور ثاني" even misspelled "ثامي", "what do you have?"). False when they simply name or pick something.
 "asks_price": asks about a price, fee or cost.
 "asks_location": asks where a branch is, its address, map or location pin ("ارسلي اللوكيشن"), or which branch is nearest to a place; also lost on the way there ("ضيعت اللفة/الدخلة", "تهت") - faq, never medical.
 "about_this_hospital": only for intent "other" - true when it concerns THIS hospital although it is not patient care (a job, training, an interview, a supplier, administration); false when it has nothing to do with the hospital (a party, event tickets, food prices, general chat).
@@ -130,7 +130,7 @@ EXAMPLES (the pattern, not the words - other keys omitted):
 - ASSISTANT: "هل تريد إلغاء الموعد؟" / PATIENT: "أكيد" -> {{"intent": "cancel", "answer_to_previous_question": true, "confirms": true, "cancel_confirmed": true}}
 - ASSISTANT: "تحب أدور لك على دكتور ثاني؟" / PATIENT: "لا" -> {{"intent": "answer", "answer_to_previous_question": true, "declines": true}}
 - ASSISTANT: "عندك دكتور أو تخصص معيّن في بالك؟" / PATIENT: "المديفر" -> {{"intent": "booking", "answer_to_previous_question": true, "doctor_name": "المديفر"}} (a bare name or surname answering "which doctor?" is a doctor, never a symptom)
-- nothing asked yet / PATIENT: "ابي اعرف موعدي" -> {{"intent": "answer", "cancel_request": false}} (seeing an appointment is not cancelling or moving it)
+- nothing asked yet / PATIENT: "ابي اعرف موعدي" / "وصلني اتصال بالغاء الموعد، عندي موعد اليوم؟" -> {{"intent": "answer", "cancel_request": false}} (seeing or checking an appointment is not cancelling it)
 - ASSISTANT: "تحب نجرب يوم ثاني؟" / PATIENT: "لا خلاص ثبت موعدي" -> {{"intent": "answer", "answer_to_previous_question": true, "declines": true, "confirms": false}}
 - ASSISTANT: "عندك دكتور أو تخصص معيّن؟" / PATIENT: "لا، زيارة مريض" -> {{"intent": "faq", "declines": true, "changes_intent": true, "about_this_hospital": true}}
 - nothing asked yet / PATIENT: "ابغى اعرف عن اصيلا والعنود" -> {{"intent": "faq", "doctor_name": "اصيلا، العنود"}} (first names of doctors, not branches)

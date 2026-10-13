@@ -457,18 +457,29 @@ def _agent_models(raw: str) -> dict:
 OPENAI_MODEL_BY_AGENT: dict = _agent_models(os.getenv("OPENAI_MODEL_BY_AGENT", ""))
 
 # ==========================================================
-# LLM provider: OpenAI directly (default) or OpenRouter
+# LLM provider: OpenRouter (default) or OpenAI directly
 # ==========================================================
 #
-# LLM_PROVIDER=openai (DEFAULT) -> api.openai.com with OPENAI_API_KEY.
-#     Every OPENAI_MODEL* value is a plain OpenAI model name ("gpt-4.1").
-# LLM_PROVIDER=openrouter -> the OpenAI-compatible client pointed at
-#     OpenRouter. Every OPENAI_MODEL* value is an OpenRouter model id; a
+# LLM_PROVIDER=openrouter (DEFAULT) -> the OpenAI-compatible client pointed
+#     at OpenRouter. Every OPENAI_MODEL* value is an OpenRouter model id; a
 #     bare OpenAI name ("gpt-4.1") is sent as "openai/gpt-4.1", so the
 #     existing values keep working. Key: OPENROUTER_API_KEY.
+# LLM_PROVIDER=openai (DEFAULT ON THIS DEPLOYMENT) -> api.openai.com with
+#     OPENAI_API_KEY, as before.
+# LLM_PROVIDER=azure -> Azure OpenAI. Azure has no notion of calling a
+#     model by name: every model must first be "deployed" in your Azure
+#     resource under a deployment name YOU chose, and that name (not
+#     "gpt-4.1") is what each request references. With azure, every
+#     OPENAI_MODEL* value is read as a DEPLOYMENT NAME, so
+#     OPENAI_MODEL_BY_AGENT=faq:my-mini-deployment works as before,
+#     naming a deployment instead of a model.
 #
-# Azure OpenAI is not supported in this deployment.
+# This deployment defaults to "openai" (not "openrouter") so the
+# environment it already runs in keeps working with no change.
 LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "openai").strip().lower()
+
+AZURE_OPENAI_ENDPOINT: str = os.getenv("AZURE_OPENAI_ENDPOINT", "")
+AZURE_OPENAI_API_VERSION: str = os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview")
 
 OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_BASE_URL: str = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")

@@ -10,6 +10,7 @@ from datetime import timedelta
 from langchain_core.messages import HumanMessage
 
 import config
+import graph
 import tools
 
 _SID = "same-day-per-doctor"
@@ -46,13 +47,21 @@ def test_todays_weekday_is_today():
     assert result["date"] == _now().date().isoformat()
 
 
+def test_no_same_day_notice():
+    tools._BOOKING_SESSIONS.pop(_SID, None)
+    tools._get_booking_session(_SID)["doctor_id"] = "dr"
+    try:
+        reply = "📅 المواعيد المتاحة اليوم:\n1️⃣ 8:00 مساءً\nأي رقم أو وقت تفضل؟"
+        assert not graph._patient_asked_for_today(_state())
+        assert graph._same_day_notice(reply, _state(), "ar") == reply
+    finally:
+        tools._BOOKING_SESSIONS.pop(_SID, None)
+
+
 def test_the_old_rule_can_still_be_switched_back(monkeypatch):
     monkeypatch.setattr(config, "ALLOW_SAME_DAY_BOOKING", False)
-    later = (_now() + timedelta(hours=3)).replace(second=0, microsecond=0)
-    if later.date() != _now().date():
-        return
-    kept, removed = tools._drop_same_day_slots([{"_localStart": later.isoformat()}], _TZ)
-    assert kept == [] and removed == 1
+    result = tools.get_next_weekday_date.func(weekday_name="اليوم", timezone_name=_TZ)
+    assert result["status"] == "same_day_not_allowed"
 
 
 # ----------------------------------------------------------------------

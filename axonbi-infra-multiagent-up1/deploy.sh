@@ -70,9 +70,9 @@ TEST_FILES=(
   tests/test_decline_flow_control.py tests/test_phone_validation.py
   tests/test_english_fixed_texts.py tests/test_faq_answer_and_greeting.py
   tests/test_routing_followups.py
-  tests/test_production_log_1002.py tests/test_production_log_1001_evening.py tests/test_reply_quality_round.py tests/test_production_log_1003.py tests/test_review_no_and_invented_branches.py tests/test_cms_migration.py tests/test_production_log_1004.py tests/test_doctor_names_not_branches.py
-  tests/test_geocode_ambiguity.py tests/test_place_pick.py tests/test_nearest_to_place.py tests/test_pii_tokens.py tests/test_bare_no_to_optional.py tests/test_production_log_1012.py
-  tests/test_same_day_per_doctor.py
+  tests/test_production_log_1002.py tests/test_production_log_1001_evening.py tests/test_reply_quality_round.py tests/test_production_log_1003.py tests/test_review_no_and_invented_branches.py tests/test_cms_migration.py tests/test_production_log_1004.py tests/test_doctor_names_not_branches.py tests/test_doctor_pick_from_shown_list.py tests/test_production_log_1010.py tests/test_bare_no_to_optional.py tests/test_production_log_1010_evening.py tests/test_same_day_per_doctor.py tests/test_production_log_1012.py tests/test_location_pin_1013.py
+  tests/test_geocode_ambiguity.py tests/test_place_pick.py tests/test_nearest_to_place.py
+  tests/test_pii_tokens.py
 )
 
 RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; DIM=$'\033[2m'; OFF=$'\033[0m'
