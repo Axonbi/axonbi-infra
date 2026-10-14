@@ -1,0 +1,107 @@
+# قاعدة معرفة — ذا مديكال أفينيو (The Medical Avenue)
+
+- **المصدر**: https://themedicalavenue.med.sa/
+- **تاريخ الاستخراج**: 2026-10-14
+- **الغرض**: تغذية الديمو/الشات بوت الخاص بعيادة "ذا مديكال أفينيو" على منصة Catalyst
+- **قاعدة الإجابة**: أي سؤال غير مُغطّى هنا يُحال إلى الخط الساخن 0124233762 أو info@medicalavenue.com — بدون تقديم استشارة طبية.
+
+## مرجع سريع (Quick Reference)
+
+| | العربية | English |
+|---|---|---|
+| الخط الساخن / Hotline | 0124233762 | 0124233762 |
+| البريد / Email | info@medicalavenue.com | info@medicalavenue.com |
+| الموقع / Website | themedicalavenue.med.sa | themedicalavenue.med.sa |
+| ساعات العمل / Hours | السبت–الخميس 8 ص – 10 م، الجمعة مغلق | Sat–Thu 8:00 AM–10:00 PM, closed Friday |
+| عدد الفروع / Branches | فرع واحد (جدة) | One branch (Jeddah) |
+| التأمين / Insurance | غير مذكور على الموقع | Not stated on the website |
+
+*Source: https://themedicalavenue.med.sa/contact*
+
+## من نحن / About
+
+ذا مديكال أفينيو (The Medical Avenue) — منصة متكاملة للطب الدقيق والرعاية التخصصية المتقدمة، تأسست عام 2018 في جدة. تجمع بين تحليل DNA، تقييم العمر البيولوجي، الطب الوظيفي، وشراكات دولية (الولايات المتحدة، كوريا الجنوبية) لتقديم Second Opinion وخطط علاجية شخصية بدلاً من البروتوكولات العامة. تقدّم جلسات تقييم من 90 إلى 120 دقيقة لكل حالة.
+
+Founded in 2018 in Jeddah, The Medical Avenue is an integrated precision-medicine and advanced specialty-care platform combining genetic (DNA) analysis, biological-age assessment, functional medicine, and international partnerships (USA, South Korea) to offer second opinions and personalized care plans rather than generic protocols. Assessment sessions run 90–120 minutes.
+
+*Source: https://themedicalavenue.med.sa/about*
+
+## التخصصات / Specialties
+
+| Arabic | English |
+|---|---|
+| الطب الدقيق وتقييم المخاطر الصحية | Precision Medicine & Health Risk Assessment |
+| الخلل الأيضي وMASLD | Metabolic Dysfunction & MASLD |
+| الطب النفسي للبالغين | Adult Psychiatry |
+| الجينات والطب الدقيق | Genetics & Precision Medicine |
+| هشاشة العظام المكثفة | Intensive Osteoporosis Care |
+| العلاجات الوريدية المتخصصة | Specialized IV Therapies |
+
+The site also lists broader service categories (international second opinion, preventive neurology/Alzheimer's, cellular medicine/mitochondrial dysfunction) under "خدماتنا" — the six above were kept as the main specialties for the demo per the doctor roster.
+
+*Source: https://themedicalavenue.med.sa/doctors, https://themedicalavenue.med.sa/services*
+
+## الفروع / Branches
+
+**ذا مديكال أفينيو - جدة (The Medical Avenue - Jeddah)**
+- العنوان / Address: جدة، المملكة العربية السعودية (Jeddah, Saudi Arabia — no street-level address published)
+- الهاتف / Phone: 0124233762
+- ساعات العمل / Hours: Sat–Thu 8:00 AM – 10:00 PM, closed Friday
+
+The website lists a single clinic location (Jeddah); no additional branches were found.
+
+*Source: https://themedicalavenue.med.sa/about, https://themedicalavenue.med.sa/contact*
+
+## الأطباء / Doctors
+
+The `/doctors` page lists 7 consultants; the 5 below were kept for the demo (spanning the clinic's distinct specialties, all with published fees/ratings):
+
+| Name (AR) | Name (EN) | Title | Specialty | Experience | Consultation fee | Rating |
+|---|---|---|---|---|---|---|
+| د. فيصل الأحمد | Dr. Faisal Al-Ahmad | استشاري الطب الدقيق وتقييم المخاطر الصحية | Precision Medicine & Health Risk Assessment | 18 yrs | 900 SAR | 4.9 (287) |
+| د. سارة المنصور | Dr. Sarah Al-Mansour | استشارية الخلل الأيضي والسمنة وMASLD | Metabolic Dysfunction & MASLD | 14 yrs | 800 SAR | 4.9 (234) |
+| د. خالد العمر | Dr. Khaled Al-Omar | استشاري الطب النفسي للبالغين والتقييم المعرفي | Adult Psychiatry | 16 yrs | 850 SAR | 4.8 (198) |
+| د. نورة الزهراني | Dr. Noura Al-Zahrani | استشارية الجينات والطب الدقيق والوقاية المبكرة | Genetics & Precision Medicine | 12 yrs | 750 SAR | 4.9 (176) |
+| د. محمد الراشد | Dr. Mohammed Al-Rashed | استشاري هشاشة العظام والأيض العظمي المكثف | Intensive Osteoporosis Care | 15 yrs | 700 SAR | 4.8 (212) |
+
+Not used for the demo (kept here for completeness): د. زهور ازهر (علم جينات، 14 yrs، no published fee), د. ريم الحربي (العلاجات الوريدية المتخصصة والطب الوظيفي، 10 yrs، 650 SAR).
+
+All 5 doctors above are real consultants listed on the site (`from_site: true`); none were invented.
+
+*Source: https://themedicalavenue.med.sa/doctors*
+
+## الخدمات والأسعار (مرجعية) / Services & Indicative Pricing
+
+| Service | Starting price |
+|---|---|
+| تقييم المخاطر الصحية (Risk Stratification) | 650 SAR |
+| السمنة والخلل الأيضي وMASLD | 400 SAR |
+| Second Opinion الدولي | 1,500 SAR |
+| DNA Risk Score | 1,800 SAR |
+| العلاجات الوريدية المتخصصة | 450 SAR |
+| الطب النفسي للبالغين | 500 SAR |
+| هشاشة العظام المكثفة | 350 SAR |
+| الزهايمر والتنكس العصبي | 900 SAR |
+| خلل الميتوكوندريا | 600 SAR |
+
+Care-level packages ("مستويات الرعاية") range from 800 SAR (Basic Deep Assessment) to 12,000 SAR (VIP Executive package). Full package list on `/packages`.
+
+*Source: https://themedicalavenue.med.sa/services, https://themedicalavenue.med.sa/packages*
+
+## الأسئلة الشائعة / FAQ (selected)
+
+**من هو المريض المناسب لذا مديكال أفينيو؟**
+نخدم المرضى الذين لم تمنحهم الزيارات السريعة صورة واضحة، ويحتاجون تقييمًا متعدد الطبقات، ويبحثون عن خطة شخصية لا بروتوكولًا عامًا، أو من يحتاجون Second Opinion دولي.
+
+**ما هي ساعات عمل المنصة؟**
+من السبت إلى الخميس، 8:00 صباحًا حتى 10:00 مساءً. الجمعة مغلق.
+
+*Source: https://themedicalavenue.med.sa/faq*
+
+## السياسات / Policies
+
+- يوجد رابط لسياسة الخصوصية والشروط والأحكام في تذييل الموقع، دون تفاصيل إضافية مستخرجة.
+- لا توجد معلومات تأمين منشورة على الموقع.
+- القاعدة العامة للإجابة: أي استفسار طبي يُحال لفريق العيادة عبر 0124233762 / info@medicalavenue.com أو واتساب الموقع، دون تقديم تشخيص أو نصيحة طبية مباشرة.
+
+*Source: https://themedicalavenue.med.sa/*
