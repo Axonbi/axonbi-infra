@@ -11963,6 +11963,9 @@ def get_available_slots_for_booking(
     # failed. See `select_appointment_slot` and
     # graph._build_selected_slot_directive for the two halves of the fix.
     _remember_list(state, "slot", slots)
+    # The range itself survives a newer list replacing `last_list`, so
+    # `select_appointment_slot` can fetch the very same list again.
+    _get_booking_session(session_id)["last_slot_range"] = (from_date, to_date)
 
     return {"status": "found", "slots": slots}
 
@@ -12010,12 +12013,37 @@ def select_appointment_slot(state: Annotated[AgentState, InjectedState], user_in
     session = _get_booking_session(session_id)
     last_list = session.get("last_list")
 
+    # THE LIST WAS SHOWN, BUT IS NO LONGER REMEMBERED - FETCH IT AGAIN.
+    # CONFIRMED (tanasuq-saudi, 2026-10-14 16:03): the times for الأربعاء
+    # 28/10 were on screen, `last_list` no longer held them, the patient
+    # answered "3", this returned a bare "no_list_shown", and the model
+    # re-printed the same list from memory every turn - a loop the
+    # patient could not leave. The same doctor/branch/range gives the
+    # same ordering the patient saw, so "3" resolves against real slots.
+    if (not last_list or last_list.get("entity_type") != "slot") and session.get("last_slot_range"):
+        from_date, to_date = session["last_slot_range"]
+        refetched = get_available_slots_for_booking.func(state, from_date=from_date, to_date=to_date)
+        logger.info(
+            "select_appointment_slot: slot list was not remembered for session_id=%s - "
+            "re-fetched %s..%s (status=%s)", session_id, from_date, to_date,
+            (refetched or {}).get("status") if isinstance(refetched, dict) else None,
+        )
+        last_list = session.get("last_list")
+
     if not last_list or last_list.get("entity_type") != "slot":
         logger.warning(
             "select_appointment_slot: no slot list is remembered for session_id=%s",
             session_id,
         )
-        return {"status": "no_list_shown"}
+        return {
+            "status": "no_list_shown",
+            "_guidance": (
+                "No time list is on file for this booking. Do NOT re-print times "
+                "from memory: call get_available_slots_for_booking for the day "
+                "the patient chose, show THAT list, and resolve their pick with "
+                "this tool afterwards."
+            ),
+        }
 
     slots = last_list.get("items") or []
 
