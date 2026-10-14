@@ -17255,6 +17255,37 @@ def _build_review_card_phone_directive(state: AgentState, session_id: str) -> st
     return _REVIEW_CARD_PHONE_DIRECTIVE.format(phone=normalized)
 
 
+_ANYTHING_ELSE_QUESTION = {
+    "ar": "في شي ثاني أقدر أساعدك فيه؟",
+    "en": "Is there anything else I can help you with?",
+}
+
+
+def _unasked_cancel_question_fix(reply_text: str, state: AgentState, target_language: Optional[str]) -> str:
+    """The reply without a "is this the appointment you want to cancel?"
+    question when the patient never asked to cancel - ending instead with
+    "anything else?".
+
+    CONFIRMED (tanasuq-production, 2026-10-14 00:25, 966531397653): "حاب
+    اتاكد من الايميل الخاص فيني" -> the appointment and the email, then
+    "هل هذا هو الموعد الذي تبغى تلغيه؟". The patient only wanted to check
+    the email. One "اه" there and the cancel flow would have owned the
+    conversation."""
+
+    if not reply_text or _cancellation_was_requested(state):
+        return reply_text
+    lines = reply_text.split("\n")
+    kept = [line for line in lines
+            if not (("؟" in line or "?" in line) and _CANCELLATION_FRAMING_RE.search(_norm_ar(line)))]
+    if len(kept) == len(lines):
+        return reply_text
+    body = "\n".join(kept).rstrip()
+    if "؟" in body or "?" in body:
+        return body
+    question = _ANYTHING_ELSE_QUESTION["en" if (target_language or "").startswith("en") else "ar"]
+    return f"{body}\n\n{question}".strip()
+
+
 def _card_name_is_the_doctor_fix(reply_text: str) -> str:
     """A card whose 👤 name line repeats the 👨‍⚕️ doctor line loses the
     name line. CONFIRMED (tanasuq-production, 2026-10-10 16:54,
@@ -21674,6 +21705,14 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         if unnamed != response.content:
             logger.warning("agent[%s]: card named the doctor as the patient - name line dropped", agent_name)
             response = AIMessage(content=unnamed)
+
+    # NO "CANCEL IT?" NOBODY ASKED FOR - see `_unasked_cancel_question_fix`.
+    if not has_tool_calls:
+        unasked = _unasked_cancel_question_fix(response.content, state, target_language)
+        if unasked != response.content:
+            logger.warning("agent[%s]: asked whether to cancel an appointment the patient never asked to cancel - "
+                           "question replaced", agent_name)
+            response = AIMessage(content=unasked)
 
     # THE DAY ASKED FOR WAS EMPTY, SAID FIRST - see `_requested_day_empty_notice`.
     if not has_tool_calls and agent_name in ("reschedule", "concierge"):
