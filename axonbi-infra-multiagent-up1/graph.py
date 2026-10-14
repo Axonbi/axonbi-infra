@@ -10873,6 +10873,43 @@ def _weekdays_claimed_in(reply_text: str) -> list:
     return claimed
 
 
+def _strip_knowledge_base_grounded_segments(reply_text: str, state) -> str:
+    """Drop the reply segments whose every date/time is quoted from the
+    clinic's own knowledge base (`answer_hospital_faq` passages).
+
+    CONFIRMED REAL PRODUCTION FALSE POSITIVE (tanasuq-saudi, 2026-10-14
+    15:11): "معلومات عن مديكال أفينيو" got a correct FAQ answer ending in
+    "ساعات العمل من السبت إلى الخميس من 8:00 صباحًا إلى 10:00 مساءً" -
+    the opening hours, straight from the knowledge-base passage. It was
+    rejected twice as a fabricated appointment (no availability tool ever
+    runs in the FAQ flow), and the patient got the booking safe message
+    for a question that had nothing to do with booking. Opening hours are
+    facts, not slots: a segment is exempt only when it carries at least
+    one date/time AND every one of them appears in a KB passage, so an
+    invented slot sitting next to real hours is still caught."""
+
+    kb_texts = [
+        str(getattr(msg, "content", "") or "")
+        for msg in state.get("messages", [])
+        if getattr(msg, "name", None) == "answer_hospital_faq"
+    ]
+    if not any(kb_texts):
+        return reply_text
+
+    kb_dates, kb_times = _availability_values_from_tools(kb_texts, None)
+
+    kept = []
+    for segment in _SEGMENT_SPLIT_RE.split(reply_text):
+        seg_dates = _DATE_IN_REPLY_RE.findall(segment)
+        seg_times = _TIME_IN_REPLY_RE.findall(segment)
+        if (seg_dates or seg_times) and all(
+            _normalize_date_token(d) in kb_dates for d in seg_dates
+        ) and all(_normalize_time_token(t) in kb_times for t in seg_times):
+            continue
+        kept.append(segment)
+    return "\n".join(kept)
+
+
 def _reply_invents_availability(reply_text, state) -> bool:
     """True when the reply states an appointment date or times that no
     availability tool in this conversation ever returned.
@@ -10886,6 +10923,10 @@ def _reply_invents_availability(reply_text, state) -> bool:
     model skips the tool entirely nothing else can catch it."""
 
     if not reply_text:
+        return False
+
+    reply_text = _strip_knowledge_base_grounded_segments(reply_text, state)
+    if not reply_text.strip():
         return False
 
     dates = _DATE_IN_REPLY_RE.findall(reply_text)
