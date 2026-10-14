@@ -10736,6 +10736,7 @@ def list_available_days_for_booking(
 _REVIEW_CARD_QUESTION_FALLBACKS = (
     "is everything correct - shall i confirm the booking",
     "هل جميع البيانات صحيحه وتود تاكيد الحجز",
+    "are all the details correct and would you like to confirm the booking",
 )
 
 
@@ -10777,8 +10778,14 @@ def _review_card_was_shown(state: AgentState) -> bool:
         for line in template_value.replace("\r", "\n").split("\n"):
             if "؟" in line or "?" in line:
                 needles.append(_normalize_arabic(line))
-    if not needles:
-        needles = [_normalize_arabic(s) for s in _REVIEW_CARD_QUESTION_FALLBACKS]
+    # ALWAYS accept the built-in questions too, not only when the client
+    # has no template. CONFIRMED (tanasuq-saudi, 2026-10-14 15:45): the
+    # card went out ending in "هل جميع البيانات صحيحة وتود تأكيد الحجز؟" -
+    # this tool's own documented shape - but the client's template asked
+    # it in other words, so the card was never recognised; every "نعم"
+    # re-printed the card and the booking could never complete.
+    needles += [_normalize_arabic(s) for s in _REVIEW_CARD_QUESTION_FALLBACKS]
+    needles = [n.strip(" \t✅?؟").lower() for n in needles]
     needles = [n for n in needles if n]
     if not needles:
         return False
@@ -10790,7 +10797,7 @@ def _review_card_was_shown(state: AgentState) -> bool:
         text = content if isinstance(content, str) else str(content or "")
         if not text.strip():
             continue
-        if any(needle in _normalize_arabic(text) for needle in needles):
+        if any(needle in _normalize_arabic(text).lower() for needle in needles):
             return True
 
     return False
