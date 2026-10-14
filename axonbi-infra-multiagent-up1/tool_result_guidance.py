@@ -69,6 +69,18 @@ RESULT_GUIDANCE: dict = {
     },
 
     # ------------------------------------------------------------------
+    "find_best_doctor_in_specialty": {
+        # tanasuq-production 2026-10-14 13:35: "ما في مواعيد ... مع دكتورة
+        # ندى جدّادي أو أي من أخصائيي العلاج النفسي" one message after eleven
+        # of them were listed as available.
+        "not_found":
+            "No open time was found in the next 30 days for these specialties. "
+            "Say only that. Never add that other doctors, or the whole "
+            "specialty, have nothing beyond what this result says, and never "
+            "contradict a list of available doctors already shown - offer to "
+            "check the days of a doctor from that list instead.",
+    },
+
     "find_available_doctors": {
         "found":
             "If `doctors` has exactly ONE entry and it carries an "

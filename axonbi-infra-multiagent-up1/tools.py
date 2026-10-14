@@ -12243,23 +12243,54 @@ def find_best_doctor_in_specialty(
             doctor_ids, now.isoformat(), horizon.isoformat(), len(raw_slot_items),
         )
 
-        best = None
-        for item in raw_slot_items:
-            if item.get("isBooked"):
-                continue
-            slot_start = to_clinic_local(item.get("slotStart"), timezone_name)
-            if not slot_start:
-                continue
-            try:
-                dt = datetime.fromisoformat(slot_start)
-            except ValueError:
-                continue
-            # `slot_start` is wall-clock (naive); `now` is aware. Compare
-            # like with like - see the lead_time note above.
-            if dt <= now.replace(tzinfo=None):
-                continue
-            if best is None or dt < best[0]:
-                best = (dt, item)
+        def _soonest(items):
+            best = None
+            for item in items:
+                if item.get("isBooked"):
+                    continue
+                slot_start = to_clinic_local(item.get("slotStart"), timezone_name)
+                if not slot_start:
+                    continue
+                try:
+                    dt = datetime.fromisoformat(slot_start)
+                except ValueError:
+                    continue
+                # `slot_start` is wall-clock (naive); `now` is aware. Compare
+                # like with like - see the lead_time note above.
+                if dt <= now.replace(tzinfo=None):
+                    continue
+                if best is None or dt < best[0]:
+                    best = (dt, item)
+            return best
+
+        best = _soonest(raw_slot_items)
+
+        # NOTHING FOR THE WHOLE SPECIALTY IS CHECKED DOCTOR BY DOCTOR before
+        # it is believed. CONFIRMED (tanasuq-production, 2026-10-14 13:35,
+        # 966508800894): eleven psychotherapists had just been listed as
+        # available, and the soonest search then answered that none of them
+        # had an appointment. One request for many doctors is the one step
+        # here that a single doctor's lookup does not share.
+        if not best and len(doctor_ids) > 1:
+            logger.warning(
+                "find_best_doctor_in_specialty (soonest): nothing for %d doctors in one request - "
+                "checking each doctor on their own", len(doctor_ids),
+            )
+            one_by_one = []
+            for one_id in doctor_ids[:20]:
+                single = api.get_doctor_schedule_slots(
+                    base_url, doctor_ids=[one_id],
+                    from_date=now.isoformat(), to_date=horizon.isoformat(),
+                    is_booked=False, page_size=1000,
+                    language=conversation_language(state),
+                )
+                if single.get("success"):
+                    one_by_one.extend((single.get("data") or {}).get("items", []))
+            best = _soonest(one_by_one)
+            logger.info(
+                "find_best_doctor_in_specialty (soonest): doctor by doctor -> %d item(s), %s",
+                len(one_by_one), "found" if best else "still nothing",
+            )
 
         if not best:
             logger.info("find_best_doctor_in_specialty (soonest): not_found - none of %d raw item(s) qualified after filtering", len(raw_slot_items))
