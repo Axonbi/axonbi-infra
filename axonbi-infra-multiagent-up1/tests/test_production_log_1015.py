@@ -127,3 +127,11 @@ def test_find_available_doctors_falls_back_to_the_degree():
         assert missing["status"] == "specialty_not_resolved"
     finally:
         tools._BOOKING_SESSIONS.pop(_SID, None)
+
+
+def test_a_degree_in_the_feminine_finds_the_doctors_too():
+    # 2026-10-15 17:45: "مع اخصائيه نفسيه" -> "ليس من التخصصات المتوفرة"
+    with patch.object(tools.api, "get_doctors", return_value=_ROSTER):
+        assert [d["id"] for d in tools._doctors_with_degree(_doctor_state(), "https://p", "اخصائيه نفسيه")] == ["dr-1"]
+        assert [d["id"] for d in tools._doctors_with_degree(_doctor_state(), "https://p", "أخصائية نفسية")] == ["dr-1"]
+        assert [d["id"] for d in tools._doctors_with_degree(_doctor_state(), "https://p", "استشارية")] == ["dr-2"]
