@@ -90,7 +90,10 @@ RESULT_GUIDANCE: dict = {
             "separate block). If `doctors` has more than one entry, "
             "ignore any `about` field entirely and give names only - "
             "reading out several bios makes comparing the list harder, "
-            "not easier.",
+            "not easier. If `matched_by` is \"degree\", the patient named a "
+            "degree, not a specialty: these are the doctors with that "
+            "`degree` - present them as such, never say the specialty is "
+            "missing.",
         "found_broader_search":
             "The given specialty_ids had nobody available; these are "
             "OTHER doctors clinic-wide and NOT a specialty match - never "
@@ -102,7 +105,8 @@ RESULT_GUIDANCE: dict = {
             "nobody available. Say so plainly; do NOT substitute other "
             "doctors.",
         "specialty_not_resolved":
-            "Not a specialty this clinic has. NO search ran and there "
+            "Not a specialty this clinic has, and no doctor here has that "
+            "degree either - say this is not available here. NO search ran and there "
             "are NO doctors to show. Call `list_specialties` and offer "
             "only what it returns, or ask which specialty they meant. "
             "Never name a doctor after this status.",

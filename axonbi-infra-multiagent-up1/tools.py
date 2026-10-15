@@ -3051,6 +3051,55 @@ def list_specialties(state: Annotated[AgentState, InjectedState]) -> dict:
     return result_payload
 
 
+# Words that name no degree on their own - "دكتور" alone is every doctor.
+_GENERIC_DEGREE_WORDS = {"دكتور", "دكتوره", "دكتورة", "الدكتور", "طبيب", "طبيبه", "طبيبة", "doctor", "dr"}
+
+
+def _doctors_with_degree(state: AgentState, base_url: str, label: str) -> list:
+    """The clinic's bookable doctors whose DEGREE is what the patient named
+    ("أخصائي نفسي", "استشاري") - raw API items, [] when none or on failure.
+
+    The fallback for a specialty that does not resolve: patients ask for a
+    degree as often as a specialty - "ابي اخصائي نفسي" names the degree of
+    the علاج نفسي doctors, not a specialty - and was answered that the
+    clinic has no such specialty (tanasuq-production, 2026-10-15)."""
+
+    wanted = _normalize_arabic(str(label or "")).strip()
+    words = [w for w in wanted.split() if w not in _GENERIC_DEGREE_WORDS]
+    if not words or len(" ".join(words)) < 4:
+        return []
+    wanted = " ".join(words)
+    try:
+        result = api.get_doctors(base_url, page_size=200, language=conversation_language(state))
+    except Exception:  # noqa: BLE001
+        logger.warning("_doctors_with_degree: get_doctors raised", exc_info=True)
+        return []
+    if not result.get("success"):
+        return []
+    matched = []
+    for item in (result.get("data") or {}).get("items", []):
+        degrees = {_normalize_arabic(str(item.get(k) or "")).strip() for k in ("degreeName", "degreeAltName")}
+        degrees.discard("")
+        if any(wanted == d or wanted in d or (len(d) >= 4 and d in wanted) for d in degrees):
+            matched.append(item)
+    logger.info("_doctors_with_degree: %r -> %d doctor(s)", label, len(matched))
+    return [i for i in matched if i.get("hasSlots") is not False]
+
+
+def _degree_fallback(state: AgentState, base_url: str, label: str) -> Optional[dict]:
+    """find_available_doctors' answer for a degree named where a specialty
+    was expected, or None when no doctor has that degree either."""
+
+    items = _doctors_with_degree(state, base_url, label)
+    if not items:
+        return None
+    doctors = _shape_doctor_list(items, conversation_language(state))
+    if not doctors:
+        return None
+    _remember_list(state, "doctor", doctors)
+    return {"status": "found", "matched_by": "degree", "degree": label, "doctors": doctors}
+
+
 def _shape_doctor_list(raw_items: list, language: str = "ar") -> list:
     """Shape raw Doctors/GetList rows into the dict the model sees AND
     the dict remembered for positional selection - one function so the
@@ -4459,6 +4508,9 @@ def find_available_doctors(
     # prevent - so report it the same way.
     if (_unresolved_specialty_labels and not specialty_ids
             and not (specialty_name or "").strip()):
+        by_degree = _degree_fallback(state, base_url, _unresolved_specialty_labels[0])
+        if by_degree:
+            return by_degree
         logger.error(
             "find_available_doctors: every specialty_ids entry was unresolvable "
             "(%s) - returning specialty_not_resolved instead of searching ALL "
@@ -4545,6 +4597,9 @@ def find_available_doctors(
                 "doctors unfiltered",
                 specialty_name,
             )
+            by_degree = _degree_fallback(state, base_url, specialty_name.strip())
+            if by_degree:
+                return by_degree
             return {
                 "status": "specialty_not_resolved",
                 "specialty_name": specialty_name.strip(),
@@ -12233,22 +12288,24 @@ def find_best_doctor_in_specialty(
     )
 
     if _unresolved and not specialty_ids:
-        logger.error(
-            "find_best_doctor_in_specialty: every specialty_ids entry was "
-            "unresolvable (%s)", _unresolved,
-        )
-        return {
-            "status": "specialty_not_resolved",
-            "specialty_name": _unresolved[0],
-            "doctors": [],
-        }
+        raw_doctors = _doctors_with_degree(state, base_url, _unresolved[0])
+        if not raw_doctors:
+            logger.error(
+                "find_best_doctor_in_specialty: every specialty_ids entry was "
+                "unresolvable (%s), as a specialty and as a degree", _unresolved,
+            )
+            return {
+                "status": "specialty_not_resolved",
+                "specialty_name": _unresolved[0],
+                "doctors": [],
+            }
+    else:
+        doctors_result = api.get_doctors(base_url, specialty_ids=specialty_ids, page_size=200, language=conversation_language(state))
+        if not doctors_result["success"]:
+            logger.error("find_best_doctor_in_specialty: get_doctors failed: status_code=%s error=%s", doctors_result.get("status_code"), doctors_result.get("error"))
+            return _api_error(doctors_result)
 
-    doctors_result = api.get_doctors(base_url, specialty_ids=specialty_ids, page_size=200, language=conversation_language(state))
-    if not doctors_result["success"]:
-        logger.error("find_best_doctor_in_specialty: get_doctors failed: status_code=%s error=%s", doctors_result.get("status_code"), doctors_result.get("error"))
-        return _api_error(doctors_result)
-
-    raw_doctors = (doctors_result["data"] or {}).get("items", [])
+        raw_doctors = (doctors_result["data"] or {}).get("items", [])
     doctors = [d for d in raw_doctors if d.get("hasSlots") is not False]
     logger.info(
         "find_best_doctor_in_specialty: specialty_ids=%s criteria=%s api_returned=%d after_hasSlots_filter=%d",
