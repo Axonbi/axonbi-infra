@@ -1333,8 +1333,11 @@ def get_messages(client_id: str, dialect: Optional[str] = None, client_row_overr
     # (comma-separated) on the server, or PII_TOKENS=0 for everyone.
     # `pii_debug` true/1 logs what the model received, on every call - for a
     # test flow only.
+    # PII_TOKENS_CLIENTS (comma-separated client ids, or "*" for every
+    # client) turns it ON from the server whatever the n8n row says.
     row_pii = str(client_row.get("pii_tokens") or "").strip().lower()
-    merged["_pii_tokens"] = not (
+    forced_on = {c.strip() for c in os.getenv("PII_TOKENS_CLIENTS", "").split(",") if c.strip()}
+    merged["_pii_tokens"] = ("*" in forced_on or str(client_id or "").strip() in forced_on) or not (
         row_pii in ("0", "false", "no", "off")
         or os.getenv("PII_TOKENS", "1").strip() == "0"
         or str(client_id or "").strip() in {
