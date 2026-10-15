@@ -79,6 +79,46 @@ _NOT_NAME_WORDS = {
     "what", "why", "how", "my", "name", "is",
 }
 
+# A NAME THE PATIENT GIVES UNASKED, after the word that introduces it:
+# "الساعة ٤ باسم فاطمة العمري" (tanasuq-production, 2026-10-12 14:37) went
+# to the model as written. The words after one of these, up to the first
+# word that is not part of a name, are the name.
+_NAME_CUE_RE = re.compile(
+    r"(?:^|\s)(?:باسم|بإسم|بأسم|على اسم|علي اسم|عاسم|اسمي|إسمي|أسمي|"
+    r"اسم المريض|اسم المريضة|اسم المريضه|"
+    r"my name is|name is|under the name|in the name of)\s+",
+    re.IGNORECASE,
+)
+_NAME_STOP_WORDS = _NOT_NAME_WORDS | {
+    "و", "او", "أو", "يوم", "الساعة", "الساعه", "بكرة", "بكره", "اليوم", "مع", "عند", "في",
+    "من", "الى", "إلى", "على", "علي", "رقم", "رقمي", "جوالي", "and", "at", "on", "with", "for",
+    "ابني", "ابنى", "بنتي", "بنتى", "ابنتي", "زوجتي", "زوجي", "امي", "أمي", "ابوي", "أبوي", "والدي",
+    "والدتي", "اخوي", "أخوي", "اخي", "أخي", "اختي", "أختي", "الطفل", "المريض", "المريضة",
+}
+
+
+def _names_after_cue(text: str) -> list:
+    """Each name the patient introduced with a cue word, as written."""
+
+    names = []
+    for cue in _NAME_CUE_RE.finditer(text or ""):
+        # "باسم" is also a first name: "دكتور باسم يوسف" names a doctor.
+        before = text[:cue.start()].split()
+        if before and before[-1].strip(".").lower() in ("دكتور", "الدكتور", "د", "دكتوره", "دكتورة", "dr", "doctor"):
+            continue
+        words = []
+        for word in text[cue.end():].split():
+            bare = word.strip("،,.!؟?:؛")
+            if not bare or not bare.isalpha() or bare.lower() in _NAME_STOP_WORDS:
+                break
+            words.append(bare)
+            if len(words) == 4 or bare != word:
+                break
+        if words:
+            names.append(" ".join(words))
+    return names
+
+
 _current = contextvars.ContextVar("pii_vault_session", default=None)
 _lock = threading.Lock()
 _VAULTS: dict = {}
@@ -238,6 +278,8 @@ def _observe_patient_text(vault: dict, text: str, history: list) -> None:
     if (asked_for_name and 2 <= len(words) <= 6 and all(w.isalpha() for w in words)
             and not any(w.lower() in _NOT_NAME_WORDS for w in words)):
         _register(vault, "NAME", text.strip())
+    for name in _names_after_cue(text):
+        _register(vault, "NAME", name)
 
 
 def observe(vault: dict, messages: list) -> None:

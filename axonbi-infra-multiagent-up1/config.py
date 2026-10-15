@@ -1244,16 +1244,18 @@ def get_messages(client_id: str, dialect: Optional[str] = None, client_row_overr
          or (client_row.get("cms_base_url") or "").strip())
         and os.getenv("BOOKING_ON_CMS", "1").strip() != "0"
     )
-    # PATIENT DATA AS PLACEHOLDERS FOR THE MODEL - see pii_vault.py. Per
-    # client, from its n8n row: `pii_tokens` true/1 turns it on;
+    # PATIENT DATA AS PLACEHOLDERS FOR THE MODEL - see pii_vault.py. ON for
+    # every client (2026-10-15). A client's n8n row with `pii_tokens`
+    # false/0/off turns it off, and so does its id in PII_TOKENS_OFF_CLIENTS
+    # (comma-separated) on the server, or PII_TOKENS=0 for everyone.
     # `pii_debug` true/1 logs what the model received, on every call - for a
     # test flow only.
-    # PII_TOKENS_CLIENTS (comma-separated client ids) turns it on from the
-    # server too, for a row whose column does not reach us.
-    merged["_pii_tokens"] = (
-        str(client_row.get("pii_tokens") or "").strip().lower() in ("1", "true", "yes", "on")
+    row_pii = str(client_row.get("pii_tokens") or "").strip().lower()
+    merged["_pii_tokens"] = not (
+        row_pii in ("0", "false", "no", "off")
+        or os.getenv("PII_TOKENS", "1").strip() == "0"
         or str(client_id or "").strip() in {
-            c.strip() for c in os.getenv("PII_TOKENS_CLIENTS", "").split(",") if c.strip()
+            c.strip() for c in os.getenv("PII_TOKENS_OFF_CLIENTS", "").split(",") if c.strip()
         }
     )
     merged["_pii_debug"] = str(client_row.get("pii_debug") or "").strip().lower() in ("1", "true", "yes", "on")
