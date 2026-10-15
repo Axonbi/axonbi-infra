@@ -187,11 +187,14 @@ def test_a_phone_in_an_unexpected_field_is_masked_and_counted(sid):
 
 
 # ----------------------------------------------------------------------
-# The n8n row turns it on
+# On for every client; the n8n row can turn it off (2026-10-15)
 # ----------------------------------------------------------------------
 
-@pytest.mark.parametrize("value,expected", [("true", True), ("1", True), ("", False), ("false", False), (None, False)])
-def test_the_n8n_column_turns_it_on(value, expected):
+@pytest.mark.parametrize("value,expected", [("true", True), ("1", True), ("", True), (None, True),
+                                            ("false", False), ("0", False), ("off", False)])
+def test_the_n8n_column_turns_it_off(value, expected, monkeypatch):
+    monkeypatch.delenv("PII_TOKENS", raising=False)
+    monkeypatch.delenv("PII_TOKENS_OFF_CLIENTS", raising=False)
     row = {"client_id": "rovan-test", "Dialect": "Egyptian", "base_url": "http://booking.test"}
     if value is not None:
         row["pii_tokens"] = value
@@ -269,10 +272,43 @@ def test_pii_debug_logs_what_the_model_received_for_every_conversation(sid, capl
     assert "what the model received" in caplog.text and "⟦NAME_1⟧" in caplog.text
 
 
-def test_the_server_can_turn_it_on_for_a_client_whose_column_does_not_arrive(monkeypatch):
+def test_the_server_can_turn_it_off(monkeypatch):
     row = {"client_id": "tanasuq-saudi", "Dialect": "Egyptian", "base_url": "http://booking.test"}
-    monkeypatch.setenv("PII_TOKENS_CLIENTS", "rovan, tanasuq-saudi")
-    assert config.get_messages("tanasuq-saudi", client_row_override=row)["_pii_tokens"] is True
-    assert config.get_messages("someone-else", client_row_override={**row, "client_id": "someone-else"})["_pii_tokens"] is False
-    monkeypatch.delenv("PII_TOKENS_CLIENTS")
+    monkeypatch.delenv("PII_TOKENS", raising=False)
+    monkeypatch.setenv("PII_TOKENS_OFF_CLIENTS", "rovan, tanasuq-saudi")
     assert config.get_messages("tanasuq-saudi", client_row_override=row)["_pii_tokens"] is False
+    assert config.get_messages("someone-else", client_row_override={**row, "client_id": "someone-else"})["_pii_tokens"] is True
+    monkeypatch.delenv("PII_TOKENS_OFF_CLIENTS")
+    monkeypatch.setenv("PII_TOKENS", "0")
+    assert config.get_messages("someone-else", client_row_override={**row, "client_id": "someone-else"})["_pii_tokens"] is False
+
+
+# ----------------------------------------------------------------------
+# A name given unasked, after the word that introduces it (tanasuq
+# 2026-10-12 14:37: "الساعة ٤ باسم فاطمة العمري" reached the model as written)
+# ----------------------------------------------------------------------
+
+def test_a_name_after_a_cue_word_is_masked():
+    import pii_vault
+    assert pii_vault._names_after_cue("الساعة ٤ باسم فاطمة العمري") == ["فاطمة العمري"]
+    assert pii_vault._names_after_cue("احجز على اسم محمد عبدالله يوم الخميس") == ["محمد عبدالله"]
+    assert pii_vault._names_after_cue("اسمي سارة.") == ["سارة"]
+    vault = {"values": {}, "tokens": {}, "counts": {}}
+    pii_vault._observe_patient_text(vault, "الساعة ٤ باسم فاطمة العمري", [])
+    assert "فاطمة العمري" in vault["values"]
+
+
+def test_a_doctor_called_basem_and_family_words_are_not_names():
+    import pii_vault
+    assert pii_vault._names_after_cue("دكتور باسم يوسف") == []
+    assert pii_vault._names_after_cue("باسم ابني") == []
+
+
+def test_on_for_every_client_unless_turned_off(monkeypatch):
+    import config
+    monkeypatch.delenv("PII_TOKENS", raising=False)
+    monkeypatch.delenv("PII_TOKENS_OFF_CLIENTS", raising=False)
+    assert config.get_messages("x", client_row_override={})["_pii_tokens"] is True
+    assert config.get_messages("x", client_row_override={"pii_tokens": "false"})["_pii_tokens"] is False
+    monkeypatch.setenv("PII_TOKENS_OFF_CLIENTS", "x")
+    assert config.get_messages("x", client_row_override={})["_pii_tokens"] is False
