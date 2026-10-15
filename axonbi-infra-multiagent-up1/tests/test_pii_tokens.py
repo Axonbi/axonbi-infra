@@ -323,3 +323,27 @@ def test_the_server_turns_it_on_over_the_n8n_row(monkeypatch):
     assert config.get_messages("other", client_row_override={**row, "client_id": "other"})["_pii_tokens"] is False
     monkeypatch.setenv("PII_TOKENS_CLIENTS", "*")
     assert config.get_messages("other", client_row_override={**row, "client_id": "other"})["_pii_tokens"] is True
+
+
+def test_azure_is_masked_too(sid, monkeypatch):
+    # tanasuq-production runs on Azure: the Azure client was a plain
+    # AzureChatOpenAI, so nothing was ever masked there (2026-10-15).
+    from langchain_openai import AzureChatOpenAI
+    monkeypatch.setattr(graph.config, "LLM_PROVIDER", "azure")
+    monkeypatch.setattr(graph.config, "AZURE_OPENAI_ENDPOINT", "https://x.openai.azure.com", raising=False)
+    monkeypatch.setattr(graph.config, "AZURE_OPENAI_API_VERSION", "2024-08-01-preview", raising=False)
+    seen = []
+
+    def fake_network(self, input, config=None, *, stop=None, **kwargs):
+        seen.append(input)
+        return AIMessage(content="تمام")
+
+    pii_vault.begin_turn(sid, ON, CHANNEL, [], None)
+    llm = graph._make_llm("gpt-4.1-mini")
+    assert isinstance(llm, graph._PiiMasking)
+    with patch.object(AzureChatOpenAI, "invoke", fake_network):
+        llm.bind_tools([]).invoke(_conversation())
+    text = _everything(seen[0])
+    for value in REAL_VALUES:
+        assert value not in text, value
+    assert "⟦NAME_" in text
