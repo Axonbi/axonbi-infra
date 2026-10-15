@@ -585,7 +585,10 @@ RESULT_GUIDANCE: dict = {
             "cancelled, completed, or its own date/time has passed - it "
             "can no longer be cancelled or rescheduled. Tell the user "
             "plainly why; don't say \"not found\", which wrongly implies "
-            "they mistyped something.",
+            "they mistyped something. If `cancelled_appointments` is "
+            "present, those are their own bookings and they are CANCELLED: "
+            "show each one (doctor, date, time) saying it is cancelled, and "
+            "offer to book a new appointment.",
         "error":
             "The booking API call failed - a technical problem, NOT the "
             "same as \"no booking exists\".",
