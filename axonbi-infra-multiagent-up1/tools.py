@@ -1165,6 +1165,14 @@ def lookup_appointment(
         return {"status": "reference_needs_correction" if partial else "reference_not_found"}
 
     if not items:
+        # The phone search asks for New/Confirmed only, so a CANCELLED
+        # booking never comes back and the patient was told "ما لقيت أي
+        # حجز" about an appointment they can see in their messages
+        # (tanasuq-production, 2026-10-15, 0593719856). Say it is cancelled.
+        if phone and not ref_number:
+            cancelled = _upcoming_cancelled_bookings(state, phone, language)
+            if cancelled:
+                return {"status": "found_but_inactive", "cancelled_appointments": cancelled}
         return {"status": "not_found"}
 
     # CHANGED (explicit request): both paths now apply the same
@@ -1208,6 +1216,38 @@ def lookup_appointment(
     _remember_list(state, "appointment", shaped)
 
     return {"status": "found_many", "appointments": shaped}
+
+
+_STATUS_CANCELLED = 6
+
+
+def _upcoming_cancelled_bookings(state: AgentState, phone: str, language: str) -> list:
+    """This phone's CANCELLED bookings dated today or later, shaped for the
+    patient (at most three); [] on any failure - only ever used to explain
+    a "not found"."""
+
+    try:
+        result = api.get_bookings_by_phone(
+            _cms_base_url(state), normalize_phone_number(phone, state) or phone,
+            language=language, sso=_sso(state),
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("_upcoming_cancelled_bookings: lookup raised (session_id=%s)", state.get("session_id"))
+        return []
+    if not result.get("success"):
+        return []
+    timezone_name = (state.get("templates") or {}).get("_timezone", DEFAULT_TIMEZONE)
+    today = _local_now_naive(timezone_name).date().isoformat()
+    cancelled = []
+    for item in (result.get("data") or {}).get("items") or []:
+        if item.get("status") != _STATUS_CANCELLED:
+            continue
+        local_from = to_clinic_local(item.get("bookingTimeFrom"), timezone_name) or ""
+        if local_from and local_from[:10] < today:
+            continue
+        cancelled.append(item)
+    cancelled.sort(key=lambda i: str(i.get("bookingTimeFrom") or ""))
+    return [_shape_appointment(i, timezone_name, conversation_language(state)) for i in cancelled[:3]]
 
 
 def _resolve_appointment_pick(state, text: str) -> dict:
@@ -9209,7 +9249,10 @@ def get_patient_info(state: Annotated[AgentState, InjectedState], mobile_number:
         logger.warning("get_patient_info called but no doctors_base_url is configured for client_id=%s", state.get("client_id"))
         return {"status": "not_configured"}
 
-    result = api.get_patient_info(_cms_base_url(state), mobile_number, sso=_sso(state))
+    # The patient registry matches only the full number - "0593719856"
+    # finds nobody where "+966593719856" finds them.
+    result = api.get_patient_info(_cms_base_url(state), normalize_phone_number(mobile_number, state) or mobile_number,
+                                  sso=_sso(state))
 
     if not result["success"] and result.get("error") == "endpoint_not_found":
         # The patient lookup endpoint is gone (404 from portal-api). It only
