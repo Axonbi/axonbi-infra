@@ -192,3 +192,6 @@ def cairo_branches_geo(tmp_path, monkeypatch):
     path = tmp_path / "branches_geo_cairo.csv"
     path.write_text(_CAIRO_BRANCHES_GEO, encoding="utf-8")
     monkeypatch.setattr(_config, "BRANCHES_GEO_CSV_FILENAME", str(path))
+    _config._all_branches_geo.cache_clear()   # loaded once and cached
+    yield
+    _config._all_branches_geo.cache_clear()

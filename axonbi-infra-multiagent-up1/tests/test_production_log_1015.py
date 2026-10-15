@@ -79,6 +79,7 @@ def test_the_patient_lookup_gets_the_full_number():
 
 def test_tanasuq_branches_have_coordinates_and_nothing_else_does():
     import config
+    config._all_branches_geo.cache_clear()
     geo = config.load_branches_geo()
     assert {"المنار", "النزهة"} <= set(geo)
     assert {row["country_code"] for row in geo.values()} == {"sa"}
