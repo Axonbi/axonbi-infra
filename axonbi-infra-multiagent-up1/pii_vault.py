@@ -440,8 +440,21 @@ def unmask_output(vault: dict, message, stats: dict):
     return message.model_copy(update=update) if update else message
 
 
+_LONG_DIGITS_RE = re.compile(r"\d{5,}")
+
+
+def safe_session_id(session_id) -> str:
+    """The session id with the phone number in it cut to its last four
+    digits - "201000625084-DEMO1223=23" -> "…5084-DEMO1223=23". The session
+    id is built from the WhatsApp number, and a line that reports what was
+    hidden from the model must not print the number itself (2026-10-15)."""
+
+    return _LONG_DIGITS_RE.sub(lambda m: "…" + m.group(0)[-4:], str(session_id or ""))
+
+
 def log_call(session_id: str, stats: dict, masked_input=None, debug: bool = False) -> None:
     kinds = ", ".join(f"{k}×{n}" for k, n in sorted((stats.get("kinds") or {}).items()))
+    session_id = safe_session_id(session_id)
     logger.info(
         "pii[%s]: masked=%d (%s) unmasked=%d unknown=%d leaks=%d",
         session_id, stats.get("masked", 0), kinds or "-", stats.get("unmasked", 0),
