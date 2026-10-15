@@ -312,3 +312,14 @@ def test_on_for_every_client_unless_turned_off(monkeypatch):
     assert config.get_messages("x", client_row_override={"pii_tokens": "false"})["_pii_tokens"] is False
     monkeypatch.setenv("PII_TOKENS_OFF_CLIENTS", "x")
     assert config.get_messages("x", client_row_override={})["_pii_tokens"] is False
+
+
+def test_the_server_turns_it_on_over_the_n8n_row(monkeypatch):
+    row = {"client_id": "tanasuq-production", "pii_tokens": "false"}
+    monkeypatch.delenv("PII_TOKENS", raising=False)
+    monkeypatch.delenv("PII_TOKENS_OFF_CLIENTS", raising=False)
+    monkeypatch.setenv("PII_TOKENS_CLIENTS", "tanasuq-production")
+    assert config.get_messages("tanasuq-production", client_row_override=row)["_pii_tokens"] is True
+    assert config.get_messages("other", client_row_override={**row, "client_id": "other"})["_pii_tokens"] is False
+    monkeypatch.setenv("PII_TOKENS_CLIENTS", "*")
+    assert config.get_messages("other", client_row_override={**row, "client_id": "other"})["_pii_tokens"] is True
