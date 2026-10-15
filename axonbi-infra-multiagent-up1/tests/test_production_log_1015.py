@@ -75,3 +75,11 @@ def test_the_patient_lookup_gets_the_full_number():
         tools.get_patient_info.func(state=state, mobile_number="0593719856")
     tools._BOOKING_SESSIONS.pop(_SID, None)
     assert seen == ["+966593719856"]
+
+
+def test_tanasuq_branches_have_coordinates_and_nothing_else_does():
+    import config
+    geo = config.load_branches_geo()
+    assert {"المنار", "النزهة"} <= set(geo)
+    assert {row["country_code"] for row in geo.values()} == {"sa"}
+    assert 24 < geo["المنار"]["latitude"] < 25 and 46 < geo["المنار"]["longitude"] < 47

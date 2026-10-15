@@ -6,7 +6,10 @@ The wider retry keeps the clinic's country ("سيتي ستارز" once resolved 
 a laundromat in New York).
 """
 
+import pytest
 import tools
+
+pytestmark = pytest.mark.usefixtures("cairo_branches_geo")
 
 
 def _r(name, lat, lon, cls="tourism", addresstype="attraction"):

@@ -14,6 +14,8 @@ import config
 import graph
 import tools
 
+pytestmark = pytest.mark.usefixtures("cairo_branches_geo")
+
 API_BRANCHES = [
     {"name": "Sheikh Zayed", "altName": "الشيخ زايد", "address": "Beverly Hills, The Polygon HQ, Bldg 3",
      "mobile": "15180"},

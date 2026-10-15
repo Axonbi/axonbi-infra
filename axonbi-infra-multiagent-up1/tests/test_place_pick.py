@@ -10,7 +10,10 @@ import json
 from langchain_core.messages import AIMessage, HumanMessage
 
 import graph
+import pytest
 import tools
+
+pytestmark = pytest.mark.usefixtures("cairo_branches_geo")
 
 OPTIONS = [
     {"option": 1, "label": "كارفور, طريق النصر, مدينة نصر", "latitude": 30.05, "longitude": 31.33},
