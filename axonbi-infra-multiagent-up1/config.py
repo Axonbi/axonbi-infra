@@ -1327,22 +1327,19 @@ def get_messages(client_id: str, dialect: Optional[str] = None, client_row_overr
          or (client_row.get("cms_base_url") or "").strip())
         and os.getenv("BOOKING_ON_CMS", "1").strip() != "0"
     )
-    # PATIENT DATA AS PLACEHOLDERS FOR THE MODEL - see pii_vault.py. ON for
-    # every client (2026-10-15). A client's n8n row with `pii_tokens`
-    # false/0/off turns it off, and so does its id in PII_TOKENS_OFF_CLIENTS
-    # (comma-separated) on the server, or PII_TOKENS=0 for everyone.
-    # `pii_debug` true/1 logs what the model received, on every call - for a
-    # test flow only.
-    # PII_TOKENS_CLIENTS (comma-separated client ids, or "*" for every
-    # client) turns it ON from the server whatever the n8n row says.
-    row_pii = str(client_row.get("pii_tokens") or "").strip().lower()
-    forced_on = {c.strip() for c in os.getenv("PII_TOKENS_CLIENTS", "").split(",") if c.strip()}
-    merged["_pii_tokens"] = ("*" in forced_on or str(client_id or "").strip() in forced_on) or not (
-        row_pii in ("0", "false", "no", "off")
-        or os.getenv("PII_TOKENS", "1").strip() == "0"
-        or str(client_id or "").strip() in {
-            c.strip() for c in os.getenv("PII_TOKENS_OFF_CLIENTS", "").split(",") if c.strip()
-        }
+    # PATIENT DATA AS PLACEHOLDERS FOR THE MODEL - see pii_vault.py. Decided
+    # on the SERVER only, from the environment - the n8n row's `pii_tokens`
+    # is not read (2026-10-15). ON for every client unless:
+    #   PII_TOKENS=0                     off for everyone
+    #   PII_TOKENS_OFF_CLIENTS=a,b       off for these client ids
+    # PII_TOKENS_CLIENTS=a,b (or "*") is always on, whatever PII_TOKENS says.
+    # `pii_debug` true/1 in the n8n row logs what the model received, on
+    # every call - for a test flow only.
+    _client = str(client_id or "").strip()
+    _forced_on = {c.strip() for c in os.getenv("PII_TOKENS_CLIENTS", "").split(",") if c.strip()}
+    _off = {c.strip() for c in os.getenv("PII_TOKENS_OFF_CLIENTS", "").split(",") if c.strip()}
+    merged["_pii_tokens"] = ("*" in _forced_on or _client in _forced_on) or not (
+        os.getenv("PII_TOKENS", "1").strip() == "0" or _client in _off
     )
     merged["_pii_debug"] = str(client_row.get("pii_debug") or "").strip().lower() in ("1", "true", "yes", "on")
     # SSO account for cms-api, also per client. Keys are named after the env

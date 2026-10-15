@@ -190,15 +190,15 @@ def test_a_phone_in_an_unexpected_field_is_masked_and_counted(sid):
 # On for every client; the n8n row can turn it off (2026-10-15)
 # ----------------------------------------------------------------------
 
-@pytest.mark.parametrize("value,expected", [("true", True), ("1", True), ("", True), (None, True),
-                                            ("false", False), ("0", False), ("off", False)])
-def test_the_n8n_column_turns_it_off(value, expected, monkeypatch):
+@pytest.mark.parametrize("value", ["true", "1", "", None, "false", "0", "off"])
+def test_the_n8n_column_is_not_read(value, monkeypatch):
     monkeypatch.delenv("PII_TOKENS", raising=False)
     monkeypatch.delenv("PII_TOKENS_OFF_CLIENTS", raising=False)
+    monkeypatch.delenv("PII_TOKENS_CLIENTS", raising=False)
     row = {"client_id": "rovan-test", "Dialect": "Egyptian", "base_url": "http://booking.test"}
     if value is not None:
         row["pii_tokens"] = value
-    assert config.get_messages("rovan-test", client_row_override=row)["_pii_tokens"] is expected
+    assert config.get_messages("rovan-test", client_row_override=row)["_pii_tokens"] is True
 
 
 # ----------------------------------------------------------------------
@@ -309,14 +309,14 @@ def test_on_for_every_client_unless_turned_off(monkeypatch):
     monkeypatch.delenv("PII_TOKENS", raising=False)
     monkeypatch.delenv("PII_TOKENS_OFF_CLIENTS", raising=False)
     assert config.get_messages("x", client_row_override={})["_pii_tokens"] is True
-    assert config.get_messages("x", client_row_override={"pii_tokens": "false"})["_pii_tokens"] is False
+    assert config.get_messages("x", client_row_override={"pii_tokens": "false"})["_pii_tokens"] is True
     monkeypatch.setenv("PII_TOKENS_OFF_CLIENTS", "x")
     assert config.get_messages("x", client_row_override={})["_pii_tokens"] is False
 
 
 def test_the_server_turns_it_on_over_the_n8n_row(monkeypatch):
     row = {"client_id": "tanasuq-production", "pii_tokens": "false"}
-    monkeypatch.delenv("PII_TOKENS", raising=False)
+    monkeypatch.setenv("PII_TOKENS", "0")
     monkeypatch.delenv("PII_TOKENS_OFF_CLIENTS", raising=False)
     monkeypatch.setenv("PII_TOKENS_CLIENTS", "tanasuq-production")
     assert config.get_messages("tanasuq-production", client_row_override=row)["_pii_tokens"] is True
