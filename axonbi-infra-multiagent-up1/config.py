@@ -1250,7 +1250,11 @@ def get_messages(client_id: str, dialect: Optional[str] = None, client_row_overr
 
     client_row = client_row_override or get_client_config(client_id) or {}
 
-    effective_dialect = dialect or client_row.get("Dialect")
+    # eqtran-teset: this deployment always answers in Saudi dialect,
+    # whatever Dialect the client row (n8n / client_config.csv) carries.
+    # Set FORCE_DIALECT="" to go back to the client row's own dialect.
+    forced_dialect = os.getenv("FORCE_DIALECT", "Saudi").strip()
+    effective_dialect = forced_dialect or dialect or client_row.get("Dialect")
 
     dialect_row = get_dialect_template(effective_dialect) or {}
 
