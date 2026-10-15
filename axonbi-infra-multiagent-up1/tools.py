@@ -3069,6 +3069,14 @@ def _doctors_with_degree(state: AgentState, base_url: str, label: str) -> list:
     if not words or len(" ".join(words)) < 4:
         return []
     wanted = " ".join(words)
+
+    def _stems(text: str) -> list:
+        # "اخصائيه نفسيه" (a woman) is the degree "أخصائي نفسي": the
+        # feminine ending is dropped from every word before comparing
+        # (tanasuq-production, 2026-10-15 17:45).
+        return [w[:-1] if len(w) > 3 and w.endswith(("ه", "ة")) else w for w in text.split()]
+
+    wanted_stems = _stems(wanted)
     try:
         result = api.get_doctors(base_url, page_size=200, language=conversation_language(state))
     except Exception:  # noqa: BLE001
@@ -3080,7 +3088,8 @@ def _doctors_with_degree(state: AgentState, base_url: str, label: str) -> list:
     for item in (result.get("data") or {}).get("items", []):
         degrees = {_normalize_arabic(str(item.get(k) or "")).strip() for k in ("degreeName", "degreeAltName")}
         degrees.discard("")
-        if any(wanted == d or wanted in d or (len(d) >= 4 and d in wanted) for d in degrees):
+        if any(set(wanted_stems) <= set(_stems(d)) or (len(d) >= 4 and set(_stems(d)) <= set(wanted_stems))
+               for d in degrees):
             matched.append(item)
     logger.info("_doctors_with_degree: %r -> %d doctor(s)", label, len(matched))
     return [i for i in matched if i.get("hasSlots") is not False]
