@@ -75,3 +75,46 @@ def test_the_patient_lookup_gets_the_full_number():
         tools.get_patient_info.func(state=state, mobile_number="0593719856")
     tools._BOOKING_SESSIONS.pop(_SID, None)
     assert seen == ["+966593719856"]
+
+
+# ----------------------------------------------------------------------
+# A degree asked for where a specialty was expected ("ابي اخصائي نفسي"):
+# the doctors with that degree, and "not available" only when neither
+# a specialty nor a degree matches.
+# ----------------------------------------------------------------------
+
+_ROSTER = {"success": True, "data": {"items": [
+    {"id": "dr-1", "formatedName": "أصيلا الحسن", "altName": "أصيلا الحسن", "degreeName": "أخصائي نفسي",
+     "specialtyName": "علاج نفسي", "hasSlots": True},
+    {"id": "dr-2", "formatedName": "سعد الماضي", "altName": "سعد الماضي", "degreeName": "استشاري طب نفسي",
+     "specialtyName": "طب نفسي", "hasSlots": True},
+]}}
+
+
+def _doctor_state():
+    return {"session_id": _SID, "messages": [], "understanding": None,
+            "templates": {"_timezone": "Asia/Riyadh", "_doctors_base_url": "https://portal.x.test"}}
+
+
+def test_a_degree_finds_the_doctors_with_it():
+    with patch.object(tools.api, "get_doctors", return_value=_ROSTER):
+        assert [d["id"] for d in tools._doctors_with_degree(_doctor_state(), "https://p", "اخصائي نفسي")] == ["dr-1"]
+        assert [d["id"] for d in tools._doctors_with_degree(_doctor_state(), "https://p", "استشاري")] == ["dr-2"]
+        assert tools._doctors_with_degree(_doctor_state(), "https://p", "دكتور") == []
+        assert tools._doctors_with_degree(_doctor_state(), "https://p", "جراحة قلب") == []
+
+
+def test_find_available_doctors_falls_back_to_the_degree():
+    tools._BOOKING_SESSIONS.pop(_SID, None)
+    try:
+        with patch.object(tools, "_sanitize_specialty_ids", return_value=([], ["اخصائي نفسي"])), \
+             patch.object(tools.api, "get_doctors", return_value=_ROSTER):
+            result = tools.find_available_doctors.func(state=_doctor_state(), specialty_ids=["اخصائي نفسي"])
+        assert result["status"] == "found" and result["matched_by"] == "degree"
+        assert [d["id"] for d in result["doctors"]] == ["dr-1"]
+        with patch.object(tools, "_sanitize_specialty_ids", return_value=([], ["جراحة قلب"])), \
+             patch.object(tools.api, "get_doctors", return_value=_ROSTER):
+            missing = tools.find_available_doctors.func(state=_doctor_state(), specialty_ids=["جراحة قلب"])
+        assert missing["status"] == "specialty_not_resolved"
+    finally:
+        tools._BOOKING_SESSIONS.pop(_SID, None)
