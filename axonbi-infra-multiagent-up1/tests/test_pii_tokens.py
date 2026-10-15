@@ -347,3 +347,11 @@ def test_azure_is_masked_too(sid, monkeypatch):
     for value in REAL_VALUES:
         assert value not in text, value
     assert "⟦NAME_" in text
+
+
+def test_the_pii_log_line_does_not_print_the_whatsapp_number(caplog):
+    # The session id is built from the WhatsApp number (2026-10-15).
+    assert pii_vault.safe_session_id("201000625084-DEMO1223=23") == "…5084-DEMO1223=23"
+    with caplog.at_level("INFO"):
+        pii_vault.log_call("201000625084-DEMO1223=23", {"masked": 1, "kinds": {"REF": 1}})
+    assert "201000625084" not in caplog.text and "…5084" in caplog.text
