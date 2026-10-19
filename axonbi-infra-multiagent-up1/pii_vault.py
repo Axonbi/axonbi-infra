@@ -47,11 +47,14 @@ _TTL_SECONDS = 2 * 3600
 
 _FIELD_KINDS = {
     "patientfullname": "NAME", "patient_full_name": "NAME", "patientname": "NAME",
-    "patient_name": "NAME",
+    "patient_name": "NAME", "fullname": "NAME", "full_name": "NAME",
+    "patientfirstname": "NAME", "patientlastname": "NAME",
     "mobilenumber": "PHONE", "mobile_number": "PHONE", "patientmobile": "PHONE",
     "phone": "PHONE", "provided_phone": "PHONE", "channel_phone": "PHONE",
-    "booking_phone": "PHONE",
-    "email": "EMAIL", "patientemail": "EMAIL",
+    "booking_phone": "PHONE", "mobile": "PHONE", "patientphone": "PHONE",
+    "patient_phone": "PHONE", "patient_mobile": "PHONE", "phonenumber": "PHONE",
+    "phone_number": "PHONE", "whatsapp": "PHONE",
+    "email": "EMAIL", "patientemail": "EMAIL", "patient_email": "EMAIL",
     "ref": "REF", "booking_ref": "REF", "bookingrefnum": "REF", "ref_number": "REF",
     "otp": "OTP",
 }

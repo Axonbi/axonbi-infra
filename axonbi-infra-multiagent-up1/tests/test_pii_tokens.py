@@ -272,15 +272,7 @@ def test_pii_debug_logs_what_the_model_received_for_every_conversation(sid, capl
     assert "what the model received" in caplog.text and "⟦NAME_1⟧" in caplog.text
 
 
-def test_the_server_can_turn_it_off(monkeypatch):
-    row = {"client_id": "tanasuq-saudi", "Dialect": "Egyptian", "base_url": "http://booking.test"}
-    monkeypatch.delenv("PII_TOKENS", raising=False)
-    monkeypatch.setenv("PII_TOKENS_OFF_CLIENTS", "rovan, tanasuq-saudi")
-    assert config.get_messages("tanasuq-saudi", client_row_override=row)["_pii_tokens"] is False
-    assert config.get_messages("someone-else", client_row_override={**row, "client_id": "someone-else"})["_pii_tokens"] is True
-    monkeypatch.delenv("PII_TOKENS_OFF_CLIENTS")
-    monkeypatch.setenv("PII_TOKENS", "0")
-    assert config.get_messages("someone-else", client_row_override={**row, "client_id": "someone-else"})["_pii_tokens"] is False
+
 
 
 # ----------------------------------------------------------------------
@@ -304,25 +296,10 @@ def test_a_doctor_called_basem_and_family_words_are_not_names():
     assert pii_vault._names_after_cue("باسم ابني") == []
 
 
-def test_on_for_every_client_unless_turned_off(monkeypatch):
-    import config
-    monkeypatch.delenv("PII_TOKENS", raising=False)
-    monkeypatch.delenv("PII_TOKENS_OFF_CLIENTS", raising=False)
-    assert config.get_messages("x", client_row_override={})["_pii_tokens"] is True
-    assert config.get_messages("x", client_row_override={"pii_tokens": "false"})["_pii_tokens"] is True
-    monkeypatch.setenv("PII_TOKENS_OFF_CLIENTS", "x")
-    assert config.get_messages("x", client_row_override={})["_pii_tokens"] is False
 
 
-def test_the_server_turns_it_on_over_the_n8n_row(monkeypatch):
-    row = {"client_id": "tanasuq-production", "pii_tokens": "false"}
-    monkeypatch.setenv("PII_TOKENS", "0")
-    monkeypatch.delenv("PII_TOKENS_OFF_CLIENTS", raising=False)
-    monkeypatch.setenv("PII_TOKENS_CLIENTS", "tanasuq-production")
-    assert config.get_messages("tanasuq-production", client_row_override=row)["_pii_tokens"] is True
-    assert config.get_messages("other", client_row_override={**row, "client_id": "other"})["_pii_tokens"] is False
-    monkeypatch.setenv("PII_TOKENS_CLIENTS", "*")
-    assert config.get_messages("other", client_row_override={**row, "client_id": "other"})["_pii_tokens"] is True
+
+
 
 
 def test_azure_is_masked_too(sid, monkeypatch):
@@ -355,3 +332,17 @@ def test_the_pii_log_line_does_not_print_the_whatsapp_number(caplog):
     with caplog.at_level("INFO"):
         pii_vault.log_call("201000625084-DEMO1223=23", {"masked": 1, "kinds": {"REF": 1}})
     assert "201000625084" not in caplog.text and "…5084" in caplog.text
+
+
+def test_always_on_and_cannot_be_turned_off(monkeypatch):
+    import config
+    monkeypatch.setenv("PII_TOKENS", "0")
+    monkeypatch.setenv("PII_TOKENS_OFF_CLIENTS", "x")
+    assert config.get_messages("x", client_row_override={"pii_tokens": "false"})["_pii_tokens"] is True
+
+
+def test_patient_field_names_are_known():
+    assert pii_vault._FIELD_KINDS["patient_phone"] == "PHONE"
+    assert pii_vault._FIELD_KINDS["mobile"] == "PHONE"
+    assert pii_vault._FIELD_KINDS["full_name"] == "NAME"
+
