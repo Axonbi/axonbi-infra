@@ -2082,6 +2082,21 @@ def _resolve_booking_guid(state: AgentState, value: Optional[str]) -> dict:
         )
         return {"status": "resolved", "booking_id": resolved}
 
+    # ONE BOOKING ON FILE - there is nothing to choose between. A value
+    # the model could not have got right (a placeholder like `⟦ID_1⟧`
+    # once the id had left its view - tanasuq-production 2026-10-18
+    # 14:55 and 18:45) names that booking or none, and none is never
+    # what a patient confirming a change means.
+    ids = {str(r.get("id")).strip() for r in records if str(r.get("id") or "").strip()}
+    if len(ids) == 1:
+        only = next(iter(ids))
+        logger.warning(
+            "_resolve_booking_guid: %r is no id this conversation saw, but it "
+            "looked up exactly one booking - using id=%s (session_id=%s)",
+            wanted, only, state.get("session_id"),
+        )
+        return {"status": "resolved", "booking_id": only}
+
     logger.warning(
         "_resolve_booking_guid: %r matches no booking any lookup returned in "
         "this conversation (session_id=%s, %d record(s) on file)",

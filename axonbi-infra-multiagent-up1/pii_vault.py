@@ -3,6 +3,8 @@ PATIENT DATA REACHES THE MODEL AS PLACEHOLDERS (per client, `pii_tokens`).
 
 The patient's name, phone numbers, email, booking references and OTP codes
 are replaced by tokens - ⟦NAME_1⟧, ⟦PHONE_1⟧, ⟦EMAIL_1⟧, ⟦REF_1⟧, ⟦OTP_1⟧ -
+and so is a booking's internal id (⟦ID_1⟧), which the model must pass back
+to reschedule or cancel it -
 in the COPY of the conversation sent to the model, and put back in what the
 model returns (its reply text and its tool-call arguments) the moment it
 returns. Everything else - the graph state, the tools, the verifiers, the
@@ -54,11 +56,12 @@ _FIELD_KINDS = {
     "email": "EMAIL", "patientemail": "EMAIL",
     "ref": "REF", "booking_ref": "REF", "bookingrefnum": "REF", "ref_number": "REF",
     "otp": "OTP",
+    "booking_id": "ID", "bookingid": "ID",
 }
 
-_TOKEN_RE = re.compile(r"⟦(NAME|PHONE|EMAIL|REF|OTP)_(\d+)⟧")
+_TOKEN_RE = re.compile(r"⟦(NAME|PHONE|EMAIL|REF|OTP|ID)_(\d+)⟧")
 # The same token with its brackets dropped by the model.
-_BARE_TOKEN_RE = re.compile(r"(?<![\w⟦])(NAME|PHONE|EMAIL|REF|OTP)_(\d+)(?![\w⟧])")
+_BARE_TOKEN_RE = re.compile(r"(?<![\w⟦])(NAME|PHONE|EMAIL|REF|OTP|ID)_(\d+)(?![\w⟧])")
 
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 _REF_RE = re.compile(r"(?<![\w-])[A-Za-z]{2,}(?:-[A-Za-z0-9]+)*-\d[A-Za-z0-9-]*\d(?![\w])")
@@ -242,8 +245,19 @@ def _text(content) -> str:
     return str(content or "")
 
 
+def _is_booking_record(data: dict) -> bool:
+    """A booking as a lookup returns it: its own id next to its reference."""
+
+    return bool(data.get("id")) and bool(data.get("ref") or data.get("bookingRefNum"))
+
+
 def _walk_fields(vault: dict, data) -> None:
     if isinstance(data, dict):
+        # A booking's `id` is the GUID reschedule/cancel need back - kept
+        # behind a token like the reference beside it. Any other `id`
+        # (doctor, branch, slot) is left alone.
+        if _is_booking_record(data) and isinstance(data.get("id"), str):
+            _register(vault, "ID", data["id"])
         for key, value in data.items():
             kind = _FIELD_KINDS.get(str(key).lower())
             if kind and isinstance(value, str):
