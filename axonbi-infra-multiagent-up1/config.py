@@ -1316,17 +1316,19 @@ def get_messages(client_id: str, dialect: Optional[str] = None, client_row_overr
          or (client_row.get("cms_base_url") or "").strip())
         and os.getenv("BOOKING_ON_CMS", "1").strip() != "0"
     )
-    # PATIENT DATA AS PLACEHOLDERS FOR THE MODEL - see pii_vault.py. Per
-    # client, from its n8n row: `pii_tokens` true/1 turns it on;
-    # `pii_debug` true/1 logs what the model received, on every call - for a
-    # test flow only.
-    # PII_TOKENS_CLIENTS (comma-separated client ids) turns it on from the
-    # server too, for a row whose column does not reach us.
-    merged["_pii_tokens"] = (
-        str(client_row.get("pii_tokens") or "").strip().lower() in ("1", "true", "yes", "on")
-        or str(client_id or "").strip() in {
-            c.strip() for c in os.getenv("PII_TOKENS_CLIENTS", "").split(",") if c.strip()
-        }
+    # PATIENT DATA AS PLACEHOLDERS FOR THE MODEL - see pii_vault.py. Decided
+    # on the SERVER only, from the environment - the n8n row's `pii_tokens`
+    # is not read (2026-10-15). ON for every client unless:
+    #   PII_TOKENS=0                     off for everyone
+    #   PII_TOKENS_OFF_CLIENTS=a,b       off for these client ids
+    # PII_TOKENS_CLIENTS=a,b (or "*") is always on, whatever PII_TOKENS says.
+    # `pii_debug` true/1 in the n8n row logs what the model received, on
+    # every call - for a test flow only.
+    _client = str(client_id or "").strip()
+    _forced_on = {c.strip() for c in os.getenv("PII_TOKENS_CLIENTS", "").split(",") if c.strip()}
+    _off = {c.strip() for c in os.getenv("PII_TOKENS_OFF_CLIENTS", "").split(",") if c.strip()}
+    merged["_pii_tokens"] = ("*" in _forced_on or _client in _forced_on) or not (
+        os.getenv("PII_TOKENS", "1").strip() == "0" or _client in _off
     )
     merged["_pii_debug"] = str(client_row.get("pii_debug") or "").strip().lower() in ("1", "true", "yes", "on")
     # SSO account for cms-api, also per client. Keys are named after the env

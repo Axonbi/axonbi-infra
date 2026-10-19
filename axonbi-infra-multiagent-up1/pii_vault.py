@@ -79,6 +79,46 @@ _NOT_NAME_WORDS = {
     "what", "why", "how", "my", "name", "is",
 }
 
+# A NAME THE PATIENT GIVES UNASKED, after the word that introduces it:
+# "الساعة ٤ باسم فاطمة العمري" (tanasuq-production, 2026-10-12 14:37) went
+# to the model as written. The words after one of these, up to the first
+# word that is not part of a name, are the name.
+_NAME_CUE_RE = re.compile(
+    r"(?:^|\s)(?:باسم|بإسم|بأسم|على اسم|علي اسم|عاسم|اسمي|إسمي|أسمي|"
+    r"اسم المريض|اسم المريضة|اسم المريضه|"
+    r"my name is|name is|under the name|in the name of)\s+",
+    re.IGNORECASE,
+)
+_NAME_STOP_WORDS = _NOT_NAME_WORDS | {
+    "و", "او", "أو", "يوم", "الساعة", "الساعه", "بكرة", "بكره", "اليوم", "مع", "عند", "في",
+    "من", "الى", "إلى", "على", "علي", "رقم", "رقمي", "جوالي", "and", "at", "on", "with", "for",
+    "ابني", "ابنى", "بنتي", "بنتى", "ابنتي", "زوجتي", "زوجي", "امي", "أمي", "ابوي", "أبوي", "والدي",
+    "والدتي", "اخوي", "أخوي", "اخي", "أخي", "اختي", "أختي", "الطفل", "المريض", "المريضة",
+}
+
+
+def _names_after_cue(text: str) -> list:
+    """Each name the patient introduced with a cue word, as written."""
+
+    names = []
+    for cue in _NAME_CUE_RE.finditer(text or ""):
+        # "باسم" is also a first name: "دكتور باسم يوسف" names a doctor.
+        before = text[:cue.start()].split()
+        if before and before[-1].strip(".").lower() in ("دكتور", "الدكتور", "د", "دكتوره", "دكتورة", "dr", "doctor"):
+            continue
+        words = []
+        for word in text[cue.end():].split():
+            bare = word.strip("،,.!؟?:؛")
+            if not bare or not bare.isalpha() or bare.lower() in _NAME_STOP_WORDS:
+                break
+            words.append(bare)
+            if len(words) == 4 or bare != word:
+                break
+        if words:
+            names.append(" ".join(words))
+    return names
+
+
 _current = contextvars.ContextVar("pii_vault_session", default=None)
 _lock = threading.Lock()
 _VAULTS: dict = {}
@@ -238,6 +278,8 @@ def _observe_patient_text(vault: dict, text: str, history: list) -> None:
     if (asked_for_name and 2 <= len(words) <= 6 and all(w.isalpha() for w in words)
             and not any(w.lower() in _NOT_NAME_WORDS for w in words)):
         _register(vault, "NAME", text.strip())
+    for name in _names_after_cue(text):
+        _register(vault, "NAME", name)
 
 
 def observe(vault: dict, messages: list) -> None:
@@ -398,8 +440,21 @@ def unmask_output(vault: dict, message, stats: dict):
     return message.model_copy(update=update) if update else message
 
 
+_LONG_DIGITS_RE = re.compile(r"\d{5,}")
+
+
+def safe_session_id(session_id) -> str:
+    """The session id with the phone number in it cut to its last four
+    digits - "201000625084-DEMO1223=23" -> "…5084-DEMO1223=23". The session
+    id is built from the WhatsApp number, and a line that reports what was
+    hidden from the model must not print the number itself (2026-10-15)."""
+
+    return _LONG_DIGITS_RE.sub(lambda m: "…" + m.group(0)[-4:], str(session_id or ""))
+
+
 def log_call(session_id: str, stats: dict, masked_input=None, debug: bool = False) -> None:
     kinds = ", ".join(f"{k}×{n}" for k, n in sorted((stats.get("kinds") or {}).items()))
+    session_id = safe_session_id(session_id)
     logger.info(
         "pii[%s]: masked=%d (%s) unmasked=%d unknown=%d leaks=%d",
         session_id, stats.get("masked", 0), kinds or "-", stats.get("unmasked", 0),

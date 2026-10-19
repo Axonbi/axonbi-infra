@@ -187,15 +187,18 @@ def test_a_phone_in_an_unexpected_field_is_masked_and_counted(sid):
 
 
 # ----------------------------------------------------------------------
-# The n8n row turns it on
+# On for every client; the n8n row can turn it off (2026-10-15)
 # ----------------------------------------------------------------------
 
-@pytest.mark.parametrize("value,expected", [("true", True), ("1", True), ("", False), ("false", False), (None, False)])
-def test_the_n8n_column_turns_it_on(value, expected):
+@pytest.mark.parametrize("value", ["true", "1", "", None, "false", "0", "off"])
+def test_the_n8n_column_is_not_read(value, monkeypatch):
+    monkeypatch.delenv("PII_TOKENS", raising=False)
+    monkeypatch.delenv("PII_TOKENS_OFF_CLIENTS", raising=False)
+    monkeypatch.delenv("PII_TOKENS_CLIENTS", raising=False)
     row = {"client_id": "rovan-test", "Dialect": "Egyptian", "base_url": "http://booking.test"}
     if value is not None:
         row["pii_tokens"] = value
-    assert config.get_messages("rovan-test", client_row_override=row)["_pii_tokens"] is expected
+    assert config.get_messages("rovan-test", client_row_override=row)["_pii_tokens"] is True
 
 
 # ----------------------------------------------------------------------
@@ -269,10 +272,86 @@ def test_pii_debug_logs_what_the_model_received_for_every_conversation(sid, capl
     assert "what the model received" in caplog.text and "⟦NAME_1⟧" in caplog.text
 
 
-def test_the_server_can_turn_it_on_for_a_client_whose_column_does_not_arrive(monkeypatch):
+def test_the_server_can_turn_it_off(monkeypatch):
     row = {"client_id": "tanasuq-saudi", "Dialect": "Egyptian", "base_url": "http://booking.test"}
-    monkeypatch.setenv("PII_TOKENS_CLIENTS", "rovan, tanasuq-saudi")
-    assert config.get_messages("tanasuq-saudi", client_row_override=row)["_pii_tokens"] is True
-    assert config.get_messages("someone-else", client_row_override={**row, "client_id": "someone-else"})["_pii_tokens"] is False
-    monkeypatch.delenv("PII_TOKENS_CLIENTS")
+    monkeypatch.delenv("PII_TOKENS", raising=False)
+    monkeypatch.setenv("PII_TOKENS_OFF_CLIENTS", "rovan, tanasuq-saudi")
     assert config.get_messages("tanasuq-saudi", client_row_override=row)["_pii_tokens"] is False
+    assert config.get_messages("someone-else", client_row_override={**row, "client_id": "someone-else"})["_pii_tokens"] is True
+    monkeypatch.delenv("PII_TOKENS_OFF_CLIENTS")
+    monkeypatch.setenv("PII_TOKENS", "0")
+    assert config.get_messages("someone-else", client_row_override={**row, "client_id": "someone-else"})["_pii_tokens"] is False
+
+
+# ----------------------------------------------------------------------
+# A name given unasked, after the word that introduces it (tanasuq
+# 2026-10-12 14:37: "الساعة ٤ باسم فاطمة العمري" reached the model as written)
+# ----------------------------------------------------------------------
+
+def test_a_name_after_a_cue_word_is_masked():
+    import pii_vault
+    assert pii_vault._names_after_cue("الساعة ٤ باسم فاطمة العمري") == ["فاطمة العمري"]
+    assert pii_vault._names_after_cue("احجز على اسم محمد عبدالله يوم الخميس") == ["محمد عبدالله"]
+    assert pii_vault._names_after_cue("اسمي سارة.") == ["سارة"]
+    vault = {"values": {}, "tokens": {}, "counts": {}}
+    pii_vault._observe_patient_text(vault, "الساعة ٤ باسم فاطمة العمري", [])
+    assert "فاطمة العمري" in vault["values"]
+
+
+def test_a_doctor_called_basem_and_family_words_are_not_names():
+    import pii_vault
+    assert pii_vault._names_after_cue("دكتور باسم يوسف") == []
+    assert pii_vault._names_after_cue("باسم ابني") == []
+
+
+def test_on_for_every_client_unless_turned_off(monkeypatch):
+    import config
+    monkeypatch.delenv("PII_TOKENS", raising=False)
+    monkeypatch.delenv("PII_TOKENS_OFF_CLIENTS", raising=False)
+    assert config.get_messages("x", client_row_override={})["_pii_tokens"] is True
+    assert config.get_messages("x", client_row_override={"pii_tokens": "false"})["_pii_tokens"] is True
+    monkeypatch.setenv("PII_TOKENS_OFF_CLIENTS", "x")
+    assert config.get_messages("x", client_row_override={})["_pii_tokens"] is False
+
+
+def test_the_server_turns_it_on_over_the_n8n_row(monkeypatch):
+    row = {"client_id": "tanasuq-production", "pii_tokens": "false"}
+    monkeypatch.setenv("PII_TOKENS", "0")
+    monkeypatch.delenv("PII_TOKENS_OFF_CLIENTS", raising=False)
+    monkeypatch.setenv("PII_TOKENS_CLIENTS", "tanasuq-production")
+    assert config.get_messages("tanasuq-production", client_row_override=row)["_pii_tokens"] is True
+    assert config.get_messages("other", client_row_override={**row, "client_id": "other"})["_pii_tokens"] is False
+    monkeypatch.setenv("PII_TOKENS_CLIENTS", "*")
+    assert config.get_messages("other", client_row_override={**row, "client_id": "other"})["_pii_tokens"] is True
+
+
+def test_azure_is_masked_too(sid, monkeypatch):
+    # tanasuq-production runs on Azure: the Azure client was a plain
+    # AzureChatOpenAI, so nothing was ever masked there (2026-10-15).
+    from langchain_openai import AzureChatOpenAI
+    monkeypatch.setattr(graph.config, "LLM_PROVIDER", "azure")
+    monkeypatch.setattr(graph.config, "AZURE_OPENAI_ENDPOINT", "https://x.openai.azure.com", raising=False)
+    monkeypatch.setattr(graph.config, "AZURE_OPENAI_API_VERSION", "2024-08-01-preview", raising=False)
+    seen = []
+
+    def fake_network(self, input, config=None, *, stop=None, **kwargs):
+        seen.append(input)
+        return AIMessage(content="تمام")
+
+    pii_vault.begin_turn(sid, ON, CHANNEL, [], None)
+    llm = graph._make_llm("gpt-4.1-mini")
+    assert isinstance(llm, graph._PiiMasking)
+    with patch.object(AzureChatOpenAI, "invoke", fake_network):
+        llm.bind_tools([]).invoke(_conversation())
+    text = _everything(seen[0])
+    for value in REAL_VALUES:
+        assert value not in text, value
+    assert "⟦NAME_" in text
+
+
+def test_the_pii_log_line_does_not_print_the_whatsapp_number(caplog):
+    # The session id is built from the WhatsApp number (2026-10-15).
+    assert pii_vault.safe_session_id("201000625084-DEMO1223=23") == "…5084-DEMO1223=23"
+    with caplog.at_level("INFO"):
+        pii_vault.log_call("201000625084-DEMO1223=23", {"masked": 1, "kinds": {"REF": 1}})
+    assert "201000625084" not in caplog.text and "…5084" in caplog.text

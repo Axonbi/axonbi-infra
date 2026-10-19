@@ -76,13 +76,18 @@ logger = logging.getLogger(__name__)
 # UNCHANGED from the old project
 # ==========================================================
 
-class _PiiMaskingChatOpenAI(ChatOpenAI):
-    """ChatOpenAI that, for a client with `pii_tokens` on, sends the model
-    placeholders instead of patient data and puts the real values back in
-    what it returns - see pii_vault.py. Every binding (`bind_tools`,
-    `bind`) ends in this `invoke`, so the main turn, verifier retries,
-    forced tool calls, understanding and the router all go through it.
-    With the feature off it is plain ChatOpenAI."""
+class _PiiMasking:
+    """For a client with `pii_tokens` on, the model is sent placeholders
+    instead of patient data and the real values are put back in what it
+    returns - see pii_vault.py. Every binding (`bind_tools`, `bind`) ends
+    in this `invoke`, so the main turn, verifier retries, forced tool
+    calls, understanding and the router all go through it. With the
+    feature off it is the plain client.
+
+    A MIXIN, ON EVERY PROVIDER. It used to be a ChatOpenAI subclass only,
+    and the Azure branch built a plain AzureChatOpenAI: on
+    tanasuq-production (Azure) nothing was ever masked and no `pii[` line
+    was ever logged (2026-10-15)."""
 
     def invoke(self, input, config=None, *, stop=None, **kwargs):
         vault = pii_vault.active_vault()
@@ -94,6 +99,14 @@ class _PiiMaskingChatOpenAI(ChatOpenAI):
         restored = pii_vault.unmask_output(vault, response, stats)
         pii_vault.log_call(pii_vault._current.get(), stats, masked, debug=vault.get("debug"))
         return restored
+
+
+class _PiiMaskingChatOpenAI(_PiiMasking, ChatOpenAI):
+    pass
+
+
+class _PiiMaskingAzureChatOpenAI(_PiiMasking, AzureChatOpenAI):
+    pass
 
 
 def _make_llm(model: str, **kwargs):
@@ -112,7 +125,7 @@ def _make_llm(model: str, **kwargs):
         # names the tenant created in the Azure portal - so `model`
         # (OPENAI_MODEL / _CHEAP / _BY_AGENT / _UNDERSTANDING holds a
         # deployment name here) is passed as `azure_deployment`.
-        return AzureChatOpenAI(
+        return _PiiMaskingAzureChatOpenAI(
             azure_deployment=model,
             azure_endpoint=config.AZURE_OPENAI_ENDPOINT,
             api_version=config.AZURE_OPENAI_API_VERSION,

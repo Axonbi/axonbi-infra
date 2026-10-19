@@ -75,6 +75,7 @@ TEST_FILES=(
   tests/test_pii_tokens.py
   tests/test_oursms_otp.py
   tests/test_production_log_1014.py
+  tests/test_production_log_1015.py
 )
 
 RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; DIM=$'\033[2m'; OFF=$'\033[0m'
