@@ -20328,6 +20328,20 @@ _COMPACT_MAX_ITEMS = 6
 _COMPACT_MIN_CHARS = 400
 
 
+def _compact_booking_id(item: dict) -> str:
+    """A looked-up booking keeps its `id` through compaction.
+
+    tanasuq-production 2026-10-18 14:55 and 18:45: the lookup was three
+    turns back, its `id` had been shortened away, and at the patient's
+    final "نعم" the model had no id to reschedule with - it wrote
+    `⟦ID_1⟧` and the change was refused. Only a booking (an `id` beside
+    its reference) keeps it; doctor, branch and slot ids still go."""
+
+    if item.get("id") and (item.get("ref") or item.get("bookingRefNum")):
+        return f" (id={item['id']})"
+    return ""
+
+
 def _compact_tool_payload(raw: str) -> str:
     """A short, readable stand-in for an OLD tool result.
 
@@ -20380,7 +20394,7 @@ def _compact_tool_payload(raw: str) -> str:
                 if isinstance(item, dict):
                     for field in _COMPACT_KEEP_KEYS:
                         if item.get(field):
-                            names.append(str(item[field]).strip())
+                            names.append(str(item[field]).strip() + _compact_booking_id(item))
                             break
                 elif isinstance(item, str) and item.strip():
                     names.append(item.strip())
@@ -20393,6 +20407,8 @@ def _compact_tool_payload(raw: str) -> str:
 
         elif isinstance(value, dict):
             inner = [f"{f}={value[f]}" for f in _COMPACT_KEEP_KEYS if value.get(f)]
+            if inner and _compact_booking_id(value):
+                inner.append(f"id={value['id']}")
             if inner:
                 parts.append(f"{key}: " + ", ".join(inner))
 
