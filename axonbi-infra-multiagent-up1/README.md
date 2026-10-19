@@ -44,6 +44,31 @@ documented in the rest of this file.
 
 **`OPENAI_API_KEY` is now mandatory**, not optional. The previous hybrid design could run with zero LLM calls (heuristics did everything); this one cannot - the LLM makes every decision, so without a real key the agent cannot function at all, in local dev, on Railway, or anywhere else.
 
+## Durable conversation memory (CHECKPOINT_DB)
+
+By default the graph keeps conversations in a `MemorySaver`, i.e. in
+process memory: every container restart and every redeploy from git
+wiped all in-progress conversations, and a patient mid-booking started
+over. Set `CHECKPOINT_DB=/path/to/checkpoints.sqlite` and two things
+move into that SQLite file instead:
+
+- the LangGraph checkpointer (`graph.py` -> `SqliteSaver`), so each
+  thread's history survives restarts;
+- the per-session bookkeeping `main.py` uses to pick the thread
+  (`session_store.py`: last activity, post-success marker, generation),
+  so a returning session continues the conversation that was actually
+  in progress rather than falling back to its first one.
+
+Unset, nothing changes: tests and local runs stay in-memory. The file
+never shrinks on its own - run `python prune_checkpoints.py --days 7`
+from a daily cron (on the Bridge server it runs inside the api
+container against the mounted `/app/state` volume).
+
+Not persisted on purpose: `tools._BOOKING_SESSIONS` (confirmed doctor,
+verified phone numbers, six-hour TTL) and the duplicate-message guards.
+After a restart those rebuild as the tools run again; the history itself
+is intact.
+
 ## API contract change (n8n needs to know this)
 
 The old `/chat` response had `status`/`interrupt`/`appointments` fields for n8n to branch on. **That's gone.** The new contract is just:
