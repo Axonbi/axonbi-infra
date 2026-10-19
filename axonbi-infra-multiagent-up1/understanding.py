@@ -96,18 +96,18 @@ Return ONLY a JSON object with these keys:
 "intent": what the patient wants to happen next -
   booking: a new appointment, a doctor's available times, or continuing a booking in progress
   cancel: cancel an existing appointment - they no longer want it
-  reschedule: move an existing appointment - they want another day/time. Changing or renewing a PRESCRIPTION or medication ("تعديل الوصفة", "تجديد صرف الدواء") is not an appointment - that is human
+  reschedule: move an existing appointment - they want another day/time. Changing or renewing a PRESCRIPTION or medication ("تعديل الوصفة", "تجديد الدواء", "خلصت أدويتي") is not an appointment - that is human
   medical: a symptom, injury or health worry, or which doctor/specialty suits them
   faq: information for a PATIENT about the hospital's care (services, prices, branches, hours, insurance, visiting hours or visiting a patient staying there ("مواعيد الزيارة" is visiting, not appointments), a named doctor's background, the therapies offered such as CBT/DBT)
   complaint: file a complaint or suggestion - including that something was already done to their appointment ("لغيتوا موعدي", "the AI cancelled it"), which is not a request to cancel
-  human: talk to a real person / staff / customer service - including a bare "موظف" (or misspelt "موضف") or "التحدث"; and anything only staff can do, such as changing or renewing a prescription
+  human: talk to a real person / staff / customer service - including a bare "موظف" (or misspelt "موضف") or "التحدث"; and anything only staff can do, such as changing or renewing a prescription or preparing a medical report or sick leave ("ابي التقرير الطبي" is not a symptom)
   answer: replies to the assistant's question but you cannot tell which flow it moves forward
   greeting: only a greeting or thanks
   other: anything else - including things that are not patient care: jobs, training, interviews, suppliers, business
   An answer's intent is the flow it moves forward: yes to "shall I book you with Dr X?" is booking, to "cancel it?" is cancel, to "connect you with customer service?" is human.
   A no moves nothing forward: a bare refusal ("لا", "لا خلاص", "مش عايز") is intent "answer", declines true - not the topic's flow, not a cancellation. A no that also asks for something ("لا، السبت", "لا، عايز الدكتور عبدالله") takes that request's intent and values, declines true.
 "confidence": 0.0-1.0 for intent. ALWAYS give it - the examples below leave keys out only to stay short.
-"is_ambiguous": true only if it could mean different intents and neither STATE nor the conversation settles it; then "alternatives": the 2-3 plausible intents, else []. Two cases that are ALWAYS ambiguous unless the conversation already says which: "الموعد" with nothing before it; and being unable to make an appointment without saying whether to cancel it or move it ("مش هقدر اجي", "can't make it") -> intent "cancel", is_ambiguous true, alternatives ["cancel", "reschedule"], confidence at most 0.5.
+"is_ambiguous": true only if it could mean different intents and neither STATE nor the conversation settles it; then "alternatives": the 2-3 plausible intents, else []. Two cases that are ALWAYS ambiguous unless the conversation already says which: "الموعد" with nothing before it; and being unable to make an appointment, being late or delayed, or apologising for it, without saying whether to cancel it or move it ("مش هقدر اجي", "can't make it", "متأخر", "اعتذر") -> intent "cancel", is_ambiguous true, alternatives ["cancel", "reschedule"], confidence at most 0.5.
 "answer_to_previous_question": it replies to the assistant's previous message.
 "changes_intent": the patient deliberately leaves the current flow (STATE.flow) for a different request.
 "confirms": clearly says yes to what the assistant's previous message asked to confirm or approve. Never true together with declines. "ايه" / "إيه" without "؟" answering a yes/no question is yes in Saudi/Gulf Arabic (STATE.dialect).
@@ -116,11 +116,11 @@ Return ONLY a JSON object with these keys:
 "cancel_request": this message asks for an existing appointment to be cancelled. Saying it WAS cancelled is not.
 "cancel_confirmed": ONLY when the previous message asked to confirm cancelling a specific appointment and this clearly says yes. "تم تاكيد الموعد مسبقا" (already confirmed) is not.
 "crisis": suicidal thoughts, wanting to die or "end it", self-harm, or danger to self or others, direct or indirect, including someone with them. Anxiety, sadness, insomnia or asking for a psychiatrist are not.
-"wants_options": cannot choose or does not know (which doctor, which specialty, which day), asks to be shown everything that is available, or asks for other choices, in any wording ("مش عارف", "اعرض لي الكل", "غيره", "what do you have?"). False when they simply name or pick something.
+"wants_options": cannot choose or does not know (which doctor, which specialty, which day), asks to be shown everything that is available, or asks for other choices, in any wording ("مش عارف", "اعرض لي الكل", "غيره", "دكتور ثاني" even misspelled "ثامي", "what do you have?"). False when they simply name or pick something.
 "asks_price": asks about a price, fee or cost.
-"asks_location": asks where a branch is, its address, map or location pin ("ارسلي اللوكيشن"), or which branch is nearest to a place.
+"asks_location": asks where a branch is, its address, map or location pin ("ارسلي اللوكيشن"), or which branch is nearest to a place; also lost on the way there ("ضيعت اللفة/الدخلة", "تهت") - faq, never medical.
 "about_this_hospital": only for intent "other" - true when it concerns THIS hospital although it is not patient care (a job, training, an interview, a supplier, administration); false when it has nothing to do with the hospital (a party, event tickets, food prices, general chat).
-"doctor_name": a doctor's PERSONAL name as used - not the patient's own name ("الموعد لحاتم العنزي" names the patient) (or the doctor referred back to, e.g. "الدكتور اللي قولتي عليه"), else null. "دكتور نفسي" / "دكتور عيون" name a specialty.
+"doctor_name": a doctor's PERSONAL name as used - not the patient's own name ("الموعد لحاتم العنزي", "باسم فاطمة العمري" name the patient) (or the doctor referred back to, e.g. "الدكتور اللي قولتي عليه"), else null. "دكتور نفسي" / "دكتور عيون" name a specialty.
 "specialty": the specialty, department or service referred to, in the patient's words, else null.
 "entities": {{"branch", "date", "time", "booking_reference", "phone", "service", "topic"}} - values this message gives, as written ("بكرة" stays "بكرة"), else null. "topic" only for a request outside patient care: 1-3 words naming it in the patient's language (e.g. "التدريب").
 "reason": at most 8 words, for internal logs.
@@ -130,7 +130,7 @@ EXAMPLES (the pattern, not the words - other keys omitted):
 - ASSISTANT: "هل تريد إلغاء الموعد؟" / PATIENT: "أكيد" -> {{"intent": "cancel", "answer_to_previous_question": true, "confirms": true, "cancel_confirmed": true}}
 - ASSISTANT: "تحب أدور لك على دكتور ثاني؟" / PATIENT: "لا" -> {{"intent": "answer", "answer_to_previous_question": true, "declines": true}}
 - ASSISTANT: "عندك دكتور أو تخصص معيّن في بالك؟" / PATIENT: "المديفر" -> {{"intent": "booking", "answer_to_previous_question": true, "doctor_name": "المديفر"}} (a bare name or surname answering "which doctor?" is a doctor, never a symptom)
-- nothing asked yet / PATIENT: "ابي اعرف موعدي" -> {{"intent": "answer", "cancel_request": false}} (seeing an appointment is not cancelling or moving it)
+- nothing asked yet / PATIENT: "ابي اعرف موعدي" / "وصلني اتصال بالغاء الموعد، عندي موعد اليوم؟" -> {{"intent": "answer", "cancel_request": false}} (seeing or checking an appointment is not cancelling it)
 - ASSISTANT: "تحب نجرب يوم ثاني؟" / PATIENT: "لا خلاص ثبت موعدي" -> {{"intent": "answer", "answer_to_previous_question": true, "declines": true, "confirms": false}}
 - ASSISTANT: "عندك دكتور أو تخصص معيّن؟" / PATIENT: "لا، زيارة مريض" -> {{"intent": "faq", "declines": true, "changes_intent": true, "about_this_hospital": true}}
 - nothing asked yet / PATIENT: "ابغى اعرف عن اصيلا والعنود" -> {{"intent": "faq", "doctor_name": "اصيلا، العنود"}} (first names of doctors, not branches)
@@ -138,7 +138,7 @@ EXAMPLES (the pattern, not the words - other keys omitted):
 - ASSISTANT: "وش المشكلة اللي تحس فيها؟" / PATIENT: "موضف" -> {{"intent": "human", "wants_human": true}}
 - ASSISTANT: "تحب تضيف بريدك الإلكتروني؟ (اختياري)" / PATIENT: "لا" -> {{"intent": "booking", "answer_to_previous_question": true, "declines": false}} (no email - the booking goes on)
 - nothing asked yet / PATIENT: "مش هقدر احضر الموعد" -> {{"intent": "cancel", "is_ambiguous": true, "alternatives": ["cancel", "reschedule"], "confidence": 0.5, "declines": false}}
-- ASSISTANT: "تحب نلغي الموعد، ولا نأجله ليوم تاني؟" / PATIENT: "خليه الأسبوع الجاي" -> {{"intent": "reschedule", "answer_to_previous_question": true, "is_ambiguous": false}}
+- nothing asked yet / PATIENT: "يبغالي ١٠ دقايق" -> {{"intent": "cancel", "is_ambiguous": true, "alternatives": ["cancel", "reschedule"], "confidence": 0.5, "cancel_request": false}}
 
 STATE: {state}
 

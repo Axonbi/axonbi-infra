@@ -34,6 +34,16 @@ from config import (
     DOCTORS_API_MAX_RETRIES,
     DOCTORS_API_RETRY_BACKOFF_SECONDS,
     REQUEST_TIMEOUT_SECONDS,
+    SMSMISR_BASE_URL,
+    SMSMISR_ENVIRONMENT,
+    SMSMISR_PASSWORD,
+    SMSMISR_SENDER,
+    SMSMISR_TEMPLATE,
+    SMSMISR_USERNAME,
+    OURSMS_BASE_URL,
+    OURSMS_BODY,
+    OURSMS_SENDER,
+    OURSMS_TOKEN,
     SSO_EMAIL,
     SSO_LOGIN_URL,
     SSO_ORGANIZATION_ID,
@@ -635,6 +645,104 @@ def authentica_verify_otp(phone: str, otp: str, email: str = "") -> dict:
 
 
 # ==========================================================
+# SMS Misr OTP API. Only used when config.OTP_PROVIDER == "smsmisr".
+# The provider just delivers the code we hand it - generation and
+# verification both happen in tools.py.
+# ==========================================================
+
+def oursms_send_otp(phone: str, otp: str) -> dict:
+    """Deliver `otp` by OurSMS (api.oursms.com/msgs/sms). Success is a list
+    whose job has accepted >= 1 and rejected == 0."""
+
+    if not (OURSMS_TOKEN and OURSMS_SENDER):
+        logger.error("OurSMS send_otp: OURSMS_TOKEN / OURSMS_SENDER are not configured")
+        return _result(False, error="not_configured")
+
+    payload = {
+        "src": OURSMS_SENDER,
+        # International number without "+" (9665...).
+        "dests": [str(phone).lstrip("+")],
+        "body": OURSMS_BODY.replace("{code}", str(otp)),
+        "msgClass": "transactional",
+        "validity": 5,
+        "dlr": 1,
+    }
+    headers = {"Authorization": f"Bearer {OURSMS_TOKEN}", "Content-Type": "application/json"}
+
+    # Single attempt: a retry after a slow-but-delivered request would text
+    # the patient two different codes. Never log the payload or headers.
+    response, last_timeout, last_exc = _request_once("post", OURSMS_BASE_URL, json=payload, headers=headers)
+    if response is None:
+        if last_timeout:
+            return _result(False, error="timeout")
+        return _result(False, error=str(last_exc) if last_exc else "request_failed")
+
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    job = body[0] if isinstance(body, list) and body else (body if isinstance(body, dict) else {})
+
+    if response.status_code >= 400 or not (int(job.get("accepted") or 0) >= 1 and int(job.get("rejected") or 0) == 0):
+        logger.error("OurSMS send_otp not accepted phone=%s status=%s body=%s",
+                     phone, response.status_code, response.text[:500])
+        reason = job.get("enNotes") or job.get("statusDesc") or job.get("message") or response.text[:300]
+        return _result(False, response.status_code, error="send_otp_failed", details=[str(reason)])
+
+    return _result(True, response.status_code, data=job)
+
+
+def smsmisr_send_otp(phone: str, otp: str) -> dict:
+    if not (SMSMISR_USERNAME and SMSMISR_PASSWORD and SMSMISR_SENDER and SMSMISR_TEMPLATE):
+        logger.error("SMS Misr send_otp: SMSMISR_* credentials are not configured")
+        return _result(False, error="not_configured")
+
+    params = {
+        "environment": SMSMISR_ENVIRONMENT,
+        "username": SMSMISR_USERNAME,
+        "password": SMSMISR_PASSWORD,
+        "sender": SMSMISR_SENDER,
+        # SMS Misr wants the international number without "+" (2010...).
+        "mobile": str(phone).lstrip("+"),
+        "template": SMSMISR_TEMPLATE,
+        "otp": otp,
+    }
+
+    # POST with the parameters in the query string (curl -X POST -G).
+    # Single attempt on purpose: a retry after a slow-but-delivered request
+    # would text the patient two different codes.
+    response, last_timeout, last_exc = _request_once("post", SMSMISR_BASE_URL, params=params)
+
+    if response is None:
+        if last_timeout:
+            return _result(False, error="timeout")
+        return _result(False, error=str(last_exc) if last_exc else "request_failed")
+
+    # Never log `params` - it carries the account credentials and the code.
+    if response.status_code >= 400:
+        logger.error("SMS Misr send_otp rejected phone=%s status=%s body=%s",
+                     phone, response.status_code, response.text[:500])
+        return _result(False, response.status_code, error="send_otp_failed",
+                       details=[response.text[:300]])
+
+    try:
+        body = response.json()
+    except ValueError:
+        body = {}
+
+    # SMS Misr answers HTTP 200 for failures too. The OTP API's success
+    # reply is {"Code":"4901","SMSID":...,"Cost":...} (capital C; 1901 is
+    # the plain SMS API's code, not this one).
+    code = str({k.lower(): v for k, v in body.items()}.get("code", "")).strip()
+    if code != "4901":
+        logger.error("SMS Misr send_otp not accepted phone=%s body=%s", phone, response.text[:500])
+        return _result(False, response.status_code, error="send_otp_failed",
+                       details=[response.text[:300]])
+
+    return _result(True, response.status_code, data=body)
+
+
+# ==========================================================
 # Doctors / Specialties API (Medical Concierge feature)
 # ==========================================================
 #
@@ -1014,10 +1122,36 @@ def get_doctor_schedule_slots(
         payload["branchIds"] = branch_ids
 
     if _cms_sso_for(base_url) is not None:
-        return _cms_first(base_url, lambda: _cms_bookable_slots(base_url, payload, language),
-                          lambda portal: _post_json(f"{portal}/api/Doctors/GetDoctorScheduleSlots", payload, client_id=client_id, language=language),
-                          "Doctors/GetBookableScheduleSlots")
-    return _post_json(url, payload, client_id=client_id, language=language)
+        result = _cms_first(base_url, lambda: _cms_bookable_slots(base_url, payload, language),
+                            lambda portal: _post_json(f"{portal}/api/Doctors/GetDoctorScheduleSlots", payload, client_id=client_id, language=language),
+                            "Doctors/GetBookableScheduleSlots")
+    else:
+        result = _post_json(url, payload, client_id=client_id, language=language)
+    return _only_branches(result, branch_ids)
+
+
+def _only_branches(result: dict, branch_ids: Optional[list]) -> dict:
+    """Drop slots at any other branch than the ones asked for.
+
+    The branch filter is sent, but nothing checked that it was applied:
+    a slot at another branch shown under "المتاحة في المنار" is a day the
+    patient cannot book there (tanasuq-production, 2026-10-10 12:47 - the
+    days offered for المنار were not days on the doctor's المنار rota). A
+    slot that carries no branchId is kept."""
+
+    if not branch_ids or not isinstance(result, dict) or not result.get("success") \
+            or not isinstance(result.get("data"), dict):
+        return result
+    wanted = {str(b) for b in branch_ids}
+    items = result["data"].get("items") or []
+    kept = [i for i in items if not i.get("branchId") or str(i.get("branchId")) in wanted]
+    if len(kept) != len(items):
+        logger.warning(
+            "get_doctor_schedule_slots: dropped %d slot(s) at other branches than %s - the "
+            "branch filter was not applied upstream", len(items) - len(kept), sorted(wanted),
+        )
+        result["data"] = {**result["data"], "items": kept, "totalCount": len(kept)}
+    return result
 
 
 def _cms_bookable_slots(base_url: str, payload: dict, language: Optional[str]) -> dict:

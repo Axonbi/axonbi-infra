@@ -42,8 +42,18 @@ def test_a_yes_to_the_assistants_own_cancel_suggestion_cancels_nothing():
 
 
 @pytest.mark.parametrize("previous", ["cancel", "reschedule"])
+def test_being_routed_into_the_cancel_flow_is_not_a_request(previous):
+    # tanasuq-production 2026-10-06 15:00: a misread "اليوم" moved the
+    # conversation into the cancel flow; that alone must not authorise it.
+    gated = graph._gated_tool_calls(_cancel_call_state(previous))
+    assert [payload["status"] for _, payload in gated] == ["cancellation_not_requested"]
+
+
+@pytest.mark.parametrize("previous", ["cancel", "reschedule"])
 def test_a_cancellation_the_patient_asked_for_goes_ahead(previous):
-    assert graph._gated_tool_calls(_cancel_call_state(previous)) == []
+    state = _cancel_call_state(previous)
+    tools._get_booking_session(state["session_id"])["_cancel_requested"] = True
+    assert graph._gated_tool_calls(state) == []
 
 
 def test_the_concierge_is_told_not_to_offer_cancelling_an_appointment_it_shows():

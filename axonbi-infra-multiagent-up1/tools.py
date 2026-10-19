@@ -29,6 +29,7 @@ import ast
 import json
 import logging
 import re
+import secrets
 import smtplib
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -51,6 +52,8 @@ from config import (
     AUTHENTICA_FALLBACK_EMAIL,
     OTP_PROVIDER,
     OTP_TTL_SECONDS,
+    SMSMISR_OTP_LENGTH,
+    OURSMS_OTP_LENGTH,
     TEST_OTP,
     SMTP_HOST,
     SMTP_PORT,
@@ -605,6 +608,25 @@ def _drop_same_day_slots(slots: list, timezone_name: str) -> tuple:
     return kept, len(slots) - len(kept)
 
 
+def _booking_lead_time(now: datetime) -> datetime:
+    """The earliest slot start a patient may be offered, naive wall-clock.
+
+    With same-day booking open the CMS decides, per doctor (US_5.4.5.3:
+    each practitioner's own cutoff of X hours before a slot), and its
+    bookable-slots endpoint already leaves out what is too close - so
+    anything still in the future may be offered. CONFIRMED (Rovan,
+    2026-10-12 11:09): a fixed 12-hour lead here dropped today's 8:30 pm,
+    9:00 and 9:30 slots, and the patient was offered next Monday instead.
+    With same-day booking off, the old 12-hour lead stands."""
+
+    import config
+
+    naive = now.replace(tzinfo=None)
+    if getattr(config, "ALLOW_SAME_DAY_BOOKING", False):
+        return naive
+    return naive + timedelta(hours=12)
+
+
 def _local_now_naive(timezone_name: str = DEFAULT_TIMEZONE) -> datetime:
     """"Now", as a NAIVE local datetime.
 
@@ -736,6 +758,14 @@ def _shape_appointment(item: dict, timezone_name: str = DEFAULT_TIMEZONE, langua
                 shaped[name] = item[key]
                 break
 
+    # A patient name that IS the doctor's name is not the patient's name
+    # (a booking saved with the doctor's name in the name field) - it is
+    # left out rather than shown as "👤 الاسم: <the doctor>".
+    if shaped.get("patientFullName") and shaped.get("doctorName") and (
+        _normalize_arabic(str(shaped["patientFullName"])) == _normalize_arabic(str(shaped["doctorName"]))
+    ):
+        shaped["patientFullName"] = None
+
     # THE CLINIC'S OWN CLOCK - see `to_clinic_local`.
     #
     # A booking's stored time came from a slotStart, and slotStart is a
@@ -756,6 +786,18 @@ def _shape_appointment(item: dict, timezone_name: str = DEFAULT_TIMEZONE, langua
     shaped["date_display"] = _display_date(local_from)
     shaped["time_display"] = _display_time_12h(local_from, language)
     shaped["weekday_display"] = _display_weekday(local_from, language)
+    # "today"/"tomorrow" on the clinic's calendar, so "اليوم عندي موعد ايش"
+    # can be answered from the list instead of with "which one?".
+    shaped["day_relation"] = None
+    try:
+        visit_day = datetime.fromisoformat(local_from).date() if local_from else None
+        today = _local_now_naive(timezone_name).date()
+        if visit_day == today:
+            shaped["day_relation"] = "today"
+        elif visit_day == today + timedelta(days=1):
+            shaped["day_relation"] = "tomorrow"
+    except (ValueError, TypeError):
+        pass
     shaped["id"] = item.get("id")
     shaped["status"] = item.get("status")
 
@@ -1048,6 +1090,7 @@ def lookup_appointment(
     # docstring. The argument is still accepted so no tool call breaks;
     # it is simply not trusted.
     language = conversation_language(state)
+    ref_number = _clean_booking_ref(ref_number)
 
     if use_channel_identity:
         channel_phone = state.get("channel_phone")
@@ -1122,6 +1165,14 @@ def lookup_appointment(
         return {"status": "reference_needs_correction" if partial else "reference_not_found"}
 
     if not items:
+        # The phone search asks for New/Confirmed only, so a CANCELLED
+        # booking never comes back and the patient was told "ما لقيت أي
+        # حجز" about an appointment they can see in their messages
+        # (tanasuq-production, 2026-10-15, 0593719856). Say it is cancelled.
+        if phone and not ref_number:
+            cancelled = _upcoming_cancelled_bookings(state, phone, language)
+            if cancelled:
+                return {"status": "found_but_inactive", "cancelled_appointments": cancelled}
         return {"status": "not_found"}
 
     # CHANGED (explicit request): both paths now apply the same
@@ -1165,6 +1216,38 @@ def lookup_appointment(
     _remember_list(state, "appointment", shaped)
 
     return {"status": "found_many", "appointments": shaped}
+
+
+_STATUS_CANCELLED = 6
+
+
+def _upcoming_cancelled_bookings(state: AgentState, phone: str, language: str) -> list:
+    """This phone's CANCELLED bookings dated today or later, shaped for the
+    patient (at most three); [] on any failure - only ever used to explain
+    a "not found"."""
+
+    try:
+        result = api.get_bookings_by_phone(
+            _cms_base_url(state), normalize_phone_number(phone, state) or phone,
+            language=language, sso=_sso(state),
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("_upcoming_cancelled_bookings: lookup raised (session_id=%s)", state.get("session_id"))
+        return []
+    if not result.get("success"):
+        return []
+    timezone_name = (state.get("templates") or {}).get("_timezone", DEFAULT_TIMEZONE)
+    today = _local_now_naive(timezone_name).date().isoformat()
+    cancelled = []
+    for item in (result.get("data") or {}).get("items") or []:
+        if item.get("status") != _STATUS_CANCELLED:
+            continue
+        local_from = to_clinic_local(item.get("bookingTimeFrom"), timezone_name) or ""
+        if local_from and local_from[:10] < today:
+            continue
+        cancelled.append(item)
+    cancelled.sort(key=lambda i: str(i.get("bookingTimeFrom") or ""))
+    return [_shape_appointment(i, timezone_name, conversation_language(state)) for i in cancelled[:3]]
 
 
 def _resolve_appointment_pick(state, text: str) -> dict:
@@ -1487,6 +1570,26 @@ def send_otp(state: Annotated[AgentState, InjectedState], phone: str) -> dict:
             return {"status": "otp_send_failed"}
         return {"status": "otp_sent"}
 
+    if OTP_PROVIDER in ("smsmisr", "oursms"):
+        # SMS Misr / OurSMS only deliver; we own the code. Stored only after
+        # the provider accepted it, so a failed send never leaves a live code.
+        length = OURSMS_OTP_LENGTH if OTP_PROVIDER == "oursms" else SMSMISR_OTP_LENGTH
+        code = "".join(secrets.choice("0123456789") for _ in range(length))
+        send = api.oursms_send_otp if OTP_PROVIDER == "oursms" else api.smsmisr_send_otp
+        result = send(normalized, code) or {}
+        if not result.get("success"):
+            reason = " ".join(str(d) for d in (result.get("details") or [])).lower()
+            if "not valid" in reason or "invalid" in reason:
+                logger.warning("send_otp: provider rejected %r as not a valid number", normalized)
+                return {"status": "invalid_phone"}
+            logger.error("send_otp: provider did NOT send a code to %r (%s)", normalized,
+                         result.get("error") or "unknown error")
+            return {"status": "otp_send_failed"}
+        _otp_storage[normalized] = {"otp": code, "created_at": time.time()}
+        _prune_otp_storage()
+        logger.info("OTP sent via %s to %s", OTP_PROVIDER, normalized)
+        return {"status": "otp_sent"}
+
     _otp_storage[normalized] = {"otp": TEST_OTP, "created_at": time.time()}
     _prune_otp_storage()
     logger.info("OTP sent for %s (test otp=%s)", normalized, TEST_OTP)
@@ -1536,11 +1639,19 @@ def verify_otp(state: Annotated[AgentState, InjectedState], phone: str, otp: str
 
     record = _otp_storage.get(normalized)
 
+    # Diagnostics only - never the code itself.
     if not record:
+        logger.warning("verify_otp: no pending code for %r (pending numbers: %s) - sent to a different number, "
+                       "expired and pruned, or sent by another process", normalized, sorted(_otp_storage))
         return {"status": "otp_invalid"}
 
     if time.time() - record["created_at"] > OTP_TTL_SECONDS:
+        logger.warning("verify_otp: code for %r expired", normalized)
         return {"status": "otp_invalid"}
+
+    if str(otp).strip() != str(record["otp"]):
+        logger.warning("verify_otp: wrong code for %r (got %d chars, expected %d)",
+                       normalized, len(str(otp).strip()), len(str(record["otp"])))
 
     if str(otp).strip() == str(record["otp"]):
         _mark_phone_verified(state, phone)
@@ -2105,6 +2216,47 @@ def _selected_reschedule_slot(state: AgentState) -> Optional[dict]:
     return slot if isinstance(slot, dict) else None
 
 
+def _slot_the_patient_agreed_to(state: AgentState, locked: Optional[dict], key: str) -> Optional[dict]:
+    """The locked slot - or, when the confirmation the patient just said
+    yes to names a DIFFERENT time from the list on file, that slot,
+    re-locked under `key`.
+
+    CONFIRMED (tanasuq-production, 2026-10-10 18:44-18:46, 966535300750):
+    6:00 was locked from "تمام ٣"; the patient asked for 3:00, was told
+    "فيه موعد الساعة 3:00 مساءً ... تحب أأكد؟", said "تمام", and the
+    reschedule was sent at 6:00. What the patient agreed to is the time
+    on the screen they answered."""
+
+    if not locked:
+        return locked
+    shown = _normalize_arabic(understanding_module.last_ai_text_before_latest_human(state.get("messages") or []))
+    if not shown:
+        return locked
+    locked_time = _normalize_arabic(str(locked.get("time_display") or ""))
+    if not locked_time or locked_time in shown:
+        return locked
+    session = _get_booking_session(state.get("session_id"))
+    last_list = session.get("last_list") or {}
+    if last_list.get("entity_type") != "slot":
+        return locked
+    on_screen = [
+        slot for slot in last_list.get("items") or []
+        if isinstance(slot, dict) and slot.get("time_display")
+        and _normalize_arabic(str(slot["time_display"])) in shown
+        and (not locked.get("date_display") or slot.get("date_display") == locked.get("date_display"))
+    ]
+    if len(on_screen) != 1:
+        return locked
+    chosen = dict(on_screen[0])
+    session[key] = chosen
+    logger.warning(
+        "%s: the confirmation the patient answered names %s, not the locked %s - "
+        "re-locking to the time they agreed to (session_id=%s)",
+        key, chosen.get("time_display"), locked.get("time_display"), state.get("session_id"),
+    )
+    return chosen
+
+
 def _same_instant(left: Optional[str], right: Optional[str]) -> bool:
     """Do two slot timestamps name the same moment?
 
@@ -2397,6 +2549,7 @@ def _remember_list(state: AgentState, entity_type: str, items: list) -> None:
     items = list(items or [])
 
     session["last_list"] = {"entity_type": entity_type, "items": list(items)}
+    session.pop("slots_before_ambiguity", None)
 
     if entity_type in ("branch", "doctor"):
         bucket = session.setdefault(
@@ -2415,6 +2568,24 @@ def _remember_list(state: AgentState, entity_type: str, items: list) -> None:
         "_remember_list: session_id=%s entity_type=%s count=%d",
         session_id, entity_type, len(items),
     )
+
+
+def _remember_ambiguous_slots(state: AgentState, session: dict, all_slots: list, candidates: list) -> None:
+    """"الساعه ٥" matched 5:00 and 5:30, and the reply asks which: those two
+    become the list on screen, so "1" is 5:00. CONFIRMED (2026-10-12 11:46):
+    "1" was resolved against the whole day's list and booked 4:00. The
+    day's full list is kept, so a time off the short list still resolves."""
+
+    _remember_list(state, "slot", [dict(c) for c in candidates])
+    session["slots_before_ambiguity"] = list(all_slots)
+
+
+def _full_day_for_a_time_off_the_short_list(session: dict, slots: list, wanted_time, user_input: str) -> list:
+    full = session.get("slots_before_ambiguity")
+    if (full and wanted_time and _extract_selection_number(user_input) is None
+            and not _slots_at_clock_time(slots, wanted_time)):
+        return full
+    return slots
 
 
 def _remember_branch_name(state: AgentState, name: Optional[str]) -> None:
@@ -2601,6 +2772,29 @@ def _slot_matches_clock_time(slot: dict, wanted: dict) -> bool:
 
 def _slots_at_clock_time(slots: list, wanted: dict) -> list:
     return [slot for slot in (slots or []) if _slot_matches_clock_time(slot, wanted)]
+
+
+def _position_or_hour(slots: list, position: Optional[int], wanted: Optional[dict]) -> list:
+    """The two slots a bare number can mean, when they differ: the one AT
+    that position and the one starting at that hour. [] when the number
+    is not both, or both readings are the same slot.
+
+    CONFIRMED (tanasuq-production, 2026-10-10 18:42, 966535300750): the
+    times were 3:00, 5:00, 6:00 and "تمام ٣" was locked as option 3, 6:00.
+    The patient meant three o'clock, said so, was told "نعم، فيه 3:00" -
+    and the reschedule went to the booking system at 6:00."""
+
+    if position is None or not wanted or not (1 <= position <= len(slots or [])):
+        return []
+    by_time = _slots_at_clock_time(slots, wanted)
+    at_position = slots[position - 1]
+    if not by_time or any(slot is at_position or slot == at_position for slot in by_time):
+        return []
+    # "5" on a half-hourly list is 5:00 and 5:30 by the clock - the hour
+    # itself is the one it names.
+    on_the_hour = [slot for slot in by_time
+                   if _slot_matches_clock_time(slot, {**wanted, "minute": 0})]
+    return [at_position, (on_the_hour or by_time)[0]]
 
 
 def _extract_selection_number(user_input: str) -> Optional[int]:
@@ -2855,6 +3049,64 @@ def list_specialties(state: Annotated[AgentState, InjectedState]) -> dict:
         result_payload["unstaffed_specialties"] = unstaffed_names
 
     return result_payload
+
+
+# Words that name no degree on their own - "دكتور" alone is every doctor.
+_GENERIC_DEGREE_WORDS = {"دكتور", "دكتوره", "دكتورة", "الدكتور", "طبيب", "طبيبه", "طبيبة", "doctor", "dr"}
+
+
+def _doctors_with_degree(state: AgentState, base_url: str, label: str) -> list:
+    """The clinic's bookable doctors whose DEGREE is what the patient named
+    ("أخصائي نفسي", "استشاري") - raw API items, [] when none or on failure.
+
+    The fallback for a specialty that does not resolve: patients ask for a
+    degree as often as a specialty - "ابي اخصائي نفسي" names the degree of
+    the علاج نفسي doctors, not a specialty - and was answered that the
+    clinic has no such specialty (tanasuq-production, 2026-10-15)."""
+
+    wanted = _normalize_arabic(str(label or "")).strip()
+    words = [w for w in wanted.split() if w not in _GENERIC_DEGREE_WORDS]
+    if not words or len(" ".join(words)) < 4:
+        return []
+    wanted = " ".join(words)
+
+    def _stems(text: str) -> list:
+        # "اخصائيه نفسيه" (a woman) is the degree "أخصائي نفسي": the
+        # feminine ending is dropped from every word before comparing
+        # (tanasuq-production, 2026-10-15 17:45).
+        return [w[:-1] if len(w) > 3 and w.endswith(("ه", "ة")) else w for w in text.split()]
+
+    wanted_stems = _stems(wanted)
+    try:
+        result = api.get_doctors(base_url, page_size=200, language=conversation_language(state))
+    except Exception:  # noqa: BLE001
+        logger.warning("_doctors_with_degree: get_doctors raised", exc_info=True)
+        return []
+    if not result.get("success"):
+        return []
+    matched = []
+    for item in (result.get("data") or {}).get("items", []):
+        degrees = {_normalize_arabic(str(item.get(k) or "")).strip() for k in ("degreeName", "degreeAltName")}
+        degrees.discard("")
+        if any(set(wanted_stems) <= set(_stems(d)) or (len(d) >= 4 and set(_stems(d)) <= set(wanted_stems))
+               for d in degrees):
+            matched.append(item)
+    logger.info("_doctors_with_degree: %r -> %d doctor(s)", label, len(matched))
+    return [i for i in matched if i.get("hasSlots") is not False]
+
+
+def _degree_fallback(state: AgentState, base_url: str, label: str) -> Optional[dict]:
+    """find_available_doctors' answer for a degree named where a specialty
+    was expected, or None when no doctor has that degree either."""
+
+    items = _doctors_with_degree(state, base_url, label)
+    if not items:
+        return None
+    doctors = _shape_doctor_list(items, conversation_language(state))
+    if not doctors:
+        return None
+    _remember_list(state, "doctor", doctors)
+    return {"status": "found", "matched_by": "degree", "degree": label, "doctors": doctors}
 
 
 def _shape_doctor_list(raw_items: list, language: str = "ar") -> list:
@@ -4265,6 +4517,9 @@ def find_available_doctors(
     # prevent - so report it the same way.
     if (_unresolved_specialty_labels and not specialty_ids
             and not (specialty_name or "").strip()):
+        by_degree = _degree_fallback(state, base_url, _unresolved_specialty_labels[0])
+        if by_degree:
+            return by_degree
         logger.error(
             "find_available_doctors: every specialty_ids entry was unresolvable "
             "(%s) - returning specialty_not_resolved instead of searching ALL "
@@ -4351,6 +4606,9 @@ def find_available_doctors(
                 "doctors unfiltered",
                 specialty_name,
             )
+            by_degree = _degree_fallback(state, base_url, specialty_name.strip())
+            if by_degree:
+                return by_degree
             return {
                 "status": "specialty_not_resolved",
                 "specialty_name": specialty_name.strip(),
@@ -4431,6 +4689,7 @@ def find_available_doctors(
             return {"status": "branch_not_matched"}
 
         branch_ids = [matched_branch["id"]]
+        _retire_previous_doctors_branch(session, "branch", matched_branch["id"])
         session["branch_id"] = matched_branch["id"]
         session["branch_display_name"] = _arabic_preferred_name(matched_branch)
         # Same class of gap as get_doctor_schedule_for_booking /
@@ -4722,6 +4981,22 @@ def find_available_doctors(
 _LOOKS_LIKE_BOOKING_REF_RE = re.compile(r"[A-Za-z]{2,}[A-Za-z0-9]*-[A-Za-z0-9]")
 
 
+def _clean_booking_ref(value: Optional[str]) -> str:
+    """A booking reference as the booking system writes it: no label, no
+    spaces around its hyphens. CONFIRMED (tanasuq-production, 2026-10-07
+    11:29): "Booking Reference: APT- CL01-20260930-594" was searched with
+    the space in it, matched only partially, and the patient was told their
+    (correct) reference was wrong."""
+
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"^(?:booking|appointment|reservation)?\s*(?:reference|ref|number|no|id)\s*(?:number|no)?\s*[:#]\s*",
+                  "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*-\s*", "-", text)
+    return text.strip()
+
+
 def _resolve_doctor_id(state: AgentState, ref_number: str, language: Optional[str]) -> dict:
     """Internal helper: look up a booking by its reference number and
     return its doctorId, so schedule/slot tools know which doctor to
@@ -4730,6 +5005,7 @@ def _resolve_doctor_id(state: AgentState, ref_number: str, language: Optional[st
     status matching lookup_appointment's own conventions."""
 
     base_url = _base_url(state)
+    ref_number = _clean_booking_ref(ref_number)
     result = api.get_bookings_by_ref(_cms_base_url(state), ref_number, language=language, sso=_sso(state))
 
     if not result["success"]:
@@ -4925,7 +5201,7 @@ _RELATIVE_DATE_OFFSETS = (
     # "اليومين" is NOT here on purpose: "اليومين الجايين" is the next
     # two days, not today, and reading it as today would answer a
     # different question than the one asked.
-    (0, ("النهارده", "النهاردة", "اليوم", "today", "tonight")),
+    (0, ("النهارده", "النهاردة", "انهارده", "انهاردة", "اليوم", "today", "tonight")),
 )
 
 
@@ -5005,11 +5281,17 @@ def get_next_weekday_date(
     calendar date on the clinic's calendar. ALWAYS call this - never work
     out a date yourself - and pass the patient's own word unchanged.
 
-    `after_date` omitted: the next such day counting from TODAY (today
-    itself if it already is that weekday).
+    `after_date` omitted: the next such day AFTER today - today is never
+    returned, since same-day booking is not taken ("اليوم" itself comes
+    back "same_day_not_allowed").
     `after_date` given ("YYYY-MM-DD", e.g. from an earlier call or from
     get_available_reschedule_slots): the next occurrence STRICTLY AFTER
     it - use it for "الاثنين اللي بعده" instead of asking them to clarify.
+
+    It only names the CALENDAR date - it does not check availability. Never
+    call that date "متاح" / available until `get_available_reschedule_slots`
+    has returned slots on it (that tool moves to the next same weekday with
+    slots by itself when the asked-for day has none).
 
     Returns {"status": "found", "date": "YYYY-MM-DD", "weekday_name":
     "Thursday"} or {"status": "error"} (unrecognized day or bad after_date)."""
@@ -5022,7 +5304,12 @@ def get_next_weekday_date(
     # tool's own docstring forbids. See `resolve_relative_date`.
     # Checked BEFORE the weekday map so "بكره" cannot be mistaken
     # for anything in it.
+    import config as _config
+    same_day_allowed = getattr(_config, "ALLOW_SAME_DAY_BOOKING", False)
+
     relative = resolve_relative_date(weekday_name, timezone_name)
+    if relative and not after_date and relative.get("offset_days") == 0 and not same_day_allowed:
+        return {"status": "same_day_not_allowed"}
     if relative and not after_date:
         logger.info(
             "get_next_weekday_date: %r is a relative date -> %s (%s)",
@@ -5055,6 +5342,12 @@ def get_next_weekday_date(
     else:
         reference = datetime.now(tz).date()
         days_ahead = (target_weekday - reference.weekday()) % 7
+        if days_ahead == 0 and not same_day_allowed:
+            # TODAY IS NEVER OFFERED - same-day booking is not taken.
+            # CONFIRMED (tanasuq-production, 2026-10-10 12:12 and 18:39,
+            # 966535300750): "السبت الساعة ٢" on a Saturday was answered
+            # "أقرب يوم سبت متاح هو 10/10/2026" - that day.
+            days_ahead = 7
 
     target_date = reference + timedelta(days=days_ahead)
     english_name = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][target_weekday]
@@ -5202,6 +5495,111 @@ def get_doctor_schedule(
     return {"status": "found", "schedules": schedules}
 
 
+def _reschedule_slots_from_items(items: list, timezone_name: str, language: str) -> tuple:
+    """(slots, same_day_removed): API slot items -> the slot dicts this flow
+    shows, minus booked, past and same-day ones."""
+
+    # Defense in depth: exclude any item explicitly marked isBooked=True,
+    # even though is_booked=False was already sent as a request filter -
+    # other endpoints in this same system have been observed to not
+    # always respect their own request filters (e.g. the inverted
+    # from_date/to_date range issue), so don't rely on the request filter
+    # alone for something this important (double-booking a doctor).
+    items = [i for i in (items or []) if i.get("isBooked") is not True]
+    slots = []
+    for item in items:
+        # TWO VALUES, DELIBERATELY. `slot_start`/`slot_end` are the WIRE
+        # format - byte for byte what this flow has always passed back to
+        # `reschedule_appointment` and on to the booking API, and
+        # changing them would move every appointment this system writes.
+        # `local_start` is the same instant on the clinic's clock, and is
+        # the only one the patient ever sees. See `to_clinic_local`.
+        slot_start = to_local_wallclock(item.get("slotStart"), timezone_name)
+        slot_end = to_local_wallclock(item.get("slotEnd"), timezone_name)
+        local_start = to_clinic_local(item.get("slotStart"), timezone_name)
+        slots.append({
+            "slotStart": slot_start,
+            "slotEnd": slot_end,
+            "_localStart": local_start,
+            "date_display": _display_date(local_start),
+            "weekday_display": _display_weekday(local_start, language),
+            "time_display": _display_time_12h(local_start, language),
+            "doctorName": item.get("doctorName"),
+            # Ids cms-api's Bookings/Update needs to move the booking to
+            # this slot - carried on the slot so the locked slot has them.
+            "branchId": item.get("branchId"),
+            "branchName": item.get("branchName"),
+            "doctorId": item.get("doctorId"),
+            "serviceId": item.get("serviceId"),
+            "spaceId": item.get("spaceId"),
+            "scheduleId": item.get("scheduleId"),
+            "serviceName": _service_name(item, language),
+            # servicePrice is deliberately NOT returned: fees are private
+            # by default and must only ever be revealed through
+            # `get_doctor_fees` when the user explicitly asks. Confirmed
+            # real issue - a price the model could see in the slot list
+            # ended up printed in the availability message unprompted.
+        })
+
+    # Exclude slots that have already passed - a slot for TODAY earlier
+    # than right now must never still be offered (observed directly:
+    # 9:00 AM was still shown while the conversation was happening at
+    # ~5pm the same day). Compared in the client's own local timezone,
+    # matching how slotStart itself was already converted.
+    try:
+        now_local = _local_now_naive(timezone_name)
+        slots = [
+            s for s in slots
+            if s["_localStart"] and datetime.fromisoformat(s["_localStart"]) > now_local
+        ]
+    except Exception:
+        logger.exception("get_available_reschedule_slots: failed to filter past slots, showing all")
+
+    return _drop_same_day_slots(slots, timezone_name)
+
+
+def _single_query_day(from_date: str, to_date: str) -> Optional[date]:
+    """The calendar day a [from_date, to_date] query covers, when it covers
+    exactly one; else None."""
+
+    try:
+        start = datetime.fromisoformat(str(from_date)).date()
+        end = datetime.fromisoformat(str(to_date)).date()
+    except (TypeError, ValueError):
+        return None
+    return start if start == end else None
+
+
+_RESCHEDULE_LOOKAHEAD_DAYS = 42
+
+
+def _nearest_reschedule_weekday_slots(base_url: str, doctor_id, requested_day: date,
+                                      timezone_name: str, language: str) -> list:
+    """The bookable slots on the first date AFTER `requested_day` that falls on
+    the same weekday and really has open slots, within the usual window."""
+
+    window_start = datetime.combine(requested_day + timedelta(days=1), datetime.min.time())
+    window_end = datetime.combine(requested_day + timedelta(days=_RESCHEDULE_LOOKAHEAD_DAYS),
+                                  datetime.max.time().replace(microsecond=0))
+    result = api.get_doctor_schedule_slots(
+        base_url, doctor_ids=[doctor_id],
+        from_date=window_start.isoformat(), to_date=window_end.isoformat(), is_booked=False,
+        page_size=1000, language=language,
+    )
+    if not result.get("success"):
+        logger.error("_nearest_reschedule_weekday_slots: API call failed: status_code=%s error=%s",
+                     result.get("status_code"), result.get("error"))
+        return []
+    slots, _ = _reschedule_slots_from_items((result.get("data") or {}).get("items", []),
+                                            timezone_name, language)
+    same_weekday = [s for s in slots
+                    if datetime.fromisoformat(s["_localStart"]).weekday() == requested_day.weekday()]
+    if not same_weekday:
+        return []
+    first_day = min(datetime.fromisoformat(s["_localStart"]).date() for s in same_weekday)
+    return [s for s in same_weekday if datetime.fromisoformat(s["_localStart"]).date() == first_day]
+
+
 @tool
 def get_available_reschedule_slots(
     state: Annotated[AgentState, InjectedState],
@@ -5276,72 +5674,41 @@ def get_available_reschedule_slots(
         logger.error("get_available_reschedule_slots API call failed: status_code=%s error=%s", result.get("status_code"), result.get("error"))
         return _api_error(result)
 
-    items = (result["data"] or {}).get("items", [])
-    if not items:
-        return {"status": "not_found"}
-
-    # Defense in depth: exclude any item explicitly marked isBooked=True,
-    # even though is_booked=False was already sent as a request filter -
-    # other endpoints in this same system have been observed to not
-    # always respect their own request filters (e.g. the inverted
-    # from_date/to_date range issue), so don't rely on the request filter
-    # alone for something this important (double-booking a doctor).
-    items = [i for i in items if i.get("isBooked") is not True]
-    if not items:
-        return {"status": "not_found"}
-
     timezone_name = (state.get("templates") or {}).get("_timezone", DEFAULT_TIMEZONE)
     language = conversation_language(state)
-    slots = []
-    for item in items:
-        # TWO VALUES, DELIBERATELY. `slot_start`/`slot_end` are the WIRE
-        # format - byte for byte what this flow has always passed back to
-        # `reschedule_appointment` and on to the booking API, and
-        # changing them would move every appointment this system writes.
-        # `local_start` is the same instant on the clinic's clock, and is
-        # the only one the patient ever sees. See `to_clinic_local`.
-        slot_start = to_local_wallclock(item.get("slotStart"), timezone_name)
-        slot_end = to_local_wallclock(item.get("slotEnd"), timezone_name)
-        local_start = to_clinic_local(item.get("slotStart"), timezone_name)
-        slots.append({
-            "slotStart": slot_start,
-            "slotEnd": slot_end,
-            "_localStart": local_start,
-            "date_display": _display_date(local_start),
-            "weekday_display": _display_weekday(local_start, language),
-            "time_display": _display_time_12h(local_start, language),
-            "doctorName": item.get("doctorName"),
-            # Ids cms-api's Bookings/Update needs to move the booking to
-            # this slot - carried on the slot so the locked slot has them.
-            "branchId": item.get("branchId"),
-            "branchName": item.get("branchName"),
-            "doctorId": item.get("doctorId"),
-            "serviceId": item.get("serviceId"),
-            "spaceId": item.get("spaceId"),
-            "scheduleId": item.get("scheduleId"),
-            "serviceName": _service_name(item, language),
-            # servicePrice is deliberately NOT returned: fees are private
-            # by default and must only ever be revealed through
-            # `get_doctor_fees` when the user explicitly asks. Confirmed
-            # real issue - a price the model could see in the slot list
-            # ended up printed in the availability message unprompted.
-        })
+    slots, same_day_removed = _reschedule_slots_from_items(
+        (result["data"] or {}).get("items", []), timezone_name, language,
+    )
 
-    # Exclude slots that have already passed - a slot for TODAY earlier
-    # than right now must never still be offered (observed directly:
-    # 9:00 AM was still shown while the conversation was happening at
-    # ~5pm the same day). Compared in the client's own local timezone,
-    # matching how slotStart itself was already converted.
-    try:
-        now_local = _local_now_naive(timezone_name)
-        slots = [
-            s for s in slots
-            if s["_localStart"] and datetime.fromisoformat(s["_localStart"]) > now_local
-        ]
-    except Exception:
-        logger.exception("get_available_reschedule_slots: failed to filter past slots, showing all")
+    # A DAY WITH NOTHING LEFT IS NOT THE END OF THE ANSWER.
+    #
+    # CONFIRMED (tanasuq-production, 2026-10-07 10:52-10:56): moving an
+    # appointment with a doctor who works Wednesdays, the patient said
+    # "الاربعاء" and was told "الدكتور غير متوفر يوم الأربعاء" (only TODAY's
+    # Wednesday had been checked - same-day is not allowed), then offered
+    # "أقرب يوم اثنين متاح 12/10" which had no slots, then "أقرب يوم أربعاء
+    # متاح 07/10" - today, the appointment being moved. Ten messages in a
+    # circle. When the one day asked for has nothing, the next same-weekday
+    # date that really has slots is found here, in code.
+    requested_empty = None
+    if not slots:
+        requested_day = _single_query_day(from_date, to_date)
+        if requested_day is not None:
+            nearest = _nearest_reschedule_weekday_slots(
+                base_url, resolved["doctor_id"], requested_day, timezone_name, language,
+            )
+            if nearest:
+                logger.info(
+                    "get_available_reschedule_slots: %s had no bookable slot - offering the "
+                    "next same weekday with slots instead (%s)",
+                    requested_day.isoformat(), nearest[0]["date_display"],
+                )
+                slots = nearest
+                requested_empty = {
+                    "date_display": requested_day.strftime("%d/%m/%Y"),
+                    "weekday_display": _display_weekday_name(requested_day.weekday(), language),
+                }
 
-    slots, same_day_removed = _drop_same_day_slots(slots, timezone_name)
     if not slots:
         return {"status": "same_day_not_allowed" if same_day_removed else "not_found"}
 
@@ -5398,6 +5765,9 @@ def get_available_reschedule_slots(
     # no doctorId. Session-only: the model is shown `slots` without it.
     _remember_list(state, "slot", [dict(slot, _doctor_id=resolved["doctor_id"]) for slot in slots])
 
+    if requested_empty:
+        # The day they asked for had nothing; these slots are a later one.
+        return {"status": "found", "slots": slots, "requested_day_had_no_slots": requested_empty}
     return {"status": "found", "slots": slots}
 
 
@@ -5434,6 +5804,7 @@ def select_reschedule_slot(state: Annotated[AgentState, InjectedState], user_inp
     slots = last_list.get("items") or []
 
     wanted_time = _parse_clock_time(user_input)
+    slots = _full_day_for_a_time_off_the_short_list(session, slots, wanted_time, user_input)
     position = _extract_selection_number(user_input)
 
     if position is not None:
@@ -5457,6 +5828,14 @@ def select_reschedule_slot(state: Annotated[AgentState, InjectedState], user_inp
                 )
                 return {"status": "out_of_range", "list_size": len(slots)}
         else:
+            both = _position_or_hour(slots, position, wanted_time)
+            if both:
+                logger.info(
+                    "select_reschedule_slot: %r is option %d (%s) or the hour %s - asking which",
+                    user_input, position, both[0].get("time_display"), both[1].get("time_display"),
+                )
+                return {"status": "ambiguous_pick",
+                        "candidates": [dict(slot) for slot in both]}
             chosen = slots[position - 1]
     else:
         # Not a number - match the TIME they typed against each
@@ -5475,6 +5854,7 @@ def select_reschedule_slot(state: Annotated[AgentState, InjectedState], user_inp
                     user_input, len(by_time),
                     [slot.get("time_display") for slot in by_time],
                 )
+                _remember_ambiguous_slots(state, session, slots, by_time)
                 return {
                     "status": "ambiguous_time",
                     "candidates": [dict(slot) for slot in by_time],
@@ -5586,7 +5966,7 @@ def reschedule_appointment(
     # booking API exactly as typed - moving the appointment to the wrong
     # instant. Retrying ("حاول تاني") reran the identical wrong write
     # every time, because nothing had ever locked the actual slot.
-    locked_slot = _selected_reschedule_slot(state)
+    locked_slot = _slot_the_patient_agreed_to(state, _selected_reschedule_slot(state), "selected_reschedule_slot")
     remembered = None
     if locked_slot and locked_slot.get("slotStart"):
         if not _same_instant(new_time_from, locked_slot.get("slotStart")):
@@ -6780,6 +7160,26 @@ def _doctors_named_in(state: AgentState, base_url: str, text: str, items: Option
     return found
 
 
+_CITY_PREFIX_RE = re.compile(r"^(?:في|فى|بال|لل|ال|ب|ل)(?=\S{3,})")
+
+
+def _branches_in_city(items: list, user_input: str) -> list:
+    """The branches whose city (or address) is a word the patient typed,
+    with a leading preposition dropped: "للرياض" / "بالرياض" -> "رياض"."""
+
+    words = [_CITY_PREFIX_RE.sub("", w) for w in _normalize_arabic(user_input or "").split()]
+    words = [w for w in words if len(w) >= 3 and w not in ("فرع", "اقرب", "قريب", "فروع")]
+    if not words:
+        return []
+    found = []
+    for b in items:
+        place = _normalize_arabic(" ".join(str(b.get(k) or "") for k in ("cityName", "address")))
+        place_words = {_CITY_PREFIX_RE.sub("", w) for w in place.replace("،", " ").replace(",", " ").split()}
+        if any(w in place_words for w in words):
+            found.append(b)
+    return found
+
+
 @tool
 def match_entity_info(
     state: Annotated[AgentState, InjectedState],
@@ -7122,6 +7522,31 @@ def match_entity_info(
                 )
                 _remember_list(state, "doctor", named_doctors)
                 return {"status": "is_a_doctor", "doctors": named_doctors}
+            # A CITY, NOT A BRANCH NAME. CONFIRMED (tanasuq-production
+            # 2026-10-12 12:48): "اقرب فرع للرياض" searched "للرياض" and the
+            # reply opened with 'ما لقيت فرع اسمه "للرياض"' before listing
+            # the two Riyadh branches. The branches in that city are the answer.
+            in_city = _branches_in_city(items, user_input)
+            if in_city:
+                shaped_city = [
+                    {
+                        "id": b.get("id"),
+                        "name": _arabic_preferred_name(b) or b.get("name"),
+                        "altName": b.get("altName"),
+                        "address": b.get("address"),
+                        "cityName": b.get("cityName"),
+                    }
+                    for b in in_city
+                ]
+                logger.info("match_entity_info: %r names a city - returning its %d branch(es)",
+                            user_input, len(shaped_city))
+                _remember_list(state, "branch", shaped_city)
+                return {
+                    "status": "list",
+                    "items": shaped_city,
+                    "_guidance": "These are the branches in the city the patient named - list them; "
+                                 "do not say a branch by that name was not found.",
+                }
             # Don't leave the patient with a bare "couldn't find it" -
             # hand back the branches that ARE currently available, so
             # the reply can say "لم أجد فرعًا باسم [x]، هذه الفروع
@@ -7686,6 +8111,23 @@ def _retire_previous_doctors_branch(session: dict, entity_type: str,
     a new DOCTOR has to retire the branch for exactly the same reason.
     """
 
+    if entity_type == "branch" and new_id:
+        # A DIFFERENT BRANCH means the time chosen at the old one is not a
+        # time at this one. CONFIRMED (tanasuq-production, 2026-10-10
+        # 16:31-16:35, 966534089903): 21/10 5:30 was locked at المنار, the
+        # patient switched to النزهة, and the booking went on to the phone
+        # question with the المنار time still locked.
+        previous_branch = session.get("branch_id")
+        if previous_branch and str(previous_branch) != str(new_id) and session.get("selected_slot"):
+            logger.info(
+                "match_entity_for_booking: branch changed (%s -> %s) - dropping the "
+                "time chosen at the previous branch", previous_branch, new_id,
+            )
+            session["selected_slot"] = None
+            session["slots_shown"] = False
+            session["review_shown"] = False
+        return
+
     if entity_type != "doctor" or not new_id:
         return
 
@@ -7709,6 +8151,98 @@ def _retire_previous_doctors_branch(session: dict, entity_type: str,
     # describes what would actually be booked now - it must be shown
     # again (and re-confirmed) before `create_new_booking` can proceed.
     session["review_shown"] = False
+
+
+_KEYCAP_TEN = "\U0001F51F"
+
+
+def _shown_line_position(line: str) -> Optional[int]:
+    """The list number a reply line starts with ("1️⃣ …", "🔟 …",
+    "⁦1️⃣1️⃣⁩ …", "3. …"), or None."""
+
+    text = (line or "").replace("⁦", "").replace("⁩", "").strip()
+    if text.startswith(_KEYCAP_TEN):
+        return 10
+    text = text.replace("️", "").replace("⃣", "").translate(_ARABIC_DIGIT_MAP)
+    digits = ""
+    for ch in text:
+        if not ch.isdigit():
+            break
+        digits += ch
+    return int(digits) if digits else None
+
+
+def _confirm_doctor_picked_from_shown_list(state: AgentState) -> Optional[str]:
+    """Confirm the doctor the patient picked BY NUMBER from the list in
+    the assistant's last reply, when no doctor is confirmed yet.
+
+    CONFIRMED REAL PRODUCTION FAILURE (tanasuq-production, 2026-10-05
+    13:49, session 201025981330, and again 21:23, session 966567700950):
+    the doctor list came from the medical agent's `find_available_doctors`
+    and was shown again by booking from history. The patient answered
+    "2" / "7"; the model went straight to `get_doctor_schedule_for_booking`
+    without `match_entity_for_booking`, got "missing_doctor", and told
+    the patient "ما قدرت أجيب جدول مواعيد الدكتور" - for doctors with
+    open rotas.
+
+    The number is resolved against the line the patient actually SAW
+    with that number, and the doctor on it must be one a tool returned
+    (`last_list`) - never by position in `last_list` alone, since a reply
+    may show fewer doctors than the tool returned. Anything else is left
+    to the model, exactly as before."""
+
+    session = _get_booking_session(state.get("session_id"))
+    if session.get("doctor_id"):
+        return session["doctor_id"]
+
+    patient_text = _latest_human_text_for_handoff_guard(state)
+    position = _extract_selection_number(patient_text)
+    last_list = session.get("last_list") or {}
+    if last_list.get("entity_type") != "doctor":
+        return None
+
+    shown = understanding_module.last_ai_text_before_latest_human(state.get("messages") or [])
+
+    def _names(item):
+        return {item.get(k) for k in ("altName", "name", "formatedName") if item.get(k)}
+
+    items = [i for i in last_list.get("items") or [] if isinstance(i, dict) and i.get("id")]
+    if position is not None:
+        line = next(
+            (ln for ln in shown.splitlines() if _shown_line_position(ln) == position),
+            None,
+        )
+        if not line:
+            return None
+        normalized_line = _normalize_arabic(line)
+        candidates = [i for i in items if any(_normalize_arabic(n) in normalized_line for n in _names(i))]
+    else:
+        # A NAME from the reply on screen - "نوره متى متاحه؟" after a reply
+        # naming نورة العتيبي (tanasuq-production, 2026-10-10 20:49,
+        # 966500096796: answered "ما عندي جدول مواعيد" for a doctor who
+        # works Thursdays). Only doctors that reply named are candidates,
+        # so a first name shared with someone not on screen is no match.
+        normalized_shown = _normalize_arabic(shown)
+        patient_words = set(_normalize_arabic(patient_text or "").split())
+        candidates = [
+            i for i in items
+            if any(_normalize_arabic(n) in normalized_shown for n in _names(i))
+            and any(word in patient_words
+                    for n in _names(i) for word in _normalize_arabic(n).split() if len(word) >= 3)
+        ]
+    if len({c["id"] for c in candidates}) != 1:
+        return None
+
+    chosen = candidates[0]
+    _retire_previous_doctors_branch(session, "doctor", chosen["id"])
+    session["doctor_id"] = chosen["id"]
+    session["doctor_display_name"] = _arabic_preferred_name(chosen)
+    logger.info(
+        "_confirm_doctor_picked_from_shown_list: %s on the shown list -> "
+        "doctor_id=%s (%s)", f"position {position}" if position is not None else "name",
+        chosen["id"], session["doctor_display_name"],
+    )
+    return chosen["id"]
 
 
 @tool
@@ -7771,6 +8305,21 @@ def match_entity_for_booking(
     entity_type = (entity_type or "").strip().lower()
     if entity_type not in ("doctor", "branch"):
         return {"matched": False, "ambiguous": False, "status": "error"}
+
+    # AN E-MAIL ADDRESS IS NEVER A DOCTOR OR BRANCH NAME. CONFIRMED
+    # (tanasuq-production, 2026-10-06 08:20): "salm1387@gmail.com" went
+    # through the doctor fetch, a widened second fetch, and came back as
+    # 'no doctor named salm1387@gmail.com'. Skip the API entirely.
+    if re.search(r"[^\s@]+@[^\s@]+\.[A-Za-z]{2,}", str(user_input or "")):
+        return {
+            "matched": False,
+            "ambiguous": False,
+            "_guidance": (
+                "The patient typed an e-mail address, not a doctor or branch name. "
+                "Do not say no doctor/branch was found by that name and do not repeat the "
+                "address. Ask once, plainly, which doctor or specialty they want."
+            ),
+        }
 
     session_id = state.get("session_id")
     session = _get_booking_session(session_id)
@@ -8521,7 +9070,7 @@ def _preferred_name(entity: dict, language: str = "ar") -> str:
 
 
 _PRICE_WORDS_RE = re.compile(
-    r"سعر|اسعار|أسعار|تكلف|رسوم|بكام|بكم|كم (?:ال)?(?:سعر|كشف|حق)|حق الكشف|فلوس|"
+    r"سعر|اسعار|أسعار|تكلف|رسوم|بكام|بكم|كم (?:ال)?(?:سعر|كشف|حق)|حق الكشف|فلوس|ثمن|كشفي|"
     r"price|cost|fee|how much",
     re.IGNORECASE,
 )
@@ -8535,11 +9084,23 @@ def _fees_requested(state: AgentState) -> bool:
     reading = state.get("understanding")
     if reading is None or reading.get("asks_price"):
         return True
-    humans = [m for m in (state.get("messages") or []) if getattr(m, "type", None) == "human"]
+    all_messages = state.get("messages") or []
+    humans = [m for m in all_messages if getattr(m, "type", None) == "human"]
     for message in humans[-2:]:
         content = getattr(message, "content", "")
         if _PRICE_WORDS_RE.search(content if isinstance(content, str) else str(content)):
             return True
+    # The patient is ANSWERING our price follow-up ("أي دكتور تود تعرف سعر
+    # الجلسة عنده؟" -> "2" / "أصيلا الحسن"). CONFIRMED (tanasuq-production,
+    # 2026-10-06 15:38-15:40): three refusals in a row and the price was
+    # never given. Only the last question WE asked counts.
+    for message in reversed(all_messages):
+        if getattr(message, "type", None) != "ai":
+            continue
+        content = getattr(message, "content", "")
+        text = content if isinstance(content, str) else str(content)
+        questions = [line for line in text.splitlines() if "؟" in line or "?" in line]
+        return bool(questions) and bool(_PRICE_WORDS_RE.search(questions[-1]))
     return False
 
 
@@ -8752,7 +9313,10 @@ def get_patient_info(state: Annotated[AgentState, InjectedState], mobile_number:
         logger.warning("get_patient_info called but no doctors_base_url is configured for client_id=%s", state.get("client_id"))
         return {"status": "not_configured"}
 
-    result = api.get_patient_info(_cms_base_url(state), mobile_number, sso=_sso(state))
+    # The patient registry matches only the full number - "0593719856"
+    # finds nobody where "+966593719856" finds them.
+    result = api.get_patient_info(_cms_base_url(state), normalize_phone_number(mobile_number, state) or mobile_number,
+                                  sso=_sso(state))
 
     if not result["success"] and result.get("error") == "endpoint_not_found":
         # The patient lookup endpoint is gone (404 from portal-api). It only
@@ -8796,6 +9360,191 @@ def get_patient_info(state: Annotated[AgentState, InjectedState], mobile_number:
     }
 
 
+_ISO_DATE_RE = re.compile(r"(?<!\d)(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)")
+_DMY_DATE_RE = re.compile(r"(?<!\d)(\d{1,2})\s*[/\-.]\s*(\d{1,2})(?:\s*[/\-.]\s*(\d{2,4}))?(?!\d)")
+# Words that mean "the NEXT such weekday" - a bare weekday reply may only
+# be matched against the days just shown when none of these is present.
+_NEXT_OCCURRENCE_WORDS = {"الجاي", "الجايه", "الجاى", "القادم", "القادمه", "بعده", "بعدها", "بعد", "التالي", "next", "after"}
+
+
+_MONTH_NAMES = {
+    1: ("يناير", "كانون الثاني", "january", "jan"),
+    2: ("فبراير", "شباط", "february", "feb"),
+    3: ("مارس", "اذار", "march", "mar"),
+    4: ("ابريل", "نيسان", "april", "apr"),
+    5: ("مايو", "ايار", "may"),
+    6: ("يونيو", "يونيه", "حزيران", "june", "jun"),
+    7: ("يوليو", "يوليه", "تموز", "july", "jul"),
+    8: ("اغسطس", "august", "aug"),
+    9: ("سبتمبر", "ايلول", "september", "sep", "sept"),
+    10: ("اكتوبر", "تشرين الاول", "october", "oct"),
+    11: ("نوفمبر", "تشرين الثاني", "november", "nov"),
+    12: ("ديسمبر", "كانون الاول", "december", "dec"),
+}
+
+
+def _fold_month_text(text: str) -> str:
+    folded = str(text or "").translate(_ARABIC_DIGIT_MAP).lower()
+    for src in "أإآ":
+        folded = folded.replace(src, "ا")
+    return folded.replace("ة", "ه").replace("ى", "ي")
+
+
+def _month_named(text: Optional[str]) -> Optional[int]:
+    """The month a patient NAMED ("نوفمبر", "3 نوفمبر", "November"), or
+    None. Whole words only, so "اب" / "may" inside another word is ignored."""
+
+    folded = _fold_month_text(text)
+    if not folded:
+        return None
+    for number, names in _MONTH_NAMES.items():
+        for name in names:
+            if re.search(r"(?<![^\W\d_])" + re.escape(name) + r"(?![^\W\d_])", folded):
+                return number
+    return None
+
+
+def _parse_named_month_date(text: str, today: date) -> Optional[date]:
+    """"3 نوفمبر" / "نوفمبر 3" / "3 November" -> that calendar date (next
+    occurrence when no year is typed)."""
+
+    month = _month_named(text)
+    if not month:
+        return None
+    folded = _fold_month_text(text)
+    numbers = [int(n) for n in re.findall(r"(?<!\d)(\d{1,2})(?!\d)", folded)]
+    year_match = re.search(r"(?<!\d)(20\d{2})(?!\d)", folded)
+    days = [n for n in numbers if 1 <= n <= 31]
+    if not days:
+        return None
+    try:
+        if year_match:
+            return date(int(year_match.group(1)), month, days[0])
+        candidate = date(today.year, month, days[0])
+        if candidate < today:
+            candidate = date(today.year + 1, month, days[0])
+        return candidate
+    except ValueError:
+        return None
+
+
+def _parse_explicit_date(text: Optional[str], today: date) -> Optional[date]:
+    """A calendar date the patient typed (\"18/10\", \"الاحد 18/10/2026\",
+    \"2026-10-18\", Arabic-Indic digits too) or None.
+
+    CONFIRMED REAL PRODUCTION FAILURE (tanasuq-production, 2026-10-06):
+    after being offered \"الأحد 18/10/2026\" the patient replied \"18/10\"
+    (-> unrecognized day) and then \"الاحد 18/10/2026\" (-> the weekday
+    word won and the DATE was dropped, so 11/10 - the Sunday they had
+    just turned down - was shown again). A typed date is the most
+    specific answer there is and has to win over the weekday word.
+    Without a year the next occurrence on/after today is used."""
+
+    if not text:
+        return None
+    raw = str(text).translate(_ARABIC_DIGIT_MAP)
+
+    match = _ISO_DATE_RE.search(raw)
+    if match:
+        year, month, day = (int(g) for g in match.groups())
+        try:
+            return date(year, month, day)
+        except ValueError:
+            return None
+
+    match = _DMY_DATE_RE.search(raw)
+    if not match:
+        return _parse_named_month_date(raw, today)
+    day, month = int(match.group(1)), int(match.group(2))
+    year_text = match.group(3)
+    try:
+        if year_text:
+            year = int(year_text)
+            if year < 100:
+                year += 2000
+            return date(year, month, day)
+        candidate = date(today.year, month, day)
+        if candidate < today:
+            candidate = date(today.year + 1, month, day)
+        return candidate
+    except ValueError:
+        return None
+
+
+# The patient's own word for TODAY. Read from their latest message, not
+# from the tool argument: the model passes "Monday" for "الاتنين اليوم".
+_TODAY_WORD_RE = re.compile(r"(?:^|[\s،,.])(?:اليوم|النهارده|انهارده|today)(?:$|[\s،,.؟?!])")
+
+
+def _patient_says_today(state) -> bool:
+    text = _latest_human_text_for_handoff_guard(state)
+    return bool(_TODAY_WORD_RE.search(_normalize_arabic(text)))
+
+
+def _patient_names_a_day(state, today: date) -> bool:
+    """Their latest message names a day - today, or a typed date."""
+
+    if _patient_says_today(state):
+        return True
+    try:
+        return _parse_explicit_date(_latest_human_text_for_handoff_guard(state), today) is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _remember_empty_day(session: dict, doctor_id: Optional[str], day_iso: str) -> None:
+    """A per-day slot lookup for this doctor found nothing: a later "no
+    appointments on <that day>" is backed by it (graph's unchecked-denial
+    gate reads this)."""
+
+    if doctor_id and day_iso:
+        session.setdefault("empty_days", {}).setdefault(doctor_id, [])
+        if day_iso not in session["empty_days"][doctor_id]:
+            session["empty_days"][doctor_id].append(day_iso)
+
+
+def _says_next_occurrence(weekday_text: str) -> bool:
+    words = {w for w in re.split(r"[\s/،,]+", str(weekday_text or "").lower()) if w}
+    return bool(words & {_fold_weekday_token(w) for w in _NEXT_OCCURRENCE_WORDS} or words & _NEXT_OCCURRENCE_WORDS)
+
+
+def _shown_date_for_weekday(session: dict, target_weekday: int) -> Optional[date]:
+    """The date of `target_weekday` in the day list on screen, if any."""
+
+    last = session.get("last_list") or {}
+    if last.get("entity_type") != "day":
+        return None
+    for item in last.get("items") or []:
+        try:
+            shown = date.fromisoformat(str(item.get("date"))[:10])
+        except (ValueError, TypeError, AttributeError):
+            continue
+        if shown.weekday() == target_weekday:
+            return shown
+    return None
+
+
+def _date_from_last_shown_days(session: dict, target_weekday: int, weekday_text: str) -> Optional[date]:
+    """The date of `target_weekday` in the day list the patient was JUST
+    shown, so a bare \"الاحد\" means the Sunday on screen (18/10) and not
+    the nearest Sunday overall (11/10, already declined)."""
+
+    last = session.get("last_list") or {}
+    if last.get("entity_type") != "day":
+        return None
+    words = {w for w in re.split(r"[\s/،,]+", str(weekday_text or "").lower()) if w}
+    if words & {_fold_weekday_token(w) for w in _NEXT_OCCURRENCE_WORDS} or words & _NEXT_OCCURRENCE_WORDS:
+        return None
+    for item in last.get("items") or []:
+        try:
+            shown = date.fromisoformat(str(item.get("date"))[:10])
+        except (ValueError, TypeError, AttributeError):
+            continue
+        if shown.weekday() == target_weekday:
+            return shown
+    return None
+
+
 @tool
 def resolve_available_day(
     state: Annotated[AgentState, InjectedState],
@@ -8821,13 +9570,54 @@ def resolve_available_day(
 
     session_id = state.get("session_id")
     session = _get_booking_session(session_id)
-    doctor_id = session.get("doctor_id")
+    doctor_id = session.get("doctor_id") or _confirm_doctor_picked_from_shown_list(state)
     branch_id = session.get("branch_id")
 
     if not doctor_id:
         return {"status": "missing_doctor"}
 
-    target_weekday = resolve_weekday_index(weekday_name)
+    _tz_name = (state.get("templates") or {}).get("_timezone", DEFAULT_TIMEZONE)
+    try:
+        _today = datetime.now(ZoneInfo(_tz_name)).date()
+    except Exception:
+        _today = datetime.now(ZoneInfo(DEFAULT_TIMEZONE)).date()
+
+    # A typed DATE beats a weekday word; a bare weekday after a shown day
+    # list means the one on screen. See the two helpers above.
+    exact_date = _parse_explicit_date(weekday_name, _today)
+    said_weekday = resolve_weekday_index(weekday_name)
+    if exact_date is not None and said_weekday is not None and said_weekday != exact_date.weekday():
+        # "الاثنين 3 نوفمبر" when 3 November is a Tuesday: one of the two is
+        # wrong, and picking either silently books a day nobody asked for.
+        return {
+            "status": "weekday_date_mismatch",
+            "date_display": exact_date.strftime("%d/%m/%Y"),
+            "weekday_display": _display_weekday_name(exact_date.weekday(), conversation_language(state)),
+            "said_weekday_display": _display_weekday_name(said_weekday, conversation_language(state)),
+            "instruction": "Tell the patient the date and the weekday they gave do not match "
+                           "and ask which one they mean. Do not offer any other day yet.",
+        }
+    target_weekday = exact_date.weekday() if exact_date else said_weekday
+    # "الاتنين اليوم" on a Monday is TODAY, not the Monday on screen.
+    # CONFIRMED (tanasuq-production 2026-10-12 17:06): with 19/10 on
+    # screen it was resolved to 19/10 - the model passes only "Monday".
+    if (exact_date is None and target_weekday == _today.weekday() and not after_date
+            and _patient_says_today(state)):
+        exact_date = _today
+        logger.info("resolve_available_day: %r with 'today' in the message is today %s", weekday_name, _today)
+    if exact_date is None and target_weekday is not None and not after_date:
+        exact_date = _date_from_last_shown_days(session, target_weekday, weekday_name)
+        if exact_date:
+            logger.info("resolve_available_day: bare weekday %r matched to shown date %s", weekday_name, exact_date)
+    # "الاتنين اللي بعده" / "الاتنين الجاي": the one AFTER the Monday on screen,
+    # or after today when none is. CONFIRMED (2026-10-12 11:42): with Monday
+    # 12/10 (today) on screen, "الاتنين الي بعده" came back as 12/10 again -
+    # the word only stopped the match to the shown day, and the nearest
+    # Monday was that same day.
+    if (exact_date is None and target_weekday is not None and not after_date
+            and _says_next_occurrence(weekday_name)):
+        after_date = (_shown_date_for_weekday(session, target_weekday) or _today).isoformat()
+        logger.info("resolve_available_day: %r is the next one - after %s", weekday_name, after_date)
     if target_weekday is None:
         # NOT "error" - the two need completely different handling.
         # "error" means the lookup itself broke and the patient should
@@ -8836,6 +9626,16 @@ def resolve_available_day(
         # to ask which day they meant. Falling back to "show the
         # soonest date" is exactly how a day the patient named used to
         # get silently discarded.
+        month = _month_named(weekday_name)
+        if month:
+            # A month with no day ("نوفمبر"): not an unrecognised word - ask
+            # which day, instead of telling the patient a month is not a day.
+            return {
+                "status": "month_without_day", "month": month,
+                "instruction": "The patient named a month but no day. Ask which day or weekday "
+                               "in that month they want. Do not say anything about availability "
+                               "in that month until a day has been checked.",
+            }
         logger.warning("resolve_available_day: unrecognized weekday_name=%r", weekday_name)
         return {"status": "unrecognized_day", "weekday_text": weekday_name}
 
@@ -8913,6 +9713,11 @@ def resolve_available_day(
 
     now = datetime.now(tz)
     horizon_days = 42  # matches the confirmed production booking window
+    if exact_date is not None:
+        # A day the patient named beyond the usual window must still be
+        # CHECKED, not assumed empty (tanasuq-production, 2026-10-06 14:04:
+        # "no appointments in November" said with nothing looked up).
+        horizon_days = min(max(horizon_days, (exact_date - now.date()).days + 2), 365)
     from_date = now.isoformat()
     to_date = (now + timedelta(days=horizon_days)).isoformat()
 
@@ -8937,7 +9742,7 @@ def resolve_available_day(
     # TypeError - CONFIRMED REAL PRODUCTION CRASH: "can't compare
     # offset-naive and offset-aware datetimes" at `dt <= lead_time`,
     # which took down the whole turn.
-    lead_time = now.replace(tzinfo=None) + timedelta(hours=12)  # 12h minimum advance booking lead
+    lead_time = _booking_lead_time(now)
     after_dt = None
     if after_date:
         try:
@@ -8968,6 +9773,8 @@ def resolve_available_day(
         if dt.weekday() != target_weekday:
             continue
         if after_dt and dt.date() <= after_dt:
+            continue
+        if exact_date and dt.date() != exact_date:
             continue
         candidates.append((dt, wire_dt))
 
@@ -9091,7 +9898,7 @@ def resolve_available_day(
     # 04/10 and 11/10 Sundays had nothing open - and the reply showed
     # 18/10's times as if it were the Sunday they asked for. Said only
     # when it happened, so it costs nothing otherwise.
-    skipped = _nearer_weekday_dates(lead_time.date(), after_dt, target_weekday, chosen_date)
+    skipped = [] if exact_date else _nearer_weekday_dates(lead_time.date(), after_dt, target_weekday, chosen_date)
     if skipped:
         result["nearer_dates_without_slots"] = [
             f"{_display_weekday(d.isoformat(), language)} {_display_date(d.isoformat())}" for d in skipped
@@ -9155,6 +9962,43 @@ def _weekdays_with_open_slots(state, base_url: str, doctor_id: str, branch_id: s
         return None
 
     return {slot.weekday() for slot in slots}
+
+
+def _open_slot_spans(state, base_url: str, doctor_id: str, branch_id: str,
+                     timezone_name: str, window_days: int):
+    """Open slots at this branch within the booking window, as
+    [(start, end, service_name)] in clinic-local time, or None when the
+    lookup failed. Same query as `_open_slots_on_day`, keeping the end
+    and the service so a weekday can be shown with its real hours."""
+
+    try:
+        tz = ZoneInfo(timezone_name)
+    except Exception:
+        tz = ZoneInfo(DEFAULT_TIMEZONE)
+    now_local = datetime.now(tz)
+    result = api.get_doctor_schedule_slots(
+        base_url, doctor_ids=[doctor_id], branch_ids=[branch_id],
+        from_date=now_local.isoformat(),
+        to_date=(now_local + timedelta(days=window_days)).isoformat(),
+        is_booked=False, page_size=200, language=conversation_language(state),
+    )
+    if not result["success"]:
+        logger.warning("_open_slot_spans: lookup failed (status_code=%s)", result.get("status_code"))
+        return None
+    now_naive = _local_now_naive(timezone_name)
+    spans = []
+    for item in (result["data"] or {}).get("items", []):
+        if item.get("isBooked") is True:
+            continue
+        start, end = (to_clinic_local(item.get(k), timezone_name) for k in ("slotStart", "slotEnd"))
+        try:
+            start_dt = datetime.fromisoformat(start) if start else None
+            end_dt = datetime.fromisoformat(end) if end else start_dt
+        except ValueError:
+            continue
+        if start_dt and start_dt > now_naive:
+            spans.append((start_dt, end_dt, _service_name(item, conversation_language(state))))
+    return sorted(spans, key=lambda s: s[0])
 
 
 _ARABIC_WEEKDAY_BY_INDEX = {
@@ -9250,6 +10094,7 @@ def _mark_fully_booked_schedule_days(state, base_url: str, doctor_id: str,
     today = datetime.now(tz).date()
 
     open_weekdays_by_branch = {}
+    spans_by_branch = {}
 
     for row in schedules:
         branch_id = row.get("branchId")
@@ -9268,9 +10113,13 @@ def _mark_fully_booked_schedule_days(state, base_url: str, doctor_id: str,
         starts_on = _schedule_row_effective_from(row)
 
         if branch_id not in open_weekdays_by_branch:
-            open_weekdays_by_branch[branch_id] = _weekdays_with_open_slots(
+            spans = _open_slot_spans(
                 state, base_url, doctor_id, branch_id, timezone_name,
                 DOCTOR_AVAILABILITY_WINDOW_DAYS,
+            )
+            spans_by_branch[branch_id] = spans
+            open_weekdays_by_branch[branch_id] = (
+                None if spans is None else {start.weekday() for start, _end, _svc in spans}
             )
 
         open_weekdays = open_weekdays_by_branch[branch_id]
@@ -9300,7 +10149,65 @@ def _mark_fully_booked_schedule_days(state, base_url: str, doctor_id: str,
             names, branch_id, DOCTOR_AVAILABILITY_WINDOW_DAYS,
         )
 
-    return schedules
+    return schedules + _rows_for_open_days_off_the_rota(schedules, spans_by_branch)
+
+
+def _rows_for_open_days_off_the_rota(schedules: list, spans_by_branch: dict) -> list:
+    """Rows for weekdays that HAVE open slots at a branch but appear on
+    none of that branch's rota rows - with the hours the slots really
+    run.
+
+    CONFIRMED (tanasuq-production, 2026-10-10 12:46): د. أحمد يوسف's
+    schedule at المنار read Sunday/Monday/Tuesday, and the very next turn's
+    bookable days were Wednesday 14/10, Thursday 15/10 and Saturday 17/10.
+    The rota and the bookable slots are two different records in the
+    clinic's system; what the patient can book is the slots, so the days
+    shown are made to include every day they can actually book."""
+
+    covered: dict = {}
+    template: dict = {}
+    for row in schedules:
+        branch_id = row.get("branchId")
+        if not branch_id:
+            continue
+        template.setdefault(branch_id, row)
+        for name in row.get("recurringDaysNames") or []:
+            index = _ENGLISH_WEEKDAY_INDEX.get(str(name).strip().lower())
+            if index is not None:
+                covered.setdefault(branch_id, set()).add(index)
+
+    added = []
+    for branch_id, spans in spans_by_branch.items():
+        if not spans or branch_id not in template:
+            continue
+        by_weekday: dict = {}
+        for start, end, service in spans:
+            by_weekday.setdefault(start.weekday(), []).append((start, end, service))
+        for weekday in sorted(by_weekday):
+            if weekday in covered.get(branch_id, set()):
+                continue
+            day_spans = by_weekday[weekday]
+            first = day_spans[0][0]
+            earliest = min(s[0].time() for s in day_spans)
+            latest = max((s[1] or s[0]).time() for s in day_spans)
+            services = [s[2] for s in day_spans if s[2]]
+            row = dict(template[branch_id])
+            row.update({
+                "recurringDaysNames": [_ENGLISH_WEEKDAY_BY_INDEX[weekday]],
+                "fromDateTime": datetime.combine(first.date(), earliest).isoformat(),
+                "toDateTime": datetime.combine(first.date(), latest).isoformat(),
+                "serviceName": max(set(services), key=services.count) if services else row.get("serviceName"),
+                "effectiveFrom": None,
+                "fully_booked": False,
+                "from_open_slots": True,
+            })
+            added.append(row)
+            logger.info(
+                "_rows_for_open_days_off_the_rota: branch %s has open slots on %s, which no rota "
+                "row lists - showing it with the slots' hours",
+                branch_id, _ENGLISH_WEEKDAY_BY_INDEX[weekday],
+            )
+    return added
 
 
 def _parse_iso_date(value):
@@ -9542,7 +10449,7 @@ def list_available_days_for_booking(
 
     session_id = state.get("session_id")
     session = _get_booking_session(session_id)
-    doctor_id = session.get("doctor_id")
+    doctor_id = session.get("doctor_id") or _confirm_doctor_picked_from_shown_list(state)
     branch_id = session.get("branch_id")
 
     if not doctor_id:
@@ -9705,7 +10612,7 @@ def list_available_days_for_booking(
     horizon_days = 42  # same booking window resolve_available_day uses
     # Naive for the same reason as resolve_available_day's - it is
     # compared against wall-clock slot times.
-    lead_time = now.replace(tzinfo=None) + timedelta(hours=12)  # same 12h minimum advance lead
+    lead_time = _booking_lead_time(now)
 
     result = api.get_doctor_schedule_slots(
         base_url, doctor_ids=[doctor_id], branch_ids=[branch_id],
@@ -9765,6 +10672,24 @@ def list_available_days_for_booking(
     offset = max(0, offset)
     limit = max(1, limit)
 
+    # "MORE DAYS" CONTINUE AFTER THE DAYS ON SCREEN, whatever offset the
+    # model passed - it guessed 3 after a list of one (2026-10-12 11:43).
+    shown_days = [str(i.get("date"))[:10] for i in ((session.get("last_list") or {}).get("items") or [])
+                  if (session.get("last_list") or {}).get("entity_type") == "day" and i.get("date")]
+    # NOT when they named a day: "اليوم" with today over is answered with
+    # the nearest days again, not the ones after the list. CONFIRMED
+    # (tanasuq-production 2026-10-12 17:05): 13-15/10 were on screen, today
+    # was over, and the reply showed 17-19/10 as if they had asked for more.
+    try:
+        _named_a_day = _patient_names_a_day(state, _local_now_naive(
+            (state.get("templates") or {}).get("_timezone", DEFAULT_TIMEZONE)).date())
+    except Exception:  # noqa: BLE001
+        _named_a_day = False
+    if _named_a_day:
+        offset = 0
+    elif offset > 0 and shown_days:
+        offset = sum(1 for d in all_dates if d <= max(shown_days))
+
     if offset >= len(all_dates):
         # The patient has already been shown every available day and
         # asked for more - say so plainly rather than silently repeating
@@ -9790,7 +10715,6 @@ def list_available_days_for_booking(
     # is your appointment" something the next turn can actually honour.
     verified_calls = 0
     MAX_VERIFY_CALLS = 8
-    consumed = 0
 
     # ONE DATE PER WEEKDAY.
     #
@@ -9812,22 +10736,15 @@ def list_available_days_for_booking(
     # old `limit=1` produced, arrived at because it is true rather than
     # by capping the list.
     seen_weekdays = set()
+    picked: set = set()
+    candidates = all_dates[offset:]
 
-    for date_iso in all_dates[offset:]:
-        if len(days) >= limit:
-            break
-
+    def _try_day(date_iso):
+        nonlocal verified_calls
         slot_times = sorted(by_date[date_iso])
         first = slot_times[0]
-
-        if first.weekday() in seen_weekdays:
-            consumed += 1
-            continue
-
         day_start = datetime.combine(first.date(), datetime.min.time(), tzinfo=first.tzinfo)
         day_end = datetime.combine(first.date(), datetime.max.time().replace(microsecond=0), tzinfo=first.tzinfo)
-
-        consumed += 1
 
         if verified_calls < MAX_VERIFY_CALLS:
             verified_calls += 1
@@ -9843,17 +10760,13 @@ def list_available_days_for_booking(
                     "offering a date that cannot be booked",
                     date_iso,
                 )
-                continue
+                return None
 
             if real_slots:
-                # Describe the day from the per-day lookup, which is what
-                # the patient will actually be shown next.
                 slot_times = real_slots
                 first = slot_times[0]
 
-        seen_weekdays.add(first.weekday())
-
-        days.append({
+        return {
             "date": date_iso,
             "weekday_name": english_weekday_names[first.weekday()],
             "weekday_display": _display_weekday(first.isoformat(), language),
@@ -9863,7 +10776,31 @@ def list_available_days_for_booking(
             "lastTime": _display_time_12h(slot_times[-1].isoformat(), language),
             "from_date": day_start.isoformat(),
             "to_date": day_end.isoformat(),
-        })
+        }
+
+    # First the doctor's different weekdays, then - when there are not
+    # enough of them to fill the list - the same weekday in the following
+    # weeks. CONFIRMED (2026-10-12 11:43): a Monday-only doctor had seven
+    # bookable Mondays; one was shown, the other six were counted as
+    # "shown" by the one-per-weekday rule, and "more days?" got "ما فيش
+    # مواعيد متاحة".
+    for second_pass in (False, True):
+        for date_iso in candidates:
+            if len(days) >= limit:
+                break
+            if date_iso in picked:
+                continue
+            weekday = date.fromisoformat(date_iso).weekday()
+            if not second_pass and weekday in seen_weekdays:
+                continue
+            picked.add(date_iso)
+            day = _try_day(date_iso)
+            if day is None:
+                continue
+            seen_weekdays.add(weekday)
+            days.append(day)
+
+    days.sort(key=lambda d: d["date"])
 
     if not days:
         logger.warning(
@@ -9873,7 +10810,9 @@ def list_available_days_for_booking(
         )
         return {"status": "not_found" if offset == 0 else "no_more_days"}
 
-    shown_through = offset + consumed
+    # The next page starts after the LAST day shown - nothing between is
+    # skipped for good.
+    shown_through = sum(1 for d in all_dates if d <= days[-1]["date"])
 
     # REMEMBER THE DAYS, exactly as they are about to be shown.
     #
@@ -9961,6 +10900,49 @@ def _review_card_was_shown(state: AgentState) -> bool:
     return False
 
 
+def _name_is_the_doctor(session: dict, patient_full_name: str) -> bool:
+    """True when the "patient" name is the doctor's own name (every word of
+    it appears in the chosen doctor's name). CONFIRMED (tanasuq-production,
+    2026-10-06 14:02): a review card went out with الاسم: عمر المديفر - the
+    doctor being booked - because the name asked for was never supplied."""
+
+    doctor = (session or {}).get("doctor_display_name") or ""
+    given = set(re.findall(r"[^\W\d_]{2,}", _normalize_arabic(patient_full_name or "").lower(), re.UNICODE))
+    doctor_words = set(re.findall(r"[^\W\d_]{2,}", _normalize_arabic(doctor).lower(), re.UNICODE))
+    doctor_words -= {"د", "دكتور", "الدكتور", "dr"}
+    return bool(given) and bool(doctor_words) and given <= doctor_words
+
+
+_REPLY_NAME_RE = re.compile(r"(?:اسمي|إسمي|أسمي|الاسم|الإسم|اسم|إسم|my name is|name is)\s*[:\-]?\s*([^\n،,.!؟?]+)", re.IGNORECASE)
+_REPLY_EMAIL_RE = re.compile(r"[\w.+\-]+@[\w\-]+\.[\w.\-]+")
+
+
+def _review_reply_corrects_card(state: AgentState, card_name: str, card_email: str = "") -> str:
+    """"name" / "email" when the patient's latest message carries a value
+    that differs from the review card, else "". A yes that also supplies a
+    different name or email is a correction, not a confirmation."""
+
+    humans = [m for m in (state.get("messages") or []) if getattr(m, "type", None) == "human"]
+    if not humans:
+        return ""
+    content = getattr(humans[-1], "content", "")
+    text = content if isinstance(content, str) else str(content)
+
+    def tokens(value: str) -> set:
+        return set(re.findall(r"[^\W\d_]{2,}", _normalize_arabic(value or "").lower(), re.UNICODE))
+
+    named = _REPLY_NAME_RE.search(text)
+    if named:
+        given, on_card = tokens(named.group(1)), tokens(card_name)
+        if given and on_card and not (given & on_card):
+            return "name"
+
+    for found in _REPLY_EMAIL_RE.findall(text):
+        if card_email and found.lower() != card_email.strip().lower():
+            return "email"
+    return ""
+
+
 @tool
 def confirm_booking_review(
     state: Annotated[AgentState, InjectedState],
@@ -10016,7 +10998,37 @@ def confirm_booking_review(
         )
         return {"status": "card_not_shown"}
 
+    correction = _review_reply_corrects_card(state, patient_full_name, email)
+    if correction:
+        # CONFIRMED IN PRODUCTION (tanasuq, 2026-10-06 21:25): the card showed
+        # "لطيفه الجربوع" and the patient answered "نعم إسم خالد النصيان".
+        # The yes was taken and the booking went out under the wrong person.
+        logger.warning(
+            "confirm_booking_review: refusing for session_id=%s - the patient's reply "
+            "corrects the card (%s); card name=%r email=%r",
+            session_id, correction, patient_full_name, email,
+        )
+        return {
+            "status": "card_corrected_by_patient",
+            "correction": correction,
+            "instruction": (
+                "The patient's reply is NOT a plain yes - it gives a different "
+                f"{correction}. Do not confirm or book. Use the value the patient just "
+                "wrote, show the review card again with it, and wait for a new yes."
+            ),
+        }
+
     session = _get_booking_session(session_id)
+    if _name_is_the_doctor(session, patient_full_name):
+        logger.warning(
+            "confirm_booking_review: refusing for session_id=%s - patient_full_name=%r is the "
+            "doctor's own name", session_id, patient_full_name,
+        )
+        return {
+            "status": "missing_patient_name",
+            "instruction": "That is the DOCTOR's name, not the patient's. Ask the patient for "
+                           "their own full name before showing the review card.",
+        }
     if not session.get("selected_slot"):
         # CONFIRMED IN PRODUCTION (2026-09-30 12:22): a review card was
         # built with the doctor's working hours as the "time" because no
@@ -10081,15 +11093,19 @@ def _is_failed_slot(session: dict, doctor_id, branch_id, slot_start: str) -> boo
     )
 
 
-def _patient_booking_at(state: AgentState, mobile_number: str, slot_start: str, doctor_id) -> Optional[dict]:
+def _patient_booking_at(state: AgentState, mobile_number: str, slot_start: str, doctor_id,
+                        same_day: bool = False) -> Optional[dict]:
     """The patient's own active booking with this doctor at exactly this
-    instant, or None. Best-effort: any lookup failure returns None so the
+    instant - or, with `same_day`, at any time on that slot's clinic-local
+    date - or None. Best-effort: any lookup failure returns None so the
     caller falls back to its normal failure reply."""
 
     base_url = _cms_base_url(state)
     phone = normalize_phone_number(mobile_number, state) or mobile_number
     if not base_url or not phone or not slot_start:
         return None
+    timezone_name = (state.get("templates") or {}).get("_timezone") or DEFAULT_TIMEZONE
+    slot_day = (to_clinic_local(slot_start, timezone_name) or "")[:10]
     try:
         result = api.get_bookings_by_phone(
             base_url, phone, language=conversation_language(state),
@@ -10110,9 +11126,42 @@ def _patient_booking_at(state: AgentState, mobile_number: str, slot_start: str, 
             continue
         if doctor_id and item.get("doctorId") and str(item.get("doctorId")) != str(doctor_id):
             continue
-        if _same_instant(item.get("bookingTimeFrom"), slot_start):
+        if same_day:
+            if slot_day and (to_clinic_local(item.get("bookingTimeFrom"), timezone_name) or "")[:10] == slot_day:
+                return item
+        elif _same_instant(item.get("bookingTimeFrom"), slot_start):
             return item
     return None
+
+
+def _patient_booking_that_day(state: AgentState, mobile_number: str, slot_start: str, doctor_id) -> Optional[dict]:
+    """A refused booking explained by the patient's OWN booking with this
+    doctor on that day: {"status": "patient_has_booking_that_day",
+    "appointment": {...}}, or None.
+
+    tanasuq-production, 2026-10-10 (from the patient's screenshot - no log
+    survived): after the patient's "Yes" the reservation was refused, and
+    the replies relayed it as "you already have a booking with Dr. Samar
+    Alkhelfi on the same day". A refusal that is not about the patient's
+    details came back as "invalid_details", so they were asked for their
+    name and email again, and finally told "it is already confirmed" for
+    a 12:00 the clinic says it never held. They turned up at 12:00. The
+    booking the clinic does hold, if any, is looked up and shown as it
+    is."""
+
+    existing = _patient_booking_at(state, mobile_number, slot_start, doctor_id, same_day=True)
+    if not existing:
+        return None
+    timezone_name = (state.get("templates") or {}).get("_timezone") or DEFAULT_TIMEZONE
+    logger.warning(
+        "create_new_booking: refused - the patient already holds booking id=%s ref=%s with this "
+        "doctor on that day (session_id=%s)",
+        existing.get("id"), existing.get("bookingRefNum"), state.get("session_id"),
+    )
+    return {
+        "status": "patient_has_booking_that_day",
+        "appointment": _shape_appointment(existing, timezone_name, conversation_language(state)),
+    }
 
 
 def _success_if_patient_already_booked(state: AgentState, session_id, mobile_number: str, slot_start: str, doctor_id) -> Optional[dict]:
@@ -10166,6 +11215,8 @@ def create_new_booking(
     {"status": "slot_unavailable"}
     {"status": "missing_doctor"} / {"status": "missing_branch"}
     {"status": "invalid_details", "rejected": [{"field": ..., "message": ...}]}
+    {"status": "patient_has_booking_that_day", "appointment": {...}}
+    {"status": "booking_refused", "reason": [...]}
     {"status": "phone_not_verified"}
     {"status": "missing_patient_name"}
     {"status": "not_configured"} / {"status": "error"}"""
@@ -10205,7 +11256,7 @@ def create_new_booking(
     # returned that very slot as "2026-09-14T07:24:00+00:00". The
     # patient was told 10:24 was no longer available, picked it again,
     # and was told the same thing. The booking never completed.
-    locked_slot = _selected_slot(state)
+    locked_slot = _slot_the_patient_agreed_to(state, _selected_slot(state), "selected_slot")
     if locked_slot and locked_slot.get("slotStart"):
         if not _same_instant(slot_start, locked_slot.get("slotStart")):
             logger.warning(
@@ -10254,6 +11305,12 @@ def create_new_booking(
             "create_new_booking: refusing to book with patient_full_name=%r "
             "(session_id=%s) - not a real full name (need at least 2 parts)",
             patient_full_name, session_id,
+        )
+        return {"status": "missing_patient_name"}
+    if _name_is_the_doctor(_get_booking_session(session_id), patient_full_name):
+        logger.warning(
+            "create_new_booking: refusing - patient_full_name=%r is the doctor's own name "
+            "(session_id=%s)", patient_full_name, session_id,
         )
         return {"status": "missing_patient_name"}
 
@@ -10477,6 +11534,9 @@ def create_new_booking(
         already = _success_if_patient_already_booked(state, session_id, normalized_mobile, slot_start, doctor_id)
         if already:
             return already
+        that_day = _patient_booking_that_day(state, normalized_mobile, slot_start, doctor_id)
+        if that_day:
+            return that_day
         # Never offer this exact slot again in this booking - but only
         # when the API actually REFUSED it (4xx, or 200 with isSuccess=false).
         # A timeout/5xx says nothing about the slot, and a rejection of the
@@ -10501,8 +11561,17 @@ def create_new_booking(
         # time on something they could fix in one message. Pass the
         # rejected field(s) back so the reply can name what needs
         # correcting instead of blaming a generic outage.
-        if result.get("error") == "validation_error" and details:
+        if result.get("error") == "validation_error" and details and patient_field_rejected:
             return {"status": "invalid_details", "rejected": details}
+        # REFUSED, AND NOT FOR THE PATIENT'S DETAILS. Reported as
+        # invalid_details, this sent the patient back to re-type a name
+        # and email that were never the problem (tanasuq-production,
+        # 2026-10-10 - see `_patient_booking_that_day`).
+        if api_refused:
+            return {
+                "status": "booking_refused",
+                "reason": [d.get("message") for d in details if d.get("message")],
+            }
         return {"status": "error"}
 
     new_booking_id = result["data"]
@@ -10571,7 +11640,7 @@ def get_doctor_schedule_for_booking(
 
     session_id = state.get("session_id")
     session = _get_booking_session(session_id)
-    doctor_id = session.get("doctor_id")
+    doctor_id = session.get("doctor_id") or _confirm_doctor_picked_from_shown_list(state)
 
     if not doctor_id:
         return {"status": "missing_doctor"}
@@ -10930,6 +11999,19 @@ def get_available_slots_for_booking(
 
     if not slots:
         logger.info("get_available_slots_for_booking: not_found - all slots were in the past relative to now")
+        day_iso = str(from_date or "")[:10]
+        _remember_empty_day(session, doctor_id, day_iso)
+        try:
+            is_today = day_iso == _local_now_naive(timezone_name).date().isoformat()
+        except Exception:  # noqa: BLE001
+            is_today = False
+        if is_today:
+            return {
+                "status": "not_found",
+                "day": "today",
+                "_guidance": "Today's appointments with this doctor are over. Say that in one line, "
+                             "then call list_available_days_for_booking (offset 0) and show the nearest days.",
+            }
         return {"status": "not_found"}
 
     # Never re-offer a slot that already failed to book in this booking -
@@ -11035,6 +12117,7 @@ def select_appointment_slot(state: Annotated[AgentState, InjectedState], user_in
     slots = last_list.get("items") or []
 
     wanted_time = _parse_clock_time(user_input)
+    slots = _full_day_for_a_time_off_the_short_list(session, slots, wanted_time, user_input)
 
     position = _extract_selection_number(user_input)
     if position is not None:
@@ -11063,6 +12146,14 @@ def select_appointment_slot(state: Annotated[AgentState, InjectedState], user_in
                 )
                 return {"status": "out_of_range", "list_size": len(slots)}
         else:
+            both = _position_or_hour(slots, position, wanted_time)
+            if both:
+                logger.info(
+                    "select_appointment_slot: %r is option %d (%s) or the hour %s - asking which",
+                    user_input, position, both[0].get("time_display"), both[1].get("time_display"),
+                )
+                return {"status": "ambiguous_pick",
+                        "candidates": [dict(slot) for slot in both]}
             chosen = slots[position - 1]
     else:
         # Not a number - match the TIME they typed against each
@@ -11094,6 +12185,7 @@ def select_appointment_slot(state: Annotated[AgentState, InjectedState], user_in
                     user_input, len(by_time),
                     [slot.get("time_display") for slot in by_time],
                 )
+                _remember_ambiguous_slots(state, session, slots, by_time)
                 return {
                     "status": "ambiguous_time",
                     "candidates": [dict(slot) for slot in by_time],
@@ -11176,6 +12268,22 @@ def find_best_doctor_in_specialty(
     criteria = (criteria or "soonest").strip().lower()
     if criteria not in ("soonest", "cheapest"):
         criteria = "soonest"
+    # "Cheapest" is a price, and a price is only given when asked.
+    # CONFIRMED (tanasuq-production, 2026-10-10 20:48, 966500096796):
+    # "ابي الافضل والموعد الاقرب" was answered with the soonest doctor AND
+    # "أرخص دكتور ... 150 ريال" - nobody had asked about cost.
+    if criteria == "cheapest" and not _fees_requested(state):
+        logger.warning(
+            "find_best_doctor_in_specialty: cheapest refused for session_id=%s - the "
+            "patient has not asked about price", state.get("session_id"),
+        )
+        return {
+            "status": "not_requested",
+            "instruction": (
+                "The patient did NOT ask about price. Do not search by price and do not "
+                "mention any fee - answer what they asked (e.g. the soonest appointment)."
+            ),
+        }
 
     base_url = _doctors_base_url(state)
     if not base_url:
@@ -11189,22 +12297,24 @@ def find_best_doctor_in_specialty(
     )
 
     if _unresolved and not specialty_ids:
-        logger.error(
-            "find_best_doctor_in_specialty: every specialty_ids entry was "
-            "unresolvable (%s)", _unresolved,
-        )
-        return {
-            "status": "specialty_not_resolved",
-            "specialty_name": _unresolved[0],
-            "doctors": [],
-        }
+        raw_doctors = _doctors_with_degree(state, base_url, _unresolved[0])
+        if not raw_doctors:
+            logger.error(
+                "find_best_doctor_in_specialty: every specialty_ids entry was "
+                "unresolvable (%s), as a specialty and as a degree", _unresolved,
+            )
+            return {
+                "status": "specialty_not_resolved",
+                "specialty_name": _unresolved[0],
+                "doctors": [],
+            }
+    else:
+        doctors_result = api.get_doctors(base_url, specialty_ids=specialty_ids, page_size=200, language=conversation_language(state))
+        if not doctors_result["success"]:
+            logger.error("find_best_doctor_in_specialty: get_doctors failed: status_code=%s error=%s", doctors_result.get("status_code"), doctors_result.get("error"))
+            return _api_error(doctors_result)
 
-    doctors_result = api.get_doctors(base_url, specialty_ids=specialty_ids, page_size=200, language=conversation_language(state))
-    if not doctors_result["success"]:
-        logger.error("find_best_doctor_in_specialty: get_doctors failed: status_code=%s error=%s", doctors_result.get("status_code"), doctors_result.get("error"))
-        return _api_error(doctors_result)
-
-    raw_doctors = (doctors_result["data"] or {}).get("items", [])
+        raw_doctors = (doctors_result["data"] or {}).get("items", [])
     doctors = [d for d in raw_doctors if d.get("hasSlots") is not False]
     logger.info(
         "find_best_doctor_in_specialty: specialty_ids=%s criteria=%s api_returned=%d after_hasSlots_filter=%d",
@@ -11242,23 +12352,54 @@ def find_best_doctor_in_specialty(
             doctor_ids, now.isoformat(), horizon.isoformat(), len(raw_slot_items),
         )
 
-        best = None
-        for item in raw_slot_items:
-            if item.get("isBooked"):
-                continue
-            slot_start = to_clinic_local(item.get("slotStart"), timezone_name)
-            if not slot_start:
-                continue
-            try:
-                dt = datetime.fromisoformat(slot_start)
-            except ValueError:
-                continue
-            # `slot_start` is wall-clock (naive); `now` is aware. Compare
-            # like with like - see the lead_time note above.
-            if dt <= now.replace(tzinfo=None):
-                continue
-            if best is None or dt < best[0]:
-                best = (dt, item)
+        def _soonest(items):
+            best = None
+            for item in items:
+                if item.get("isBooked"):
+                    continue
+                slot_start = to_clinic_local(item.get("slotStart"), timezone_name)
+                if not slot_start:
+                    continue
+                try:
+                    dt = datetime.fromisoformat(slot_start)
+                except ValueError:
+                    continue
+                # `slot_start` is wall-clock (naive); `now` is aware. Compare
+                # like with like - see the lead_time note above.
+                if dt <= now.replace(tzinfo=None):
+                    continue
+                if best is None or dt < best[0]:
+                    best = (dt, item)
+            return best
+
+        best = _soonest(raw_slot_items)
+
+        # NOTHING FOR THE WHOLE SPECIALTY IS CHECKED DOCTOR BY DOCTOR before
+        # it is believed. CONFIRMED (tanasuq-production, 2026-10-14 13:35,
+        # 966508800894): eleven psychotherapists had just been listed as
+        # available, and the soonest search then answered that none of them
+        # had an appointment. One request for many doctors is the one step
+        # here that a single doctor's lookup does not share.
+        if not best and len(doctor_ids) > 1:
+            logger.warning(
+                "find_best_doctor_in_specialty (soonest): nothing for %d doctors in one request - "
+                "checking each doctor on their own", len(doctor_ids),
+            )
+            one_by_one = []
+            for one_id in doctor_ids[:20]:
+                single = api.get_doctor_schedule_slots(
+                    base_url, doctor_ids=[one_id],
+                    from_date=now.isoformat(), to_date=horizon.isoformat(),
+                    is_booked=False, page_size=1000,
+                    language=conversation_language(state),
+                )
+                if single.get("success"):
+                    one_by_one.extend((single.get("data") or {}).get("items", []))
+            best = _soonest(one_by_one)
+            logger.info(
+                "find_best_doctor_in_specialty (soonest): doctor by doctor -> %d item(s), %s",
+                len(one_by_one), "found" if best else "still nothing",
+            )
 
         if not best:
             logger.info("find_best_doctor_in_specialty (soonest): not_found - none of %d raw item(s) qualified after filtering", len(raw_slot_items))
@@ -11884,6 +13025,14 @@ def share_branch_location(
             text = content if isinstance(content, str) else str(content or "")
 
             if msg_type == "human":
+                # The latest message was already judged above. It is still
+                # in `history` when the tool call is not the last message,
+                # and judged again here it ended the walk as "a different
+                # topic" - CONFIRMED (tanasuq-production, 2026-10-07 10:19):
+                # "ارسل رابط" right after the branch address was refused
+                # ("ما أقدر أرسل رابط الموقع") though the address WAS the topic.
+                if text.strip() and text.strip() == latest_text.strip():
+                    continue
                 if _LOCATION_REQUEST_CUE_RE.search(text):
                     location_asked = True
                     break
@@ -11906,6 +13055,7 @@ def share_branch_location(
         )
         return {"status": "not_requested", "reason": "no_explicit_location_request"}
 
+    branch_name = _pin_branch(state, branch_name)
     logger.info(
         "share_branch_location: session_id=%s client_id=%s branch_name=%r",
         state.get("session_id"), state.get("client_id"), branch_name,
@@ -11917,6 +13067,64 @@ def share_branch_location(
     # out of the raw message history.
     _remember_branch_name(state, branch_name)
     return {"status": "location_requested", "branch_name": branch_name}
+
+
+def _branch_key(name) -> str:
+    text = _normalize_arabic(str(name or ""))
+    for filler in ("فرع", "حي", "branch"):
+        text = re.sub(r"(?:^|\s)" + filler + r"(?:\s|$)", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _configured_branch_names(state: AgentState) -> list:
+    """The clinic's own branch names: its n8n `branches` field, then every
+    branch a tool returned in this conversation."""
+
+    names = []
+    raw = (state.get("raw_client_config") or {}).get("branches")
+    if isinstance(raw, str):
+        names.extend(re.split(r"[,،;|\n]+", raw))
+    elif isinstance(raw, list):
+        names.extend(item.get("name") if isinstance(item, dict) else item for item in raw)
+    names.extend(sorted(get_known_entity_names(state.get("session_id"), "branch")))
+    out, seen = [], set()
+    for name in names:
+        name = str(name or "").strip().strip("\"'[]{}")
+        key = _branch_key(name)
+        if len(key) >= 2 and key not in seen and "{" not in name and ":" not in name:
+            seen.add(key)
+            out.append(name)
+    return out
+
+
+def _pin_branch(state: AgentState, branch_name: str) -> str:
+    """The branch whose pin is sent: the ONE branch the patient's own
+    location request names, when the model passed another; and the
+    clinic's own spelling of it, which is what n8n looks up.
+
+    CONFIRMED (tanasuq-production, 2026-10-13 12:54): "ابي موقع تناسق حي
+    النزهه" was answered with فرع النزهة's address and المنار's pin."""
+
+    configured = _configured_branch_names(state)
+    if not configured:
+        return branch_name
+    asked_in = ""
+    for msg in reversed(state.get("messages") or []):
+        if getattr(msg, "type", None) == "human":
+            text = str(getattr(msg, "content", "") or "")
+            if _LOCATION_REQUEST_CUE_RE.search(text.lower()):
+                asked_in = text
+                break
+    folded = f" {_branch_key(asked_in)} "
+    named = list({_branch_key(n): n for n in configured if f" {_branch_key(n)} " in folded}.values())
+    if len(named) == 1 and _branch_key(named[0]) != _branch_key(branch_name):
+        logger.warning(
+            "share_branch_location: the patient asked for %r - pin sent for it, not for %r",
+            named[0], branch_name,
+        )
+        return named[0]
+    same = next((n for n in configured if _branch_key(n) == _branch_key(branch_name)), None)
+    return same or branch_name
 
 
 ALL_TOOLS = [

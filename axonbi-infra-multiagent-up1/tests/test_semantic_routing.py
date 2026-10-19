@@ -226,7 +226,7 @@ def test_the_unsure_paraphrase_is_offered_exactly_its_candidates(session_id, llm
     ctx_reader.add(msg, R("cancel", is_ambiguous=True, confidence=0.5, alternatives=["cancel", "reschedule"]))
     result = send(session_id, msg)
     # Exactly the two candidates, as one natural question.
-    assert "تحب نلغي الموعد، ولا نأجله ليوم تاني؟" in result["reply"]
+    assert "تحب أحولك لخدمة العملاء، ولا تحب نأجل موعدك؟" in result["reply"]
     assert len(llm.calls) == 0, "a clarification is written in code - no specialist call"
 
 
@@ -645,7 +645,7 @@ def test_cant_come_asks_cancel_or_move_instead_of_guessing(session_id, llm, ctx_
     ctx_reader.add("مش هعرف اجي بكره", R("cancel", is_ambiguous=True, confidence=0.5,
                                           alternatives=["cancel", "reschedule"]))
     result = send(session_id, "مش هعرف اجي بكره")
-    assert "تحب نلغي الموعد، ولا نأجله ليوم تاني؟" in result["reply"]
+    assert "تحب أحولك لخدمة العملاء، ولا تحب نأجل موعدك؟" in result["reply"]
     assert len(llm.calls) == 0
     assert state_of(session_id)["active_agent"] != "cancel", "guessed cancel"
 

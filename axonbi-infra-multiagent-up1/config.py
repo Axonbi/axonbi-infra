@@ -257,6 +257,10 @@ DEFAULT_TIMEZONE: str = os.getenv("DEFAULT_TIMEZONE", "Asia/Riyadh")
 #                    (always succeeds; TEST_OTP is accepted as correct)
 #   "authentica"  -> mirrors send_otp5 / verify_otp5 in
 #                    langchain_cancellation.json (api.authentica.sa)
+#   "smsmisr"     -> SMS Misr OTP API (smsmisr.com/api/OTP/). Unlike
+#                    Authentica, SMS Misr only DELIVERS the code: we
+#                    generate it ourselves, store it in memory and verify
+#                    it locally (see tools.send_otp / verify_otp).
 # Defaults to "dummy" so the project runs end-to-end with no external
 # OTP credentials, exactly like the n8n dev setup that ships both a real
 # and a dummy OTP sub-workflow side by side.
@@ -272,6 +276,25 @@ AUTHENTICA_BASE_URL: str = os.getenv(
 AUTHENTICA_API_KEY: str = os.getenv("AUTHENTICA_API_KEY", "")
 AUTHENTICA_TEMPLATE_ID: str = os.getenv("AUTHENTICA_TEMPLATE_ID", "31")
 AUTHENTICA_FALLBACK_EMAIL: str = os.getenv("AUTHENTICA_FALLBACK_EMAIL", "")
+
+# SMS Misr (OTP_PROVIDER=smsmisr). Credentials come from the environment
+# only - never commit them.
+SMSMISR_BASE_URL: str = os.getenv("SMSMISR_BASE_URL", "https://smsmisr.com/api/OTP/")
+SMSMISR_ENVIRONMENT: str = os.getenv("SMSMISR_ENVIRONMENT", "1")  # 1 = live, 2 = test
+SMSMISR_USERNAME: str = os.getenv("SMSMISR_USERNAME", "")
+SMSMISR_PASSWORD: str = os.getenv("SMSMISR_PASSWORD", "")
+SMSMISR_SENDER: str = os.getenv("SMSMISR_SENDER", "")
+SMSMISR_TEMPLATE: str = os.getenv("SMSMISR_TEMPLATE", "")
+SMSMISR_OTP_LENGTH: int = int(os.getenv("SMSMISR_OTP_LENGTH", "6"))
+
+# OurSMS (OTP_PROVIDER=oursms, api.oursms.com). Like SMS Misr it only
+# delivers the code we generate and verify. Token from the environment
+# only - never commit it. OURSMS_BODY must contain "{code}".
+OURSMS_BASE_URL: str = os.getenv("OURSMS_BASE_URL", "https://api.oursms.com/msgs/sms")
+OURSMS_TOKEN: str = os.getenv("OURSMS_TOKEN", "")
+OURSMS_SENDER: str = os.getenv("OURSMS_SENDER", "")
+OURSMS_BODY: str = os.getenv("OURSMS_BODY", "رمز التحقق: {code} صالح لمدة 5 دقائق")
+OURSMS_OTP_LENGTH: int = int(os.getenv("OURSMS_OTP_LENGTH", "4"))
 
 # SMTP config for the Complaint Agent's send_complaint_email tool.
 # Per-clinic recipient list comes from client_config.csv's own
@@ -488,9 +511,13 @@ def llm_model_id(model: str) -> str:
 # convert itself into unverified output.
 OPENAI_TIMEOUT_SECONDS: float = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "45"))
 
-# Booking or moving an appointment TO the same calendar day is not offered:
-# the clinic needs notice. Set ALLOW_SAME_DAY_BOOKING=true to lift it.
-ALLOW_SAME_DAY_BOOKING: bool = os.getenv("ALLOW_SAME_DAY_BOOKING", "false").strip().lower() in ("1", "true", "yes", "on")
+# SAME-DAY BOOKING IS THE CMS'S CALL, PER DOCTOR. Each practitioner's own
+# booking rules (US_5.4.5.3: a cutoff of X hours before a slot, a maximum
+# number of cases per day) decide whether today's slots are bookable, and
+# the API returns only what may be booked. So today's open slots are
+# offered like any other day's. ALLOW_SAME_DAY_BOOKING=false brings back
+# the old blanket rule (no booking or moving TO today at all).
+ALLOW_SAME_DAY_BOOKING: bool = os.getenv("ALLOW_SAME_DAY_BOOKING", "true").strip().lower() in ("1", "true", "yes", "on")
 
 # Pinned rather than left to the API default of 1.0 - see the comment
 # on graph._llm. Every task this agent performs is closer to
@@ -1217,6 +1244,21 @@ def get_messages(client_id: str, dialect: Optional[str] = None, client_row_overr
          or (client_row.get("cms_base_url") or "").strip())
         and os.getenv("BOOKING_ON_CMS", "1").strip() != "0"
     )
+    # PATIENT DATA AS PLACEHOLDERS FOR THE MODEL - see pii_vault.py. Decided
+    # on the SERVER only, from the environment - the n8n row's `pii_tokens`
+    # is not read (2026-10-15). ON for every client unless:
+    #   PII_TOKENS=0                     off for everyone
+    #   PII_TOKENS_OFF_CLIENTS=a,b       off for these client ids
+    # PII_TOKENS_CLIENTS=a,b (or "*") is always on, whatever PII_TOKENS says.
+    # `pii_debug` true/1 in the n8n row logs what the model received, on
+    # every call - for a test flow only.
+    _client = str(client_id or "").strip()
+    _forced_on = {c.strip() for c in os.getenv("PII_TOKENS_CLIENTS", "").split(",") if c.strip()}
+    _off = {c.strip() for c in os.getenv("PII_TOKENS_OFF_CLIENTS", "").split(",") if c.strip()}
+    merged["_pii_tokens"] = ("*" in _forced_on or _client in _forced_on) or not (
+        os.getenv("PII_TOKENS", "1").strip() == "0" or _client in _off
+    )
+    merged["_pii_debug"] = str(client_row.get("pii_debug") or "").strip().lower() in ("1", "true", "yes", "on")
     # SSO account for cms-api, also per client. Keys are named after the env
     # vars, like CMS_API_BASE_URL. Anything missing falls back to the
     # environment (api._sso_settings).

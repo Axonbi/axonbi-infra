@@ -102,6 +102,11 @@ class TurnFacts:
     # The booking session already has a doctor chosen - a new booking is
     # really under way, so a correction belongs to it.
     booking_underway: bool = False
+    # Provenance over OUR OWN previous question: it offered a NEW booking
+    # ("تبغى أساعدك بحجز موعد جديد؟") - typically reschedule/cancel after
+    # the appointment turned out cancelled or past. A booking-shaped
+    # answer to it accepts that offer.
+    new_booking_offered: bool = False
 
 
 # WHAT THE MESSAGE DOES THIS TURN - derived in code from the reading, not
@@ -204,6 +209,13 @@ def turn_action(reading: Optional[dict], facts: TurnFacts) -> Optional[str]:
     if (facts.optional_question and (declines or facts.bare_refusal)
             and not carries_new_request(reading, flow)):
         return ACTION_ANSWER
+    # A BARE "لا" carries no new request, whatever the reading attached to
+    # it. CONFIRMED (2026-10-12 09:30): "لا" to the email question came back
+    # with entities_present [branch, date, doctor, time] - taken from the
+    # conversation, not the message - so the rule above passed it over, the
+    # review was blocked and the booking ended at "ما عندي مشكلة".
+    if facts.optional_question and facts.bare_refusal:
+        return ACTION_ANSWER
     if facts.bare_refusal and not confirms:
         return ACTION_DECLINE
     if (reading.get("changes_intent") and intent in SPECIALISTS + ("human",)
@@ -249,6 +261,18 @@ def owner(reading: dict, facts: TurnFacts, thresholds: Thresholds = Thresholds()
         # not start a booking, and "no" is never by itself a cancel.
         keeper = flow or CONCIERGE
         return keeper, f"semantic: declined the previous offer - {keeper} keeps it, nothing advances", None
+
+    if (flow in ("reschedule", "cancel") and facts.new_booking_offered and not reading.get("cancel_request")
+            and (intent == "booking" or reading.get("confirms"))):
+        # reschedule/cancel OFFERED a new booking (the appointment was
+        # cancelled or past), and the patient takes it - "حجز موعد", "نعم".
+        # Only booking holds create_new_booking. CONFIRMED (tanasuq-
+        # production 2026-10-12 12:34, session 966599991508): "حجز موعد"
+        # stayed in reschedule, which built the whole booking with no tool
+        # to finish it - the claim gate caught "✅ تم تأكيد حجز موعدك" and
+        # nothing was booked. "continuation - answer moves" keeps the
+        # doctor on file (graph._CONTINUATION_REASONS).
+        return "booking", f"semantic: continuation - answer moves {flow} into booking (accepts the new booking {flow} offered)", None
 
     if intent == "answer":
         # TOOL-CAPABILITY INVARIANT: the answer picks from a doctor or

@@ -64,6 +64,7 @@ import tools
 from prompts import build_agent_system_prompt, build_system_prompt
 from state import AgentState
 import llm_usage
+import pii_vault
 import tool_result_guidance
 import understanding
 
@@ -74,6 +75,39 @@ logger = logging.getLogger(__name__)
 # LLM (bound to every tool) - api.py/config.py's OPENAI_* settings,
 # UNCHANGED from the old project
 # ==========================================================
+
+class _PiiMasking:
+    """For a client with `pii_tokens` on, the model is sent placeholders
+    instead of patient data and the real values are put back in what it
+    returns - see pii_vault.py. Every binding (`bind_tools`, `bind`) ends
+    in this `invoke`, so the main turn, verifier retries, forced tool
+    calls, understanding and the router all go through it. With the
+    feature off it is the plain client.
+
+    A MIXIN, ON EVERY PROVIDER. It used to be a ChatOpenAI subclass only,
+    and the Azure branch built a plain AzureChatOpenAI: on
+    tanasuq-production (Azure) nothing was ever masked and no `pii[` line
+    was ever logged (2026-10-15)."""
+
+    def invoke(self, input, config=None, *, stop=None, **kwargs):
+        vault = pii_vault.active_vault()
+        if vault is None:
+            return super().invoke(input, config, stop=stop, **kwargs)
+        stats: dict = {}
+        masked = pii_vault.mask_input(vault, input, stats)
+        response = super().invoke(masked, config, stop=stop, **kwargs)
+        restored = pii_vault.unmask_output(vault, response, stats)
+        pii_vault.log_call(pii_vault._current.get(), stats, masked, debug=vault.get("debug"))
+        return restored
+
+
+class _PiiMaskingChatOpenAI(_PiiMasking, ChatOpenAI):
+    pass
+
+
+class _PiiMaskingAzureChatOpenAI(_PiiMasking, AzureChatOpenAI):
+    pass
+
 
 def _make_llm(model: str, **kwargs):
     """The chat client for `model`, for config.LLM_PROVIDER.
@@ -91,7 +125,7 @@ def _make_llm(model: str, **kwargs):
         # names the tenant created in the Azure portal - so `model`
         # (OPENAI_MODEL / _CHEAP / _BY_AGENT / _UNDERSTANDING holds a
         # deployment name here) is passed as `azure_deployment`.
-        return AzureChatOpenAI(
+        return _PiiMaskingAzureChatOpenAI(
             azure_deployment=model,
             azure_endpoint=config.AZURE_OPENAI_ENDPOINT,
             api_version=config.AZURE_OPENAI_API_VERSION,
@@ -100,7 +134,7 @@ def _make_llm(model: str, **kwargs):
         )
 
     if config.LLM_PROVIDER == "openrouter":
-        return ChatOpenAI(
+        return _PiiMaskingChatOpenAI(
             model=config.llm_model_id(model),
             api_key=config.llm_api_key() or "sk-not-configured",
             base_url=config.OPENROUTER_BASE_URL,
@@ -111,7 +145,7 @@ def _make_llm(model: str, **kwargs):
             **kwargs,
         )
 
-    return ChatOpenAI(model=model, api_key=config.OPENAI_API_KEY or "sk-not-configured", **kwargs)
+    return _PiiMaskingChatOpenAI(model=model, api_key=config.OPENAI_API_KEY or "sk-not-configured", **kwargs)
 
 
 # TEMPERATURE IS PINNED, NOT LEFT TO THE API DEFAULT (1.0).
@@ -988,6 +1022,13 @@ def _deterministic_slot_lock(state: AgentState, agent_name: str):
     if session.get("selected_slot"):
         return None  # already locked - nothing for this hook to do
 
+    if not session.get("doctor_id"):
+        # A time is a time WITH a doctor. Locked without one, the
+        # same-number step can never open and the times come back for
+        # every pick (tanasuq-production, 2026-10-10 14:31).
+        logger.info("_deterministic_slot_lock: no doctor on file - not locking a time")
+        return None
+
     messages = state.get("messages") or []
     index = _latest_human_index(messages)
     if index < 0:
@@ -1014,11 +1055,11 @@ def _deterministic_slot_lock(state: AgentState, agent_name: str):
         )
         return None
 
-    if isinstance(payload, dict) and payload.get("status") == "slot_unavailable":
-        # The pick is a time the booking system already refused. Hand the
-        # model that result (and its guidance to fetch fresh times)
-        # rather than leaving it to re-list the old times from memory.
-        logger.info("_deterministic_slot_lock: %r is a time that already failed to book", text)
+    if isinstance(payload, dict) and payload.get("status") in ("slot_unavailable", "ambiguous_pick"):
+        # The pick is a time the booking system already refused, or a
+        # number that is both an option and an hour. Hand the model that
+        # result and its guidance rather than leaving it to guess.
+        logger.info("_deterministic_slot_lock: %r -> %s", text, payload.get("status"))
         return _forge_tool_pair("select_appointment_slot", {"user_input": text}, payload)
 
     if not isinstance(payload, dict) or payload.get("status") != "selected":
@@ -1207,6 +1248,20 @@ def _deterministic_doctor_schedule_lookup(state: AgentState, agent_name: str) ->
     return pairs
 
 
+def _names_another_day(text: str, offered: dict, state: AgentState) -> bool:
+    """The patient's words name a day ("انهارده", "بكره", "الخميس") that is
+    not the one day the assistant offered."""
+
+    timezone_name = (state.get("templates") or {}).get("_timezone") or tools.DEFAULT_TIMEZONE
+    relative = tools.resolve_relative_date(text, timezone_name)
+    if relative:
+        return relative.get("date") != offered.get("date")
+    weekday = tools.resolve_weekday_index(text)
+    if weekday is None:
+        return False
+    return weekday != tools.resolve_weekday_index(str(offered.get("weekday_name") or ""))
+
+
 def _deterministic_slots_for_accepted_day(state: AgentState, agent_name: str) -> list:
     """The assistant offered ONE day ("أقرب موعد ... الأربعاء 07/10 - أي
     يوم يناسبك؟") and the patient said yes: fetch that day's real slots
@@ -1232,6 +1287,11 @@ def _deterministic_slots_for_accepted_day(state: AgentState, agent_name: str) ->
         return []
     if _tool_results_since_latest_human(messages, (
             "get_available_slots_for_booking", "select_appointment_slot", "resolve_available_day")):
+        return []
+    # A REPLY NAMING ANOTHER DAY IS NOT A YES TO THIS ONE. CONFIRMED (Rovan,
+    # 2026-10-12 11:10): "تحب تحجز في يوم الاثنين 19/10؟" -> "انهارده" was
+    # read as a yes, and 19/10's times were shown instead of today's.
+    if _names_another_day(_latest_human_text(messages), items[0], state):
         return []
 
     from_date, to_date = items[0].get("from_date"), items[0].get("to_date")
@@ -4110,6 +4170,12 @@ _CONFIRMATION_WORD_RE = re.compile(
 )
 
 
+# "كمل الحجز", "اكمل الحجز", "تابع الحجز" - see `_build_booking_entry_directive`.
+_CONTINUE_BOOKING_RE = re.compile(
+    r"(?:^|\s)(?:كمل|كملي|اكمل|نكمل|تابع|اتابع)\s*(?:ال)?(?:حجز|موعد|معاد|ميعاد)"
+)
+
+
 _DONT_KNOW_RE = re.compile(
     r"^\s*(?:"
     r"مش\s*عارف\w*|مش\s*عارفه|ما\s*ادري|مااادري|ما\s*اعرف|لا\s*اعرف|"
@@ -4639,6 +4705,12 @@ _LOCATION_QUESTION_DIRECTIVE = (
     "plain from the addresses. For the map pin, call `share_branch_location` "
     "with the exact branch name above (the one they asked about, chose or "
     "booked). Then carry on with whatever was in progress.\n"
+    "If they say they are LOST or missed the turn/entrance (\"ضيعت اللفة\", "
+    "\"ضيعت الدخلة\", \"تهت\"), that is this question: do NOT ask what they "
+    "mean and do NOT describe the hospital. Give only the branches and "
+    "addresses above, then ask ONE question: \"جاي أي فرع؟\" (which branch "
+    "are they heading to) - not whether they want the map. When they answer, "
+    "send that branch's pin with `share_branch_location`.\n"
 )
 
 
@@ -4780,16 +4852,30 @@ def _build_booking_entry_directive(messages: list, session_id: str, agent_name: 
     # weigh against everything else - but the reply is now emitted
     # directly from code, so a false positive here replaces a real answer
     # with the opening question. It has to be exact.
-    if not _BARE_BOOKING_REQUEST_RE.search(folded):
-        return ""
+    # "كمل الحجز هنا" AS THE OPENING MESSAGE - the website's "continue on
+    # WhatsApp" button - has nothing to continue: it asks to book.
+    # CONFIRMED (tanasuq-production 2026-10-12 12:22): "كمل" read as a
+    # confirmation, the rung stood down, and the model asked STEP NB6's
+    # "نكمل الحجز على نفس رقم الواتساب ده؟" with no doctor or time - the
+    # premature-NB6 gate caught it at the cost of two more model calls.
+    opens_by_continuing = (bool(_CONTINUE_BOOKING_RE.search(folded))
+                           and not _last_ai_reply_text(messages)
+                           and not (tools._BOOKING_SESSIONS.get(session_id or "") or {}).get("doctor_id"))
+    if not opens_by_continuing:
+        if not _BARE_BOOKING_REQUEST_RE.search(folded):
+            return ""
 
-    # Confirming, cancelling or moving something is not opening a new
-    # booking, whatever nouns the sentence happens to contain.
-    if _CONFIRMATION_WORD_RE.search(folded):
-        return ""
+        # Confirming, cancelling or moving something is not opening a new
+        # booking, whatever nouns the sentence happens to contain.
+        if _CONFIRMATION_WORD_RE.search(folded):
+            return ""
 
     scores = agents.router.score_message(text)
     for other in ("cancel", "reschedule", "complaint"):
+        # The keyword scores carry no "كمل" cue - an opening "كمل الحجز"
+        # scores 0 everywhere, and 0 >= 0 is not another intent.
+        if opens_by_continuing and not scores.get(other, 0):
+            continue
         if scores.get(other, 0) >= scores.get("booking", 0):
             return ""
 
@@ -5536,6 +5622,9 @@ def _keycap(position: int) -> str:
     return "".join(_KEYCAPS[int(d) - 1] for d in str(position))
 
 
+_APPOINTMENT_DAY_LABELS = {"today": "اليوم", "tomorrow": "بكرة"}
+
+
 def _build_appointment_choice_directive(messages: list) -> str:
     """Pre-build the numbered list of a patient's OWN appointments, in
     the exact order `lookup_appointment` returned them.
@@ -5588,6 +5677,9 @@ def _build_appointment_choice_directive(messages: list) -> str:
             appt.get("time_display"),
         ]
         detail = " - ".join(str(p).strip() for p in parts if p and str(p).strip())
+        relation = _APPOINTMENT_DAY_LABELS.get(appt.get("day_relation") or "")
+        if relation:
+            detail = f"{detail} ({relation})"
         lines.append(f"{_keycap(index)} {detail}")
 
     block = "\n".join(lines)
@@ -5607,7 +5699,13 @@ def _build_appointment_choice_directive(messages: list) -> str:
         "[BEGIN-EXACT-TEXT]\n"
         f"{block}\n"
         "[END-EXACT-TEXT]\n\n"
-        "Introduce the list in one short sentence, then ask ONLY which "
+        "IF THE PATIENT ASKED ABOUT ONE DAY (\"اليوم عندي موعد؟\", \"موعدي "
+        "بكرة\", a date) and exactly ONE row is on that day - rows on today "
+        "or tomorrow are marked so - answer about that row directly: its "
+        "doctor, branch, date and time, and that it is still active in our "
+        "system. Do not show the list and do not ask which one. If NO row is "
+        "on that day, say so plainly, then show the list.\n\n"
+        "Otherwise, introduce the list in one short sentence, then ask ONLY which "
         "number they mean - one question, nothing else. Pass their answer "
         "straight through to `check_booking_status` as `ref_number`; it "
         "resolves the position itself, so never work out the reference "
@@ -5656,8 +5754,9 @@ def _build_appointment_display_directive(messages: list) -> str:
     if not appt:
         return ""
 
+    name_line = f"👤 الاسم: {appt.get('patientFullName')}\n" if appt.get("patientFullName") else ""
     block = (
-        f"👤 الاسم: {appt.get('patientFullName', '')}\n"
+        f"{name_line}"
         f"👨\u200d⚕️ الطبيب: {appt.get('doctorName', '')}\n"
         f"🏥 الفرع: {appt.get('branchName', '')}\n"
         f"🗓️ التاريخ: {appt.get('date_display', '')}\n"
@@ -6066,6 +6165,13 @@ _NEUTRAL_DOMAIN_RE = re.compile(
 _NEUTRAL_NUMBER_RE = re.compile(r"\+?\d[\d\s\-()]{3,}\d")
 
 
+_REFERENCE_INNER_SPACE_RE = re.compile(r"(?<=[A-Za-z0-9])\s*-\s*(?=[A-Za-z0-9])")
+_REFERENCE_LABEL_RE = re.compile(
+    r"\b(?:booking|appointment|reservation)?\s*(?:reference|ref|number|no|id)\s*(?:number|no)?\s*[:#]",
+    re.IGNORECASE,
+)
+
+
 def _strip_language_neutral_tokens(text: str) -> str:
     """`text` with every language-neutral token removed.
 
@@ -6078,7 +6184,13 @@ def _strip_language_neutral_tokens(text: str) -> str:
     if not text:
         return ""
 
-    remainder = str(text)
+    # A pasted reference often carries its own English label and a stray
+    # space ("Booking Reference: APT- CL01-20260930-594"). CONFIRMED
+    # (tanasuq-production, 2026-10-07 11:29): the space broke the reference
+    # pattern, "Booking Reference" was left as two English words, and an
+    # Arabic conversation was answered in English.
+    remainder = _REFERENCE_INNER_SPACE_RE.sub("-", str(text))
+    remainder = _REFERENCE_LABEL_RE.sub(" ", remainder)
     for pattern in (
         _NEUTRAL_URL_RE, _NEUTRAL_EMAIL_RE, _NEUTRAL_REFERENCE_RE,
         _NEUTRAL_DOMAIN_RE, _NEUTRAL_NUMBER_RE,
@@ -6627,7 +6739,15 @@ def _strip_extra_questions(reply_text: str, templates: dict) -> tuple:
         # CONFIRMED (tanasuq-production, 2026-10-03 06:16): "آسفة، ما
         # قدرنا نرسل رمز التحقق ... الحين. ممكن نكمل ...؟" lost the apology
         # together with the question.
-        statement_end = max(segment.rfind(". "), segment.rfind(".‏ "))
+        # "د." / "Dr." is a title, not the end of a statement: cutting there
+        # sent "ممكن تحدد لي وش السؤال بالضبط عن د." (tanasuq-production,
+        # 2026-10-06 15:38 and 15:39) with the doctor's name gone.
+        statement_end = -1
+        for match in re.finditer(r"\.‏? ", segment):
+            before = segment[:match.start()].rstrip()
+            if re.search(r"(?:^|\s)(?:د|dr|prof|أ)$", before, re.IGNORECASE):
+                continue
+            statement_end = match.start() if match.start() > statement_end else statement_end
         if statement_end > 0:
             kept.append(segment[:statement_end + 1])
 
@@ -9845,6 +9965,21 @@ def _reply_ignores_a_refusal(reply_text: str, state: AgentState) -> bool:
         return False
 
     folded_human = _norm_ar(text)
+
+    # A COUNTER-REQUEST IS NOT A BARE REFUSAL. CONFIRMED (tanasuq-production,
+    # 2026-10-06 11:12): the patient was shown a day list, rejected it and
+    # named what she wanted - "الثلاثاء". The router read it as
+    # "decline_and_request" and the reply correctly showed that Tuesday's
+    # times for the SAME doctor - and this check flagged it (twice) as
+    # "brought the same doctor straight back". Naming a day/date is the
+    # opposite of a dead end: the same doctor on the day they asked for is
+    # exactly the right answer.
+    if state.get("turn_action") == "decline_and_request":
+        return False
+    if (tools.resolve_weekday_index(text) is not None
+            or tools._parse_explicit_date(text, date.today()) is not None):
+        return False
+
     reading = state.get("understanding")
     if reading is not None:
         if not reading.get("declines"):
@@ -10171,6 +10306,13 @@ def _reply_denies_availability_without_lookup(reply_text: str, state: AgentState
     if not _AVAILABILITY_DENIAL_RE.search(_norm_ar(reply_text)):
         return False
 
+    # "Nothing today" needs no lookup: same-day booking is not offered at
+    # all. Flagged, "مافي 10 اكتوبر ؟" (asked on 10 October) got a
+    # rewrite-then-substitute instead of that answer (tanasuq-production,
+    # 2026-10-10 12:48).
+    if _patient_asked_for_today(state):
+        return False
+
     messages = state.get("messages", []) or []
 
     # SCOPED TO THIS TURN, NOT TO THE WHOLE OF THE CURRENT DOCTOR.
@@ -10207,7 +10349,33 @@ def _reply_denies_availability_without_lookup(reply_text: str, state: AgentState
         if getattr(msg, "name", None) in _AVAILABILITY_LOOKUP_TOOLS:
             return False
 
+    # ...or the day they just named was ALREADY looked up for this doctor
+    # and had nothing. CONFIRMED (tanasuq-production 2026-10-12 17:07):
+    # today's slots had come back empty a minute earlier; "12/10/2026" got
+    # "no appointments that day", was flagged, replaced with "أي تاريخ تحب؟",
+    # and the patient typed the same date again into the same loop.
+    if _named_day_already_found_empty(state):
+        return False
+
     return True
+
+
+def _named_day_already_found_empty(state: AgentState) -> bool:
+    session = tools._BOOKING_SESSIONS.get(state.get("session_id") or "") or {}
+    empty = (session.get("empty_days") or {}).get(session.get("doctor_id") or "") or []
+    if not empty:
+        return False
+    timezone_name = (state.get("templates") or {}).get("_timezone") or tools.DEFAULT_TIMEZONE
+    today = tools._local_now_naive(timezone_name).date()
+    named = None
+    if tools._patient_says_today(state):
+        named = today
+    else:
+        try:
+            named = tools._parse_explicit_date(tools._latest_human_text_for_handoff_guard(state), today)
+        except Exception:  # noqa: BLE001
+            named = None
+    return named is not None and named.isoformat() in empty
 
 
 _AVAILABILITY_DENIAL_CORRECTION_DIRECTIVE = (
@@ -11768,8 +11936,76 @@ def _real_branches_reply(state: AgentState, target_language: Optional[str]) -> s
     return f"فروعنا:\n{lines}\n\nأي فرع يناسبك؟"
 
 
+_UNVERIFIED_AVAILABILITY_MARKERS = (
+    "has no available appointments while no availability tool has run",
+    "never checked with resolve_available_day",
+)
+
+
+def _unverified_availability_reply(description: Optional[str], target_language: Optional[str]) -> str:
+    """A reply that talks about availability nobody looked up is replaced by
+    one question, not by the hand-off text and not left as it is.
+
+    CONFIRMED (tanasuq-production, 2026-10-06 14:04-14:06): "ما عندنا مواعيد
+    متاحة في 3 نوفمبر" and "محجوزة لغاية نهاية أكتوبر" were sent twice with no
+    availability tool run, while the doctor's rota ran to 2027. It names no
+    doctor, day or time, so it cannot itself be a claim."""
+
+    # NOT "بدل ما أخمّن" - telling the patient the assistant was about to
+    # guess is not something they should ever read (tanasuq-production,
+    # 2026-10-10 12:48, sent twice in a row to "مافي 10 اكتوبر ؟").
+    if not any(marker in (description or "") for marker in _UNVERIFIED_AVAILABILITY_MARKERS):
+        return ""
+    if target_language == "en":
+        return "Which date would you like me to check the available appointments for? 🌷"
+    return "أي تاريخ تحب أشوف لك المواعيد المتاحة فيه؟ 🌷"
+
+
 def _substitute_despite_disabled_fallback(description: Optional[str]) -> bool:
+    # A booking that does not exist must never reach the patient as one:
+    # they act on it and turn up (tanasuq-production, 2026-10-10).
+    if "unverified existing booking" in (description or ""):
+        return True
     return _SAFE_FALLBACK_FABRICATED_AVAILABILITY and "fabricated appointment" in (description or "")
+
+
+def _booking_not_made_reply(state: AgentState, is_english: bool) -> str:
+    """Instead of a reply claiming a booking nothing returned: that the
+    booking was NOT made, and WHY, from the latest `create_new_booking`
+    result - the patient's own booking with that doctor that day, or the
+    system's refusal in its own words. Built only from tool values."""
+
+    result = {}
+    for message in reversed(state.get("messages") or []):
+        if getattr(message, "type", None) == "tool" and getattr(message, "name", None) == "create_new_booking":
+            result = parse_tool_content(message) or {}
+            break
+    status = result.get("status")
+
+    if status == "patient_has_booking_that_day":
+        appt = result.get("appointment") or {}
+        when = " ".join(str(appt.get(k)).strip() for k in ("weekday_display", "date_display", "time_display") if appt.get(k))
+        doctor = appt.get("doctorName") or ""
+        if is_english:
+            return (f"We can't book a second appointment with {doctor} on the same day - you already "
+                    f"have one with them on {when} 🌷\nWould you like to keep it, or choose another day?")
+        return (f"ما نقدر نحجز لك موعد ثاني مع {doctor} في نفس اليوم، لأن عندك حجز {when} مع نفس الطبيب 🌷\n"
+                "تحب تثبت هذا الموعد ولا تختار يوم ثاني؟")
+
+    reasons = [str(r).strip() for r in (result.get("reason") or []) if str(r).strip()]
+    if status == "booking_refused" and reasons:
+        # The system's own message as it is, and the offer of a person -
+        # nothing added around it (explicit instruction, 2026-10-10).
+        reason = "\n".join(reasons[:2])
+        if is_english:
+            return f"{reason}\nWould you like me to transfer you to a staff member?"
+        return f"{reason}\nتحب أحولك لموظف؟"
+
+    if is_english:
+        return ("Sorry, the booking was not completed in our system 🌷\n"
+                "Would you like to choose another time, or shall I connect you with customer service?")
+    return ("عذرًا، الحجز ما تم في النظام 🌷\n"
+            "تحب تختار وقت ثاني، ولا أحوّلك لخدمة العملاء؟")
 
 
 def _safe_fallback_reply(
@@ -11813,6 +12049,9 @@ def _safe_fallback_reply(
 
     is_english = (target_language or "").strip().lower().startswith("en")
     desc = (failure_description or "").lower()
+
+    if "unverified existing booking" in desc:
+        return _booking_not_made_reply(state, is_english)
 
     # Ordered so a more specific match wins over a more general one when
     # a description could plausibly match more than one category.
@@ -14677,6 +14916,12 @@ _REPLY_VERIFIERS = (
         "appointment has ever been looked up in this conversation",
     ),
     (
+        lambda reply, state, agent_name: _reply_claims_an_unverified_booking(reply, state),
+        lambda reply, state: _UNVERIFIED_BOOKING_CORRECTION_DIRECTIVE,
+        "reply told the patient they have a booking or that it is confirmed, but "
+        "no tool in this conversation returned one - unverified existing booking",
+    ),
+    (
         lambda reply, state, agent_name: _reply_invents_availability(reply, state),
         lambda reply, state: _AVAILABILITY_CORRECTION_DIRECTIVE,
         "reply stated an appointment date/time that NO availability tool returned "
@@ -16657,6 +16902,89 @@ _CANCELLATION_CORRECTION_DIRECTIVE = (
 )
 
 
+# "عندك حجز/موعد", "موعدك مؤكد", "you already have a booking", "it is
+# already confirmed" - an EXISTING booking stated as fact. Conditionals
+# and negations ("لو عندك موعد", "ما عندك حجز", "if you have") are not.
+_HAS_BOOKING_CLAIM_RE = re.compile(
+    r"(?<!لو )(?<!اذا )(?<!ما )(?<!لا )عندك\s*(?:حجز|موعد)|"
+    r"(?<!if )\byou\s+(?:already\s+)?have\s+(?:a|an|another)\s+(?:booking|appointment)"
+)
+_CONFIRMED_BOOKING_CLAIM_RE = re.compile(
+    r"(?:موعدك|حجزك)\s*(?:مؤكد|متاكد|ثابت|قائم|موجود)|"
+    r"\b(?:it|this|that|your\s+(?:appointment|booking))\s+is\s+(?:already\s+)?confirmed"
+)
+
+# A tool result that shows the patient really holds a booking.
+_BOOKING_EXISTS_STATUSES = frozenset({
+    "found_one", "found_many", "active", "success", "success_ref_pending",
+    "patient_has_booking_that_day",
+})
+
+
+def _reply_claims_an_unverified_booking(reply_text: str, state: AgentState) -> bool:
+    """True when the reply tells the patient they HAVE a booking, or that
+    it is confirmed, while no tool in this conversation returned one.
+
+    tanasuq-production, 2026-10-10 (patient's screenshot): after a
+    refused reservation the reply said "You already have a booking with
+    Dr. Samar Alkhelfi on Saturday, 10 October 2026 at 12:00 PM. If you
+    want to keep this appointment, it is already confirmed." The clinic
+    held no such booking; the patient turned up at 12:00. `_CLAIM_GATES`
+    catches "your booking is confirmed" as a NEW booking, not this."""
+
+    if not reply_text:
+        return False
+    # Split on full stops too: "...at 12:00 PM. If you want to keep it,
+    # it is already confirmed. Anything else?" is one question-ended
+    # segment for `_split_sentences`, and the claim inside it is not a
+    # question.
+    sentences = [
+        part for line in reply_text.splitlines()
+        for part in re.split(r"(?<=[.!?؟])\s+", line)
+    ]
+    statements = [
+        _norm_ar(s).lower() for s in sentences
+        if s.strip() and not _QUESTION_MARK_RE.search(s.strip())
+    ]
+    has_claim = any(_HAS_BOOKING_CLAIM_RE.search(s) for s in statements)
+    confirmed_claim = any(_CONFIRMED_BOOKING_CLAIM_RE.search(s) for s in statements)
+    if not (has_claim or confirmed_claim):
+        return False
+    refused_with_reason = False
+    for msg in state.get("messages", []) or []:
+        if getattr(msg, "type", None) != "tool":
+            continue
+        data = parse_tool_content(msg)
+        if not isinstance(data, dict):
+            continue
+        if data.get("status") in _BOOKING_EXISTS_STATUSES:
+            return False
+        if data.get("status") == "booking_refused" and data.get("reason"):
+            refused_with_reason = True
+    # Relaying the system's own refusal ("you already have a booking with
+    # this doctor that day, so a second one is not possible") is the
+    # reason the patient is owed. Calling it CONFIRMED is not.
+    if refused_with_reason and not confirmed_claim:
+        return False
+    return True
+
+
+_UNVERIFIED_BOOKING_CORRECTION_DIRECTIVE = (
+    "============================================================\n"
+    "YOU SAID THE PATIENT HAS A BOOKING NOTHING RETURNED - REWRITE\n"
+    "============================================================\n"
+    "Your previous draft told the patient they have a booking, or that "
+    "an appointment is confirmed. No tool in this conversation returned "
+    "such a booking: `create_new_booking` did not succeed, and no lookup "
+    "found one. A patient told this will turn up at the clinic for an "
+    "appointment that does not exist.\n\n"
+    "Never say they have a booking or that it is confirmed. Say plainly "
+    "that the booking was not completed, and offer one next step: "
+    "another time, or our customer service team.\n\n"
+    "Rewrite the reply now.\n\n"
+)
+
+
 def _build_out_of_scope_block(templates: dict, language: str = "ar") -> str:
     """The clinic's scope refusal, as ONE fixed text.
 
@@ -16961,6 +17289,134 @@ def _build_review_card_phone_directive(state: AgentState, session_id: str) -> st
     return _REVIEW_CARD_PHONE_DIRECTIVE.format(phone=normalized)
 
 
+_ANYTHING_ELSE_QUESTION = {
+    "ar": "في شي ثاني أقدر أساعدك فيه؟",
+    "en": "Is there anything else I can help you with?",
+}
+
+
+def _unasked_cancel_question_fix(reply_text: str, state: AgentState, target_language: Optional[str]) -> str:
+    """The reply without a "is this the appointment you want to cancel?"
+    question when the patient never asked to cancel - ending instead with
+    "anything else?".
+
+    CONFIRMED (tanasuq-production, 2026-10-14 00:25, 966531397653): "حاب
+    اتاكد من الايميل الخاص فيني" -> the appointment and the email, then
+    "هل هذا هو الموعد الذي تبغى تلغيه؟". The patient only wanted to check
+    the email. One "اه" there and the cancel flow would have owned the
+    conversation."""
+
+    if not reply_text or _cancellation_was_requested(state):
+        return reply_text
+    lines = reply_text.split("\n")
+    kept = [line for line in lines
+            if not (("؟" in line or "?" in line) and _CANCELLATION_FRAMING_RE.search(_norm_ar(line)))]
+    if len(kept) == len(lines):
+        return reply_text
+    body = "\n".join(kept).rstrip()
+    if "؟" in body or "?" in body:
+        return body
+    question = _ANYTHING_ELSE_QUESTION["en" if (target_language or "").startswith("en") else "ar"]
+    return f"{body}\n\n{question}".strip()
+
+
+def _card_name_is_the_doctor_fix(reply_text: str) -> str:
+    """A card whose 👤 name line repeats the 👨‍⚕️ doctor line loses the
+    name line. CONFIRMED (tanasuq-production, 2026-10-10 16:54,
+    966566802947): "👤 الاسم: مشاعل الشعلان / 👨‍⚕️ الطبيب: مشاعل الشعلان"."""
+
+    if not isinstance(reply_text, str) or "👤" not in reply_text:
+        return reply_text
+    lines = reply_text.split("\n")
+
+    def _value(line):
+        return _norm_ar(line.split(":", 1)[1]) if ":" in line else ""
+
+    doctors = {_value(line) for line in lines if "👨" in line and _value(line)}
+    kept = [line for line in lines if not ("👤" in line and _value(line) and _value(line) in doctors)]
+    return "\n".join(kept) if len(kept) != len(lines) else reply_text
+
+
+def _patient_asked_for_today(state: AgentState) -> bool:
+    """The patient's latest message names TODAY - "اليوم", "النهارده", or
+    today's date ("١٠ اكتوبر" on 10 October) - and same-day booking is
+    not offered."""
+
+    if config.ALLOW_SAME_DAY_BOOKING:
+        return False
+    messages = state.get("messages") or []
+    templates = state.get("templates") or {}
+    named = _relative_date_in_latest_human(messages, templates)
+    if named and named.get("offset_days") == 0:
+        return True
+    index = _latest_human_index(messages)
+    if index < 0:
+        return False
+    content = getattr(messages[index], "content", "")
+    text = content if isinstance(content, str) else str(content)
+    timezone_name = templates.get("_timezone") or tools.DEFAULT_TIMEZONE
+    today = tools._local_now_naive(timezone_name).date()
+    try:
+        return tools._parse_explicit_date(text, today) == today
+    except Exception:  # noqa: BLE001
+        return False
+
+
+_SAME_DAY_NOTICE = {
+    "ar": "للأسف ما نقدر نحجز في نفس اليوم 🌷",
+    "en": "Unfortunately we can't book an appointment for the same day 🌷",
+}
+
+
+def _requested_day_empty_notice(reply_text: str, state: AgentState, target_language: str) -> str:
+    """When the day the patient asked for had no slot and this turn's
+    times are for a later same weekday, the reply opens by saying so.
+
+    CONFIRMED (bridge-production, 2026-10-13 13:05): "أقرب يوم أربعاء متاح
+    هو 14/10/2026 - يناسبك؟" -> "اه", and the reply listed 28/10's times
+    with no word that 14/10 had none; the same again for 21/10."""
+
+    if not isinstance(reply_text, str) or not reply_text.strip():
+        return reply_text
+    messages = state.get("messages") or []
+    index = _latest_human_index(messages)
+    empty = None
+    for msg in messages[index + 1:] if index >= 0 else []:
+        if getattr(msg, "name", None) == "get_available_reschedule_slots":
+            payload = parse_tool_content(msg) or {}
+            empty = payload.get("requested_day_had_no_slots") or empty
+    if not empty or not empty.get("date_display"):
+        return reply_text
+    if empty["date_display"] in reply_text:
+        return reply_text
+    day = f"{empty.get('weekday_display') or ''} {empty['date_display']}".strip()
+    if target_language == "en":
+        return f"{day} has no available appointments 🌷\n{reply_text}"
+    return f"يوم {day} ما فيه مواعيد متاحة 🌷\n{reply_text}"
+
+
+def _same_day_notice(reply_text: str, state: AgentState, target_language: str) -> str:
+    """When the patient asked for TODAY, the reply opens by saying today
+    cannot be booked.
+
+    CONFIRMED (tanasuq-production, 2026-10-10 12:47): the patient asked
+    for "اليوم", then "اليوم السبت ١٠ اكتوبر", and was shown other days and
+    then Saturday 17/10's times with no word about today - until "مافي 10
+    اكتوبر ؟". The directive saying so was prose and was not followed;
+    the sentence is put first here instead."""
+
+    if not isinstance(reply_text, str) or not reply_text.strip():
+        return reply_text
+    session = tools._BOOKING_SESSIONS.get(state.get("session_id") or "") or {}
+    if not session.get("doctor_id") or not _patient_asked_for_today(state):
+        return reply_text
+    folded = _norm_ar(reply_text).lower()
+    if "نفس اليوم" in folded or "same day" in folded or "same-day" in folded:
+        return reply_text
+    notice = _SAME_DAY_NOTICE["en" if target_language == "en" else "ar"]
+    return f"{notice}\n{reply_text}"
+
+
 def _review_card_branch_fix(reply_text: str, state: AgentState, target_language: str) -> str:
     """The review card always carries the branch on file.
 
@@ -16980,11 +17436,24 @@ def _review_card_branch_fix(reply_text: str, state: AgentState, target_language:
     segments = [_normalize_for_compare(s) for s in _split_sentences(reply_text)]
     if not any(c in s for s in segments if s for c in confirmations):
         return reply_text
-    if "🏥" in reply_text or str(branch) in reply_text:
-        return reply_text
-
     label = "Branch" if target_language == "en" else "الفرع"
     lines = reply_text.split("\n")
+
+    # A branch line with a QUESTION or nothing for its value is filled in
+    # too. CONFIRMED (tanasuq-production, 2026-10-10, patient's
+    # screenshot): the card read "🏥 الفرع: أي فرع تفضلين؟" and the patient
+    # answered "Yes" to it.
+    for i, line in enumerate(lines):
+        if "🏥" not in line:
+            continue
+        value = line.split(":", 1)[1].strip() if ":" in line else ""
+        if not value or "؟" in value or "?" in value:
+            lines[i] = f"🏥 {label}: {branch}"
+            return "\n".join(lines)
+        return reply_text
+    if str(branch) in reply_text:
+        return reply_text
+
     # Above the doctor line where the card has one, else under its heading.
     at = next((i for i, line in enumerate(lines) if "👨" in line), 1)
     lines.insert(at, f"🏥 {label}: {branch}")
@@ -17218,7 +17687,9 @@ _BARE_AFFIRMATION_RE = re.compile(
     # informal spelling away from "اها", which this regex already
     # matched, and was missed entirely because the list only ever held
     # exact words, never variants of them.
-    r"^\s*(?:اه+ا*|ايه+|أيوه+|ايوه+|ايوا+|نعم|تمام|اوك+|أوك+|ok(?:ay)?|yes|yep|sure|"
+    # A bare "اي" is the Gulf "yes" (tanasuq-production, 2026-10-07 10:51:
+    # "اي" to "تحب أحوّلك لخدمة العملاء؟" was not taken as one).
+    r"^\s*(?:اه+ا*|اي+|ايه+|أيوه+|ايوه+|ايوا+|نعم|تمام|اوك+|أوك+|ok(?:ay)?|yes|yep|sure|"
     r"اكمل|كمل|اه\s*اكمل|ماشي|حاضر|طبعا|أكيد|اكيد)"
     r"\s*[.!؟?،,]*\s*$",
     re.IGNORECASE,
@@ -18654,16 +19125,29 @@ def _reply_skips_same_number_question_when_ready(reply_text: str, state: AgentSt
 
     # NB6's own question already appeared earlier in this conversation
     # - a direct phone request now is a legitimate follow-up (e.g. they
-    # said "no"), not a fresh skip.
+    # said "no"), not a fresh skip. But only while the conversation is
+    # STILL at the phone step: every reply since that question asked for
+    # the number too. A reply in between about something else means the
+    # question was left unanswered (tanasuq, 2026-10-10 16:31: NB6 asked,
+    # the patient asked about another day, the bot answered that, and
+    # "هنا مو مشكله" then got "من فضلك أرسل رقم الجوال مع رمز الدولة").
     from langchain_core.messages import AIMessage as _AIMessage4
+    since_question = None
     for msg in (state.get("messages") or []):
-        if isinstance(msg, _AIMessage4):
-            content = getattr(msg, "content", "")
-            text = content if isinstance(content, str) else str(content or "")
-            text_folded = _norm_ar(text)
-            if (_SAME_WHATSAPP_QUESTION_RE.search(text_folded)
-                    or _NEW_BOOKING_SAME_NUMBER_QUESTION_RE.search(text_folded)):
-                return False
+        if not isinstance(msg, _AIMessage4):
+            continue
+        content = getattr(msg, "content", "")
+        text = content if isinstance(content, str) else str(content or "")
+        if not text.strip():
+            continue
+        text_folded = _norm_ar(text)
+        if (_SAME_WHATSAPP_QUESTION_RE.search(text_folded)
+                or _NEW_BOOKING_SAME_NUMBER_QUESTION_RE.search(text_folded)):
+            since_question = []
+        elif since_question is not None:
+            since_question.append(text_folded)
+    if since_question is not None and all(_ASKS_FOR_PHONE_DIRECTLY_RE.search(t) for t in since_question):
+        return False
 
     return True
 
@@ -19926,6 +20410,9 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     language, even for a conversation that had been purely English from
     its first message."""
 
+    # Patient data as placeholders for this node's model calls - see pii_vault.py.
+    pii_vault.attach(state)
+
     target_language = _detect_target_language(state["messages"])
     language_directive = _LANGUAGE_DIRECTIVE.get(target_language, "")
 
@@ -21081,6 +21568,14 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
                         normalized = _safe_fallback_reply(state, target_language, description)
                         used_safe_fallback = True
                         break
+                    unverified = _unverified_availability_reply(description, target_language)
+                    if unverified:
+                        logger.error(
+                            "agent[%s]: reply STILL claimed availability nobody checked (%s) - "
+                            "replaced with a question. Draft: %r", agent_name, description, normalized,
+                        )
+                        normalized = unverified
+                        break
                     # INVENTED BRANCHES ARE REPLACED BY THE REAL ONES - see
                     # `_real_branches_reply`. Not the hand-off text: the
                     # patient keeps going with a true list.
@@ -21240,6 +21735,35 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         if carded != response.content:
             logger.warning("agent[%s]: review card had no branch line - added the branch on file", agent_name)
             response = AIMessage(content=carded)
+
+    # NO "👤 الاسم: <the doctor>" - see `_card_name_is_the_doctor_fix`.
+    if not has_tool_calls:
+        unnamed = _card_name_is_the_doctor_fix(response.content)
+        if unnamed != response.content:
+            logger.warning("agent[%s]: card named the doctor as the patient - name line dropped", agent_name)
+            response = AIMessage(content=unnamed)
+
+    # NO "CANCEL IT?" NOBODY ASKED FOR - see `_unasked_cancel_question_fix`.
+    if not has_tool_calls:
+        unasked = _unasked_cancel_question_fix(response.content, state, target_language)
+        if unasked != response.content:
+            logger.warning("agent[%s]: asked whether to cancel an appointment the patient never asked to cancel - "
+                           "question replaced", agent_name)
+            response = AIMessage(content=unasked)
+
+    # THE DAY ASKED FOR WAS EMPTY, SAID FIRST - see `_requested_day_empty_notice`.
+    if not has_tool_calls and agent_name in ("reschedule", "concierge"):
+        told = _requested_day_empty_notice(response.content, state, target_language)
+        if told != response.content:
+            logger.warning("agent[%s]: the asked-for day had no slots - said so above the later day's times", agent_name)
+            response = AIMessage(content=told)
+
+    # TODAY IS REFUSED FIRST, IN CODE - see `_same_day_notice`.
+    if not has_tool_calls and agent_name in ("booking", "concierge", "reschedule"):
+        noticed = _same_day_notice(response.content, state, target_language)
+        if noticed != response.content:
+            logger.warning("agent[%s]: the patient asked for today - same-day notice put first", agent_name)
+            response = AIMessage(content=noticed)
 
     # A SAUDI/GULF CLINIC GETS NO EGYPTIAN FIXED WORDING - see
     # `_localize_egyptian_wording_for_gulf`.
@@ -21438,9 +21962,100 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
 
         updates["greeted"] = True
 
+    if not getattr(response, "tool_calls", None):
+        deterministic_pairs = deterministic_pairs + _missed_location_pin_pair(state, response, target_language)
+
     updates["messages"] = deterministic_pairs + [_tag_author(response, agent_name)]
 
     return updates
+
+
+# The assistant offering a map pin, and the assistant saying it sent one -
+# our own wording (folded: أ->ا, ة->ه).
+_LOCATION_OFFER_RE = re.compile(r"(?:ارسل|ابعت|ابعث)\s*لك\s*(?:ال)?موقع|send\s+you\s+the\s+(?:location|pin|map)")
+_LOCATION_SENT_CLAIM_RE = re.compile(
+    r"(?:ارسلت|بعتت|بعثت|ارسلنا)\s*لك\s*(?:ال)?موقع|(?:راح|رح|حا|ح)\s*ارسل\s*لك\s*(?:ال)?موقع|"
+    r"sent\s+you\s+the\s+(?:location|pin|map)")
+
+
+def _missed_location_pin_pair(state: AgentState, response, target_language: Optional[str]) -> list:
+    """They asked where a branch is, ONE branch is the answer, and the reply
+    gave its address without calling `share_branch_location` - so no map pin
+    was sent. The call is made here, as the forged tool-call pair the
+    handoff already uses; main._turn_signals reads it like a real one.
+
+    CONFIRMED (tanasuq-production 2026-10-12 17:12): "موقع العيادة بحي
+    النزهه ابيه" got فرع النزهة's address and services, and no pin.
+
+    The branch must be one this conversation really knows: the branch
+    `match_entity_info` matched this turn, else the only real branch the
+    reply names. Nothing when several are named - that is a "which one?"."""
+
+    messages = state.get("messages") or []
+    index = _latest_human_index(messages)
+    if index < 0:
+        return []
+    latest = understanding.latest_human_text(messages) or ""
+    reading = state.get("understanding") or {}
+    reply_text = str(getattr(response, "content", "") or "")
+    last_ai = understanding.last_ai_text_before_latest_human(messages) or ""
+    asked_now = bool(reading.get("asks_location") or tools._LOCATION_REQUEST_CUE_RE.search(latest.lower()))
+    # "ايه" to "تحب أرسل لك موقع الفرع على الخريطة؟", and a reply that SAYS the
+    # pin was sent. CONFIRMED (tanasuq-production, 2026-10-13 12:55-12:57):
+    # "ايه", "ما ارسلت", "لم ترسله لي" carry no location word, so nothing was
+    # sent, while the replies said "أرسلت لك موقع فرع النزهة" three times.
+    accepted_offer = bool(reading.get("confirms")) and bool(
+        _LOCATION_OFFER_RE.search(_norm_ar(last_ai).lower()))
+    claims_sent = bool(_LOCATION_SENT_CLAIM_RE.search(_norm_ar(reply_text).lower()))
+    if not (asked_now or accepted_offer or claims_sent):
+        return []
+
+    this_turn = messages[index + 1:]
+    if any(getattr(m, "name", None) == "share_branch_location" for m in this_turn):
+        return []
+
+    # A branch they asked for that does not exist gets no pin of another
+    # one. CONFIRMED (bridge-production, 2026-10-13 13:19): "ممكن عنوان
+    # النرجس؟" -> "ما لقيت فرع اسمه النرجس ... عندنا بريدج النزهة" went out
+    # with بريدج النزهة's pin.
+    lookups = [parse_tool_content(m) or {} for m in this_turn if getattr(m, "name", None) == "match_entity_info"]
+    if lookups and not any(l.get("status") == "matched" for l in lookups):
+        return []
+
+    branch = None
+    for msg in this_turn:
+        if getattr(msg, "name", None) != "match_entity_info":
+            continue
+        try:
+            payload = json.loads(str(getattr(msg, "content", "")))
+        except (TypeError, ValueError):
+            continue
+        item = payload.get("item") if isinstance(payload, dict) and payload.get("status") == "matched" else None
+        if isinstance(item, dict) and (item.get("name") or item.get("altName")) and "formatedName" not in item:
+            branch = item.get("name") or item.get("altName")
+
+    # The only real branch the reply names; else the one the offer named.
+    for text in ((reply_text, last_ai) if branch is None else ()):
+        folded = _norm_ar(text)
+        named = [n for n in _real_branch_names(state, target_language)
+                 if _norm_ar(n.replace("فرع", "").strip()) and _norm_ar(n.replace("فرع", "").strip()) in folded]
+        if len(named) == 1:
+            branch = named[0]
+            break
+
+    if not branch:
+        return []
+
+    logger.info("agent: location asked and %r is the answer, but share_branch_location was not called "
+                "- sending the pin from code (session_id=%s)", branch, state.get("session_id"))
+    call_id = f"call_location_{uuid.uuid4().hex[:12]}"
+    return [
+        AIMessage(content="", tool_calls=[{"id": call_id, "name": "share_branch_location",
+                                           "args": {"branch_name": branch}}]),
+        ToolMessage(content=json.dumps({"status": "location_requested", "branch_name": branch},
+                                       ensure_ascii=False),
+                    name="share_branch_location", tool_call_id=call_id),
+    ]
 
 
 
@@ -21498,10 +22113,25 @@ def router(state: AgentState) -> dict:
     previous = state.get("active_agent")
     messages = state["messages"]
 
+    # Patient data as placeholders for this node's model calls - see pii_vault.py.
+    pii_vault.attach(state)
     reading = _understand_turn(state)
     if reading is not None and not reading.get("wants_human") and _types_the_word_we_asked_for(state.get("messages") or []):
         reading = {**reading, "wants_human": True, "intent": "human", "confidence": 1.0,
                    "is_ambiguous": False, "answer_to_previous_question": True}
+    if (reading is not None and not reading.get("wants_human")
+            and _yes_to_our_transfer_question(state.get("messages") or [], reading)):
+        reading = {**reading, "wants_human": True, "intent": "human", "confidence": 1.0,
+                   "is_ambiguous": False, "answer_to_previous_question": True}
+    if (reading is not None and reading.get("intent") == "human"
+            and _bare_edit_request(state.get("messages") or [])):
+        reading = {**reading, "intent": "reschedule", "wants_human": False, "confidence": 1.0,
+                   "is_ambiguous": False}
+    if reading is not None and _says_lost_on_the_way(state.get("messages") or []):
+        reading = {**reading, "intent": "faq", "asks_location": True, "confidence": 1.0,
+                   "is_ambiguous": False, "alternatives": [], "changes_intent": True,
+                   "answer_to_previous_question": False, "cancel_request": False,
+                   "cancel_confirmed": False, "confirms": False, "declines": False}
     decision = agents.semantic_router.decide(reading, _turn_facts(state), _routing_thresholds())
 
     if decision.agent is None:
@@ -21528,8 +22158,17 @@ def router(state: AgentState) -> dict:
     # The patient ASKED to cancel - in their own words, not as a yes to a
     # cancellation the assistant suggested. What `_cancellation_was_requested`
     # reads, whichever specialist later holds the turn.
-    if (reading and reading.get("cancel_request") and not reading.get("confirms")
-            and state.get("session_id")):
+    #
+    # A reading that says intent "cancel" while ANSWERING the assistant's
+    # question is not that: it is a yes/short reply the model bent into a
+    # cancellation. CONFIRMED (tanasuq-production, 2026-10-06 15:00): "اليوم"
+    # answering "هذا هو موعدك الذي تبغى تلغيه؟" - a question the assistant
+    # itself invented - routed to the cancel flow, and a bare "ااي" 17
+    # minutes later cancelled the appointment.
+    own_request = bool(reading) and not reading.get("confirms") and (
+        reading.get("cancel_request")
+        or (reading.get("intent") == "cancel" and not reading.get("answer_to_previous_question")))
+    if own_request and state.get("session_id"):
         tools._get_booking_session(state["session_id"])["_cancel_requested"] = True
 
     if chosen != previous:
@@ -21617,13 +22256,34 @@ def _assistant_asked_an_optional_question(messages: list) -> bool:
     last_ai = understanding.last_ai_text_before_latest_human(messages) or ""
     questions = [line for line in last_ai.splitlines() if "؟" in line or "?" in line]
     if not questions:
-        return False
+        # The email REQUEST can be a statement with no question mark
+        # ("من فضلك أرسل بريدك الإلكتروني لإضافته للحجز."), and "لا" to it
+        # is still "no email". CONFIRMED (tanasuq-production, 2026-10-06
+        # 13:37): that "لا" was read as a refusal, confirm_booking_review
+        # was blocked and the patient had to ask again to get the review.
+        # A review card always ends in its own question, so it never gets here.
+        return bool(_OPTIONAL_QUESTION_RE.search(agents.router.normalize(last_ai).lower()))
     # "نكمل على نفس رقم الواتساب ده؟" -> "لا" means "another number", not
     # "stop". CONFIRMED (tanasuq-production 2026-10-04 10:39): it was read
     # as a refusal and the patient got "تمام 🌷 إذا احتجت أي شيء ثاني".
     if _SAME_WHATSAPP_QUESTION_RE.search(_norm_ar(questions[-1])):
         return True
     return bool(_OPTIONAL_QUESTION_RE.search(agents.router.normalize(questions[-1]).lower()))
+
+
+# OUR OWN previous question offered a NEW booking. Only question lines
+# count: the greeting menu lists "حجز موعد جديد" on a line of its own, and
+# "هل هذا هو الموعد الجديد؟" (a reschedule's new time) is not an offer.
+_NEW_BOOKING_OFFER_RE = re.compile(
+    r"(?:حجز|احجز|تحجز|نحجز)\s*(?:لك\s*)?موعد\s*جديد|حجز\s*جديد|"
+    r"new\s*(?:booking|appointment)"
+)
+
+
+def _assistant_offered_a_new_booking(messages: list) -> bool:
+    last_ai = understanding.last_ai_text_before_latest_human(messages) or ""
+    questions = [agents.router.normalize(line) for line in last_ai.splitlines() if "؟" in line or "?" in line]
+    return any(_NEW_BOOKING_OFFER_RE.search(q) for q in questions)
 
 
 def _assistant_offered_a_transfer(messages: list) -> bool:
@@ -21664,6 +22324,7 @@ def _turn_facts(state: AgentState, previous: Optional[str] = None,
         transfer_offered=_assistant_offered_a_transfer(messages),
         optional_question=_assistant_asked_an_optional_question(messages),
         booking_underway=bool(session.get("doctor_id")),
+        new_booking_offered=_assistant_offered_a_new_booking(messages),
         bare_list_position=bool(_BARE_LIST_POSITION_RE.match(latest)),
         list_on_screen=last_list.get("entity_type") if isinstance(last_list, dict) else None,
         previous_cannot_book=previous in agents.router._CANNOT_COMPLETE_A_BOOKING,
@@ -21706,6 +22367,56 @@ def _types_the_word_we_asked_for(messages: list) -> bool:
         return False
     return any(_norm_ar(m).strip() == typed for m in _INVITED_WORD_RE.findall(
         understanding.last_ai_text_before_latest_human(messages) or ""))
+
+
+# "ضيعت اللفة" / "ضيعت الدخلة" / "توهت" - a Gulf idiom for being lost on the
+# way to the hospital. CONFIRMED (tanasuq-production, 2026-10-07 08:52 and
+# 09:02-09:33): read as medical ("pull over somewhere safe"), as the HR email
+# and, after a lateness question, as an ambiguous cancel/reschedule - five
+# different wrong answers to someone standing outside looking for the door.
+# The reading cannot be trusted with an idiom it has never seen, so the
+# patient's own words decide this one.
+_LOST_ON_THE_WAY_RE = re.compile(
+    r"(?:ضيع|ضع)(?:ت|نا)\s*(?:ال)?(?:لفه|دخله|طريق|مدخل|موقع|مكان)"
+    r"|(?:توه|ته)(?:ت|نا)(?!\w)"
+    r"|(?:ما|م)\s*لقي(?:ت|نا)\s*(?:ال)?(?:مستشف|فرع|مبن|مدخل|باب)"
+    r"|(?:مو|مب|ما)\s*لاقي\s*(?:ال)?(?:مستشف|فرع|مبن|مدخل|باب)"
+)
+
+
+# "تعديل" ON ITS OWN is changing an appointment. CONFIRMED (tanasuq-production,
+# 2026-10-07 14:55): a first message "تعديل" was read as wanting a person
+# (the prompt's "تعديل الوصفة" -> human rule, stretched to the bare word) and
+# the patient was handed off without being asked anything. A prescription or
+# any other object named after it still goes to a person.
+_BARE_EDIT_RE = re.compile(r"^\s*(?:ابي|ابغي|ابغى|اريد|بدي|عايز)?\s*(?:تعديل|اعدل|عدل|تغيير|اغير)"
+                           r"(?:\s*(?:ال)?(?:موعد|موعدي|الموعد|حجز|حجزي|الحجز))?\s*[.!؟?]*\s*$")
+
+
+def _bare_edit_request(messages: list) -> bool:
+    return bool(_BARE_EDIT_RE.match(_norm_ar(understanding.latest_human_text(messages) or "")))
+
+
+def _yes_to_our_transfer_question(messages: list, reading: Optional[dict]) -> bool:
+    """Our own LAST question offered customer service and the patient said yes.
+
+    CONFIRMED (tanasuq-production, 2026-10-07 10:51): "ولأي استفسار ثاني، تحب
+    أحوّلك لخدمة العملاء؟" -> "اي" was read as neither yes nor a request for a
+    person; the concierge then wrote "تم تحويلك" with no handoff raised, the
+    verifier turned that into the same question again, and the patient had to
+    type "حولني". Only the question line counts - the greeting menu also
+    mentions transferring, and "كيف أستطيع مساعدتك اليوم؟" offers nothing."""
+
+    last_ai = understanding.last_ai_text_before_latest_human(messages) or ""
+    questions = [line for line in last_ai.splitlines() if "؟" in line or "?" in line]
+    if not questions or not _TRANSFER_OFFER_RE.search(agents.router.normalize(questions[-1])):
+        return False
+    return _patient_confirms(understanding.latest_human_text(messages) or "", reading)
+
+
+def _says_lost_on_the_way(messages: list) -> bool:
+    text = _norm_ar((understanding.latest_human_text(messages) or "").strip())
+    return bool(text) and len(text.split()) <= 8 and bool(_LOST_ON_THE_WAY_RE.search(text))
 
 
 def _understand_turn(state: AgentState) -> Optional[dict]:
@@ -21837,13 +22548,17 @@ def _clarification_question(reading: Optional[dict], english: bool,
 
     options = [name for name in reading.get("alternatives") or [] if name in labels]
 
-    # "مش هقدر اجي" - they can't make it, and have not said whether to
-    # cancel or move it. One natural question offering exactly those two,
-    # unless the clinic authored its own clarification wording.
+    # "مش هقدر اجي" / "يبغالي ١٠ دقايق" / an apology - they are late or
+    # cannot make it, and have not said what they want done. Cancelling is
+    # NEVER what we offer: the patient asked for nothing of the kind
+    # (tanasuq-production, 2026-10-06 15:00 - a patient on the way to the
+    # hospital had their appointment cancelled). Offer a person, or moving
+    # it - unless the clinic authored its own clarification wording.
     if set(options) == {"cancel", "reschedule"} and not (templates or {}).get(
             "msg_clarify_intent_en" if english else "msg_clarify_intent"):
-        return ("Sure 🌷 Would you like to cancel the appointment, or move it to another day?"
-                if english else "أكيد 🌷 تحب نلغي الموعد، ولا نأجله ليوم تاني؟")
+        return ("Of course 🌷 Would you like me to connect you with customer service, "
+                "or move your appointment to another time?"
+                if english else "أكيد 🌷 تحب أحولك لخدمة العملاء، ولا تحب نأجل موعدك؟")
 
     if len(options) < 2:
         options = list(_CLARIFY_DEFAULT_OPTIONS.get(reading.get("intent"), _CLARIFY_APPOINTMENT_OPTIONS))
@@ -22191,6 +22906,14 @@ def _clear_abandoned_booking_context(chosen: Optional[str], previous: Optional[s
         )
         return
 
+    if _answers_the_booking_on_screen(session, reading):
+        logger.info(
+            "router: %s -> booking answering the %s list on screen for the doctor on file "
+            "(session_id=%s) - the same booking, not clearing it",
+            previous, (session.get("last_list") or {}).get("entity_type"), session_id,
+        )
+        return
+
     stale_keys = ("doctor_id", "branch_id", "specialty_ids", "known_doctor_names", "selected_slot")
     present = [key for key in stale_keys if session.get(key)]
     if not present:
@@ -22203,6 +22926,36 @@ def _clear_abandoned_booking_context(chosen: Optional[str], previous: Optional[s
     )
     for key in stale_keys:
         session.pop(key, None)
+    # The days or times on screen were that doctor's. Left behind, a "1"
+    # locked one of them into a booking with no doctor - see
+    # `_answers_the_booking_on_screen`.
+    if (session.get("last_list") or {}).get("entity_type") in ("slot", "day"):
+        session.pop("last_list", None)
+
+
+def _answers_the_booking_on_screen(session: dict, reading: Optional[dict]) -> bool:
+    """A doctor is on file, the last list shown is that booking's days or
+    times, and the patient's message answers it naming nothing new: the
+    booking continues, whichever agent showed the list.
+
+    CONFIRMED (tanasuq-production, 2026-10-10 14:31, session
+    966501650466): concierge had shown د. العنود الخليفة's times (4:00,
+    8:00). The patient's "1" moved the turn to booking, which wiped the
+    doctor and branch as abandoned but left the times; "1" then locked
+    4:00 into a booking with no doctor, and every pick after it - "1",
+    "1️⃣", "١", "4 مساء" - was answered with the same two times, because
+    the same-number step needs a doctor."""
+
+    if not session.get("doctor_id"):
+        return False
+    if (session.get("last_list") or {}).get("entity_type") not in ("slot", "day"):
+        return False
+    reading = reading or {}
+    if not reading.get("answer_to_previous_question"):
+        return False
+    entities = reading.get("entities") or {}
+    return not (reading.get("doctor_name") or reading.get("specialty")
+                or entities.get("doctor") or entities.get("service"))
 
 
 def route_to_specialist(state: AgentState) -> str:
@@ -22564,14 +23317,45 @@ _CANCEL_NOT_ASKED_PAYLOAD = {
 }
 
 
+# ONE DOCTOR AT A TIME. The booking session holds ONE doctor; several
+# `match_entity_for_booking(entity_type="doctor")` calls in one response
+# each overwrite it, and whichever ran last wins - the reply then talks
+# about one doctor while the session books another (tanasuq, 2026-10-10
+# 15:19: three doctors matched in one batch, days of one shown under the
+# name of another).
+_SEVERAL_DOCTORS_PAYLOAD = {
+    "status": "one_doctor_at_a_time",
+    "message": (
+        "Not run - several doctors were matched in one response, and the "
+        "booking holds one doctor at a time, so none of them was confirmed. "
+        "If the patient named one doctor, match only that one. If they just "
+        "want the soonest appointment in a specialty, use "
+        "find_best_doctor_in_specialty(criteria=\"soonest\"). Otherwise ask "
+        "them which doctor they want."
+    ),
+}
+
+
+def _several_doctor_matches(calls: list) -> list:
+    """The doctor `match_entity_for_booking` calls of one response, when
+    there is more than one distinct doctor among them."""
+
+    doctor_calls = [tc for tc in calls
+                    if tc.get("name") == "match_entity_for_booking"
+                    and str((tc.get("args") or {}).get("entity_type") or "").strip().lower() == "doctor"
+                    and str((tc.get("args") or {}).get("user_input") or "").strip()]
+    names = {str(tc["args"]["user_input"]).strip() for tc in doctor_calls}
+    return doctor_calls if len(names) > 1 else []
+
+
 def _cancellation_was_requested(state: AgentState) -> bool:
     """The patient asked to cancel in their own words at some point in this
-    conversation (recorded by the router), or the cancel/reschedule flow
-    owned the previous turn. A yes to the assistant's own suggestion is
-    neither."""
+    conversation (recorded by the router). A yes to the assistant's own
+    suggestion, or merely being routed into the cancel flow, is not that."""
 
-    if state.get("previous_agent") in ("cancel", "reschedule"):
-        return True
+    # Owning the previous turn is NOT proof: the router can be moved into the
+    # cancel flow by a misread yes (see the router note above), and that
+    # misread must not authorise the cancellation itself.
     session = tools._BOOKING_SESSIONS.get(state.get("session_id") or "") or {}
     return bool(session.get("_cancel_requested"))
 
@@ -22603,6 +23387,10 @@ def _gated_tool_calls(state: AgentState) -> list:
             already = {tc.get("id") for tc, _ in gated}
             gated += [(tc, _NOT_AT_PHONE_STEP_PAYLOAD) for tc in calls
                       if tc.get("name") in _NEW_BOOKING_IDENTITY_TOOLS and tc.get("id") not in already]
+
+    already = {tc.get("id") for tc, _ in gated}
+    gated += [(tc, _SEVERAL_DOCTORS_PAYLOAD) for tc in _several_doctor_matches(calls)
+              if tc.get("id") not in already]
 
     return gated
 

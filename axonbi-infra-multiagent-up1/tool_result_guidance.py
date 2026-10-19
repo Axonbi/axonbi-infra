@@ -69,6 +69,18 @@ RESULT_GUIDANCE: dict = {
     },
 
     # ------------------------------------------------------------------
+    "find_best_doctor_in_specialty": {
+        # tanasuq-production 2026-10-14 13:35: "ما في مواعيد ... مع دكتورة
+        # ندى جدّادي أو أي من أخصائيي العلاج النفسي" one message after eleven
+        # of them were listed as available.
+        "not_found":
+            "No open time was found in the next 30 days for these specialties. "
+            "Say only that. Never add that other doctors, or the whole "
+            "specialty, have nothing beyond what this result says, and never "
+            "contradict a list of available doctors already shown - offer to "
+            "check the days of a doctor from that list instead.",
+    },
+
     "find_available_doctors": {
         "found":
             "If `doctors` has exactly ONE entry and it carries an "
@@ -78,7 +90,10 @@ RESULT_GUIDANCE: dict = {
             "separate block). If `doctors` has more than one entry, "
             "ignore any `about` field entirely and give names only - "
             "reading out several bios makes comparing the list harder, "
-            "not easier.",
+            "not easier. If `matched_by` is \"degree\", the patient named a "
+            "degree, not a specialty: these are the doctors with that "
+            "`degree` - present them as such, never say the specialty is "
+            "missing.",
         "found_broader_search":
             "The given specialty_ids had nobody available; these are "
             "OTHER doctors clinic-wide and NOT a specialty match - never "
@@ -90,7 +105,8 @@ RESULT_GUIDANCE: dict = {
             "nobody available. Say so plainly; do NOT substitute other "
             "doctors.",
         "specialty_not_resolved":
-            "Not a specialty this clinic has. NO search ran and there "
+            "Not a specialty this clinic has, and no doctor here has that "
+            "degree either - say this is not available here. NO search ran and there "
             "are NO doctors to show. Call `list_specialties` and offer "
             "only what it returns, or ask which specialty they meant. "
             "Never name a doctor after this status.",
@@ -346,6 +362,15 @@ RESULT_GUIDANCE: dict = {
     },
 
     # ------------------------------------------------------------------
+    "get_next_weekday_date": {
+        "same_day_not_allowed":
+            "They asked for TODAY, and the clinic does not book or move an "
+            "appointment to the same day. Say so plainly (e.g. \"للأسف ما "
+            "نقدر نحجز في نفس اليوم 🌷\") and ask which other day suits them. "
+            "Never show today's times.",
+    },
+
+    # ------------------------------------------------------------------
     "get_available_reschedule_slots": {
         "same_day_not_allowed":
             "Only TODAY's times were open, and the clinic does not book or "
@@ -358,6 +383,12 @@ RESULT_GUIDANCE: dict = {
 
     # ------------------------------------------------------------------
     "select_appointment_slot": {
+        "ambiguous_pick":
+            "Their number can be read two ways: the option at that "
+            "position in the list, or the hour itself - and they are two "
+            "different times (both in `candidates`). Ask ONE short question "
+            "naming both `time_display` values, e.g. \"تقصد الساعة 3:00 ولا "
+            "الخيار رقم 3 (6:00)؟\" - never pick one yourself.",
         "selected":
             "Confirm it back in ONE short line and move on to STEP NB6 - "
             "never re-ask for the time now that this succeeded.",
@@ -386,6 +417,16 @@ RESULT_GUIDANCE: dict = {
             "`get_available_slots_for_booking` for the day (it leaves that "
             "time out) and show only what it returns; if nothing is left, "
             "say that day is full and offer another day.",
+    },
+
+    # ------------------------------------------------------------------
+    "select_reschedule_slot": {
+        "ambiguous_pick":
+            "Their number can be read two ways: the option at that "
+            "position in the list, or the hour itself - and they are two "
+            "different times (both in `candidates`). Ask ONE short question "
+            "naming both `time_display` values, e.g. \"تقصد الساعة 3:00 ولا "
+            "الخيار رقم 3 (6:00)؟\" - never pick one yourself.",
     },
 
     # ------------------------------------------------------------------
@@ -476,6 +517,29 @@ RESULT_GUIDANCE: dict = {
             "tell the patient plainly which detail wasn't accepted, ask "
             "for a corrected one, and book again with it. Never describe "
             "this as a temporary technical problem.",
+        "patient_has_booking_that_day":
+            "THE NEW BOOKING WAS NOT CREATED. The clinic's system already "
+            "holds a booking for this patient with this same doctor on "
+            "that day - the one in `appointment` - and does not allow a "
+            "second one. Tell them that booking's real details from "
+            "`appointment` (doctor, branch, date, time, reference), "
+            "exactly as given - never the time they were trying to book. "
+            "Then ask ONE question: keep that booking, or choose another "
+            "day. Do NOT ask for their name or email again.",
+        "booking_refused":
+            "THE BOOKING WAS NOT CREATED - the clinic's system refused it, "
+            "and not because of the patient's name, phone or email "
+            "(`reason` carries the system's own words, if any). Say "
+            "plainly that the booking could not be completed AND WHY, "
+            "from `reason`, in plain words - e.g. a reason saying the "
+            "patient already has a booking with this doctor that day "
+            "means a second booking with the same doctor on the same day "
+            "is not possible. Never say "
+            "or imply it is booked or confirmed, never give a time for any "
+            "booking no tool returned, and do NOT ask for their name or "
+            "email again. "
+            "Offer one next step: another time, or our customer service "
+            "team.",
         "phone_not_verified":
             "mobile_number is neither the channel identity nor verified "
             "in this conversation (no successful compare_phone, no "
@@ -508,7 +572,10 @@ RESULT_GUIDANCE: dict = {
             "cancelled, completed, or its own date/time has passed - it "
             "can no longer be cancelled or rescheduled. Tell the user "
             "plainly why; don't say \"not found\", which wrongly implies "
-            "they mistyped something.",
+            "they mistyped something. If `cancelled_appointments` is "
+            "present, those are their own bookings and they are CANCELLED: "
+            "show each one (doctor, date, time) saying it is cancelled, and "
+            "offer to book a new appointment.",
         "error":
             "The booking API call failed - a technical problem, NOT the "
             "same as \"no booking exists\".",
@@ -624,6 +691,14 @@ RESULT_GUIDANCE: dict = {
 
     # ------------------------------------------------------------------
     "get_doctor_fees": {
+        # tanasuq, 2026-10-10: "كم ٥٠٠ للجلسة" was told the consultation
+        # costs 500 - 500 was the follow-up, the consultation 600.
+        "found":
+            "Each price belongs to its own service. Give each one with its "
+            "service name exactly as listed in `fees` (a consultation and a "
+            "follow-up are different prices). If the patient quotes a price, "
+            "say which service it belongs to, and correct it if it is not the "
+            "price of the service they asked about.",
         "doctor_not_found":
             "No doctor by that name. Say so plainly and offer the list "
             "of doctors (match_entity_info in list mode) - do NOT say "
