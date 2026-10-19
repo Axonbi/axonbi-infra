@@ -52,6 +52,7 @@ FILES=(
   agents/__init__.py agents/router.py agents/registry.py
   agents/sections.py agents/response_contract.py agents/hard_rules.py
   agents/semantic_router.py
+  session_store.py prune_checkpoints.py
 )
 
 # The regression suite. Downloaded and RUN against the new code before
