@@ -1323,11 +1323,16 @@ def get_messages(client_id: str, dialect: Optional[str] = None, client_row_overr
     #   PII_TOKENS_OFF_CLIENTS=a,b       off for these client ids
     # PII_TOKENS_CLIENTS=a,b (or "*") is always on, whatever PII_TOKENS says.
     # `pii_debug` true/1 in the n8n row logs what the model received, on
-    # every call - for a test flow only.
+    # every call - for a test flow only. From the server instead:
+    #   PII_DEBUG_CLIENTS=a,b (or "*")   on for these client ids
     # egypt-test: patient data is ALWAYS masked for the model, every
     # client - PII_TOKENS=0 / PII_TOKENS_OFF_CLIENTS cannot turn it off.
+    _client = str(client_id or "").strip()
+    _debug_on = {c.strip() for c in os.getenv("PII_DEBUG_CLIENTS", "").split(",") if c.strip()}
     merged["_pii_tokens"] = True
-    merged["_pii_debug"] = str(client_row.get("pii_debug") or "").strip().lower() in ("1", "true", "yes", "on")
+    merged["_pii_debug"] = ("*" in _debug_on or _client in _debug_on) or (
+        str(client_row.get("pii_debug") or "").strip().lower() in ("1", "true", "yes", "on")
+    )
     # SSO account for cms-api, also per client. Keys are named after the env
     # vars, like CMS_API_BASE_URL. Anything missing falls back to the
     # environment (api._sso_settings).
