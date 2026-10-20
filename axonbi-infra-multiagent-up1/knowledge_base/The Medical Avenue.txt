@@ -70,6 +70,18 @@ All 5 doctors above are real consultants listed on the site (`from_site: true`);
 
 *Source: https://themedicalavenue.med.sa/doctors*
 
+4. الخدمات | Services
+
+4.1 تقييم المخاطر الصحية | Health Risk Assessment
+4.2 السمنة والخلل الأيضي وMASLD | Obesity, Metabolic Dysfunction & MASLD
+4.3 الرأي الطبي الثاني الدولي | International Second Opinion
+4.4 تحليل المخاطر الجينية DNA Risk Score | DNA Risk Score
+4.5 العلاجات الوريدية المتخصصة | Specialized IV Therapies
+4.6 الطب النفسي للبالغين | Adult Psychiatry
+4.7 هشاشة العظام المكثفة | Intensive Osteoporosis Care
+4.8 الزهايمر والتنكس العصبي | Alzheimer's & Neurodegeneration
+4.9 خلل الميتوكوندريا | Mitochondrial Dysfunction
+
 ## الخدمات والأسعار (مرجعية) / Services & Indicative Pricing
 
 | Service | Starting price |
