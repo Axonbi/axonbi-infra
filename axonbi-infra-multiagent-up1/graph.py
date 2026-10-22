@@ -46,7 +46,7 @@ import ast
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from functools import lru_cache
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage, trim_messages
 from langchain_openai import AzureChatOpenAI, ChatOpenAI
@@ -2679,7 +2679,8 @@ def _build_terminal_success_directive(messages: list, templates: dict) -> str:
     )
 
 
-def _build_booking_success_display_directive(messages: list, templates: dict) -> str:
+def _build_booking_success_display_directive(messages: list, templates: dict,
+                                              session_id: Optional[str] = None) -> str:
     """
     If the LAST message is a ToolMessage from `create_new_booking` with
     status "success", pre-build the EXACT confirmation block in code -
@@ -2763,6 +2764,27 @@ def _build_booking_success_display_directive(messages: list, templates: dict) ->
         )
 
     block = f"{greeting_line}\n{success_body}\n{clinic_line}"
+
+    # A SECOND DOCTOR THE PATIENT ASKED FOR IN THE SAME MESSAGE THAT
+    # STARTED THIS BOOKING must not be silently dropped now that this one
+    # is confirmed (see `_split_multi_doctor_names`). The exact-text lock
+    # below forbids the model from adding anything of its own, so the
+    # follow-up question is appended to the locked block itself, inside
+    # the same reply, rather than left for a later turn the patient may
+    # never write ("نعم أي رقم أو وقت تفضل؟" is already the clinic's
+    # existing offer-another-slot phrasing convention).
+    followup_name = ""
+    if session_id:
+        session = tools._get_booking_session(session_id)
+        pending = session.get("pending_doctor_requests") or []
+        if pending:
+            followup_name = pending.pop(0)
+
+    if followup_name:
+        block = (
+            f"{block}\n\n"
+            f"بما إنك طلبت موعد مع {followup_name} كمان، حابب نكمل حجزه الحين؟"
+        )
 
     return (
         "[INTERNAL INSTRUCTION - NOT FOR THE USER - READ CAREFULLY]\n"
@@ -3851,6 +3873,35 @@ def _doctor_fragment(text: str, reading: Optional[dict] = None) -> str:
     return fragment
 
 
+def _split_multi_doctor_names(doctor_name: str) -> List[str]:
+    """`doctor_name` as the understanding reading writes it when the
+    patient named more than one doctor in the same message - comma-
+    joined, per its own documented convention (see understanding.PROMPT's
+    "اصيلا، العنود" example). Returns the individual names, in the order
+    given, deduplicated and stripped - a single name back as a
+    one-element list, so callers never need a separate "was this split?"
+    check.
+
+    CONFIRMED IN PRODUCTION (tanasuq chat 1068): a patient wrote "محتاج
+    موعد مع د عمر المديفر وموعد مع نجود الخليفي" in one message. The
+    reading correctly captured both names, but the booking flow passed
+    the whole string to `match_entity_for_booking` as a single fuzzy
+    name, which happened to name-match both real doctors - so it was
+    shown as ONE ambiguous name ("do you mean X or Y?") instead of being
+    handled as two separate booking requests, and after the patient
+    picked one, the other was never mentioned again."""
+
+    if not doctor_name:
+        return []
+    parts = re.split(r"[،,]| و (?=\S)", doctor_name)
+    seen = []
+    for part in parts:
+        name = part.strip(" .!؟?")
+        if name and name not in seen:
+            seen.append(name)
+    return seen
+
+
 def _build_multi_intent_directive(messages: list, session_id: str, agent_name: str = "booking",
                                   reading: Optional[dict] = None) -> str:
     """Lists, in the system prompt, every distinct piece of information
@@ -3911,6 +3962,24 @@ def _build_multi_intent_directive(messages: list, session_id: str, agent_name: s
     found = []
 
     doctor_fragment = _doctor_fragment(text, reading)
+    extra_doctor_names = []
+    if doctor_fragment:
+        doctor_names = _split_multi_doctor_names(doctor_fragment)
+        if len(doctor_names) >= 2:
+            # Two (or more) distinct doctors in one message: resolve the
+            # FIRST this turn only - handing the whole joined string to
+            # match_entity_for_booking makes it look like one ambiguous
+            # fuzzy name instead of two separate requests - and remember
+            # the rest so the confirmation step offers them next instead
+            # of silently dropping them.
+            doctor_fragment = doctor_names[0]
+            extra_doctor_names = doctor_names[1:]
+            if session_id:
+                session = tools._get_booking_session(session_id)
+                pending = session.setdefault("pending_doctor_requests", [])
+                for name in extra_doctor_names:
+                    if name not in pending:
+                        pending.append(name)
     if doctor_fragment:
         found.append((
             "A DOCTOR",
@@ -4059,6 +4128,17 @@ def _build_multi_intent_directive(messages: list, session_id: str, agent_name: s
         "THEY ALREADY TOLD YOU THIS - DO NOT ASK FOR IT AGAIN"
     )
 
+    pending_note = ""
+    if extra_doctor_names:
+        pending_note = (
+            "\nTHE PATIENT ALSO ASKED FOR AN APPOINTMENT WITH: "
+            + "، ".join(extra_doctor_names) + ". Finish booking the doctor "
+            "above FIRST - do not try to juggle both in the same turn. "
+            "Once that booking is fully confirmed, the next message you "
+            "send will remind you to come back and offer this one too; "
+            "you do not need to mention it again before then.\n"
+        )
+
     return (
         "============================================================\n"
         + heading + "\n"
@@ -4066,7 +4146,7 @@ def _build_multi_intent_directive(messages: list, session_id: str, agent_name: s
         "The patient's latest message carries information you would "
         "otherwise be about to ask for. Everything below is something "
         "they have ALREADY told you:\n\n"
-        + "\n".join(lines) + "\n\n"
+        + "\n".join(lines) + "\n" + pending_note + "\n"
         "Start from the earliest step that is still genuinely unanswered "
         "AFTER all of the above is taken into account - not from the "
         "beginning of the flow. Asking for any item on that list is "
@@ -20477,7 +20557,8 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
         state["messages"], agent_name,
     )
     booking_confirmation_directive = _build_booking_confirmation_requires_tool_directive(state["messages"], state.get("session_id"))
-    booking_success_directive = _build_booking_success_display_directive(state["messages"], state.get("templates"))
+    booking_success_directive = _build_booking_success_display_directive(
+        state["messages"], state.get("templates"), state.get("session_id"))
 
     # The three display blocks added to close the remaining gaps: a
     # resolved date, an entity list (doctors/specialties/branches), and
@@ -22504,6 +22585,22 @@ _PRESCRIPTION_OFFER = {
            "Would you like me to transfer you to customer service?"),
 }
 
+# The HR-email default only fits when the request is actually about jobs,
+# training, interviews or a CV. CONFIRMED IN PRODUCTION (tanasuq chat
+# 1054): a patient asking about a community partnership ("شراكة مجتمعية",
+# an awareness session, a brochure) was answered three times in a row
+# with the HR/jobs email, because the HR default fired on ANY
+# about_this_hospital topic whenever the clinic had an HR address, not
+# just on employment ones. Everything else outside this list (a
+# community partnership, a supplier, media, administration) must get the
+# generic "outside what I can help with - transfer you?" offer instead.
+_HR_TOPIC_RE = re.compile(
+    r"وظيف|توظيف|تدريب|تدريبي|متدرب|شغل|دوام|سيرة\s*ذاتية|السيرة الذاتية|مقابلة\s*(شخصية|عمل)?"
+    r"|شاغر|تقديم\s*(على|علي)?\s*(وظيف|شغل)|انترن|تطوع|CV|resume|r[ée]sum[ée]"
+    r"|\bjob\b|\bjobs\b|career|hiring|intern(ship)?|training|\btrainee\b|vacan(cy|cies)",
+    re.IGNORECASE,
+)
+
 
 def _out_of_scope_offer(reading: Optional[dict], english: bool,
                         templates: Optional[dict] = None,
@@ -22519,11 +22616,13 @@ def _out_of_scope_offer(reading: Optional[dict], english: bool,
     templates = templates or {}
     if _PRESCRIPTION_RE.search(_norm_ar(f"{topic or ''} {_latest_human_text(messages or [])}")):
         return _PRESCRIPTION_OFFER["en" if english else "ar"]
-    # A clinic whose knowledge base names an HR address gives it: jobs,
-    # training and CVs are most of what arrives here. Worded as "if it is
-    # about...", so a supplier or an admin question still reads right,
-    # and the transfer offer stays for everything else.
-    hr_email = _clinic_hr_email(templates)
+    # A clinic whose knowledge base names an HR address gives it, but only
+    # when the topic itself is actually about jobs/training/a CV - a
+    # community partnership, a supplier or an admin question is not
+    # employment, and must fall through to the generic transfer offer
+    # below instead of the HR email.
+    is_hr_topic = bool(_HR_TOPIC_RE.search(_norm_ar(f"{topic or ''} {_latest_human_text(messages or [])}")))
+    hr_email = _clinic_hr_email(templates) if is_hr_topic else ""
     if english:
         subject = topic or "this"
         default = ("If your question is about jobs, training or sending your CV, you can email "

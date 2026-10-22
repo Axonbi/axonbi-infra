@@ -1727,6 +1727,14 @@ def _new_booking_session() -> dict:
         # patient asks about anything else. See
         # `get_doctor_schedule_for_booking`.
         "branch_auto_resolved": False,
+        # A second (or third) doctor named in the SAME message that
+        # started this booking ("موعد مع د عمر المديفر وموعد مع نجود
+        # الخليفي") - see graph._split_multi_doctor_names. Surfaced again
+        # once the current booking is confirmed, instead of being
+        # silently dropped. Survives `reset_booking_session` for the same
+        # reason `booking_phone` does: it is a fact about what the
+        # PATIENT asked for, not about the booking just completed.
+        "pending_doctor_requests": [],
     }
 
 
@@ -1737,7 +1745,7 @@ def _new_booking_session() -> dict:
 # prove it twice is exactly the friction this project keeps removing.
 _SESSION_KEYS_SURVIVING_RESET = (
     "known_branch_names", "known_doctor_names", "verified_phones",
-    "booking_phone",
+    "booking_phone", "pending_doctor_requests",
 )
 
 
