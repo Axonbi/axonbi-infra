@@ -257,6 +257,10 @@ DEFAULT_TIMEZONE: str = os.getenv("DEFAULT_TIMEZONE", "Asia/Riyadh")
 #                    (always succeeds; TEST_OTP is accepted as correct)
 #   "authentica"  -> mirrors send_otp5 / verify_otp5 in
 #                    langchain_cancellation.json (api.authentica.sa)
+#   "smsmisr"     -> SMS Misr OTP API (smsmisr.com/api/OTP/). Unlike
+#                    Authentica, SMS Misr only DELIVERS the code: we
+#                    generate it ourselves, store it in memory and verify
+#                    it locally (see tools.send_otp / verify_otp).
 # Defaults to "dummy" so the project runs end-to-end with no external
 # OTP credentials, exactly like the n8n dev setup that ships both a real
 # and a dummy OTP sub-workflow side by side.
@@ -273,6 +277,25 @@ AUTHENTICA_API_KEY: str = os.getenv("AUTHENTICA_API_KEY", "")
 AUTHENTICA_TEMPLATE_ID: str = os.getenv("AUTHENTICA_TEMPLATE_ID", "31")
 AUTHENTICA_FALLBACK_EMAIL: str = os.getenv("AUTHENTICA_FALLBACK_EMAIL", "")
 
+# SMS Misr (OTP_PROVIDER=smsmisr). Credentials come from the environment
+# only - never commit them.
+SMSMISR_BASE_URL: str = os.getenv("SMSMISR_BASE_URL", "https://smsmisr.com/api/OTP/")
+SMSMISR_ENVIRONMENT: str = os.getenv("SMSMISR_ENVIRONMENT", "1")  # 1 = live, 2 = test
+SMSMISR_USERNAME: str = os.getenv("SMSMISR_USERNAME", "")
+SMSMISR_PASSWORD: str = os.getenv("SMSMISR_PASSWORD", "")
+SMSMISR_SENDER: str = os.getenv("SMSMISR_SENDER", "")
+SMSMISR_TEMPLATE: str = os.getenv("SMSMISR_TEMPLATE", "")
+SMSMISR_OTP_LENGTH: int = int(os.getenv("SMSMISR_OTP_LENGTH", "6"))
+
+# OurSMS (OTP_PROVIDER=oursms, api.oursms.com). Like SMS Misr it only
+# delivers the code we generate and verify. Token from the environment
+# only - never commit it. OURSMS_BODY must contain "{code}".
+OURSMS_BASE_URL: str = os.getenv("OURSMS_BASE_URL", "https://api.oursms.com/msgs/sms")
+OURSMS_TOKEN: str = os.getenv("OURSMS_TOKEN", "")
+OURSMS_SENDER: str = os.getenv("OURSMS_SENDER", "")
+OURSMS_BODY: str = os.getenv("OURSMS_BODY", "رمز التحقق: {code} صالح لمدة 5 دقائق")
+OURSMS_OTP_LENGTH: int = int(os.getenv("OURSMS_OTP_LENGTH", "4"))
+
 # SMTP config for the Complaint Agent's send_complaint_email tool.
 # Per-clinic recipient list comes from client_config.csv's own
 # "complaint_email_to" column (see get_messages) - the SMTP server
@@ -287,6 +310,14 @@ AUTHENTICA_FALLBACK_EMAIL: str = os.getenv("AUTHENTICA_FALLBACK_EMAIL", "")
 # IP-allowlist on the mail server's side - n8n's own network path is
 # already confirmed working for this same system's WhatsApp messaging).
 COMPLAINT_WEBHOOK_URL: str = os.getenv("COMPLAINT_WEBHOOK_URL", "")
+
+# Nearest-branch search (tools.geocode_address) uses OpenStreetMap's public
+# Nominatim service, whose usage policy requires a real, identifying
+# User-Agent on every request - a generic one risks the shared instance
+# rate-limiting or blocking this traffic. Point it at a real contact.
+NOMINATIM_USER_AGENT: str = os.getenv(
+    "NOMINATIM_USER_AGENT", "axonbi-clinic-assistant/1.0 (ops@axonbi.com)"
+)
 
 SMTP_HOST: str = os.getenv("SMTP_HOST", "")
 SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
@@ -915,6 +946,24 @@ PROGRESS_TIMEOUT_SECONDS: float = float(os.getenv("PROGRESS_TIMEOUT_SECONDS", "5
 
 
 # ==========================================================
+# System-failure alerts (system_alerts.py)
+# ==========================================================
+# Every create/cancel/reschedule the CMS does not accept is POSTed here,
+# so n8n can email the team the failed request and the analytics
+# dashboard can mark the conversation as a system failure. Empty: the
+# failure is only logged. A client_config row can override it with
+# `webhook_system_failure`.
+SYSTEM_FAILURE_WEBHOOK_URL: str = os.getenv("SYSTEM_FAILURE_WEBHOOK_URL", "").strip()
+
+# Sent as the X-Webhook-Secret header, so the n8n webhook can drop
+# anything that is not from us.
+SYSTEM_FAILURE_WEBHOOK_SECRET: str = os.getenv("SYSTEM_FAILURE_WEBHOOK_SECRET", "").strip()
+
+# Short: the alert is sent off the patient's path and must never pile up.
+SYSTEM_FAILURE_TIMEOUT_SECONDS: float = float(os.getenv("SYSTEM_FAILURE_TIMEOUT_SECONDS", "5"))
+
+
+# ==========================================================
 # Logging
 # ==========================================================
 
@@ -1065,6 +1114,63 @@ def _all_dialect_templates() -> Dict[str, dict]:
 
     rows = _read_csv_rows("dialect_templates.csv")
     return {row["Dialect"].strip(): row for row in rows if row.get("Dialect")}
+
+
+# ==========================================================
+# Branch geo-data (branches_geo.csv)
+# ==========================================================
+#
+# The ONE thing api.get_branches genuinely does not return: lat/lng (and,
+# optionally, working hours). Everything else about a branch - name,
+# address, phone - is live from the Booking API and must never be
+# duplicated here. Searched like the other CSVs (AGENT_DATA_DIR first,
+# then the project root, where the committed copy lives).
+#
+# A branch may be listed under several names (the API's English `name`,
+# its Arabic `altName`, a common spelling) with the same coordinates -
+# tools.find_nearest_branch joins API branches to these rows by name, so
+# an extra alias costs nothing and a missing one silently drops that
+# branch from every distance ranking.
+
+BRANCHES_GEO_CSV_FILENAME = "branches_geo.csv"
+
+
+@lru_cache(maxsize=1)
+def _all_branches_geo() -> Dict[str, dict]:
+    """branch_name -> {"latitude", "longitude", "working_hours"}, loaded
+    once and cached. A row naming no real branch is never looked up -
+    dead data until corrected, not an error."""
+
+    result: Dict[str, dict] = {}
+    for row in _read_csv_rows(BRANCHES_GEO_CSV_FILENAME):
+        name = (row.get("branch_name") or "").strip()
+        if not name:
+            continue
+        try:
+            latitude = float(row.get("latitude"))
+            longitude = float(row.get("longitude"))
+        except (TypeError, ValueError):
+            logger.warning(
+                "branches_geo.csv: skipping %r - latitude/longitude is not a "
+                "valid number (%r, %r)",
+                name, row.get("latitude"), row.get("longitude"),
+            )
+            continue
+        result[name] = {
+            "latitude": latitude,
+            "longitude": longitude,
+            "working_hours": (row.get("working_hours") or "").strip(),
+            # ISO-3166 alpha-2 ("eg") - where the branches actually are,
+            # which the client row's timezone does not always say.
+            "country_code": (row.get("country_code") or "").strip().lower(),
+        }
+    return result
+
+
+def load_branches_geo() -> Dict[str, dict]:
+    """Public accessor for `_all_branches_geo`."""
+
+    return _all_branches_geo()
 
 
 def get_client_config(client_id: str) -> Optional[dict]:
@@ -1220,6 +1326,25 @@ def get_messages(client_id: str, dialect: Optional[str] = None, client_row_overr
         ((client_row.get("CMS_API_BASE_URL") or "").strip()
          or (client_row.get("cms_base_url") or "").strip())
         and os.getenv("BOOKING_ON_CMS", "1").strip() != "0"
+    )
+    # PATIENT DATA AS PLACEHOLDERS FOR THE MODEL - see pii_vault.py. Decided
+    # on the SERVER only, from the environment - the n8n row's `pii_tokens`
+    # is not read (2026-10-15). ON for every client unless:
+    #   PII_TOKENS=0                     off for everyone
+    #   PII_TOKENS_OFF_CLIENTS=a,b       off for these client ids
+    # PII_TOKENS_CLIENTS=a,b (or "*") is always on, whatever PII_TOKENS says.
+    # `pii_debug` true/1 in the n8n row logs what the model received, on
+    # every call - for a test flow only. From the server instead:
+    #   PII_DEBUG_CLIENTS=a,b (or "*")   on for these client ids
+    _client = str(client_id or "").strip()
+    _debug_on = {c.strip() for c in os.getenv("PII_DEBUG_CLIENTS", "").split(",") if c.strip()}
+    _forced_on = {c.strip() for c in os.getenv("PII_TOKENS_CLIENTS", "").split(",") if c.strip()}
+    _off = {c.strip() for c in os.getenv("PII_TOKENS_OFF_CLIENTS", "").split(",") if c.strip()}
+    merged["_pii_tokens"] = ("*" in _forced_on or _client in _forced_on) or not (
+        os.getenv("PII_TOKENS", "1").strip() == "0" or _client in _off
+    )
+    merged["_pii_debug"] = ("*" in _debug_on or _client in _debug_on) or (
+        str(client_row.get("pii_debug") or "").strip().lower() in ("1", "true", "yes", "on")
     )
     # SSO account for cms-api, also per client. Keys are named after the env
     # vars, like CMS_API_BASE_URL. Anything missing falls back to the

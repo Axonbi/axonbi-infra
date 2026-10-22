@@ -75,3 +75,38 @@ def test_nothing_is_sent_without_a_request_an_offer_or_a_claim():
     state = _state([AIMessage(content="تحب تحجز موعد؟"), HumanMessage(content="ايه")], {"confirms": True})
     reply = AIMessage(content="تمام، أي فرع يناسبك: المنار ولا النزهة؟")
     assert graph._missed_location_pin_pair(state, reply, "ar") == []
+
+
+# ----------------------------------------------------------------------
+# bridge-production 13:19 / 13:05
+# ----------------------------------------------------------------------
+
+from langchain_core.messages import ToolMessage  # noqa: E402
+
+
+def _tool_turn(human, name, payload):
+    return [
+        HumanMessage(content=human),
+        AIMessage(content="", tool_calls=[{"name": name, "args": {}, "id": "t1"}]),
+        ToolMessage(content=json.dumps(payload, ensure_ascii=False), name=name, tool_call_id="t1"),
+    ]
+
+
+def test_a_branch_that_does_not_exist_gets_no_pin_of_another():
+    state = {"session_id": _SID, "raw_client_config": {"branches": "بريدج النزهة"}, "templates": {},
+             "understanding": {"asks_location": False},
+             "messages": _tool_turn("ممكن عنوان النرجس؟", "match_entity_info", {"status": "not_matched"})}
+    reply = AIMessage(content="ما لقيت فرع اسمه النرجس. لكن عندنا فرع واحد:\n1️⃣ بريدج النزهة - شارع حايل")
+    assert graph._missed_location_pin_pair(state, reply, "ar") == []
+
+
+def test_the_empty_day_asked_for_is_said_first():
+    payload = {"status": "found", "slots": [{"date_display": "28/10/2026"}],
+               "requested_day_had_no_slots": {"date_display": "14/10/2026", "weekday_display": "الأربعاء"}}
+    state = {"session_id": _SID, "messages": _tool_turn("اه", "get_available_reschedule_slots", payload)}
+    reply = "📅 المواعيد المتاحة ليوم الأربعاء 28/10/2026:\n1️⃣ 4:00 مساءً\nأي رقم أو وقت تفضل؟"
+    out = graph._requested_day_empty_notice(reply, state, "ar")
+    assert out.startswith("يوم الأربعاء 14/10/2026 ما فيه مواعيد متاحة") and out.endswith(reply)
+    # Said already - nothing added.
+    said = "يوم 14/10/2026 ما فيه مواعيد، أقرب أربعاء 28/10:\n1️⃣ 4:00 مساءً"
+    assert graph._requested_day_empty_notice(said, state, "ar") == said

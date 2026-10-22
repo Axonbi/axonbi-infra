@@ -29,6 +29,7 @@ from config import DUPLICATE_MESSAGE_WINDOW_SECONDS, GRAPH_RECURSION_LIMIT, MESS
 from graph import graph, soft_recovery_reply, upstream_api_failed
 
 import llm_usage
+import pii_vault
 import progress
 import tools
 
@@ -510,6 +511,20 @@ def send_message_with_signals(
                 # in state from the very first turn, including for a tool
                 # call made before agent() writes the detected value.
                 state["target_language"] = None
+
+            # PATIENT DATA AS PLACEHOLDERS FOR THE MODEL, for a client whose
+            # n8n row has `pii_tokens` on - see pii_vault.py. Never allowed
+            # to cost the turn: a failure here only means no masking.
+            try:
+                pii_vault.begin_turn(
+                    session_id, get_messages(client_id, client_row_override=client_config),
+                    channel_phone,
+                    existing_snapshot.values.get("messages", []) if existing_snapshot.values else [],
+                    message,
+                )
+            except Exception:  # noqa: BLE001
+                pii_vault._current.set(None)
+                logger.exception("session_id=%s: pii_vault.begin_turn failed - this turn is not masked", session_id)
 
             usage_token = llm_usage.start_turn()
             try:

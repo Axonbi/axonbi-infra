@@ -34,6 +34,16 @@ from config import (
     DOCTORS_API_MAX_RETRIES,
     DOCTORS_API_RETRY_BACKOFF_SECONDS,
     REQUEST_TIMEOUT_SECONDS,
+    SMSMISR_BASE_URL,
+    SMSMISR_ENVIRONMENT,
+    SMSMISR_PASSWORD,
+    SMSMISR_SENDER,
+    SMSMISR_TEMPLATE,
+    SMSMISR_USERNAME,
+    OURSMS_BASE_URL,
+    OURSMS_BODY,
+    OURSMS_SENDER,
+    OURSMS_TOKEN,
     SSO_EMAIL,
     SSO_LOGIN_URL,
     SSO_ORGANIZATION_ID,
@@ -52,6 +62,31 @@ def _result(success: bool, status_code: Optional[int] = None, data=None, error: 
             details: Optional[list] = None) -> dict:
     return {"success": success, "status_code": status_code, "data": data, "error": error,
             "details": details or []}
+
+
+# The request behind a failed result, for system_alerts. Kept OFF the
+# result dict on purpose: results flow into tool returns and the model's
+# context, and a request body carries the patient's name and number.
+# Thread-local because /chat runs each turn on its own worker thread.
+_LAST_FAILURE = threading.local()
+
+
+def _note_failure(result: dict, method: str, url: str, body, response) -> dict:
+    if not result.get("success"):
+        _LAST_FAILURE.value = {
+            "result": result,
+            "request": {"method": method.upper(), "url": url, "body": body},
+            "response": {"status_code": result.get("status_code"),
+                         "body": response.text[:2000] if response is not None else None},
+        }
+    return result
+
+
+def failure_context(result: dict) -> Optional[dict]:
+    """The request and response behind THIS failed result, if this thread
+    recorded it (identity check, so an older failure is never misattributed)."""
+    last = getattr(_LAST_FAILURE, "value", None)
+    return last if last is not None and last["result"] is result else None
 
 
 def _validation_details(response) -> list:
@@ -466,7 +501,7 @@ def _cms_request(method: str, base_url: Optional[str], path: str, language: Opti
 
     if not base_url:
         logger.error("cms-api base URL is not configured (CMS_API_BASE_URL / cms_base_url) - cannot call %s", path)
-        return _result(False, error="not_configured")
+        return _note_failure(_result(False, error="not_configured"), method, path, kwargs.get("json", kwargs.get("params")), None)
 
     url = f"{base_url}{path}"
     response, last_timeout, last_exc = None, False, None
@@ -474,7 +509,7 @@ def _cms_request(method: str, base_url: Optional[str], path: str, language: Opti
     for attempt in (1, 2):
         token = _get_sso_token(force_refresh=(attempt == 2), sso=sso)
         if not token:
-            return _result(False, error="authentication_error")
+            return _note_failure(_result(False, error="authentication_error"), method, url, kwargs.get("json", kwargs.get("params")), response)
 
         headers = _headers(language=language)
         headers["Authorization"] = f"Bearer {token}"
@@ -490,40 +525,40 @@ def _cms_request(method: str, base_url: Optional[str], path: str, language: Opti
     if response is None:
         if last_timeout:
             logger.warning("cms-api request timed out: %s", url)
-            return _result(False, error="timeout")
+            return _note_failure(_result(False, error="timeout"), method, url, kwargs.get("json", kwargs.get("params")), response)
         logger.error("cms-api request failed: %s error=%s", url, last_exc)
-        return _result(False, error=str(last_exc) if last_exc else "request_failed")
+        return _note_failure(_result(False, error=str(last_exc) if last_exc else "request_failed"), method, url, kwargs.get("json", kwargs.get("params")), response)
 
     if response.status_code >= 500:
         logger.error("cms-api server error: %s status=%s body=%s", url, response.status_code, response.text[:500])
-        return _result(False, response.status_code, error="server_error")
+        return _note_failure(_result(False, response.status_code, error="server_error"), method, url, kwargs.get("json", kwargs.get("params")), response)
 
     if response.status_code in (401, 403):
         logger.error("cms-api AUTHENTICATION/AUTHORIZATION error (%s) even after a fresh login: %s body=%s",
                      response.status_code, url, response.text[:500])
-        return _result(False, response.status_code, error="authentication_error")
+        return _note_failure(_result(False, response.status_code, error="authentication_error"), method, url, kwargs.get("json", kwargs.get("params")), response)
 
     if response.status_code == 404:
         logger.error("cms-api endpoint NOT FOUND (404): %s body=%s", url, response.text[:300])
-        return _result(False, response.status_code, error="endpoint_not_found")
+        return _note_failure(_result(False, response.status_code, error="endpoint_not_found"), method, url, kwargs.get("json", kwargs.get("params")), response)
 
     if response.status_code >= 400:
         details = _validation_details(response)
         logger.error("cms-api validation error: %s status=%s body=%s rejected_fields=%s",
                      url, response.status_code, response.text[:500],
                      [d["field"] for d in details] or "unknown")
-        return _result(False, response.status_code, error="validation_error", details=details)
+        return _note_failure(_result(False, response.status_code, error="validation_error", details=details), method, url, kwargs.get("json", kwargs.get("params")), response)
 
     try:
         body = response.json()
     except ValueError:
-        return _result(False, response.status_code, error="invalid_json_response")
+        return _note_failure(_result(False, response.status_code, error="invalid_json_response"), method, url, kwargs.get("json", kwargs.get("params")), response)
 
     if not body:
-        return _result(False, response.status_code, error="empty_response")
+        return _note_failure(_result(False, response.status_code, error="empty_response"), method, url, kwargs.get("json", kwargs.get("params")), response)
 
     if not body.get("isSuccess"):
-        return _result(False, response.status_code, data=body, error="api_reported_failure")
+        return _note_failure(_result(False, response.status_code, data=body, error="api_reported_failure"), method, url, kwargs.get("json", kwargs.get("params")), response)
 
     return _result(True, response.status_code, data=body.get("data", {}))
 
@@ -635,6 +670,104 @@ def authentica_verify_otp(phone: str, otp: str, email: str = "") -> dict:
 
 
 # ==========================================================
+# SMS Misr OTP API. Only used when config.OTP_PROVIDER == "smsmisr".
+# The provider just delivers the code we hand it - generation and
+# verification both happen in tools.py.
+# ==========================================================
+
+def oursms_send_otp(phone: str, otp: str) -> dict:
+    """Deliver `otp` by OurSMS (api.oursms.com/msgs/sms). Success is a list
+    whose job has accepted >= 1 and rejected == 0."""
+
+    if not (OURSMS_TOKEN and OURSMS_SENDER):
+        logger.error("OurSMS send_otp: OURSMS_TOKEN / OURSMS_SENDER are not configured")
+        return _result(False, error="not_configured")
+
+    payload = {
+        "src": OURSMS_SENDER,
+        # International number without "+" (9665...).
+        "dests": [str(phone).lstrip("+")],
+        "body": OURSMS_BODY.replace("{code}", str(otp)),
+        "msgClass": "transactional",
+        "validity": 5,
+        "dlr": 1,
+    }
+    headers = {"Authorization": f"Bearer {OURSMS_TOKEN}", "Content-Type": "application/json"}
+
+    # Single attempt: a retry after a slow-but-delivered request would text
+    # the patient two different codes. Never log the payload or headers.
+    response, last_timeout, last_exc = _request_once("post", OURSMS_BASE_URL, json=payload, headers=headers)
+    if response is None:
+        if last_timeout:
+            return _result(False, error="timeout")
+        return _result(False, error=str(last_exc) if last_exc else "request_failed")
+
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    job = body[0] if isinstance(body, list) and body else (body if isinstance(body, dict) else {})
+
+    if response.status_code >= 400 or not (int(job.get("accepted") or 0) >= 1 and int(job.get("rejected") or 0) == 0):
+        logger.error("OurSMS send_otp not accepted phone=%s status=%s body=%s",
+                     phone, response.status_code, response.text[:500])
+        reason = job.get("enNotes") or job.get("statusDesc") or job.get("message") or response.text[:300]
+        return _result(False, response.status_code, error="send_otp_failed", details=[str(reason)])
+
+    return _result(True, response.status_code, data=job)
+
+
+def smsmisr_send_otp(phone: str, otp: str) -> dict:
+    if not (SMSMISR_USERNAME and SMSMISR_PASSWORD and SMSMISR_SENDER and SMSMISR_TEMPLATE):
+        logger.error("SMS Misr send_otp: SMSMISR_* credentials are not configured")
+        return _result(False, error="not_configured")
+
+    params = {
+        "environment": SMSMISR_ENVIRONMENT,
+        "username": SMSMISR_USERNAME,
+        "password": SMSMISR_PASSWORD,
+        "sender": SMSMISR_SENDER,
+        # SMS Misr wants the international number without "+" (2010...).
+        "mobile": str(phone).lstrip("+"),
+        "template": SMSMISR_TEMPLATE,
+        "otp": otp,
+    }
+
+    # POST with the parameters in the query string (curl -X POST -G).
+    # Single attempt on purpose: a retry after a slow-but-delivered request
+    # would text the patient two different codes.
+    response, last_timeout, last_exc = _request_once("post", SMSMISR_BASE_URL, params=params)
+
+    if response is None:
+        if last_timeout:
+            return _result(False, error="timeout")
+        return _result(False, error=str(last_exc) if last_exc else "request_failed")
+
+    # Never log `params` - it carries the account credentials and the code.
+    if response.status_code >= 400:
+        logger.error("SMS Misr send_otp rejected phone=%s status=%s body=%s",
+                     phone, response.status_code, response.text[:500])
+        return _result(False, response.status_code, error="send_otp_failed",
+                       details=[response.text[:300]])
+
+    try:
+        body = response.json()
+    except ValueError:
+        body = {}
+
+    # SMS Misr answers HTTP 200 for failures too. The OTP API's success
+    # reply is {"Code":"4901","SMSID":...,"Cost":...} (capital C; 1901 is
+    # the plain SMS API's code, not this one).
+    code = str({k.lower(): v for k, v in body.items()}.get("code", "")).strip()
+    if code != "4901":
+        logger.error("SMS Misr send_otp not accepted phone=%s body=%s", phone, response.text[:500])
+        return _result(False, response.status_code, error="send_otp_failed",
+                       details=[response.text[:300]])
+
+    return _result(True, response.status_code, data=body)
+
+
+# ==========================================================
 # Doctors / Specialties API (Medical Concierge feature)
 # ==========================================================
 #
@@ -723,12 +856,12 @@ def _post_json(url: str, payload: dict, client_id: Optional[str] = None, languag
 
     if response is None:
         if last_timeout:
-            return _result(False, error="timeout")
-        return _result(False, error=str(last_exc) if last_exc else "request_failed")
+            return _note_failure(_result(False, error="timeout"), "post", url, payload, response)
+        return _note_failure(_result(False, error=str(last_exc) if last_exc else "request_failed"), "post", url, payload, response)
 
     if response.status_code >= 500:
         logger.error("Doctors/Specialties API server error: %s status=%s body=%s - giving up after %d attempt(s)", url, response.status_code, response.text[:1000], max_attempts)
-        return _result(False, response.status_code, error="server_error")
+        return _note_failure(_result(False, response.status_code, error="server_error"), "post", url, payload, response)
 
     if response.status_code == 404:
         # A wrong endpoint PATH, not a bad request - this is a bug in our
@@ -739,7 +872,7 @@ def _post_json(url: str, payload: dict, client_id: Optional[str] = None, languag
             "Doctors/Specialties API endpoint NOT FOUND (404) - check the URL path is correct: %s body=%s",
             url, response.text[:500],
         )
-        return _result(False, response.status_code, error="endpoint_not_found")
+        return _note_failure(_result(False, response.status_code, error="endpoint_not_found"), "post", url, payload, response)
 
     if response.status_code >= 400:
         details = _validation_details(response)
@@ -748,18 +881,18 @@ def _post_json(url: str, payload: dict, client_id: Optional[str] = None, languag
             url, response.status_code, response.text[:1000],
             [d["field"] for d in details] or "unknown", payload,
         )
-        return _result(False, response.status_code, error="validation_error", details=details)
+        return _note_failure(_result(False, response.status_code, error="validation_error", details=details), "post", url, payload, response)
 
     try:
         body = response.json()
     except ValueError:
-        return _result(False, response.status_code, error="invalid_json_response")
+        return _note_failure(_result(False, response.status_code, error="invalid_json_response"), "post", url, payload, response)
 
     if not body:
-        return _result(False, response.status_code, error="empty_response")
+        return _note_failure(_result(False, response.status_code, error="empty_response"), "post", url, payload, response)
 
     if not body.get("isSuccess"):
-        return _result(False, response.status_code, data=body, error="api_reported_failure")
+        return _note_failure(_result(False, response.status_code, data=body, error="api_reported_failure"), "post", url, payload, response)
 
     return _result(True, response.status_code, data=body.get("data", {}))
 
@@ -1217,17 +1350,17 @@ def _put_json(url: str, payload: dict, client_id: Optional[str] = None) -> dict:
     if response is None:
         if last_timeout:
             logger.warning("Request timed out: %s", url)
-            return _result(False, error="timeout")
+            return _note_failure(_result(False, error="timeout"), "put", url, payload, response)
         logger.exception("Request failed: %s", url)
-        return _result(False, error=str(last_exc) if last_exc else "request_failed")
+        return _note_failure(_result(False, error=str(last_exc) if last_exc else "request_failed"), "put", url, payload, response)
 
     if response.status_code >= 500:
         logger.error("GuestBookings/Update server error: %s status=%s payload=%s body=%s", url, response.status_code, payload, response.text[:1000])
-        return _result(False, response.status_code, error="server_error")
+        return _note_failure(_result(False, response.status_code, error="server_error"), "put", url, payload, response)
 
     if response.status_code == 404:
         logger.error("GuestBookings/Update endpoint NOT FOUND (404): %s payload=%s body=%s", url, payload, response.text[:500])
-        return _result(False, response.status_code, error="endpoint_not_found")
+        return _note_failure(_result(False, response.status_code, error="endpoint_not_found"), "put", url, payload, response)
 
     if response.status_code >= 400:
         details = _validation_details(response)
@@ -1236,18 +1369,18 @@ def _put_json(url: str, payload: dict, client_id: Optional[str] = None) -> dict:
             url, response.status_code, payload, response.text[:1000], dict(response.headers),
             [d["field"] for d in details] or "unknown",
         )
-        return _result(False, response.status_code, error="validation_error", details=details)
+        return _note_failure(_result(False, response.status_code, error="validation_error", details=details), "put", url, payload, response)
 
     try:
         body = response.json()
     except ValueError:
-        return _result(False, response.status_code, error="invalid_json_response")
+        return _note_failure(_result(False, response.status_code, error="invalid_json_response"), "put", url, payload, response)
 
     if not body:
-        return _result(False, response.status_code, error="empty_response")
+        return _note_failure(_result(False, response.status_code, error="empty_response"), "put", url, payload, response)
 
     if not body.get("isSuccess"):
-        return _result(False, response.status_code, data=body, error="api_reported_failure")
+        return _note_failure(_result(False, response.status_code, data=body, error="api_reported_failure"), "put", url, payload, response)
 
     return _result(True, response.status_code, data=body.get("data", {}))
 

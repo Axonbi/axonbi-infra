@@ -156,3 +156,42 @@ def send(session, text, phone="966500000001"):
 
 def state_of(session):
     return graph.graph.get_state(main._config_for(session)).values
+
+
+# The nearest-branch tests are written against two Cairo branches. The
+# deployment's own branches_geo.csv holds this deployment's branches
+# (tanasuq: Riyadh), so those tests read this copy instead.
+_CAIRO_BRANCHES_GEO = """branch_name,latitude,longitude,working_hours,country_code
+Sheikh Zayed,30.0712,30.9455,السبت - الخميس,eg
+الشيخ زايد,30.0712,30.9455,السبت - الخميس,eg
+Sheraton - Heliopolis,30.0985,31.3800,السبت - الخميس,eg
+شيراتون - مصر الجديدة,30.0985,31.3800,السبت - الخميس,eg
+شيراتون - هليوبوليس,30.0985,31.3800,السبت - الخميس,eg
+Mohandessin,30.0617,31.2005,,eg
+المهندسين,30.0617,31.2005,,eg
+Heliopolis (Masr El Gedida),30.0922,31.3208,,eg
+مصر الجديدة,30.0922,31.3208,,eg
+Maadi,29.975,31.278,,eg
+المعادي,29.975,31.278,,eg
+Fifth Settlement,30.008,31.491,,eg
+التجمع الخامس,30.008,31.491,,eg
+6th of October,29.97,30.944,,eg
+6 أكتوبر,29.97,30.944,,eg
+Nasr City,30.06,31.345,,eg
+مدينة نصر,30.06,31.345,,eg
+Mokattam,30.015,31.301,,eg
+المقطم,30.015,31.301,,eg
+Alexandria,31.2001,29.9187,,eg
+الإسكندرية,31.2001,29.9187,,eg
+"""
+
+
+@pytest.fixture
+def cairo_branches_geo(tmp_path, monkeypatch):
+    import config as _config
+    path = tmp_path / "branches_geo_cairo.csv"
+    path.write_text(_CAIRO_BRANCHES_GEO, encoding="utf-8")
+    monkeypatch.setattr(_config, "BRANCHES_GEO_CSV_FILENAME", str(path))
+    _config._all_branches_geo.cache_clear()   # loaded once and cached
+    yield
+    _config._all_branches_geo.cache_clear()

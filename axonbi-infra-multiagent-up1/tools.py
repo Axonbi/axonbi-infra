@@ -28,7 +28,9 @@ should decide" replaces every heuristic classifier):
 import ast
 import json
 import logging
+import math
 import re
+import secrets
 import smtplib
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -40,6 +42,7 @@ from langchain_core.tools import tool
 from langgraph.prebuilt import InjectedState
 
 import api
+import system_alerts
 import rag
 from config import (
     DEFAULT_TIMEZONE,
@@ -51,6 +54,8 @@ from config import (
     AUTHENTICA_FALLBACK_EMAIL,
     OTP_PROVIDER,
     OTP_TTL_SECONDS,
+    SMSMISR_OTP_LENGTH,
+    OURSMS_OTP_LENGTH,
     TEST_OTP,
     SMTP_HOST,
     SMTP_PORT,
@@ -60,6 +65,8 @@ from config import (
     SMTP_USE_TLS,
     SMTP_USE_SSL,
     COMPLAINT_WEBHOOK_URL,
+    NOMINATIM_USER_AGENT,
+    load_branches_geo,
 )
 import requests
 from state import AgentState
@@ -1162,6 +1169,14 @@ def lookup_appointment(
         return {"status": "reference_needs_correction" if partial else "reference_not_found"}
 
     if not items:
+        # The phone search asks for New/Confirmed only, so a CANCELLED
+        # booking never comes back and the patient was told "ما لقيت أي
+        # حجز" about an appointment they can see in their messages
+        # (tanasuq-production, 2026-10-15, 0593719856). Say it is cancelled.
+        if phone and not ref_number:
+            cancelled = _upcoming_cancelled_bookings(state, phone, language)
+            if cancelled:
+                return {"status": "found_but_inactive", "cancelled_appointments": cancelled}
         return {"status": "not_found"}
 
     # CHANGED (explicit request): both paths now apply the same
@@ -1205,6 +1220,38 @@ def lookup_appointment(
     _remember_list(state, "appointment", shaped)
 
     return {"status": "found_many", "appointments": shaped}
+
+
+_STATUS_CANCELLED = 6
+
+
+def _upcoming_cancelled_bookings(state: AgentState, phone: str, language: str) -> list:
+    """This phone's CANCELLED bookings dated today or later, shaped for the
+    patient (at most three); [] on any failure - only ever used to explain
+    a "not found"."""
+
+    try:
+        result = api.get_bookings_by_phone(
+            _cms_base_url(state), normalize_phone_number(phone, state) or phone,
+            language=language, sso=_sso(state),
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("_upcoming_cancelled_bookings: lookup raised (session_id=%s)", state.get("session_id"))
+        return []
+    if not result.get("success"):
+        return []
+    timezone_name = (state.get("templates") or {}).get("_timezone", DEFAULT_TIMEZONE)
+    today = _local_now_naive(timezone_name).date().isoformat()
+    cancelled = []
+    for item in (result.get("data") or {}).get("items") or []:
+        if item.get("status") != _STATUS_CANCELLED:
+            continue
+        local_from = to_clinic_local(item.get("bookingTimeFrom"), timezone_name) or ""
+        if local_from and local_from[:10] < today:
+            continue
+        cancelled.append(item)
+    cancelled.sort(key=lambda i: str(i.get("bookingTimeFrom") or ""))
+    return [_shape_appointment(i, timezone_name, conversation_language(state)) for i in cancelled[:3]]
 
 
 def _resolve_appointment_pick(state, text: str) -> dict:
@@ -1419,6 +1466,8 @@ def cancel_appointment(
     if result["success"]:
         return {"status": "success"}
 
+    system_alerts.report(state, "cancel", result)
+
     # THE REASON, NOT A BARE "error".
     #
     # This returned `{"status": "error"}` and nothing else, which cost
@@ -1527,6 +1576,26 @@ def send_otp(state: Annotated[AgentState, InjectedState], phone: str) -> dict:
             return {"status": "otp_send_failed"}
         return {"status": "otp_sent"}
 
+    if OTP_PROVIDER in ("smsmisr", "oursms"):
+        # SMS Misr / OurSMS only deliver; we own the code. Stored only after
+        # the provider accepted it, so a failed send never leaves a live code.
+        length = OURSMS_OTP_LENGTH if OTP_PROVIDER == "oursms" else SMSMISR_OTP_LENGTH
+        code = "".join(secrets.choice("0123456789") for _ in range(length))
+        send = api.oursms_send_otp if OTP_PROVIDER == "oursms" else api.smsmisr_send_otp
+        result = send(normalized, code) or {}
+        if not result.get("success"):
+            reason = " ".join(str(d) for d in (result.get("details") or [])).lower()
+            if "not valid" in reason or "invalid" in reason:
+                logger.warning("send_otp: provider rejected %r as not a valid number", normalized)
+                return {"status": "invalid_phone"}
+            logger.error("send_otp: provider did NOT send a code to %r (%s)", normalized,
+                         result.get("error") or "unknown error")
+            return {"status": "otp_send_failed"}
+        _otp_storage[normalized] = {"otp": code, "created_at": time.time()}
+        _prune_otp_storage()
+        logger.info("OTP sent via %s to %s", OTP_PROVIDER, normalized)
+        return {"status": "otp_sent"}
+
     _otp_storage[normalized] = {"otp": TEST_OTP, "created_at": time.time()}
     _prune_otp_storage()
     logger.info("OTP sent for %s (test otp=%s)", normalized, TEST_OTP)
@@ -1576,11 +1645,19 @@ def verify_otp(state: Annotated[AgentState, InjectedState], phone: str, otp: str
 
     record = _otp_storage.get(normalized)
 
+    # Diagnostics only - never the code itself.
     if not record:
+        logger.warning("verify_otp: no pending code for %r (pending numbers: %s) - sent to a different number, "
+                       "expired and pruned, or sent by another process", normalized, sorted(_otp_storage))
         return {"status": "otp_invalid"}
 
     if time.time() - record["created_at"] > OTP_TTL_SECONDS:
+        logger.warning("verify_otp: code for %r expired", normalized)
         return {"status": "otp_invalid"}
+
+    if str(otp).strip() != str(record["otp"]):
+        logger.warning("verify_otp: wrong code for %r (got %d chars, expected %d)",
+                       normalized, len(str(otp).strip()), len(str(record["otp"])))
 
     if str(otp).strip() == str(record["otp"]):
         _mark_phone_verified(state, phone)
@@ -2018,6 +2095,21 @@ def _resolve_booking_guid(state: AgentState, value: Optional[str]) -> dict:
             (pick["item"] or {}).get("branchName"),
         )
         return {"status": "resolved", "booking_id": resolved}
+
+    # ONE BOOKING ON FILE - there is nothing to choose between. A value
+    # the model could not have got right (a placeholder like `⟦ID_1⟧`
+    # once the id had left its view - tanasuq-production 2026-10-18
+    # 14:55 and 18:45) names that booking or none, and none is never
+    # what a patient confirming a change means.
+    ids = {str(r.get("id")).strip() for r in records if str(r.get("id") or "").strip()}
+    if len(ids) == 1:
+        only = next(iter(ids))
+        logger.warning(
+            "_resolve_booking_guid: %r is no id this conversation saw, but it "
+            "looked up exactly one booking - using id=%s (session_id=%s)",
+            wanted, only, state.get("session_id"),
+        )
+        return {"status": "resolved", "booking_id": only}
 
     logger.warning(
         "_resolve_booking_guid: %r matches no booking any lookup returned in "
@@ -2986,6 +3078,64 @@ def list_specialties(state: Annotated[AgentState, InjectedState]) -> dict:
         result_payload["unstaffed_specialties"] = unstaffed_names
 
     return result_payload
+
+
+# Words that name no degree on their own - "دكتور" alone is every doctor.
+_GENERIC_DEGREE_WORDS = {"دكتور", "دكتوره", "دكتورة", "الدكتور", "طبيب", "طبيبه", "طبيبة", "doctor", "dr"}
+
+
+def _doctors_with_degree(state: AgentState, base_url: str, label: str) -> list:
+    """The clinic's bookable doctors whose DEGREE is what the patient named
+    ("أخصائي نفسي", "استشاري") - raw API items, [] when none or on failure.
+
+    The fallback for a specialty that does not resolve: patients ask for a
+    degree as often as a specialty - "ابي اخصائي نفسي" names the degree of
+    the علاج نفسي doctors, not a specialty - and was answered that the
+    clinic has no such specialty (tanasuq-production, 2026-10-15)."""
+
+    wanted = _normalize_arabic(str(label or "")).strip()
+    words = [w for w in wanted.split() if w not in _GENERIC_DEGREE_WORDS]
+    if not words or len(" ".join(words)) < 4:
+        return []
+    wanted = " ".join(words)
+
+    def _stems(text: str) -> list:
+        # "اخصائيه نفسيه" (a woman) is the degree "أخصائي نفسي": the
+        # feminine ending is dropped from every word before comparing
+        # (tanasuq-production, 2026-10-15 17:45).
+        return [w[:-1] if len(w) > 3 and w.endswith(("ه", "ة")) else w for w in text.split()]
+
+    wanted_stems = _stems(wanted)
+    try:
+        result = api.get_doctors(base_url, page_size=200, language=conversation_language(state))
+    except Exception:  # noqa: BLE001
+        logger.warning("_doctors_with_degree: get_doctors raised", exc_info=True)
+        return []
+    if not result.get("success"):
+        return []
+    matched = []
+    for item in (result.get("data") or {}).get("items", []):
+        degrees = {_normalize_arabic(str(item.get(k) or "")).strip() for k in ("degreeName", "degreeAltName")}
+        degrees.discard("")
+        if any(set(wanted_stems) <= set(_stems(d)) or (len(d) >= 4 and set(_stems(d)) <= set(wanted_stems))
+               for d in degrees):
+            matched.append(item)
+    logger.info("_doctors_with_degree: %r -> %d doctor(s)", label, len(matched))
+    return [i for i in matched if i.get("hasSlots") is not False]
+
+
+def _degree_fallback(state: AgentState, base_url: str, label: str) -> Optional[dict]:
+    """find_available_doctors' answer for a degree named where a specialty
+    was expected, or None when no doctor has that degree either."""
+
+    items = _doctors_with_degree(state, base_url, label)
+    if not items:
+        return None
+    doctors = _shape_doctor_list(items, conversation_language(state))
+    if not doctors:
+        return None
+    _remember_list(state, "doctor", doctors)
+    return {"status": "found", "matched_by": "degree", "degree": label, "doctors": doctors}
 
 
 def _shape_doctor_list(raw_items: list, language: str = "ar") -> list:
@@ -4396,6 +4546,9 @@ def find_available_doctors(
     # prevent - so report it the same way.
     if (_unresolved_specialty_labels and not specialty_ids
             and not (specialty_name or "").strip()):
+        by_degree = _degree_fallback(state, base_url, _unresolved_specialty_labels[0])
+        if by_degree:
+            return by_degree
         logger.error(
             "find_available_doctors: every specialty_ids entry was unresolvable "
             "(%s) - returning specialty_not_resolved instead of searching ALL "
@@ -4482,6 +4635,9 @@ def find_available_doctors(
                 "doctors unfiltered",
                 specialty_name,
             )
+            by_degree = _degree_fallback(state, base_url, specialty_name.strip())
+            if by_degree:
+                return by_degree
             return {
                 "status": "specialty_not_resolved",
                 "specialty_name": specialty_name.strip(),
@@ -5563,6 +5719,7 @@ def get_available_reschedule_slots(
     # متاح 07/10" - today, the appointment being moved. Ten messages in a
     # circle. When the one day asked for has nothing, the next same-weekday
     # date that really has slots is found here, in code.
+    requested_empty = None
     if not slots:
         requested_day = _single_query_day(from_date, to_date)
         if requested_day is not None:
@@ -5576,6 +5733,10 @@ def get_available_reschedule_slots(
                     requested_day.isoformat(), nearest[0]["date_display"],
                 )
                 slots = nearest
+                requested_empty = {
+                    "date_display": requested_day.strftime("%d/%m/%Y"),
+                    "weekday_display": _display_weekday_name(requested_day.weekday(), language),
+                }
 
     if not slots:
         return {"status": "same_day_not_allowed" if same_day_removed else "not_found"}
@@ -5633,6 +5794,9 @@ def get_available_reschedule_slots(
     # no doctorId. Session-only: the model is shown `slots` without it.
     _remember_list(state, "slot", [dict(slot, _doctor_id=resolved["doctor_id"]) for slot in slots])
 
+    if requested_empty:
+        # The day they asked for had nothing; these slots are a later one.
+        return {"status": "found", "slots": slots, "requested_day_had_no_slots": requested_empty}
     return {"status": "found", "slots": slots}
 
 
@@ -6004,6 +6168,7 @@ def reschedule_appointment(
     )
 
     if not result["success"]:
+        system_alerts.report(state, "reschedule", result)
         logger.error(
             "reschedule_appointment API call failed: booking_id=%s status_code=%s error=%s",
             booking_id, result.get("status_code"), result.get("error"),
@@ -9178,7 +9343,10 @@ def get_patient_info(state: Annotated[AgentState, InjectedState], mobile_number:
         logger.warning("get_patient_info called but no doctors_base_url is configured for client_id=%s", state.get("client_id"))
         return {"status": "not_configured"}
 
-    result = api.get_patient_info(_cms_base_url(state), mobile_number, sso=_sso(state))
+    # The patient registry matches only the full number - "0593719856"
+    # finds nobody where "+966593719856" finds them.
+    result = api.get_patient_info(_cms_base_url(state), normalize_phone_number(mobile_number, state) or mobile_number,
+                                  sso=_sso(state))
 
     if not result["success"] and result.get("error") == "endpoint_not_found":
         # The patient lookup endpoint is gone (404 from portal-api). It only
@@ -11381,6 +11549,7 @@ def create_new_booking(
     )
 
     if not result["success"]:
+        system_alerts.report(state, "create_booking", result)
         details = result.get("details") or []
         logger.error(
             "create_new_booking API call failed: status_code=%s error=%s rejected_fields=%s",
@@ -12159,22 +12328,24 @@ def find_best_doctor_in_specialty(
     )
 
     if _unresolved and not specialty_ids:
-        logger.error(
-            "find_best_doctor_in_specialty: every specialty_ids entry was "
-            "unresolvable (%s)", _unresolved,
-        )
-        return {
-            "status": "specialty_not_resolved",
-            "specialty_name": _unresolved[0],
-            "doctors": [],
-        }
+        raw_doctors = _doctors_with_degree(state, base_url, _unresolved[0])
+        if not raw_doctors:
+            logger.error(
+                "find_best_doctor_in_specialty: every specialty_ids entry was "
+                "unresolvable (%s), as a specialty and as a degree", _unresolved,
+            )
+            return {
+                "status": "specialty_not_resolved",
+                "specialty_name": _unresolved[0],
+                "doctors": [],
+            }
+    else:
+        doctors_result = api.get_doctors(base_url, specialty_ids=specialty_ids, page_size=200, language=conversation_language(state))
+        if not doctors_result["success"]:
+            logger.error("find_best_doctor_in_specialty: get_doctors failed: status_code=%s error=%s", doctors_result.get("status_code"), doctors_result.get("error"))
+            return _api_error(doctors_result)
 
-    doctors_result = api.get_doctors(base_url, specialty_ids=specialty_ids, page_size=200, language=conversation_language(state))
-    if not doctors_result["success"]:
-        logger.error("find_best_doctor_in_specialty: get_doctors failed: status_code=%s error=%s", doctors_result.get("status_code"), doctors_result.get("error"))
-        return _api_error(doctors_result)
-
-    raw_doctors = (doctors_result["data"] or {}).get("items", [])
+        raw_doctors = (doctors_result["data"] or {}).get("items", [])
     doctors = [d for d in raw_doctors if d.get("hasSlots") is not False]
     logger.info(
         "find_best_doctor_in_specialty: specialty_ids=%s criteria=%s api_returned=%d after_hasSlots_filter=%d",
@@ -12212,23 +12383,54 @@ def find_best_doctor_in_specialty(
             doctor_ids, now.isoformat(), horizon.isoformat(), len(raw_slot_items),
         )
 
-        best = None
-        for item in raw_slot_items:
-            if item.get("isBooked"):
-                continue
-            slot_start = to_clinic_local(item.get("slotStart"), timezone_name)
-            if not slot_start:
-                continue
-            try:
-                dt = datetime.fromisoformat(slot_start)
-            except ValueError:
-                continue
-            # `slot_start` is wall-clock (naive); `now` is aware. Compare
-            # like with like - see the lead_time note above.
-            if dt <= now.replace(tzinfo=None):
-                continue
-            if best is None or dt < best[0]:
-                best = (dt, item)
+        def _soonest(items):
+            best = None
+            for item in items:
+                if item.get("isBooked"):
+                    continue
+                slot_start = to_clinic_local(item.get("slotStart"), timezone_name)
+                if not slot_start:
+                    continue
+                try:
+                    dt = datetime.fromisoformat(slot_start)
+                except ValueError:
+                    continue
+                # `slot_start` is wall-clock (naive); `now` is aware. Compare
+                # like with like - see the lead_time note above.
+                if dt <= now.replace(tzinfo=None):
+                    continue
+                if best is None or dt < best[0]:
+                    best = (dt, item)
+            return best
+
+        best = _soonest(raw_slot_items)
+
+        # NOTHING FOR THE WHOLE SPECIALTY IS CHECKED DOCTOR BY DOCTOR before
+        # it is believed. CONFIRMED (tanasuq-production, 2026-10-14 13:35,
+        # 966508800894): eleven psychotherapists had just been listed as
+        # available, and the soonest search then answered that none of them
+        # had an appointment. One request for many doctors is the one step
+        # here that a single doctor's lookup does not share.
+        if not best and len(doctor_ids) > 1:
+            logger.warning(
+                "find_best_doctor_in_specialty (soonest): nothing for %d doctors in one request - "
+                "checking each doctor on their own", len(doctor_ids),
+            )
+            one_by_one = []
+            for one_id in doctor_ids[:20]:
+                single = api.get_doctor_schedule_slots(
+                    base_url, doctor_ids=[one_id],
+                    from_date=now.isoformat(), to_date=horizon.isoformat(),
+                    is_booked=False, page_size=1000,
+                    language=conversation_language(state),
+                )
+                if single.get("success"):
+                    one_by_one.extend((single.get("data") or {}).get("items", []))
+            best = _soonest(one_by_one)
+            logger.info(
+                "find_best_doctor_in_specialty (soonest): doctor by doctor -> %d item(s), %s",
+                len(one_by_one), "found" if best else "still nothing",
+            )
 
         if not best:
             logger.info("find_best_doctor_in_specialty (soonest): not_found - none of %d raw item(s) qualified after filtering", len(raw_slot_items))
@@ -12792,11 +12994,12 @@ def share_branch_location(
        or how to get there - not merely named, picked or confirmed a
        branch (e.g. during booking).
     2. The branch is REAL: `match_entity_info` (entity_type="branch")
-       matched it this turn or earlier in this conversation. Never a
+       matched it, or `geocode_address`/`find_nearest_branch` returned it
+       as the nearest, this turn or earlier in this conversation. Never a
        guessed or invented name.
     A repeat request about a branch you already resolved still needs this
     call - answering from memory sends no pin. `branch_name` must be the
-    exact `name` field `match_entity_info` returned.
+    exact `name` field that tool returned.
 
     It sends nothing itself: still give the address in text in this reply.
     Returns {"status": "location_requested", "branch_name": branch_name},
@@ -12956,6 +13159,428 @@ def _pin_branch(state: AgentState, branch_name: str) -> str:
     return same or branch_name
 
 
+# ==========================================================
+# Nearest branch to a place (real geocoding, real branch data - no LLM
+# guessing of coordinates, distance, or branch identity anywhere here)
+# ==========================================================
+#
+# "انا قاعد في فندق الماسة ايه اقرب فرع؟" / "nearest branch to Cairo
+# Festival City": the place is geocoded with OpenStreetMap's Nominatim and
+# measured against the branches' own coordinates (branches_geo.csv - the
+# Booking API has none). Ported from the elborgdemo branch.
+
+_NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+
+# ISO-3166 alpha-2 codes for Nominatim's `countrycodes` param, keyed by
+# the same lowercased timezone names as _TIMEZONE_COUNTRY_CODES (that one
+# is DIALLING codes - "20" for Egypt - which Nominatim does not accept).
+_TIMEZONE_ISO_COUNTRY = {
+    "africa/cairo": "eg",
+    "asia/riyadh": "sa",
+    "asia/dubai": "ae",
+    "asia/kuwait": "kw",
+    "asia/qatar": "qa",
+    "asia/bahrain": "bh",
+    "asia/muscat": "om",
+    "asia/amman": "jo",
+    "asia/beirut": "lb",
+    "asia/baghdad": "iq",
+    "africa/tripoli": "ly",
+    "africa/tunis": "tn",
+    "africa/algiers": "dz",
+    "africa/casablanca": "ma",
+    "africa/khartoum": "sd",
+}
+
+# The nearest real branch further than this means the geocoder most likely
+# matched a same-named place elsewhere in the country (CONFIRMED on
+# elborgdemo: "النزهة" resolved to a village on the Red Sea, ~530 km from
+# every Cairo branch). Anywhere in Greater Cairo/Giza is well inside it.
+_UNUSUALLY_FAR_KM = 100
+
+# Two results closer than this are the same place for the patient's purpose
+# (the same building listed twice, two entrances of one mall).
+_GEOCODE_SAME_PLACE_KM = 1.5
+
+# Nominatim kinds that are an AREA (a district, a city, a neighbourhood),
+# not a single building: "الهرم" the district is one place to search from,
+# however many pyramids also carry the word.
+_AREA_ADDRESSTYPES = {
+    "suburb", "neighbourhood", "quarter", "city_district", "district", "borough",
+    "city", "town", "village", "hamlet", "municipality", "county", "state", "region",
+}
+
+# The places offered to a patient for an ambiguous name, per session. The
+# option coordinates in the tool result get shortened by history compaction,
+# so the model could not pass the chosen place's coordinates on and used a
+# generic city centre instead.
+_PENDING_PLACES: dict = {}
+
+
+def _client_branches_viewbox() -> Optional[str]:
+    """A Nominatim `viewbox` ("left,top,right,bottom") around this
+    deployment's own branches, padded ~50 km - a SOFT bias (never
+    `bounded=1`), so a short common name ("النزهة") prefers the one near
+    the branches over a same-named village elsewhere in the country.
+    None when no branch has coordinates."""
+
+    rows = load_branches_geo().values()
+    lats = [r["latitude"] for r in rows if isinstance(r.get("latitude"), (int, float))]
+    lons = [r["longitude"] for r in rows if isinstance(r.get("longitude"), (int, float))]
+    if not lats or not lons:
+        return None
+
+    margin_deg = 0.5
+    return f"{min(lons) - margin_deg},{max(lats) + margin_deg},{max(lons) + margin_deg},{min(lats) - margin_deg}"
+
+
+def _branches_country_code() -> Optional[str]:
+    """The country every branch in branches_geo.csv is in ("eg"), or None
+    when the CSV does not say or its rows disagree."""
+
+    codes = {r.get("country_code") for r in load_branches_geo().values() if r.get("country_code")}
+    return codes.pop() if len(codes) == 1 else None
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance between two coordinate pairs, in km."""
+
+    r_earth_km = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+    )
+    return r_earth_km * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _geocode_candidates(address: str, country_code: Optional[str],
+                        viewbox: Optional[str] = None, language: Optional[str] = None,
+                        limit: int = 5) -> list:
+    """Up to `limit` Nominatim results for `address`, best first; an empty
+    list on no match or failure. A name that exists more than once (a
+    store chain, a common neighbourhood name) comes back as several
+    results - see geocode_address for how those are told apart."""
+
+    params = {"q": address, "format": "json", "limit": limit}
+    if country_code:
+        params["countrycodes"] = country_code
+    if viewbox:
+        params["viewbox"] = viewbox
+    if language:
+        params["accept-language"] = language
+
+    try:
+        response = requests.get(
+            _NOMINATIM_URL, params=params,
+            headers={"User-Agent": NOMINATIM_USER_AGENT}, timeout=8,
+        )
+        response.raise_for_status()
+        results = response.json()
+    except Exception:
+        logger.exception("geocode_address: Nominatim request failed for address=%r", address)
+        return []
+
+    return [r for r in (results or []) if isinstance(r, dict)]
+
+
+def _is_area_result(result: dict) -> bool:
+    if result.get("class") in ("place", "boundary"):
+        return True
+    return (result.get("addresstype") or result.get("type")) in _AREA_ADDRESSTYPES
+
+
+def _distinct_places(results: list) -> list:
+    """The results as distinct places: coordinates parsed, results within
+    `_GEOCODE_SAME_PLACE_KM` of an earlier (better) one dropped."""
+
+    places = []
+    for result in results:
+        try:
+            latitude = float(result["lat"])
+            longitude = float(result["lon"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if any(
+            _haversine_km(latitude, longitude, place["latitude"], place["longitude"])
+            < _GEOCODE_SAME_PLACE_KM
+            for place in places
+        ):
+            continue
+        places.append({
+            "latitude": latitude,
+            "longitude": longitude,
+            "display_name": result.get("display_name") or "",
+            "is_area": _is_area_result(result),
+        })
+    return places
+
+
+def _place_name(place: dict) -> str:
+    """The place's own name (the first part of its address), normalised."""
+    first = (place.get("display_name") or "").split(",")[0]
+    return " ".join(_normalize_arabic(first).split())
+
+
+def _same_name_branches(places: list) -> list:
+    """The places that carry the SAME name as the best one: several stores
+    of one chain ("كارفور"). A different name that merely contains the
+    patient's word ("الهرم الأحمر" for "الهرم") is a different place,
+    not another branch of the same one."""
+    name = _place_name(places[0])
+    return [p for p in places if name and _place_name(p) == name]
+
+
+def _short_place_label(display_name: str, parts: int = 3) -> str:
+    """"Carrefour, Road 9, Maadi, Cairo, Egypt" -> "Carrefour, Road 9, Maadi":
+    enough for a patient to tell two of them apart."""
+
+    pieces = [p.strip() for p in (display_name or "").split(",") if p.strip()]
+    return ", ".join(pieces[:parts]) or (display_name or "")
+
+
+def _geo_name_key(name: Optional[str]) -> str:
+    """Join key between an API branch name and a branches_geo.csv row:
+    normalised, filler-stripped ("فرع الشيخ زايد" == "الشيخ زايد"), and
+    punctuation/spacing ignored ("Sheraton - Heliopolis" ==
+    "Sheraton-Heliopolis")."""
+
+    key = _normalize_arabic(_strip_entity_filler(name or ""))
+    return re.sub(r"[\W_]+", "", key)
+
+
+@tool
+def geocode_address(
+    state: Annotated[AgentState, InjectedState],
+    address: str,
+) -> dict:
+    """Turn a place the patient named (an address, a district, a mall, a
+    hotel, a landmark) into real coordinates via OpenStreetMap, and find
+    the clinic's branch nearest to it. Use it for any "which branch is
+    nearest to me / to <place>" question. Never estimate coordinates, a
+    distance or the nearest branch yourself.
+
+    `address`: the patient's own place text, close to verbatim (drop
+    filler like "أنا قاعد في" but do not translate or add detail) - e.g.
+    "فندق الماسة", "مول العرب", "سيتي ستارز", "Cairo Festival City".
+
+    Returns:
+    {"status": "found", "latitude", "longitude", "display_name",
+     "nearest_branch": <find_nearest_branch's own result>}
+    {"status": "ambiguous", "candidates": [{"option", "label",
+      "latitude", "longitude"}, ...]}   # the name exists in several places
+    {"status": "not_found"}  # ask for a fuller address / nearby landmark
+    {"status": "error"}"""
+
+    address = (address or "").strip()
+    if not address:
+        return {"status": "not_found"}
+
+    # THE BRANCHES' OWN COUNTRY FIRST, the timezone only when the CSV does
+    # not say. CONFIRMED (Rovan demo 2026-10-07 14:55:38): the demo ran on
+    # the tanasuq-saudi client row (Asia/Riyadh), so "فندق الماسة" was
+    # searched in Saudi Arabia and resolved to a hotel in Mecca, 1282 km
+    # from both Cairo branches.
+    country_code = _branches_country_code()
+    if not country_code:
+        timezone_name = str((state.get("templates") or {}).get("_timezone") or DEFAULT_TIMEZONE).strip().lower()
+        country_code = _TIMEZONE_ISO_COUNTRY.get(timezone_name)
+    viewbox = _client_branches_viewbox()
+    language = conversation_language(state)
+
+    # First biased to the clinic's own country AND its branches' area -
+    # a short local name is then far more likely to resolve to the right
+    # one at all.
+    candidates = _geocode_candidates(address, country_code, viewbox, language) if country_code else []
+
+    # Wider retry: drop the area bias but KEEP the country. With no country
+    # at all Nominatim answers with same-named places anywhere in the world
+    # ("سيتي ستارز" -> a laundromat in New York), and every result may be
+    # shown to the patient as a choice. Only when the clinic's country is
+    # unknown is the search left fully open.
+    if not candidates:
+        candidates = _geocode_candidates(address, country_code, None, language)
+
+    places = _distinct_places(candidates)
+    _PENDING_PLACES.pop(str(state.get("session_id")), None)
+
+    if not places:
+        logger.info("geocode_address: Nominatim returned no match for address=%r", address)
+        return {"status": "not_found"}
+
+    # AN AREA IS ONE PLACE. "الهرم" is the district; Nominatim also lists
+    # هرم خوفو / الهرم الأحمر, and the patient was asked which pyramid
+    # they meant (elborgdemo staging 2026-10-05).
+    areas = [p for p in places if p.get("is_area")]
+    if areas:
+        places = areas[:1]
+
+    # A PLACE THAT EXISTS MORE THAN ONCE IS NOT ONE PLACE. "أقرب فرع
+    # لكارفور" - there are dozens of Carrefour stores, so when the name
+    # resolves to more than one distinct place OF THAT SAME NAME the
+    # patient is asked which. Results that only contain the word are not
+    # other branches of it: the best match is taken.
+    places = _same_name_branches(places) or places[:1]
+    if len(places) > 1:
+        options = [
+            {
+                "option": index,
+                "label": _short_place_label(place["display_name"]),
+                "latitude": place["latitude"],
+                "longitude": place["longitude"],
+            }
+            for index, place in enumerate(places, 1)
+        ]
+        logger.info(
+            "geocode_address: address=%r matches %d different places - asking which one: %s",
+            address, len(options), [o["label"] for o in options],
+        )
+        _PENDING_PLACES[str(state.get("session_id"))] = options
+        return {"status": "ambiguous", "candidates": options}
+
+    top = places[0]
+    logger.info(
+        "geocode_address: address=%r -> lat=%s lon=%s (%s)",
+        address, top["latitude"], top["longitude"], top["display_name"],
+    )
+
+    result = {
+        "status": "found",
+        "latitude": top["latitude"],
+        "longitude": top["longitude"],
+        "display_name": top["display_name"],
+    }
+    # THE NEAREST BRANCH COMES WITH IT. Finding the place is only step
+    # one, and the model stopped there (elborgdemo staging 2026-10-05:
+    # "مول المرشدي" was found and the patient got the whole branch list).
+    try:
+        nearest = find_nearest_branch.func(state, latitude=top["latitude"], longitude=top["longitude"])
+    except Exception:  # noqa: BLE001
+        logger.warning("geocode_address: find_nearest_branch raised for address=%r", address, exc_info=True)
+        nearest = None
+    if isinstance(nearest, dict) and nearest.get("status") not in (None, "error", "not_configured", "not_found"):
+        result["nearest_branch"] = nearest
+    return result
+
+
+@tool
+def find_nearest_branch(
+    state: Annotated[AgentState, InjectedState],
+    latitude: float = 0.0,
+    longitude: float = 0.0,
+    place_option: int = 0,
+) -> dict:
+    """The clinic's branches sorted by distance from a point. Normally
+    you do not need it: `geocode_address` already returns
+    `nearest_branch`. After `geocode_address` returned "ambiguous" and the
+    patient chose one of the places, call it with `place_option` = that
+    option number (leave the coordinates out). Never pass coordinates you
+    estimated yourself.
+
+    Returns {"status": "found", "branches": [{"name", "address", "phone",
+    "working_hours", "distance_km"}, ...] nearest first, "unusually_far":
+    true only when the nearest is over 100 km away},
+    {"status": "needs_place_choice", "candidates": [...]},
+    {"status": "not_found"} / {"status": "not_configured"} / {"status": "error"}."""
+
+    pending = _PENDING_PLACES.get(str(state.get("session_id")))
+    if pending:
+        chosen = next((o for o in pending if o["option"] == place_option), None)
+        if chosen:
+            latitude, longitude = chosen["latitude"], chosen["longitude"]
+        elif not any(_haversine_km(latitude, longitude, o["latitude"], o["longitude"]) < 1
+                     for o in pending):
+            return {"status": "needs_place_choice",
+                    "candidates": [{"option": o["option"], "label": o["label"]} for o in pending]}
+    elif not (latitude or longitude):
+        # A place number with no list on file (the process restarted, or
+        # another lookup replaced it) - never measure from 0,0.
+        return {"status": "not_found"}
+
+    base_url = _doctors_base_url(state)
+    if not base_url:
+        logger.warning(
+            "find_nearest_branch called but no doctors_base_url is configured for client_id=%s",
+            state.get("client_id"),
+        )
+        return {"status": "not_configured"}
+
+    geo_rows = load_branches_geo()
+    if not geo_rows:
+        logger.warning("find_nearest_branch: branches_geo.csv has no usable rows")
+        return {"status": "not_found"}
+
+    # The CSV is keyed by name, but the API may answer in either language
+    # ("Sheikh Zayed" / "الشيخ زايد") and with or without "فرع" - every
+    # name-like field of the API item is tried against a normalised index.
+    geo_index = {}
+    for raw_name, geo in geo_rows.items():
+        geo_index.setdefault(_geo_name_key(raw_name), geo)
+
+    language = conversation_language(state)
+    result = api.get_branches(base_url, page_size=200, language=language)
+    if not result["success"]:
+        logger.error(
+            "find_nearest_branch: get_branches failed: status_code=%s error=%s",
+            result.get("status_code"), result.get("error"),
+        )
+        return _api_error(result)
+
+    items = (result["data"] or {}).get("items", [])
+
+    ranked = []
+    for item in items:
+        name = _preferred_name(item, language) or item.get("name")
+        geo = None
+        for candidate_name in (name, item.get("name"), item.get("altName"), item.get("formatedName")):
+            if candidate_name:
+                geo = geo_rows.get(str(candidate_name).strip()) or geo_index.get(_geo_name_key(candidate_name))
+                if geo:
+                    break
+        if not geo:
+            continue
+        ranked.append({
+            "name": name,
+            "address": item.get("address"),
+            "phone": item.get("mobile"),
+            "working_hours": geo.get("working_hours") or None,
+            "distance_km": round(_haversine_km(latitude, longitude, geo["latitude"], geo["longitude"]), 1),
+        })
+
+    if not ranked:
+        logger.warning(
+            "find_nearest_branch: %d branch(es) returned by the API, none matched a row "
+            "in branches_geo.csv (API names: %s)",
+            len(items), [i.get("name") for i in items],
+        )
+        return {"status": "not_found"}
+
+    ranked.sort(key=lambda b: b["distance_km"])
+    for branch in ranked:
+        # Real branch names from the API - see `_remember_branch_name`.
+        _remember_branch_name(state, branch["name"])
+
+    logger.info(
+        "find_nearest_branch: lat=%s lon=%s -> nearest=%r (%.1f km)",
+        latitude, longitude, ranked[0]["name"], ranked[0]["distance_km"],
+    )
+
+    result = {"status": "found", "branches": ranked}
+
+    # Not a tool failure - the distance is real - but a signal that the
+    # geocoder probably matched a same-named place elsewhere, for the
+    # reply to say rather than hide.
+    if ranked[0]["distance_km"] > _UNUSUALLY_FAR_KM:
+        result["unusually_far"] = True
+        logger.warning(
+            "find_nearest_branch: nearest real branch is %.1f km away - likely the "
+            "wrong same-named place was geocoded", ranked[0]["distance_km"],
+        )
+
+    return result
+
+
 ALL_TOOLS = [
     validate_phone_format,
     compare_phone,
@@ -12992,4 +13617,6 @@ ALL_TOOLS = [
     send_complaint_email,
     request_human_handoff,
     share_branch_location,
+    geocode_address,
+    find_nearest_branch,
 ]

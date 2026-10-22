@@ -49,6 +49,23 @@ _INVALID_PHONE_GUIDANCE = (
     "Never say a code was sent, and do not call send_otp for this number."
 )
 
+# The nearest-branch answer, shared by geocode_address (`nearest_branch`)
+# and find_nearest_branch (`branches`), which return the same ranking.
+_NEAREST_BRANCH_GUIDANCE = (
+    "the FIRST branch is the one nearest to the place the patient named - "
+    "say so with its `distance_km` (\"حوالي N كم\"), and its address and "
+    "phone as returned; the other branch's distance may follow, but never "
+    "call any other branch the nearest. If `unusually_far` is true, the "
+    "place found is a different one with the same name somewhere far away: "
+    "do NOT name any branch as the nearest and do NOT give the distance - "
+    "say you could not find that place near the branches and ask which "
+    "area/neighbourhood it is in (e.g. \"الماسة اللي في مدينة نصر؟\"). "
+    "For the map pin: if they asked where to go / for the location, "
+    "call `share_branch_location` with that branch's exact `name` this "
+    "turn; otherwise offer it (\"تحب أبعتلك لوكيشن الفرع؟\") and call it "
+    "once they say yes."
+)
+
 
 RESULT_GUIDANCE: dict = {
 
@@ -69,6 +86,18 @@ RESULT_GUIDANCE: dict = {
     },
 
     # ------------------------------------------------------------------
+    "find_best_doctor_in_specialty": {
+        # tanasuq-production 2026-10-14 13:35: "ما في مواعيد ... مع دكتورة
+        # ندى جدّادي أو أي من أخصائيي العلاج النفسي" one message after eleven
+        # of them were listed as available.
+        "not_found":
+            "No open time was found in the next 30 days for these specialties. "
+            "Say only that. Never add that other doctors, or the whole "
+            "specialty, have nothing beyond what this result says, and never "
+            "contradict a list of available doctors already shown - offer to "
+            "check the days of a doctor from that list instead.",
+    },
+
     "find_available_doctors": {
         "found":
             "If `doctors` has exactly ONE entry and it carries an "
@@ -78,7 +107,10 @@ RESULT_GUIDANCE: dict = {
             "separate block). If `doctors` has more than one entry, "
             "ignore any `about` field entirely and give names only - "
             "reading out several bios makes comparing the list harder, "
-            "not easier.",
+            "not easier. If `matched_by` is \"degree\", the patient named a "
+            "degree, not a specialty: these are the doctors with that "
+            "`degree` - present them as such, never say the specialty is "
+            "missing.",
         "found_broader_search":
             "The given specialty_ids had nobody available; these are "
             "OTHER doctors clinic-wide and NOT a specialty match - never "
@@ -90,7 +122,8 @@ RESULT_GUIDANCE: dict = {
             "nobody available. Say so plainly; do NOT substitute other "
             "doctors.",
         "specialty_not_resolved":
-            "Not a specialty this clinic has. NO search ran and there "
+            "Not a specialty this clinic has, and no doctor here has that "
+            "degree either - say this is not available here. NO search ran and there "
             "are NO doctors to show. Call `list_specialties` and offer "
             "only what it returns, or ask which specialty they meant. "
             "Never name a doctor after this status.",
@@ -556,7 +589,10 @@ RESULT_GUIDANCE: dict = {
             "cancelled, completed, or its own date/time has passed - it "
             "can no longer be cancelled or rescheduled. Tell the user "
             "plainly why; don't say \"not found\", which wrongly implies "
-            "they mistyped something.",
+            "they mistyped something. If `cancelled_appointments` is "
+            "present, those are their own bookings and they are CANCELLED: "
+            "show each one (doctor, date, time) saying it is cancelled, and "
+            "offer to book a new appointment.",
         "error":
             "The booking API call failed - a technical problem, NOT the "
             "same as \"no booking exists\".",
@@ -702,6 +738,42 @@ RESULT_GUIDANCE: dict = {
             "named a complaint without separately naming a person - no "
             "handoff was raised. Ask them whether they want a staff "
             "member first.",
+    },
+
+    # ------------------------------------------------------------------
+    "geocode_address": {
+        "found":
+            "If there is a `nearest_branch`: " + _NEAREST_BRANCH_GUIDANCE
+            + " If there is none, the branches could not be measured - give "
+            "the branches with their addresses instead and never guess "
+            "which one is nearer.",
+        "ambiguous": (
+            "The place the patient named exists in SEVERAL different "
+            "locations (a store chain, a mall, a common area name) and they "
+            "did not say which, so do NOT pick one. Show `candidates` as a "
+            "short numbered list using each `label` exactly as returned, in "
+            "the patient's language, and ask ONE short question: which one "
+            "do they mean - or which area/neighbourhood are they in? When "
+            "they answer with a number, call `find_nearest_branch` with "
+            "`place_option` = THAT candidate's `option` number (no "
+            "coordinates). If none of the candidates is theirs and they give "
+            "an area or street instead, call `geocode_address` again with "
+            "the place name plus that area (e.g. \"كارفور مدينة نصر\"). Never "
+            "name a nearest branch before one of these tools returned it."
+        ),
+        "not_found":
+            "The map does not know this place - a normal outcome for a short "
+            "or informal name, not an error. Never search a fragment of it "
+            "as a branch name. Ask ONCE for a fuller address (their area, a "
+            "nearby street or landmark); if that is not found either, give "
+            "the branches with their addresses and let them choose.",
+    },
+    "find_nearest_branch": {
+        "found": "`branches[0]`: " + _NEAREST_BRANCH_GUIDANCE,
+        "needs_place_choice":
+            "The patient has not said which of the offered places they "
+            "meant. Show `candidates` again as a numbered list and ask "
+            "which one - never measure from a place they did not choose.",
     },
 }
 

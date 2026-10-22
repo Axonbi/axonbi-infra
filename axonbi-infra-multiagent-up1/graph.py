@@ -64,6 +64,7 @@ import tools
 from prompts import build_agent_system_prompt, build_system_prompt
 from state import AgentState
 import llm_usage
+import pii_vault
 import tool_result_guidance
 import understanding
 
@@ -74,6 +75,39 @@ logger = logging.getLogger(__name__)
 # LLM (bound to every tool) - api.py/config.py's OPENAI_* settings,
 # UNCHANGED from the old project
 # ==========================================================
+
+class _PiiMasking:
+    """For a client with `pii_tokens` on, the model is sent placeholders
+    instead of patient data and the real values are put back in what it
+    returns - see pii_vault.py. Every binding (`bind_tools`, `bind`) ends
+    in this `invoke`, so the main turn, verifier retries, forced tool
+    calls, understanding and the router all go through it. With the
+    feature off it is the plain client.
+
+    A MIXIN, ON EVERY PROVIDER. It used to be a ChatOpenAI subclass only,
+    and the Azure branch built a plain AzureChatOpenAI: on
+    tanasuq-production (Azure) nothing was ever masked and no `pii[` line
+    was ever logged (2026-10-15)."""
+
+    def invoke(self, input, config=None, *, stop=None, **kwargs):
+        vault = pii_vault.active_vault()
+        if vault is None:
+            return super().invoke(input, config, stop=stop, **kwargs)
+        stats: dict = {}
+        masked = pii_vault.mask_input(vault, input, stats)
+        response = super().invoke(masked, config, stop=stop, **kwargs)
+        restored = pii_vault.unmask_output(vault, response, stats)
+        pii_vault.log_call(pii_vault._current.get(), stats, masked, debug=vault.get("debug"))
+        return restored
+
+
+class _PiiMaskingChatOpenAI(_PiiMasking, ChatOpenAI):
+    pass
+
+
+class _PiiMaskingAzureChatOpenAI(_PiiMasking, AzureChatOpenAI):
+    pass
+
 
 def _make_llm(model: str, **kwargs):
     """The chat client for `model`, for config.LLM_PROVIDER.
@@ -91,7 +125,7 @@ def _make_llm(model: str, **kwargs):
         # names the tenant created in the Azure portal - so `model`
         # (OPENAI_MODEL / _CHEAP / _BY_AGENT / _UNDERSTANDING holds a
         # deployment name here) is passed as `azure_deployment`.
-        return AzureChatOpenAI(
+        return _PiiMaskingAzureChatOpenAI(
             azure_deployment=model,
             azure_endpoint=config.AZURE_OPENAI_ENDPOINT,
             api_version=config.AZURE_OPENAI_API_VERSION,
@@ -100,7 +134,7 @@ def _make_llm(model: str, **kwargs):
         )
 
     if config.LLM_PROVIDER == "openrouter":
-        return ChatOpenAI(
+        return _PiiMaskingChatOpenAI(
             model=config.llm_model_id(model),
             api_key=config.llm_api_key() or "sk-not-configured",
             base_url=config.OPENROUTER_BASE_URL,
@@ -111,7 +145,7 @@ def _make_llm(model: str, **kwargs):
             **kwargs,
         )
 
-    return ChatOpenAI(model=model, api_key=config.OPENAI_API_KEY or "sk-not-configured", **kwargs)
+    return _PiiMaskingChatOpenAI(model=model, api_key=config.OPENAI_API_KEY or "sk-not-configured", **kwargs)
 
 
 # TEMPERATURE IS PINNED, NOT LEFT TO THE API DEFAULT (1.0).
@@ -1445,6 +1479,308 @@ def _deterministic_day_and_slot_resolution(state: AgentState, agent_name: str) -
         )
 
     return pairs
+
+
+# ==========================================================
+# Nearest branch to a place - answered from the map in code
+# ==========================================================
+#
+# Ported from the elborgdemo branch, where each of these was a confirmed
+# staging failure: the model searched a branch NAMED the place ("معنديش
+# فرع اسمه الهرم"), stopped after finding the place without naming the
+# nearest branch, re-showed a "which of these places?" list after the
+# patient had answered "1", and sent the welcome menu alone while the
+# nearest branch had been found. See tools.geocode_address.
+
+def _agent_holds_tools(agent_name: str, *tool_names: str) -> bool:
+    """True when `agent_name`'s registry tool subset contains every one
+    of `tool_names`. The hooks below call tools directly (`.func`) and so
+    bypass `_tool_node`'s allow-list - they apply the same boundary."""
+
+    held = {getattr(t, "name", "") for t in agents.tools_for(agent_name)}
+    return all(name in held for name in tool_names)
+
+
+def _list_position(text: str) -> int:
+    """The position a bare-number answer names ("2", "٢", "رقم 2"), or 0."""
+
+    digits = re.sub(r"\D", "", text.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")))
+    return int(digits) if digits else 0
+
+
+def _last_reply_before(messages: list, index: int) -> str:
+    """The text of the assistant's reply just before messages[index]."""
+
+    for message in reversed(messages[:index]):
+        if getattr(message, "type", None) == "ai" and getattr(message, "content", ""):
+            content = message.content
+            return content if isinstance(content, str) else str(content)
+    return ""
+
+
+def _reply_before_shows(messages: list, index: int, name: Optional[str]) -> bool:
+    """Whether the reply the patient answered shows `name` - spelling
+    variants, the article and spacing ignored, since the model rewords a
+    label now and then."""
+
+    if not name:
+        return False
+
+    def norm(value: str) -> str:
+        value = tools._normalize_arabic(value).replace("ئ", "ي").replace("ؤ", "و")
+        return " ".join(re.sub(r"^ال(?=\w{2})", "", word) for word in value.split())
+
+    return norm(name) in norm(_last_reply_before(messages, index))
+
+
+def _deterministic_place_pick(state: AgentState, agent_name: str):
+    """When the patient answers "which of these places?" (geocode_address
+    found the name in several places) with a BARE NUMBER, find the
+    nearest branch to that place in code.
+
+    CONFIRMED (elborgdemo staging 2026-10-05): five Carrefour stores were
+    offered, the patient replied "1" - twice - and the model showed the
+    same five again each time instead of calling
+    find_nearest_branch(place_option=1).
+
+    Only when the reply just before shows the chosen place (any part of
+    its address after the shared name); anything else goes to the model."""
+
+    if not _agent_holds_tools(agent_name, "find_nearest_branch"):
+        return None
+
+    session_id = state.get("session_id")
+    pending = tools._PENDING_PLACES.get(str(session_id)) or []
+    if not pending:
+        return None
+
+    messages = state.get("messages") or []
+    index = _latest_human_index(messages)
+    if index < 0:
+        return None
+    content = getattr(messages[index], "content", "")
+    text = (content if isinstance(content, str) else str(content)).strip()
+    if not _POSITIONAL_ANSWER_RE.match(text):
+        return None
+    position = _list_position(text)
+    chosen = next((o for o in pending if o.get("option") == position), None)
+    if not chosen:
+        return None
+
+    parts = [p.strip() for p in re.split(r"[,،]", chosen.get("label") or "") if p.strip()]
+    if not any(_reply_before_shows(messages, index, part) for part in parts[1:] or parts):
+        logger.info(
+            "_deterministic_place_pick: the reply before %r does not show option %d "
+            "- the model takes this turn (session_id=%s)", text, position, session_id,
+        )
+        return None
+
+    try:
+        payload = tools.find_nearest_branch.func(state, place_option=position)
+    except Exception:  # noqa: BLE001
+        logger.warning("_deterministic_place_pick: find_nearest_branch raised for "
+                       "session_id=%s - handing the turn to the model", session_id, exc_info=True)
+        return None
+    if not isinstance(payload, dict) or payload.get("status") in (None, "needs_place_choice", "error", "not_configured"):
+        return None
+
+    tools._PENDING_PLACES.pop(str(session_id), None)
+    logger.info("_deterministic_place_pick: option %d (%r) -> find_nearest_branch status=%r for session_id=%s",
+                position, chosen.get("label"), payload.get("status"), session_id)
+    return _forge_tool_pair("find_nearest_branch", {"place_option": position}, payload)
+
+
+# "اقرب فرع لسيتي ستارز" / "ايه اقرب فرع ليا من مول العرب" / "أقرب عيادة
+# عند الماسة": the place the patient names AFTER the question. A pronoun
+# ("ليا", "ليكم") is not a place - see _NOT_A_PLACE.
+_NEAREST_TO_PLACE_RE = re.compile(
+    r"[اأإ]قرب\s+(?:فرع|عياد[ةه]|مكان)(?:\s+(?:لل|ل)?(?:عياد[ةه]|مركز))?"
+    r"(?:\s+ل[يى](?:ا|ه|ك|كي|كم|نا|ها|هم)?)?\s*"
+    r"(?:(?:من\s+عند|من|عند|جنب|قريب\s+من|ف[يى])\s+(?P<a>.+)|لل(?P<b>\S.*)|ل(?P<c>\S.*))$"
+)
+_NEAREST_TO_PLACE_EN_RE = re.compile(
+    r"\b(?:nearest|closest)\s+(?:branch|clinic|location)(?:\s+is)?\s+"
+    r"(?:to|from|near|around)\s+(?P<a>.+)$",
+    re.IGNORECASE,
+)
+# "انا قاعد في فندق الماسة ايه اقرب فرع؟": the place named BEFORE the
+# question. Without the question in the same message ("انا جاي من عند مول
+# العرب") it counts only as the answer to a nearest-branch exchange - see
+# `_place_in_nearest_question`.
+_WHERE_I_AM_RE = re.compile(
+    r"(?:^|\s)(?:[اأإ]نا\s+)?(?:قاعد|ساكن|موجود|جاي|نازل|مقيم|واقف)[ةه]?\s+"
+    r"(?:(?:من\s+)?عند|من|ف[يى]|ف|جنب|قريب\s+من)\s+(?P<p>.+)$"
+)
+_NEAREST_QUESTION_TAIL_RE = re.compile(
+    r"\s*[,،.؟?!-]*\s*(?:و\s*)?(?:(?:هو|طب|طيب)\s+)?(?:(?:ايه|إيه|ايش|فين|وين|انهي|أنهي|اي|أي|ما|مين)\s+)?"
+    r"(?:هو\s+)?[اأإ]قرب\s+(?:فرع|عياد[ةه]).*$"
+)
+_NEAREST_CUE_RE = re.compile(r"[اأإ]قرب\s+(?:فرع|عياد[ةه])|nearest|closest", re.IGNORECASE)
+_NOT_A_PLACE = {
+    "يه", "يا", "يك", "يكي", "ينا", "يها", "يهم", "يكم", "ي", "ك", "كم", "me", "us", "you", "here",
+    "الحجز", "الكشف", "حجز", "كشف",
+}
+
+
+def _clean_place(place: Optional[str]) -> Optional[str]:
+    place = (place or "").strip().strip("؟?.!،,-").strip()
+    place = re.sub(r"^(?:عند|منطقة|منطقه)\s+", "", place)
+    if not place or place.lower() in _NOT_A_PLACE or len(place) < 3:
+        return None
+    return place
+
+
+def _place_in_nearest_question(text: str, previous_reply: str = "") -> Optional[str]:
+    """The place a nearest-branch question names, or None.
+
+    `previous_reply` is the assistant's message the patient answered: a
+    bare "انا جاي من عند مول العرب" names a place for the nearest branch
+    only when that exchange was about the nearest branch."""
+
+    text = (text or "").strip().rstrip("؟?. ")
+
+    match = _NEAREST_TO_PLACE_RE.search(text)
+    if match:
+        if match.group("a"):
+            return _clean_place(match.group("a"))
+        if match.group("b"):
+            return _clean_place("ال" + match.group("b"))
+        return _clean_place(match.group("c"))
+
+    match = _NEAREST_TO_PLACE_EN_RE.search(text)
+    if match:
+        return _clean_place(match.group("a"))
+
+    match = _WHERE_I_AM_RE.search(text)
+    if match:
+        place, asks = _NEAREST_QUESTION_TAIL_RE.subn("", match.group("p"))
+        if asks or _NEAREST_CUE_RE.search(previous_reply or ""):
+            return _clean_place(place)
+    return None
+
+
+def _deterministic_nearest_to_place(state: AgentState, agent_name: str):
+    """A nearest-branch question that names a place is looked up on the
+    map in code (geocode_address, whose result carries the nearest
+    branch, or the "which one?" choice for a chain) before the model's
+    turn.
+
+    CONFIRMED (elborgdemo staging 2026-10-05): "ايه اقرب فرع للهرم" got
+    "معنديش فرع اسمه الهرم" and the branch list - the model looked for a
+    branch called الهرم and never looked the place up."""
+
+    if not _agent_holds_tools(agent_name, "geocode_address", "find_nearest_branch"):
+        return None
+
+    messages = state.get("messages") or []
+    index = _latest_human_index(messages)
+    if index < 0:
+        return None
+    if _tool_results_since_latest_human(messages, ("geocode_address", "find_nearest_branch")):
+        return None  # already looked up on an earlier hop of this turn
+    content = getattr(messages[index], "content", "")
+    place = _place_in_nearest_question(content if isinstance(content, str) else str(content),
+                                       _last_reply_before(messages, index))
+    if not place:
+        return None
+
+    try:
+        payload = tools.geocode_address.func(state, address=place)
+    except Exception:  # noqa: BLE001
+        logger.warning("_deterministic_nearest_to_place: geocode_address raised for %r", place, exc_info=True)
+        return None
+    if not isinstance(payload, dict) or payload.get("status") not in ("found", "ambiguous"):
+        logger.info("_deterministic_nearest_to_place: %r -> %r - the model takes this turn",
+                    place, (payload or {}).get("status") if isinstance(payload, dict) else None)
+        return None
+
+    nearest_branch = payload.get("nearest_branch") if isinstance(payload.get("nearest_branch"), dict) else {}
+    nearest = (nearest_branch.get("branches") or [{}])[0]
+    logger.info("_deterministic_nearest_to_place: %r -> %s (nearest=%r)", place, payload.get("status"),
+                (nearest or {}).get("name"))
+    return _forge_tool_pair("geocode_address", {"address": place}, payload)
+
+
+def _nearest_branch_result_this_turn(messages: list) -> Optional[dict]:
+    """The nearest-branch answer found this turn (find_nearest_branch, or
+    a geocode_address result carrying `nearest_branch`), or None."""
+
+    for message in reversed(_tool_results_since_latest_human(messages, ("geocode_address", "find_nearest_branch"))):
+        try:
+            payload = json.loads(message.content) if isinstance(message.content, str) else None
+        except ValueError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if getattr(message, "name", None) == "geocode_address":
+            payload = payload.get("nearest_branch")
+        if isinstance(payload, dict) and payload.get("status") == "found" and payload.get("branches"):
+            return payload
+    return None
+
+
+def _pin_sent_this_turn(messages: list, branch_name: str) -> bool:
+    for message in _tool_results_since_latest_human(messages, ("share_branch_location",)):
+        content = str(getattr(message, "content", ""))
+        if "location_requested" in content and branch_name in content:
+            return True
+    return False
+
+
+def _reply_names_nearest_first(reply: str, branches: list) -> bool:
+    """Whether the reply names the nearest branch, and names it before any
+    other branch - with two branches, a reply that mentions both but leads
+    with the farther one reads as the wrong answer."""
+
+    squashed = tools._geo_name_key(reply)
+    positions = []
+    for branch in branches:
+        key = tools._geo_name_key(branch.get("name"))
+        positions.append(squashed.find(key) if key else -1)
+    if not positions or positions[0] < 0:
+        return False
+    return all(p < 0 or p >= positions[0] for p in positions[1:])
+
+
+def _nearest_branch_card(messages: list, language: str) -> tuple:
+    """(card text, branch name) for the nearest branch found this turn;
+    (None, None) when there is nothing to show or the distance needs the
+    model's care (`unusually_far`)."""
+
+    result = _nearest_branch_result_this_turn(messages)
+    if not result or result.get("unusually_far"):
+        return None, None
+    branch = result["branches"][0] or {}
+    name = (branch.get("name") or "").strip()
+    if not name:
+        return None, None
+
+    index = _latest_human_index(messages)
+    asked = getattr(messages[index], "content", "") if index >= 0 else ""
+    place = _place_in_nearest_question(asked if isinstance(asked, str) else str(asked),
+                                       _last_reply_before(messages, index) if index >= 0 else "")
+    pin_sent = _pin_sent_this_turn(messages, name)
+
+    distance = branch.get("distance_km")
+    if language == "en":
+        lines = [f"The nearest branch to you{f' from {place}' if place else ''} is:", "",
+                 f"🏥 Branch: {name}"]
+        labels = ("📍 Address", "📞 Phone", "⏰ Working hours", "📏 Distance")
+        closing = (f"I've sent you its location on the map. Would you like to book at {name}?"
+                   if pin_sent else "Would you like me to send you the branch location on the map?")
+        distance_text = f"about {distance} km" if distance is not None else None
+    else:
+        lines = [f"أقرب فرع ليك{f' من {place}' if place else ''} هو:", "", f"🏥 الفرع: {name}"]
+        labels = ("📍 العنوان", "📞 التليفون", "⏰ مواعيد العمل", "📏 المسافة")
+        closing = (f"بعتلك لوكيشن الفرع على الخريطة. تحب أحجزلك ميعاد في {name}؟"
+                   if pin_sent else "تحب أبعتلك لوكيشن الفرع على الخريطة؟")
+        distance_text = f"حوالي {distance} كم" if distance is not None else None
+    for label, value in zip(labels, (branch.get("address"), branch.get("phone"),
+                                     branch.get("working_hours"), distance_text)):
+        if value:
+            lines.append(f"{label}: {value}")
+    lines += ["", closing]
+    return "\n".join(lines), name
 
 
 # ==========================================================
@@ -4746,9 +5082,12 @@ _LOCATION_QUESTION_DIRECTIVE = (
     "{addresses}\n\n"
     "Answer from these addresses only. A place or district they name (\"أقرب "
     "للنظيم\") is where THEY are, never a branch name - do not search it as "
-    "one and never answer that there is no branch by that name. Give the "
-    "branches with their districts; say which is nearer only when it is "
-    "plain from the addresses. For the map pin, call `share_branch_location` "
+    "one and never answer that there is no branch by that name. Which branch "
+    "is NEARER to a place they name comes only from `geocode_address` (call "
+    "it with the place; its `nearest_branch` is the answer, already in this "
+    "turn's tool results if it ran) - never judge it from the addresses "
+    "yourself; without that tool, give the branches with their districts. "
+    "For the map pin, call `share_branch_location` "
     "with the exact branch name above (the one they asked about, chose or "
     "booked). Then carry on with whatever was in progress.\n"
     "If they say they are LOST or missed the turn/entrance (\"ضيعت اللفة\", "
@@ -17335,6 +17674,37 @@ def _build_review_card_phone_directive(state: AgentState, session_id: str) -> st
     return _REVIEW_CARD_PHONE_DIRECTIVE.format(phone=normalized)
 
 
+_ANYTHING_ELSE_QUESTION = {
+    "ar": "في شي ثاني أقدر أساعدك فيه؟",
+    "en": "Is there anything else I can help you with?",
+}
+
+
+def _unasked_cancel_question_fix(reply_text: str, state: AgentState, target_language: Optional[str]) -> str:
+    """The reply without a "is this the appointment you want to cancel?"
+    question when the patient never asked to cancel - ending instead with
+    "anything else?".
+
+    CONFIRMED (tanasuq-production, 2026-10-14 00:25, 966531397653): "حاب
+    اتاكد من الايميل الخاص فيني" -> the appointment and the email, then
+    "هل هذا هو الموعد الذي تبغى تلغيه؟". The patient only wanted to check
+    the email. One "اه" there and the cancel flow would have owned the
+    conversation."""
+
+    if not reply_text or _cancellation_was_requested(state):
+        return reply_text
+    lines = reply_text.split("\n")
+    kept = [line for line in lines
+            if not (("؟" in line or "?" in line) and _CANCELLATION_FRAMING_RE.search(_norm_ar(line)))]
+    if len(kept) == len(lines):
+        return reply_text
+    body = "\n".join(kept).rstrip()
+    if "؟" in body or "?" in body:
+        return body
+    question = _ANYTHING_ELSE_QUESTION["en" if (target_language or "").startswith("en") else "ar"]
+    return f"{body}\n\n{question}".strip()
+
+
 def _card_name_is_the_doctor_fix(reply_text: str) -> str:
     """A card whose 👤 name line repeats the 👨‍⚕️ doctor line loses the
     name line. CONFIRMED (tanasuq-production, 2026-10-10 16:54,
@@ -17381,6 +17751,33 @@ _SAME_DAY_NOTICE = {
     "ar": "للأسف ما نقدر نحجز في نفس اليوم 🌷",
     "en": "Unfortunately we can't book an appointment for the same day 🌷",
 }
+
+
+def _requested_day_empty_notice(reply_text: str, state: AgentState, target_language: str) -> str:
+    """When the day the patient asked for had no slot and this turn's
+    times are for a later same weekday, the reply opens by saying so.
+
+    CONFIRMED (bridge-production, 2026-10-13 13:05): "أقرب يوم أربعاء متاح
+    هو 14/10/2026 - يناسبك؟" -> "اه", and the reply listed 28/10's times
+    with no word that 14/10 had none; the same again for 21/10."""
+
+    if not isinstance(reply_text, str) or not reply_text.strip():
+        return reply_text
+    messages = state.get("messages") or []
+    index = _latest_human_index(messages)
+    empty = None
+    for msg in messages[index + 1:] if index >= 0 else []:
+        if getattr(msg, "name", None) == "get_available_reschedule_slots":
+            payload = parse_tool_content(msg) or {}
+            empty = payload.get("requested_day_had_no_slots") or empty
+    if not empty or not empty.get("date_display"):
+        return reply_text
+    if empty["date_display"] in reply_text:
+        return reply_text
+    day = f"{empty.get('weekday_display') or ''} {empty['date_display']}".strip()
+    if target_language == "en":
+        return f"{day} has no available appointments 🌷\n{reply_text}"
+    return f"يوم {day} ما فيه مواعيد متاحة 🌷\n{reply_text}"
 
 
 def _same_day_notice(reply_text: str, state: AgentState, target_language: str) -> str:
@@ -19970,6 +20367,20 @@ _COMPACT_MAX_ITEMS = 6
 _COMPACT_MIN_CHARS = 400
 
 
+def _compact_booking_id(item: dict) -> str:
+    """A looked-up booking keeps its `id` through compaction.
+
+    tanasuq-production 2026-10-18 14:55 and 18:45: the lookup was three
+    turns back, its `id` had been shortened away, and at the patient's
+    final "نعم" the model had no id to reschedule with - it wrote
+    `⟦ID_1⟧` and the change was refused. Only a booking (an `id` beside
+    its reference) keeps it; doctor, branch and slot ids still go."""
+
+    if item.get("id") and (item.get("ref") or item.get("bookingRefNum")):
+        return f" (id={item['id']})"
+    return ""
+
+
 def _compact_tool_payload(raw: str) -> str:
     """A short, readable stand-in for an OLD tool result.
 
@@ -20022,7 +20433,7 @@ def _compact_tool_payload(raw: str) -> str:
                 if isinstance(item, dict):
                     for field in _COMPACT_KEEP_KEYS:
                         if item.get(field):
-                            names.append(str(item[field]).strip())
+                            names.append(str(item[field]).strip() + _compact_booking_id(item))
                             break
                 elif isinstance(item, str) and item.strip():
                     names.append(item.strip())
@@ -20035,6 +20446,8 @@ def _compact_tool_payload(raw: str) -> str:
 
         elif isinstance(value, dict):
             inner = [f"{f}={value[f]}" for f in _COMPACT_KEEP_KEYS if value.get(f)]
+            if inner and _compact_booking_id(value):
+                inner.append(f"id={value['id']}")
             if inner:
                 parts.append(f"{key}: " + ", ".join(inner))
 
@@ -20397,6 +20810,9 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     strong enough signal on its own to keep replies in the user's actual
     language, even for a conversation that had been purely English from
     its first message."""
+
+    # Patient data as placeholders for this node's model calls - see pii_vault.py.
+    pii_vault.attach(state)
 
     target_language = _detect_target_language(state["messages"])
     language_directive = _LANGUAGE_DIRECTIVE.get(target_language, "")
@@ -20931,6 +21347,12 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
     if slot_lock_pair is not None:
         deterministic_pairs.extend(slot_lock_pair)
         history = history + list(slot_lock_pair)
+    # A NEAREST-BRANCH QUESTION NAMING A PLACE, or a number picking one of
+    # the places offered for it - see `_deterministic_nearest_to_place`.
+    place_pair = _deterministic_place_pick(state, agent_name) or _deterministic_nearest_to_place(state, agent_name)
+    if place_pair is not None:
+        deterministic_pairs.extend(place_pair)
+        history = history + list(place_pair)
     schedule_pairs = _deterministic_single_doctor_confirmation(state, agent_name)
     if not schedule_pairs:
         schedule_pairs = _deterministic_doctor_schedule_lookup(state, agent_name)
@@ -21729,12 +22151,45 @@ def _run_agent(state: AgentState, agent_name: str) -> dict:
             logger.warning("agent[%s]: card named the doctor as the patient - name line dropped", agent_name)
             response = AIMessage(content=unnamed)
 
+    # NO "CANCEL IT?" NOBODY ASKED FOR - see `_unasked_cancel_question_fix`.
+    if not has_tool_calls:
+        unasked = _unasked_cancel_question_fix(response.content, state, target_language)
+        if unasked != response.content:
+            logger.warning("agent[%s]: asked whether to cancel an appointment the patient never asked to cancel - "
+                           "question replaced", agent_name)
+            response = AIMessage(content=unasked)
+
+    # THE DAY ASKED FOR WAS EMPTY, SAID FIRST - see `_requested_day_empty_notice`.
+    if not has_tool_calls and agent_name in ("reschedule", "concierge"):
+        told = _requested_day_empty_notice(response.content, state, target_language)
+        if told != response.content:
+            logger.warning("agent[%s]: the asked-for day had no slots - said so above the later day's times", agent_name)
+            response = AIMessage(content=told)
+
     # TODAY IS REFUSED FIRST, IN CODE - see `_same_day_notice`.
     if not has_tool_calls and agent_name in ("booking", "concierge", "reschedule"):
         noticed = _same_day_notice(response.content, state, target_language)
         if noticed != response.content:
             logger.warning("agent[%s]: the patient asked for today - same-day notice put first", agent_name)
             response = AIMessage(content=noticed)
+
+    # THE NEAREST BRANCH FOUND THIS TURN IS WHAT THE REPLY SAYS. CONFIRMED
+    # (elborgdemo staging 2026-10-05): "اقرب فرع للهرم" as the first message
+    # found the branch - the pin went out - but the text was the welcome
+    # menu alone. The card is ALWAYS the answer - one fixed shape (branch,
+    # address, phone, hours, distance) whatever the model drafted; on a
+    # first turn the greeting goes above it.
+    if not has_tool_calls:
+        nearest_result = _nearest_branch_result_this_turn(state.get("messages") or [])
+        card, card_branch = _nearest_branch_card(state.get("messages") or [], target_language or "ar")
+        if card and response.content != card:
+            leads = _reply_names_nearest_first(response.content or "", nearest_result["branches"])
+            (logger.info if leads else logger.warning)(
+                "agent[%s]: nearest branch found this turn (%r) - sending the "
+                "nearest-branch card (draft %s with it). Draft: %r",
+                agent_name, card_branch, "led" if leads else "did NOT lead", response.content,
+            )
+            response = AIMessage(content=card)
 
     # A SAUDI/GULF CLINIC GETS NO EGYPTIAN FIXED WORDING - see
     # `_localize_egyptian_wording_for_gulf`.
@@ -21985,6 +22440,14 @@ def _missed_location_pin_pair(state: AgentState, response, target_language: Opti
     if any(getattr(m, "name", None) == "share_branch_location" for m in this_turn):
         return []
 
+    # A branch they asked for that does not exist gets no pin of another
+    # one. CONFIRMED (bridge-production, 2026-10-13 13:19): "ممكن عنوان
+    # النرجس؟" -> "ما لقيت فرع اسمه النرجس ... عندنا بريدج النزهة" went out
+    # with بريدج النزهة's pin.
+    lookups = [parse_tool_content(m) or {} for m in this_turn if getattr(m, "name", None) == "match_entity_info"]
+    if lookups and not any(l.get("status") == "matched" for l in lookups):
+        return []
+
     branch = None
     for msg in this_turn:
         if getattr(msg, "name", None) != "match_entity_info":
@@ -22076,6 +22539,8 @@ def router(state: AgentState) -> dict:
     previous = state.get("active_agent")
     messages = state["messages"]
 
+    # Patient data as placeholders for this node's model calls - see pii_vault.py.
+    pii_vault.attach(state)
     reading = _understand_turn(state)
     if reading is not None and not reading.get("wants_human") and _types_the_word_we_asked_for(state.get("messages") or []):
         reading = {**reading, "wants_human": True, "intent": "human", "confidence": 1.0,

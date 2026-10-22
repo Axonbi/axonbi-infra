@@ -100,7 +100,7 @@ Return ONLY a JSON object with these keys:
   medical: a symptom, injury or health worry, or which doctor/specialty suits them
   faq: information for a PATIENT about the hospital's care (services, prices, branches, hours, insurance, visiting hours or visiting a patient staying there ("مواعيد الزيارة" is visiting, not appointments), a named doctor's background, the therapies offered such as CBT/DBT)
   complaint: file a complaint or suggestion - including that something was already done to their appointment ("لغيتوا موعدي", "the AI cancelled it"), which is not a request to cancel
-  human: talk to a real person / staff / customer service - including a bare "موظف" (or misspelt "موضف") or "التحدث"; and anything only staff can do, such as changing or renewing a prescription
+  human: talk to a real person / staff / customer service - including a bare "موظف" (or misspelt "موضف") or "التحدث"; and anything only staff can do, such as changing or renewing a prescription or preparing a medical report or sick leave ("ابي التقرير الطبي" is not a symptom)
   answer: replies to the assistant's question but you cannot tell which flow it moves forward
   greeting: only a greeting or thanks
   other: anything else - including things that are not patient care: jobs, training, interviews, suppliers, business
